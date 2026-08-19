@@ -663,7 +663,72 @@ async function handleMessage(message: { type: string; payload?: any }) {
       return extractedData;
     }
 
+    case 'GET_MCP_FOLDER_INFO': {
+      const state = await chrome.storage.local.get(null);
+      if (!state.mcp_gas_url) {
+        return { folderName: 'School Portal MCP Intelligence', folderUrl: '', notice: 'Connect your MCP server in Step 1 to generate your Google Drive archive folder.' };
+      }
+      try {
+        const res = await fetch(state.mcp_gas_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'get_mcp_folder_info',
+            id: 'mcp-folder-info'
+          })
+        });
+        const json = await res.json();
+        return json.result || { folderName: 'School Portal MCP Intelligence', folderUrl: '' };
+      } catch (e) {
+        return { folderName: 'School Portal MCP Intelligence', folderUrl: '', notice: 'Could not fetch folder info' };
+      }
+    }
+
+    case 'PASSIVE_WHATSAPP_MESSAGES_DETECTED': {
+      const state = await chrome.storage.local.get(null);
+      const incomingMsgs = message.payload?.messages || [];
+      if (!state.mcp_gas_url || incomingMsgs.length === 0) return { status: 'skipped' };
+
+      try {
+        await fetch(state.mcp_gas_url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            method: 'archive_whatsapp_messages',
+            params: { messages: incomingMsgs },
+            id: 'passive-wa-sync'
+          })
+        });
+        return { status: 'archived', count: incomingMsgs.length };
+      } catch (e) {
+        return { status: 'error' };
+      }
+    }
+
     default:
       throw new Error(`Unknown message type: ${message.type}`);
   }
 }
+
+// Background Passive Auto-Scanner Alarm
+if (typeof chrome !== 'undefined' && chrome.alarms) {
+  try {
+    chrome.alarms.create('BACKGROUND_PASSIVE_SCANNER', { periodInMinutes: 5 });
+    chrome.alarms.onAlarm.addListener(async (alarm) => {
+      if (alarm.name === 'BACKGROUND_PASSIVE_SCANNER') {
+        try {
+          const state = await chrome.storage.local.get(null);
+          if (state.mcp_gas_url) {
+            const waTabs = await chrome.tabs.query({ url: '*://web.whatsapp.com/*' });
+            if (waTabs.length > 0) {
+              await handleMessage({ type: 'SYNC_WHATSAPP_CHATS' });
+            }
+          }
+        } catch (err) {}
+      }
+    });
+  } catch (e) {}
+}
+

@@ -184,6 +184,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         advisoryTitle.innerText = advisory.title;
         advisoryMessage.innerText = advisory.message;
       }
+
+      const folderRes = await sendMessage({ type: 'GET_MCP_FOLDER_INFO' });
+      const linkOpenDriveFolder = document.getElementById('linkOpenDriveFolder') as HTMLAnchorElement;
+      const txtDriveFolderStatus = document.getElementById('txtDriveFolderStatus') as HTMLParagraphElement;
+      if (folderRes && folderRes.folderUrl && linkOpenDriveFolder) {
+        linkOpenDriveFolder.href = folderRes.folderUrl;
+        if (txtDriveFolderStatus) {
+          txtDriveFolderStatus.innerHTML = `Folder: <strong>${folderRes.folderName}</strong> (ID: <code>${folderRes.folderId || 'Active'}</code>)`;
+        }
+      }
     } catch (e) {}
   }
 

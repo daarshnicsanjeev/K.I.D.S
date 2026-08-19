@@ -728,6 +728,10 @@ function doPost(e) {
       result = { logs: McpLogger.getLogs() };
     } else if (method === "server/clearLogs") {
       result = { cleared: McpLogger.clearLogs() };
+    } else if (method === "get_mcp_folder_info") {
+      result = DriveFolderManager.getFolderInfo();
+    } else if (method === "upload_whatsapp_attachment") {
+      result = WhatsAppStorage.saveAttachment(params.fileName, params.base64Data, params.mimeType, params.messageContext);
     } else if (method === "archive_whatsapp_messages") {
       result = WhatsAppStorage.saveMessages(params.messages);
     } else if (method === "get_whatsapp_messages") {
@@ -1022,6 +1026,45 @@ var StorageRepository = {
   }
 };
 
+var DriveFolderManager = {
+  FOLDER_NAME: 'School Portal MCP Intelligence',
+
+  getOrCreateMcpFolder: function () {
+    var props = PropertiesService.getUserProperties();
+    var folderId = props.getProperty('MCP_ROOT_FOLDER_ID');
+    if (folderId) {
+      try {
+        var existing = DriveApp.getFolderById(folderId);
+        if (existing && !existing.isTrashed()) return existing;
+      } catch (e) {}
+    }
+
+    var folders = DriveApp.getFoldersByName(this.FOLDER_NAME);
+    while (folders.hasNext()) {
+      var f = folders.next();
+      if (!f.isTrashed()) {
+        props.setProperty('MCP_ROOT_FOLDER_ID', f.getId());
+        return f;
+      }
+    }
+
+    var newFolder = DriveApp.createFolder(this.FOLDER_NAME);
+    newFolder.setDescription('Stores persistent school intelligence cache (WhatsApp messages, PDFs, images, configurations). Modifying or deleting files in this folder directly affects Gemini Spark.');
+    props.setProperty('MCP_ROOT_FOLDER_ID', newFolder.getId());
+    return newFolder;
+  },
+
+  getFolderInfo: function () {
+    var folder = this.getOrCreateMcpFolder();
+    return {
+      folderId: folder.getId(),
+      folderName: folder.getName(),
+      folderUrl: folder.getUrl(),
+      notice: '⚠️ Notice: This Google Drive folder stores your persistent school intelligence cache (WhatsApp messages, PDFs, images, configurations). Modifying or deleting files in this folder will directly alter or remove data used by Gemini Spark.'
+    };
+  }
+};
+
 var WhatsAppStorage = {
   ARCHIVE_FILE_NAME: 'whatsapp_school_archive.json',
 
@@ -1030,13 +1073,52 @@ var WhatsAppStorage = {
     var fileId = props.getProperty('WHATSAPP_ARCHIVE_FILE_ID');
     if (fileId) return fileId;
 
-    var files = DriveApp.getFilesByName(this.ARCHIVE_FILE_NAME);
+    var folder = DriveFolderManager.getOrCreateMcpFolder();
+    var files = folder.getFilesByName(this.ARCHIVE_FILE_NAME);
     if (files.hasNext()) {
       var id = files.next().getId();
       props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', id);
       return id;
     }
     return null;
+  },
+
+  saveAttachment: function (fileName, base64Data, mimeType, messageContext) {
+    var folder = DriveFolderManager.getOrCreateMcpFolder();
+    var decoded = Utilities.base64Decode(base64Data);
+    var blob = Utilities.newBlob(decoded, mimeType || 'application/pdf', fileName);
+    var file = folder.createFile(blob);
+    var fileId = file.getId();
+
+    var ocrText = '';
+    try {
+      var ocrRes = DriveContentExtractor.extractText(fileId, 4000);
+      if (ocrRes && ocrRes.text) {
+        ocrText = ocrRes.text;
+      }
+    } catch (ocrErr) {
+      McpLogger.log('WARN', 'attachment:ocr_failed', { fileId: fileId, error: ocrErr.toString() });
+    }
+
+    var fileRecord = {
+      fileId: fileId,
+      fileName: fileName,
+      fileUrl: file.getUrl(),
+      mimeType: mimeType,
+      ocrText: ocrText,
+      uploadedAt: new Date().toISOString()
+    };
+
+    if (messageContext) {
+      messageContext.attachment = fileRecord;
+      if (ocrText) {
+        messageContext.body = (messageContext.body || '') + '\n[Auto-OCR Extracted from ' + fileName + ']:\n' + ocrText;
+      }
+      this.saveMessages([messageContext]);
+    }
+
+    McpLogger.log('INFO', 'attachment:saved_and_ocr', { fileName: fileName, fileId: fileId, ocrChars: ocrText.length });
+    return { success: true, fileId: fileId, fileUrl: file.getUrl(), ocrTextLength: ocrText.length };
   },
 
   saveMessages: function (newMessages) {
@@ -1075,7 +1157,8 @@ var WhatsAppStorage = {
     if (fileId) {
       DriveApp.getFileById(fileId).setContent(jsonStr);
     } else {
-      var newFile = DriveApp.createFile(this.ARCHIVE_FILE_NAME, jsonStr, 'application/json');
+      var folder = DriveFolderManager.getOrCreateMcpFolder();
+      var newFile = folder.createFile(this.ARCHIVE_FILE_NAME, jsonStr, 'application/json');
       PropertiesService.getUserProperties().setProperty('WHATSAPP_ARCHIVE_FILE_ID', newFile.getId());
     }
 

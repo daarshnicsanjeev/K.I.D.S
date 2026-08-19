@@ -109,12 +109,23 @@ export class WhatsAppExtractor {
         const textEl = row.querySelector('span.selectable-text, div.copyable-text, span[dir="ltr"], span[dir="auto"]');
         const text = textEl ? (textEl.textContent || '').trim() : '';
 
-        // Media / Image caption
+        // Document / PDF file detection
+        const docTitleEl = row.querySelector('span[title*="."], div[data-testid="document-thumb"] + div span, span[data-testid="document-name"]');
+        const documentTitle = docTitleEl ? (docTitleEl.getAttribute('title') || docTitleEl.textContent || '').trim() : undefined;
+
+        // Image / Media caption
         const captionEl = row.querySelector('span[data-testid="media-caption"], div.image-caption');
         const mediaCaption = captionEl ? (captionEl.textContent || '').trim() : undefined;
-        const hasMedia = !!row.querySelector('img, video, div[data-testid="audio-player"], span[data-testid="document"]');
+        const hasMedia = !!row.querySelector('img, video, div[data-testid="audio-player"], span[data-testid="document"]') || !!documentTitle;
 
-        const fullBody = (text + (mediaCaption ? ` [Media: ${mediaCaption}]` : '')).trim();
+        let fullBody = text;
+        if (documentTitle && !fullBody.includes(documentTitle)) {
+          fullBody = `[Document Attachment: ${documentTitle}] ${fullBody}`.trim();
+        }
+        if (mediaCaption && !fullBody.includes(mediaCaption)) {
+          fullBody = `${fullBody} [Media Caption: ${mediaCaption}]`.trim();
+        }
+
         if (!fullBody && !hasMedia) return;
 
         // Links scanner (Drive links, PDFs, circulars, meetings)
@@ -137,7 +148,7 @@ export class WhatsAppExtractor {
           timestamp: timeStr || new Date().toLocaleTimeString(),
           body: fullBody,
           hasMedia,
-          mediaCaption,
+          mediaCaption: mediaCaption || documentTitle,
           detectedLinks: links
         });
       } catch (err) {
@@ -146,6 +157,27 @@ export class WhatsAppExtractor {
     });
 
     return messages;
+  }
+
+  /**
+   * Starts passive real-time DOM observer for background indexing.
+   */
+  public static startPassiveObserver(onNewMessages: (messages: WhatsAppMessage[]) => void): void {
+    const mainContainer = document.querySelector('#main, div[data-testid="conversation-panel-wrapper"]');
+    if (!mainContainer) return;
+
+    let debounceTimer: any = null;
+    const observer = new MutationObserver(() => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        const msgs = this.extractActiveChatMessages();
+        if (msgs.length > 0) {
+          onNewMessages(msgs);
+        }
+      }, 3000);
+    });
+
+    observer.observe(mainContainer, { childList: true, subtree: true });
   }
 }
 
@@ -165,4 +197,19 @@ if (typeof window !== 'undefined') {
       }, '*');
     }
   });
+
+  // Start passive real-time scanner on page load
+  try {
+    WhatsAppExtractor.startPassiveObserver((newMsgs) => {
+      try {
+        if (chrome && chrome.runtime && chrome.runtime.sendMessage) {
+          chrome.runtime.sendMessage({
+            type: 'PASSIVE_WHATSAPP_MESSAGES_DETECTED',
+            payload: { messages: newMsgs }
+          });
+        }
+      } catch (e) {}
+    });
+  } catch (e) {}
 }
+

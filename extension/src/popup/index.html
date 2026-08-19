@@ -261,6 +261,33 @@
             🌐 Extract Active Tab
           </button>
         </div>
+
+        <div style="margin-top: 8px; font-size: 0.75rem; color: #6ee7b7; display: flex; align-items: center; gap: 4px;">
+          <span>🟢</span>
+          <span><strong>Passive Auto-Scanner:</strong> Active (Continuously indexes open school chats & attachments)</span>
+        </div>
+      </div>
+
+      <!-- 📁 Google Drive MCP Intelligence Folder Card -->
+      <div class="card mt-2" style="background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h3 style="font-size: 0.9rem; font-weight: 700; color: #93c5fd; margin: 0;">
+            📁 Personal Google Drive MCP Archive Folder
+          </h3>
+        </div>
+
+        <p id="txtDriveFolderStatus" style="font-size: 0.75rem; color: #cbd5e1; margin-bottom: 6px;">
+          Folder: <code>School Portal MCP Intelligence</code> (Stores WhatsApp history, OCR attachments, & configs).
+        </p>
+
+        <a id="linkOpenDriveFolder" href="#" target="_blank" class="btn btn-primary btn-sm" style="display: flex; align-items: center; justify-content: center; text-decoration: none; margin-bottom: 8px;">
+          📁 Open Folder in Google Drive
+        </a>
+
+        <!-- Warning Notice -->
+        <div style="background: #451a03; border-left: 3px solid #f59e0b; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #fef3c7;">
+          <strong>⚠️ Critical Notice:</strong> This Google Drive folder stores your persistent school intelligence cache (WhatsApp messages, PDFs, images, configurations). Modifying or deleting files in this folder will directly alter or remove data used by Gemini Spark.
+        </div>
       </div>
 
       <!-- Status Alerts -->
