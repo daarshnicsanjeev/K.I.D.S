@@ -860,20 +860,26 @@ function handleToolsList() {
 
 function handleToolsCall(name, args) {
   if (name === 'get_whatsapp_school_updates') {
+    var msgs = WhatsAppStorage.getRecentMessages(args && args.chat_filter, args && args.max_count);
+    McpLogger.log('INFO', 'whatsapp:get_updates', { filter: args && args.chat_filter, count: msgs.length });
     return {
       timestamp: new Date().toISOString(),
-      messages: WhatsAppStorage.getRecentMessages(args && args.chat_filter, args && args.max_count)
+      messages: msgs
     };
   } else if (name === 'query_whatsapp_history') {
+    var results = WhatsAppStorage.getRecentMessages(args && args.query, 50);
+    McpLogger.log('INFO', 'whatsapp:query_history', { query: args && args.query, resultsCount: results.length });
     return {
       timestamp: new Date().toISOString(),
       query: args && args.query,
-      results: WhatsAppStorage.getRecentMessages(args && args.query, 50)
+      results: results
     };
   } else if (name === 'get_live_web_tab_content') {
+    var tabData = LiveTabStorage.getTabContent(args && args.domain_or_keyword);
+    McpLogger.log('INFO', 'live_tab:get_content', { domainOrKeyword: args && args.domain_or_keyword, found: !!tabData });
     return {
       timestamp: new Date().toISOString(),
-      tabData: LiveTabStorage.getTabContent(args && args.domain_or_keyword)
+      tabData: tabData
     };
   } else if (name === 'fetch_drive_file_ocr') {
     return DriveContentExtractor.extractText(args && args.fileId, 6000);
@@ -895,7 +901,13 @@ function handleToolsCall(name, args) {
     try { result.google_classroom = WorkspaceFetcher.getGoogleClassroomWork(); } catch (e) { result.google_classroom = { error: e.toString() }; }
     try { result.school_gmail_circulars = WorkspaceFetcher.getSchoolGmailMessages(args && args.gmail_query); } catch (e) { result.school_gmail_circulars = { error: e.toString() }; }
     try { result.calendar_events = WorkspaceFetcher.getCalendarEvents(); } catch (e) { result.calendar_events = { error: e.toString() }; }
-    try { result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 15); } catch (we) { result.whatsapp_school_notices = { error: we.toString() }; }
+    try {
+      result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 15);
+      McpLogger.log('INFO', 'whatsapp:school_notices', { count: result.whatsapp_school_notices ? result.whatsapp_school_notices.length : 0 });
+    } catch (we) {
+      result.whatsapp_school_notices = { error: we.toString() };
+      McpLogger.log('WARN', 'whatsapp:school_notices_failed', { error: we.toString() });
+    }
 
     var registered = StorageRepository.getRegisteredTools();
     for (var i = 0; i < registered.length; i++) {
