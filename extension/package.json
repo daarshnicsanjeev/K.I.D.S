@@ -1,0 +1,19 @@
+{
+  "name": "school-mcp-sync-extension",
+  "version": "1.0.0",
+  "description": "Chrome Extension for Universal School Portal & Workspace MCP Sync Engine",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "test": "vitest run"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/chrome": "^0.0.268",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.1.0",
+    "vitest": "^1.3.0"
+  }
+}

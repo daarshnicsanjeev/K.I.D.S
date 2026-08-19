@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Universal School Portal MCP Sync Engine",
+  "version": "1.0.0",
+  "description": "Privacy-first sync engine connecting school portals & Google Workspace to Gemini Spark MCP.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "cookies",
+    "identity"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "src/popup/index.html",
+    "default_title": "School MCP Sync Wizard"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://script.google.com/create*", "https://script.google.com/home/projects/*"],
+      "js": ["autoDeployScript.js"]
+    }
+  ],
+  "oauth2": {
+    "client_id": "161904522090-1k5bu1dh6jgmgdjcnqielm46ecn7q29g.apps.googleusercontent.com",
+    "scopes": [
+      "https://www.googleapis.com/auth/script.projects",
+      "https://www.googleapis.com/auth/script.deployments",
+      "https://www.googleapis.com/auth/drive.file",
+      "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "https://www.googleapis.com/auth/classroom.courses.readonly",
+      "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
+      "https://www.googleapis.com/auth/calendar.events.readonly",
+      "https://www.googleapis.com/auth/gmail.readonly"
+    ]
+  }
+}

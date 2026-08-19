@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>School Portal MCP Assistant Setup</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <header class="header">
+      <div class="logo-title">
+        <span class="icon">🎓</span>
+        <h1>School MCP Assistant</h1>
+      </div>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <button id="btnHeaderUpdateScript" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;" title="Update Google Apps Script Server Backend">⚡ Update Script</button>
+        <span id="stepBadge" class="badge">Step 1 of 3</span>
+      </div>
+    </header>
+
+    <div class="stepper" style="cursor: pointer;" title="Click any step to navigate">
+      <div class="step-dot active" id="dot1" title="Step 1: Workspace Setup">1</div>
+      <div class="step-line" id="line1"></div>
+      <div class="step-dot" id="dot2" title="Step 2: Connect to Gemini Spark">2</div>
+      <div class="step-line" id="line2"></div>
+      <div class="step-dot" id="dot3" title="Step 3: School Portal Features">3</div>
+    </div>
+
+    <main class="main-content">
+      <!-- Step 1: Connect School Workspace -->
+      <section id="step1Card" class="card">
+        <h2>Step 1: Connect Google Classroom & MCP Server</h2>
+
+        <!-- Action 1: Open Google Classroom -->
+        <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button">
+          🌐 1. Open Google Classroom & Sign In
+        </button>
+
+        <div class="status-box mb-2">
+          <span class="status-icon">📌</span>
+          <span><strong>Account Guidance:</strong> Please ensure to select your official school Google Classroom account. Make sure your personal Google account is not logged in before proceeding.</span>
+        </div>
+
+        <!-- Action 2: Enable Apps Script API -->
+        <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-2" tabindex="0" role="button">
+          🔗 2. Enable Google Apps Script API
+        </button>
+
+        <div class="status-box mb-2">
+          <span class="status-icon">💡</span>
+          <span><strong>One-Time Activity:</strong> Enabling Google Apps Script API is required only <strong>one time</strong> per Google Account. If you have done this already, you can ignore this step.</span>
+        </div>
+
+        <button id="btnOpenAuthScreen" class="btn btn-warning btn-sm mb-2 hidden" tabindex="0" role="button">
+          🚀 Open Google Authorization Screen
+        </button>
+
+        <!-- Action 3: Create Personal MCP Server -->
+        <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2" tabindex="0" role="button">
+          ⚡ 3. Create My Personal MCP Server
+        </button>
+
+        <div class="url-input-container">
+          <label for="gasUrlInput">Server Web App URL</label>
+          <input type="url" id="gasUrlInput" placeholder="https://script.google.com/macros/s/.../exec">
+          <button id="btnVerifyStep1" class="btn btn-secondary mt-1" tabindex="0" role="button">Verify Server Link</button>
+        </div>
+      </section>
+
+      <!-- Step 2: Bind Gemini Spark MCP -->
+      <section id="step2Card" class="card hidden">
+        <h2>Step 2: Connect to Gemini Spark</h2>
+        <p class="subtitle">Your school assistant server is active! Follow the steps below to connect your server to Gemini Spark.</p>
+        
+        <div class="url-copy-box">
+          <input type="text" id="mcpUrlDisplay" readonly>
+          <button id="btnCopyUrl" class="btn btn-secondary">Copy Link</button>
+        </div>
+
+        <div style="margin-bottom: 8px;">
+          <a id="btnOpenGasProject" href="#" target="_blank" class="btn btn-outline btn-sm text-center" style="display: block; text-decoration: none; font-size: 0.75rem;">
+            🔗 Open Connected Google Apps Script Project
+          </a>
+        </div>
+
+        <div class="guidance-box mb-2">
+          <p class="guidance-title">⚙️ Step-by-Step Connection Instructions:</p>
+          <ol style="margin-left: 16px; margin-bottom: 8px; line-height: 1.5;">
+            <li>Click <strong>Copy Link</strong> above to copy your personal server URL.</li>
+            <li>Click the button below to open <strong>Gemini Spark Apps</strong>.</li>
+            <li>In Gemini Spark, go to <strong>Connected Apps</strong>.</li>
+            <li>Click <strong>Add a custom app</strong>.</li>
+            <li>Paste your copied server link into the <strong>Add a custom app link</strong> field.</li>
+            <li>Click <strong>Next</strong>, then click <strong>Authorize</strong> to finish!</li>
+          </ol>
+
+          <a href="https://gemini.google.com/spark/apps" target="_blank" class="btn btn-primary btn-hero text-center mb-2" style="display: block; text-decoration: none;">
+            ✨ Open Gemini Spark Apps
+          </a>
+        </div>
+
+        <div class="guidance-box mb-2">
+          <p class="guidance-title">📦 Step 1: Download & Upload Skill (SKILL.md):</p>
+          <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 6px;">
+            The skill file contains all reusable dashboard instructions, HTML Canvas rendering rules, single Google Sheet binding, and overdue task calculations:
+          </p>
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+            <button id="btnDownloadSkill" class="btn btn-primary btn-sm" style="flex: 1;">
+              📥 Download Skill File (SKILL.md)
+            </button>
+            <a href="https://gemini.google.com/spark/skills" target="_blank" class="btn btn-secondary btn-sm text-center" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center;">
+              ✨ Open Gemini Spark Skills
+            </a>
+          </div>
+          <ol style="margin-left: 16px; margin-bottom: 4px; font-size: 0.75rem; line-height: 1.4; color: #cbd5e1;">
+            <li>Click <strong>Download Skill File</strong> to save <code>SKILL.md</code>.</li>
+            <li>Click <strong>Open Gemini Spark Skills</strong> and upload the <code>SKILL.md</code> file.</li>
+          </ol>
+        </div>
+
+        <div class="guidance-box mb-2">
+          <p class="guidance-title">⏰ Step 2: Schedule Prompt for Hourly Updates:</p>
+          <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 4px;">Click the prompt below to copy it, then paste it in Gemini Spark to activate hourly updates:</p>
+          <div id="schedulePromptBox" class="prompt-copy-box" tabindex="0" role="button" title="Click to copy schedule prompt">
+            "Using the 'Parent School Intelligence Dashboard' skill and School Portal MCP Server, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place."
+          </div>
+          <button id="btnCopySchedulePrompt" class="btn btn-secondary btn-sm mb-1">📋 Copy Schedule Prompt</button>
+
+          <p style="font-size: 0.75rem; color: #fbbf24; margin-top: 6px; font-weight: 600;">
+            🔓 <strong>1-Click Authorization:</strong> When triggered, Gemini Spark will only ask for authorization once for the master function!
+          </p>
+          <p style="font-size: 0.75rem; color: #cbd5e1; margin-top: 4px;">
+            🏷️ <strong>App Name Notice:</strong> Please keep the connected app name as <strong>School Portal MCP Server</strong> so the skill connects automatically.
+          </p>
+        <div style="display: flex; gap: 8px; margin-top: 8px;">
+          <button id="btnTestStep2" class="btn btn-outline" style="flex: 1;">🧪 Test Server Connection</button>
+          <button id="btnNavToStep3" class="btn btn-secondary" style="flex: 1;">➡️ Go to Step 3: School Features</button>
+        </div>
+      </section>
+
+      <!-- Step 3: Add & Manage School Portal Features -->
+      <section id="step3Card" class="card hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h2>Step 3: Tracked School Features</h2>
+          <button id="btnNavToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 2 (Server Link)</button>
+        </div>
+
+        <!-- Permanent Copyable MCP Server Link -->
+        <div class="url-copy-box mb-2" style="background: #1e293b; padding: 8px; border-radius: 6px; border: 1px solid var(--border-color);">
+          <label for="step3McpUrlDisplay" style="font-size: 0.75rem; font-weight: 600; color: var(--accent-color); display: block; margin-bottom: 4px;">🔗 Your Personal MCP Server Link:</label>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="step3McpUrlDisplay" readonly style="flex: 1; font-size: 0.75rem; padding: 4px 8px; background: #0f172a; border: 1px solid var(--border-color); color: #e2e8f0; border-radius: 4px;">
+            <button id="btnCopyUrlStep3" class="btn btn-secondary btn-sm" style="padding: 4px 8px; font-size: 0.75rem;">📋 Copy Link</button>
+          </div>
+        </div>
+        
+        <!-- Phase 1: Portal Connection Verification (Visible initially) -->
+        <div id="connectionSection">
+          <p class="subtitle">1. Log in to your school website (e.g. EduSprint, Canvas, Moodle) in an active browser tab.<br>2. Right after login, click below to verify portal connection.</p>
+          
+          <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button" aria-label="Capture & Verify Active Portal Connection">
+            🚀 1. Capture & Verify Portal Connection
+          </button>
+
+          <div id="connectionStatusBox" class="status-box hidden" aria-live="polite" aria-atomic="true">
+            <span class="status-icon" id="connectionStatusIcon">⏳</span>
+            <span id="connectionStatusText">Verifying portal connection...</span>
+          </div>
+        </div>
+
+        <!-- Phase 2: Feature Tool Registration (Hidden until connection verified) -->
+        <div id="featureSection" class="hidden mt-2" aria-live="polite">
+          <div class="status-box mb-2">
+            <span class="status-icon">✅</span>
+            <span><strong>Portal Connected!</strong> Open any feature page on your school portal (e.g. Homework, Attendance, Classwork) that you want to track, then click below to capture it.</span>
+          </div>
+
+          <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2" tabindex="0" role="button" aria-label="Capture and Register Active Feature">
+            📸 2. Capture & Register Active Feature
+          </button>
+
+          <div id="activeFeaturesBox" class="mt-2 hidden">
+            <label style="font-size: 0.85rem; font-weight: 600; color: var(--success-color);">Tracked Features on Your MCP Server:</label>
+            <p class="subtitle mb-1" style="font-size: 0.75rem;">Only the features listed below are tracked and passed to Gemini Spark.</p>
+            <ul id="step3RegisteredToolsList" class="tools-list mt-1 mb-2"></ul>
+          </div>
+
+          <!-- Permanent Copyable MCP Server Link & Gemini Spark Guidance -->
+          <div class="guidance-box mt-2 mb-2">
+            <p class="guidance-title">✨ Connect to Gemini Spark Anytime:</p>
+
+            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
+              <a href="https://gemini.google.com/spark/apps" target="_blank" class="btn btn-primary btn-sm text-center" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center;">
+                ✨ Open Connected Apps
+              </a>
+              <button id="btnDownloadSkillStep3" class="btn btn-secondary btn-sm" style="flex: 1;">
+                📥 Download SKILL.md
+              </button>
+              <a href="https://gemini.google.com/spark/skills" target="_blank" class="btn btn-secondary btn-sm text-center" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center;">
+                ✨ Open Skills
+              </a>
+            </div>
+
+            <div id="schedulePromptBoxStep3" class="prompt-copy-box mt-1" tabindex="0" role="button" title="Click to copy schedule prompt">
+              "Using the 'Parent School Intelligence Dashboard' skill and School Portal MCP Server, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place."
+            </div>
+            <button id="btnCopySchedulePromptStep3" class="btn btn-secondary btn-sm mt-1">📋 Copy Schedule Prompt</button>
+
+            <p style="font-size: 0.75rem; color: #fbbf24; margin-top: 6px; font-weight: 600;">
+              🔓 <strong>1-Click Master Authorization:</strong> Spark only requests 1 single approval for all connected tools!
+            </p>
+          </div>
+        </div>
+
+        <button id="btnAddAnotherPlatform" class="btn btn-outline text-center mt-2">
+          🔄 Reset / Connect Another Portal
+        </button>
+      </section>
+
+      <!-- Status Alerts -->
+      <div id="statusAlert" class="alert hidden"></div>
+
+      <!-- MCP Server Live Execution Logs (from Gemini Spark Activity) -->
+      <div class="card mt-2" style="background: #1e1b4b; border: 1px solid #4338ca; border-radius: 8px; padding: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <label for="txtServerLogs" style="font-weight: 600; font-size: 0.85rem; color: #a5b4fc;">
+            📡 MCP Server Execution Logs (Gemini Spark Activity):
+          </label>
+        </div>
+        <textarea id="txtServerLogs" readonly aria-live="polite" rows="8" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #4338ca; border-radius: 6px; background: #0f0b29; color: #e0e7ff; resize: vertical;" placeholder="Click 'Fetch MCP Server Logs' to view live execution logs from Gemini Spark..."></textarea>
+        <div style="display: flex; gap: 6px; margin-top: 6px;">
+          <button id="btnFetchServerLogs" class="btn btn-primary btn-sm" style="flex: 1;">
+            🔄 Fetch MCP Server Logs
+          </button>
+          <button id="btnCopyServerLogs" class="btn btn-secondary btn-sm" style="flex: 1;">
+            📋 Copy Server Logs
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Activity & Extension Diagnostic Log Box (Accessible & Copy-Ready) -->
+      <div class="card mt-2" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px;">
+        <label for="txtActivityLog" style="font-weight: 600; font-size: 0.85rem; color: #38bdf8; display: block; margin-bottom: 6px;">
+          📋 Extension Activity & Setup Logs:
+        </label>
+        <textarea id="txtActivityLog" readonly aria-live="polite" rows="8" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #334155; border-radius: 6px; background: #020617; color: #e2e8f0; resize: vertical;" placeholder="Activity logs will stream here live as actions run..."></textarea>
+        <button id="btnCopyActivityLog" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">
+          📋 Copy Setup Log
+        </button>
+      </div>
+
+      <!-- Telemetry Consent Banner -->
+      <div id="errorReportBanner" class="banner hidden">
+        <p id="errorMessageText"></p>
+        <button id="btnSendReport" class="btn btn-warning btn-sm">📩 Send Diagnostic Report to Developer</button>
+      </div>
+    </main>
+  </div>
+  <script type="module" src="wizard.ts"></script>
+</body>
+</html>
