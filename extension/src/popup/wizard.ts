@@ -149,7 +149,106 @@ document.addEventListener('DOMContentLoaded', async () => {
     showSuccess('Opening Google Apps Script Settings... Please toggle "Google Apps Script API" to ON.');
   });
 
-  const CURRENT_GAS_SCRIPT_VERSION = '2.6.1';
+  // WhatsApp & Universal Web Bridge UI elements
+  const waConnectionStatus = document.getElementById('waConnectionStatus') as HTMLParagraphElement;
+  const advisoryTitle = document.getElementById('advisoryTitle') as HTMLElement;
+  const advisoryMessage = document.getElementById('advisoryMessage') as HTMLElement;
+  const txtTargetWhatsAppChats = document.getElementById('txtTargetWhatsAppChats') as HTMLInputElement;
+  const chkWhatsAppDriveCache = document.getElementById('chkWhatsAppDriveCache') as HTMLInputElement;
+  const btnSyncWhatsApp = document.getElementById('btnSyncWhatsApp') as HTMLButtonElement;
+  const btnExtractActiveTab = document.getElementById('btnExtractActiveTab') as HTMLButtonElement;
+
+  async function refreshBridgeStatus() {
+    try {
+      const configRes = await sendMessage({ type: 'GET_WHATSAPP_CONFIG' });
+      if (txtTargetWhatsAppChats && configRes.target_whatsapp_chats) {
+        txtTargetWhatsAppChats.value = configRes.target_whatsapp_chats;
+      }
+      if (chkWhatsAppDriveCache && configRes.whatsapp_drive_caching_enabled !== undefined) {
+        chkWhatsAppDriveCache.checked = configRes.whatsapp_drive_caching_enabled;
+      }
+
+      const waStatus = await sendMessage({ type: 'GET_WHATSAPP_STATUS' });
+      if (waConnectionStatus) {
+        if (waStatus.isConnected) {
+          waConnectionStatus.innerText = `🟢 WhatsApp Web Connected (${waStatus.visibleChats?.length || 0} visible chats detected)`;
+          waConnectionStatus.style.color = '#34d399';
+        } else {
+          waConnectionStatus.innerText = '⚪ WhatsApp Web Not Open (Open web.whatsapp.com in Chrome to sync)';
+          waConnectionStatus.style.color = '#94a3b8';
+        }
+      }
+
+      const advisory = await sendMessage({ type: 'GET_BRIDGE_ADVISORY' });
+      if (advisoryTitle && advisoryMessage && advisory) {
+        advisoryTitle.innerText = advisory.title;
+        advisoryMessage.innerText = advisory.message;
+      }
+    } catch (e) {}
+  }
+
+  refreshBridgeStatus();
+
+  txtTargetWhatsAppChats?.addEventListener('input', () => {
+    sendMessage({
+      type: 'SAVE_WHATSAPP_CONFIG',
+      payload: {
+        target_whatsapp_chats: txtTargetWhatsAppChats.value,
+        whatsapp_drive_caching_enabled: chkWhatsAppDriveCache ? chkWhatsAppDriveCache.checked : true
+      }
+    });
+  });
+
+  chkWhatsAppDriveCache?.addEventListener('change', () => {
+    sendMessage({
+      type: 'SAVE_WHATSAPP_CONFIG',
+      payload: {
+        target_whatsapp_chats: txtTargetWhatsAppChats.value,
+        whatsapp_drive_caching_enabled: chkWhatsAppDriveCache.checked
+      }
+    });
+  });
+
+  btnSyncWhatsApp?.addEventListener('click', async () => {
+    clearAlerts();
+    btnSyncWhatsApp.disabled = true;
+    btnSyncWhatsApp.innerText = '⏳ Syncing...';
+    try {
+      appendLog('💬 Scanning WhatsApp Web for school group notices...');
+      const res = await sendMessage({
+        type: 'SYNC_WHATSAPP_CHATS',
+        payload: { target_whatsapp_chats: txtTargetWhatsAppChats.value }
+      });
+      appendLog(`✅ Synced ${res.messageCount} messages from "${res.chatName}". Drive Saved: ${res.driveSaved}`);
+      showSuccess(`🎉 Synced ${res.messageCount} messages from "${res.chatName}" to your MCP Server!`);
+    } catch (err: any) {
+      appendLog(`❌ WhatsApp Sync Error: ${err.message}`);
+      showError(`WhatsApp Sync Failed: ${err.message}`);
+    } finally {
+      btnSyncWhatsApp.disabled = false;
+      btnSyncWhatsApp.innerText = '💬 Sync WhatsApp Notices';
+    }
+  });
+
+  btnExtractActiveTab?.addEventListener('click', async () => {
+    clearAlerts();
+    btnExtractActiveTab.disabled = true;
+    btnExtractActiveTab.innerText = '⏳ Extracting...';
+    try {
+      appendLog('🌐 Extracting content from active browser tab...');
+      const res = await sendMessage({ type: 'EXTRACT_ACTIVE_WEB_TAB' });
+      appendLog(`✅ Extracted tab: "${res.title}" (${res.domain}) - ${res.structuredContent?.length || 0} characters, ${res.tables?.length || 0} tables.`);
+      showSuccess(`🎉 Extracted "${res.title}" (${res.domain})! Data cached to personal MCP server.`);
+    } catch (err: any) {
+      appendLog(`❌ Web Extract Error: ${err.message}`);
+      showError(`Active Tab Extraction Failed: ${err.message}`);
+    } finally {
+      btnExtractActiveTab.disabled = false;
+      btnExtractActiveTab.innerText = '🌐 Extract Active Tab';
+    }
+  });
+
+  const CURRENT_GAS_SCRIPT_VERSION = '2.7.0';
   const btnHeaderUpdateScript = document.getElementById('btnHeaderUpdateScript') as HTMLButtonElement;
 
   if (btnHeaderUpdateScript) {
@@ -159,7 +258,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnHeaderUpdateScript.innerText = '⏳ Updating...';
       try {
         const res = await sendMessage({ type: 'AUTO_UPDATE_GAS_SCRIPT' });
-        showSuccess(`🎉 MCP Server script updated to v${CURRENT_GAS_SCRIPT_VERSION}! (${res.verifiedTools ? res.verifiedTools.length : 'All'} tools active with Classroom, Drive OCR, & School Portal).`);
+        showSuccess(`🎉 MCP Server script updated to v${CURRENT_GAS_SCRIPT_VERSION}! (${res.verifiedTools ? res.verifiedTools.length : 'All'} tools active with Classroom, Drive OCR, WhatsApp, & School Portal).`);
         const newState = await sendMessage({ type: 'GET_STATE' });
         renderState(newState);
         if (newState.mcp_gas_url) {

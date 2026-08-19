@@ -218,6 +218,51 @@
         </button>
       </section>
 
+      <!-- 💬 WhatsApp School Groups & Universal Web Bridge -->
+      <div class="card mt-2" style="background: #064e3b; border: 1px solid #059669; border-radius: 8px; padding: 12px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h3 style="font-size: 0.95rem; font-weight: 700; color: #6ee7b7; margin: 0;">
+            💬 WhatsApp & Universal Web Bridge
+          </h3>
+        </div>
+
+        <!-- Smart Advisory / Mode Validation Banner -->
+        <div id="bridgeAdvisoryBanner" style="background: #022c22; border-left: 3px solid #34d399; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #a7f3d0; margin-bottom: 8px;">
+          <strong id="advisoryTitle">💡 Smart Integration Advisory:</strong>
+          <span id="advisoryMessage">Checking active browser tab...</span>
+        </div>
+
+        <!-- Prerequisite Note -->
+        <div style="background: #042f2e; border: 1px dashed #14b8a6; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #ccfbf1; margin-bottom: 8px;">
+          <strong>ℹ️ Prerequisite:</strong> Keep <a href="https://web.whatsapp.com" target="_blank" style="color: #5eead4; text-decoration: underline;">web.whatsapp.com</a> open and signed in. Personal chats are strictly ignored; only your configured target school groups are scanned.
+        </div>
+
+        <p id="waConnectionStatus" style="font-size: 0.8rem; font-weight: 600; color: #a7f3d0; margin-bottom: 6px;">
+          🟢 Checking WhatsApp Web tab...
+        </p>
+
+        <label for="txtTargetWhatsAppChats" style="font-size: 0.8rem; font-weight: 600; color: #e6fffa; display: block; margin-bottom: 4px;">
+          🎯 Tracked School Chats / Groups (Comma separated):
+        </label>
+        <input type="text" id="txtTargetWhatsAppChats" class="input mb-2" placeholder="e.g. Grade 3B CAIE, School Bus 14, Parents Group" style="width: 100%; font-size: 0.8rem; padding: 6px 8px; border-radius: 6px; border: 1px solid #059669; background: #022c22; color: #f0fdf4;" />
+
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
+          <input type="checkbox" id="chkWhatsAppDriveCache" checked />
+          <label for="chkWhatsAppDriveCache" style="font-size: 0.75rem; color: #d1fae5;">
+            📁 Cache in Google Drive (<code>whatsapp_school_archive.json</code>) for historical Q&A
+          </label>
+        </div>
+
+        <div style="display: flex; gap: 6px;">
+          <button id="btnSyncWhatsApp" class="btn btn-primary btn-sm" style="flex: 1; background: #059669; border-color: #047857;">
+            💬 Sync WhatsApp Notices
+          </button>
+          <button id="btnExtractActiveTab" class="btn btn-secondary btn-sm" style="flex: 1;">
+            🌐 Extract Active Tab
+          </button>
+        </div>
+      </div>
+
       <!-- Status Alerts -->
       <div id="statusAlert" class="alert hidden"></div>
 

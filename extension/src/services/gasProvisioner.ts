@@ -728,6 +728,12 @@ function doPost(e) {
       result = { logs: McpLogger.getLogs() };
     } else if (method === "server/clearLogs") {
       result = { cleared: McpLogger.clearLogs() };
+    } else if (method === "archive_whatsapp_messages") {
+      result = WhatsAppStorage.saveMessages(params.messages);
+    } else if (method === "get_whatsapp_messages") {
+      result = { messages: WhatsAppStorage.getRecentMessages(params.chat_filter, params.max_count) };
+    } else if (method === "cache_live_tab_content") {
+      result = LiveTabStorage.saveTabContent(params.tabData);
     } else if (method === "register_mcp_tool") {
       result = handleRegisterTool(params);
       McpLogger.log('INFO', 'register_mcp_tool', { domain: params.domain, feature: params.feature });
@@ -783,11 +789,44 @@ function handleToolsList() {
   var masterTool = [
     {
       name: 'get_all_school_updates',
-      description: 'MASTER TOOL: Unified tool to fetch ALL student school data (Google Classroom, Gmail messages, Calendar events, and all registered school portal features like Homework, Attendance, Classwork, Timetable) in a single unified call with 1 authorization.',
+      description: 'MASTER TOOL: Unified tool to fetch ALL student school data (Google Classroom, Gmail circulars, Calendar events, EduSprint portal features, and WhatsApp school group announcements) in a single unified call with 1 authorization.',
       inputSchema: {
         type: 'object',
         properties: {
-          gmail_query: { type: 'string', description: 'Optional search query for Gmail' }
+          gmail_query: { type: 'string', description: 'Optional search query for Gmail' },
+          whatsapp_filter: { type: 'string', description: 'Optional WhatsApp chat name or topic filter (e.g. "Grade 3B" or "homework")' }
+        }
+      }
+    },
+    {
+      name: 'get_whatsapp_school_updates',
+      description: 'WHATSAPP TOOL: Fetches recent school notices, teacher broadcasts, homework reminders, and shared links from user-tracked WhatsApp school groups.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          chat_filter: { type: 'string', description: 'Filter by specific chat/group name or keyword (e.g. "Grade 3B CAIE" or "bus")' },
+          max_count: { type: 'number', description: 'Maximum number of recent messages to return (default: 20)' }
+        }
+      }
+    },
+    {
+      name: 'query_whatsapp_history',
+      description: 'WHATSAPP ARCHIVE TOOL: Searches historical WhatsApp school messages stored in the user personal Google Drive archive (whatsapp_school_archive.json).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search term, subject, date, or sender name' }
+        },
+        required: ['query']
+      }
+    },
+    {
+      name: 'get_live_web_tab_content',
+      description: 'UNIVERSAL LIVE WEB TOOL: Retrieves structured text, tables, and notices from any active web tab currently open in the user Chrome browser.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          domain_or_keyword: { type: 'string', description: 'Domain name or keyword of the open tab to query (e.g. "edusprint.in", "wikipedia", "classroom")' }
         }
       }
     },
@@ -816,7 +855,23 @@ function handleToolsList() {
 }
 
 function handleToolsCall(name, args) {
-  if (name === 'fetch_drive_file_ocr') {
+  if (name === 'get_whatsapp_school_updates') {
+    return {
+      timestamp: new Date().toISOString(),
+      messages: WhatsAppStorage.getRecentMessages(args && args.chat_filter, args && args.max_count)
+    };
+  } else if (name === 'query_whatsapp_history') {
+    return {
+      timestamp: new Date().toISOString(),
+      query: args && args.query,
+      results: WhatsAppStorage.getRecentMessages(args && args.query, 50)
+    };
+  } else if (name === 'get_live_web_tab_content') {
+    return {
+      timestamp: new Date().toISOString(),
+      tabData: LiveTabStorage.getTabContent(args && args.domain_or_keyword)
+    };
+  } else if (name === 'fetch_drive_file_ocr') {
     return DriveContentExtractor.extractText(args && args.fileId, 6000);
   } else if (name === 'get_mcp_server_logs') {
     return {
@@ -829,12 +884,14 @@ function handleToolsCall(name, args) {
       google_classroom: null,
       school_gmail_circulars: null,
       calendar_events: null,
+      whatsapp_school_notices: null,
       portal_data: {}
     };
 
     try { result.google_classroom = WorkspaceFetcher.getGoogleClassroomWork(); } catch (e) { result.google_classroom = { error: e.toString() }; }
     try { result.school_gmail_circulars = WorkspaceFetcher.getSchoolGmailMessages(args && args.gmail_query); } catch (e) { result.school_gmail_circulars = { error: e.toString() }; }
     try { result.calendar_events = WorkspaceFetcher.getCalendarEvents(); } catch (e) { result.calendar_events = { error: e.toString() }; }
+    try { result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 15); } catch (we) { result.whatsapp_school_notices = { error: we.toString() }; }
 
     var registered = StorageRepository.getRegisteredTools();
     for (var i = 0; i < registered.length; i++) {
@@ -962,6 +1019,123 @@ var StorageRepository = {
     var props = PropertiesService.getUserProperties();
     props.setProperty('REGISTERED_PORTAL_TOOLS', JSON.stringify(tools));
     return true;
+  }
+};
+
+var WhatsAppStorage = {
+  ARCHIVE_FILE_NAME: 'whatsapp_school_archive.json',
+
+  getArchiveFileId: function () {
+    var props = PropertiesService.getUserProperties();
+    var fileId = props.getProperty('WHATSAPP_ARCHIVE_FILE_ID');
+    if (fileId) return fileId;
+
+    var files = DriveApp.getFilesByName(this.ARCHIVE_FILE_NAME);
+    if (files.hasNext()) {
+      var id = files.next().getId();
+      props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', id);
+      return id;
+    }
+    return null;
+  },
+
+  saveMessages: function (newMessages) {
+    if (!newMessages || !Array.isArray(newMessages) || newMessages.length === 0) {
+      return { saved: 0 };
+    }
+    var fileId = this.getArchiveFileId();
+    var existing = [];
+    if (fileId) {
+      try {
+        var content = DriveApp.getFileById(fileId).getBlob().getDataAsString();
+        existing = content ? JSON.parse(content) : [];
+      } catch (e) {
+        existing = [];
+      }
+    }
+
+    var seen = {};
+    existing.forEach(function (m) {
+      seen[(m.chatName || '') + '_' + (m.timestamp || '') + '_' + (m.body || '')] = true;
+    });
+
+    var addedCount = 0;
+    newMessages.forEach(function (m) {
+      var key = (m.chatName || '') + '_' + (m.timestamp || '') + '_' + (m.body || '');
+      if (!seen[key]) {
+        seen[key] = true;
+        existing.unshift(m);
+        addedCount++;
+      }
+    });
+
+    if (existing.length > 500) existing = existing.slice(0, 500);
+
+    var jsonStr = JSON.stringify(existing, null, 2);
+    if (fileId) {
+      DriveApp.getFileById(fileId).setContent(jsonStr);
+    } else {
+      var newFile = DriveApp.createFile(this.ARCHIVE_FILE_NAME, jsonStr, 'application/json');
+      PropertiesService.getUserProperties().setProperty('WHATSAPP_ARCHIVE_FILE_ID', newFile.getId());
+    }
+
+    var recent = existing.slice(0, 30);
+    PropertiesService.getUserProperties().setProperty('WHATSAPP_RECENT_CACHE', JSON.stringify(recent));
+    McpLogger.log('INFO', 'whatsapp:archived', { added: addedCount, totalArchived: existing.length });
+    return { saved: addedCount, total: existing.length };
+  },
+
+  getRecentMessages: function (chatFilter, maxCount) {
+    maxCount = maxCount || 30;
+    var raw = PropertiesService.getUserProperties().getProperty('WHATSAPP_RECENT_CACHE');
+    var list = raw ? JSON.parse(raw) : [];
+    if (!list || list.length === 0) {
+      var fileId = this.getArchiveFileId();
+      if (fileId) {
+        try {
+          var content = DriveApp.getFileById(fileId).getBlob().getDataAsString();
+          list = content ? JSON.parse(content) : [];
+        } catch (e) {}
+      }
+    }
+
+    if (chatFilter && chatFilter.trim()) {
+      var query = chatFilter.toLowerCase().trim();
+      list = list.filter(function (m) {
+        return (m.chatName && m.chatName.toLowerCase().indexOf(query) !== -1) ||
+               (m.body && m.body.toLowerCase().indexOf(query) !== -1) ||
+               (m.sender && m.sender.toLowerCase().indexOf(query) !== -1);
+      });
+    }
+
+    return list.slice(0, maxCount);
+  }
+};
+
+var LiveTabStorage = {
+  saveTabContent: function (tabData) {
+    if (!tabData || !tabData.url) return { saved: false };
+    PropertiesService.getUserProperties().setProperty('LATEST_LIVE_TAB_' + encodeURIComponent(tabData.domain || 'general'), JSON.stringify(tabData));
+    McpLogger.log('INFO', 'live_tab:cached', { domain: tabData.domain, title: tabData.title });
+    return { saved: true, domain: tabData.domain };
+  },
+  getTabContent: function (domainOrKeyword) {
+    var props = PropertiesService.getUserProperties();
+    if (domainOrKeyword && domainOrKeyword.trim()) {
+      var key = 'LATEST_LIVE_TAB_' + encodeURIComponent(domainOrKeyword.toLowerCase().trim());
+      var val = props.getProperty(key);
+      if (val) return JSON.parse(val);
+    }
+    var allKeys = props.getKeys();
+    for (var k = 0; k < allKeys.length; k++) {
+      if (allKeys[k].indexOf('LATEST_LIVE_TAB_') === 0) {
+        var raw = props.getProperty(allKeys[k]);
+        if (raw && (!domainOrKeyword || raw.toLowerCase().indexOf(domainOrKeyword.toLowerCase()) !== -1)) {
+          return JSON.parse(raw);
+        }
+      }
+    }
+    return null;
   }
 };
 `

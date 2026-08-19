@@ -5,6 +5,7 @@
   "description": "Privacy-first sync engine connecting school portals & Google Workspace to Gemini Spark MCP.",
   "permissions": [
     "activeTab",
+    "tabs",
     "scripting",
     "storage",
     "cookies",

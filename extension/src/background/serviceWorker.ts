@@ -2,6 +2,7 @@ import { SanitizerService } from '../services/sanitizer';
 import { ErrorHasher } from '../services/errorHasher';
 import { PreFlightValidator } from '../services/preflight';
 import { GasProvisionerService } from '../services/gasProvisioner';
+import { BridgeAdvisor } from '../services/bridgeAdvisor';
 
 export interface StorageState {
   wizard_current_step: number;
@@ -438,6 +439,228 @@ async function handleMessage(message: { type: string; payload?: any }) {
       }
 
       return { sent: true, fingerprint };
+    }
+
+    case 'GET_BRIDGE_ADVISORY': {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const activeTab = tabs[0];
+      const url = activeTab?.url || '';
+      return BridgeAdvisor.evaluateUrl(url, message.payload?.mode || 'LIVE_BRIDGE');
+    }
+
+    case 'GET_WHATSAPP_CONFIG': {
+      const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['target_whatsapp_chats', 'whatsapp_drive_caching_enabled']) : {};
+      const localData = await chrome.storage.local.get(['target_whatsapp_chats', 'whatsapp_drive_caching_enabled']);
+      return {
+        target_whatsapp_chats: syncData.target_whatsapp_chats || localData.target_whatsapp_chats || '',
+        whatsapp_drive_caching_enabled: syncData.whatsapp_drive_caching_enabled ?? localData.whatsapp_drive_caching_enabled ?? true
+      };
+    }
+
+    case 'SAVE_WHATSAPP_CONFIG': {
+      const payload = {
+        target_whatsapp_chats: message.payload.target_whatsapp_chats || '',
+        whatsapp_drive_caching_enabled: message.payload.whatsapp_drive_caching_enabled ?? true
+      };
+      if (chrome.storage.sync) await chrome.storage.sync.set(payload);
+      await chrome.storage.local.set(payload);
+      return { saved: true };
+    }
+
+    case 'GET_WHATSAPP_STATUS': {
+      const waTabs = await chrome.tabs.query({ url: '*://web.whatsapp.com/*' });
+      if (waTabs.length === 0) {
+        return { isConnected: false, tabCount: 0, visibleChats: [] };
+      }
+
+      const activeWaTab = waTabs[0];
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: activeWaTab.id! },
+          func: () => {
+            const list: string[] = [];
+            document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"]').forEach(el => {
+              const titleEl = el.querySelector('span[title], div[title], span[dir="auto"]');
+              const title = titleEl ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim() : '';
+              if (title && !list.includes(title)) list.push(title);
+            });
+            return list;
+          }
+        });
+        const visibleChats = (results && results[0]?.result) || [];
+        return { isConnected: true, tabCount: waTabs.length, tabId: activeWaTab.id, visibleChats };
+      } catch (err: any) {
+        return { isConnected: true, tabCount: waTabs.length, tabId: activeWaTab.id, visibleChats: [], warning: err.message };
+      }
+    }
+
+    case 'SYNC_WHATSAPP_CHATS': {
+      const state = await chrome.storage.local.get(null);
+      const waTabs = await chrome.tabs.query({ url: '*://web.whatsapp.com/*' });
+      if (waTabs.length === 0) {
+        throw new Error('No WhatsApp Web tab found. Please open https://web.whatsapp.com in a Chrome tab and log in.');
+      }
+
+      const targetFilterStr = message.payload?.target_whatsapp_chats || state.target_whatsapp_chats || '';
+      const targetFilter = targetFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+
+      const targetTab = waTabs[0];
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: targetTab.id! },
+        args: [targetFilter],
+        func: (filters: string[]) => {
+          const messages: any[] = [];
+          const headerTitleEl = document.querySelector('header span[title], header div[title], header span[dir="auto"]');
+          const currentChatName = headerTitleEl ? (headerTitleEl.getAttribute('title') || headerTitleEl.textContent || '').trim() : 'Active School Chat';
+
+          if (filters.length > 0) {
+            const lowerChat = currentChatName.toLowerCase();
+            const matches = filters.some(f => lowerChat.includes(f.toLowerCase()));
+            if (!matches) {
+              return { chatName: currentChatName, messages: [], filteredOut: true };
+            }
+          }
+
+          document.querySelectorAll('div[data-testid="msg-container"], div.message-in, div.message-out').forEach((row, idx) => {
+            const senderEl = row.querySelector('span[aria-label*=":"], span._ak8q, div[data-pre-plain-text]');
+            let sender = 'Teacher/Parent';
+            if (senderEl) {
+              const prePlain = senderEl.getAttribute('data-pre-plain-text');
+              if (prePlain) {
+                const match = prePlain.match(/\]\s*([^:]+):/);
+                if (match && match[1]) sender = match[1].trim();
+              } else {
+                sender = (senderEl.textContent || 'Teacher/Parent').replace(':', '').trim();
+              }
+            }
+
+            const textEl = row.querySelector('span.selectable-text, div.copyable-text, span[dir="ltr"], span[dir="auto"]');
+            const text = textEl ? (textEl.textContent || '').trim() : '';
+            const captionEl = row.querySelector('span[data-testid="media-caption"], div.image-caption');
+            const mediaCaption = captionEl ? (captionEl.textContent || '').trim() : '';
+            const fullBody = (text + (mediaCaption ? ` [Media: ${mediaCaption}]` : '')).trim();
+
+            const timeEl = row.querySelector('span[data-testid="msg-meta"], div[data-testid="msg-meta"], span.bubble-meta');
+            const timeStr = timeEl ? (timeEl.textContent || '').trim() : '';
+
+            if (fullBody) {
+              messages.push({
+                id: `wa_${Date.now()}_${idx}`,
+                chatName: currentChatName,
+                sender: sender || 'Teacher/Parent',
+                timestamp: timeStr || new Date().toLocaleTimeString(),
+                body: fullBody
+              });
+            }
+          });
+
+          return { chatName: currentChatName, messages, filteredOut: false };
+        }
+      });
+
+      const extraction = results && results[0]?.result;
+      if (!extraction) {
+        throw new Error('Could not extract messages from active WhatsApp tab.');
+      }
+
+      if (extraction.filteredOut) {
+        throw new Error(`Active chat "${extraction.chatName}" does not match any of your configured target groups [${targetFilter.join(', ')}]. Please click the target school group in WhatsApp Web.`);
+      }
+
+      const extractedMessages = extraction.messages || [];
+
+      // Save to Google Drive Cache via Apps Script Web App
+      let driveSaveResult: any = null;
+      if (state.mcp_gas_url && extractedMessages.length > 0) {
+        try {
+          const gasRes = await fetch(state.mcp_gas_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'archive_whatsapp_messages',
+              params: { messages: extractedMessages },
+              id: 'wa-archive-sync'
+            })
+          });
+          if (gasRes.ok) {
+            const gasData = await gasRes.json();
+            driveSaveResult = gasData.result;
+          }
+        } catch (gasErr) {
+          console.warn('[ServiceWorker] Could not sync WhatsApp to Drive:', gasErr);
+        }
+      }
+
+      return {
+        chatName: extraction.chatName,
+        messageCount: extractedMessages.length,
+        messages: extractedMessages,
+        driveSaved: !!driveSaveResult,
+        driveSaveResult
+      };
+    }
+
+    case 'EXTRACT_ACTIVE_WEB_TAB': {
+      const state = await chrome.storage.local.get(null);
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      const activeTab = tabs[0];
+      if (!activeTab || !activeTab.id) {
+        throw new Error('No active browser tab found.');
+      }
+
+      const results = await chrome.scripting.executeScript({
+        target: { tabId: activeTab.id },
+        func: () => {
+          const url = window.location.href;
+          const domain = window.location.hostname;
+          const title = document.title || 'Untitled Web Page';
+
+          const tables: string[][][] = [];
+          document.querySelectorAll('table').forEach(tbl => {
+            const rows: string[][] = [];
+            tbl.querySelectorAll('tr').forEach(r => {
+              const cols: string[] = [];
+              r.querySelectorAll('th, td').forEach(c => {
+                cols.push((c.textContent || '').trim().replace(/\s+/g, ' '));
+              });
+              if (cols.length > 0) rows.push(cols);
+            });
+            if (rows.length > 0) tables.push(rows);
+          });
+
+          const clone = (document.body ? document.body.cloneNode(true) : document.documentElement.cloneNode(true)) as HTMLElement;
+          const noise = ['script', 'style', 'noscript', 'iframe', 'svg', 'canvas', 'nav', 'footer', '.ad', '.ads'];
+          noise.forEach(s => clone.querySelectorAll(s).forEach(e => e.remove()));
+
+          let text = clone.innerText || clone.textContent || '';
+          text = text.replace(/[ \t]+/g, ' ').replace(/\n\s*\n\s*\n/g, '\n\n').trim();
+          if (text.length > 35000) text = text.substring(0, 35000) + '\n\n...[Truncated]';
+
+          return { url, domain, title, extractedAt: new Date().toISOString(), structuredContent: text, tables };
+        }
+      });
+
+      const extractedData = results && results[0]?.result;
+      if (!extractedData) throw new Error('Failed to extract content from active web tab.');
+
+      // Cache live tab data in personal Google Apps Script server
+      if (state.mcp_gas_url) {
+        try {
+          await fetch(state.mcp_gas_url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'cache_live_tab_content',
+              params: { tabData: extractedData },
+              id: 'cache-live-tab'
+            })
+          });
+        } catch (e) {}
+      }
+
+      return extractedData;
     }
 
     default:

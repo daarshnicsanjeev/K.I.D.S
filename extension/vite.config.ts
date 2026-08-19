@@ -14,7 +14,9 @@ export default defineConfig({
         background: resolve(__dirname, 'src/background/serviceWorker.ts'),
         content: resolve(__dirname, 'src/content/interceptor.ts'),
         injected: resolve(__dirname, 'src/content/mainWorldInterceptor.ts'),
-        autoDeployScript: resolve(__dirname, 'src/content/autoDeployScript.ts')
+        autoDeployScript: resolve(__dirname, 'src/content/autoDeployScript.ts'),
+        whatsappExtractor: resolve(__dirname, 'src/content/whatsappExtractor.ts'),
+        universalDomExtractor: resolve(__dirname, 'src/content/universalDomExtractor.ts')
       },
       output: {
         entryFileNames: '[name].js',
