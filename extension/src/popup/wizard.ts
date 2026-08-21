@@ -85,12 +85,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!active) return;
     if (confirm(`Are you sure you want to remove the profile for "${active.name}"?`)) {
       try {
+        const deletedName = active.name;
         const res = await ChildManager.deleteProfile(active.id);
+
+        // Sync remaining profiles to Drive backup
+        try {
+          const remainingProfiles = await ChildManager.getProfiles();
+          await PersonalDriveService.saveProfilesToDrive(undefined, remainingProfiles);
+        } catch (e) {}
+
         await renderChildProfiles();
         await refreshBridgeStatus();
-        const stateNow = await sendMessage({ type: 'GET_STATE' });
-        renderState(stateNow);
-        showSuccess(`Removed profile. Switched to ${res.activeProfile.name}.`);
+
+        if (res.remainingCount > 0 && res.activeProfile) {
+          showSuccess(`Removed profile "${deletedName}". Switched to ${res.activeProfile.name}.`);
+          const stateNow = await sendMessage({ type: 'GET_STATE' });
+          await renderState(stateNow);
+        } else {
+          // No children remaining: automatically navigate to Step 1 and prompt for new child
+          showSuccess(`Profile "${deletedName}" removed. Please enter child's first name to continue.`);
+          await sendMessage({
+            type: 'UPDATE_STATE',
+            payload: { wizard_current_step: 1 }
+          });
+          const stateNow = await sendMessage({ type: 'GET_STATE' });
+          await renderState(stateNow);
+          if (txtStep1ChildName) {
+            txtStep1ChildName.value = '';
+            txtStep1ChildName.focus();
+          }
+        }
       } catch (e: any) {
         showError(e.message);
       }
@@ -1258,9 +1282,10 @@ You are a Parent Executive School Assistant responsible for tracking student sch
     }
   }
 
-  function renderState(s: any) {
+  async function renderState(s: any) {
+    const hasChild = await ChildManager.hasConfiguredChild();
     let step = s.wizard_current_step || 1;
-    if (!isPersonalAccountConnected) {
+    if (!isPersonalAccountConnected || !hasChild) {
       step = 1;
     }
     if (step > 5) step = 5;
@@ -1268,7 +1293,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
 
     stepBadge.innerText = `Step ${step} of 5`;
 
-    updateStepperDots(step);
+    await updateStepperDots(step);
 
     cardStep1.classList.toggle('hidden', step !== 1);
     cardStep2.classList.toggle('hidden', step !== 2);

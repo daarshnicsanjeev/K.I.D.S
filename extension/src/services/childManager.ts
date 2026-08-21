@@ -195,18 +195,30 @@ export class ChildManager {
 
   /**
    * Deletes a child profile.
+   * If more than 1 profile exists: deletes profile and falls back to another child.
+   * If only 1 profile exists: deletes profile completely and returns activeProfile: null.
    */
-  public static async deleteProfile(childId: string): Promise<{ success: boolean; activeProfile: ChildProfile }> {
+  public static async deleteProfile(childId: string): Promise<{ success: boolean; activeProfile: ChildProfile | null; remainingCount: number }> {
     let profiles = await this.getProfiles(false);
-    if (profiles.length <= 1) {
-      throw new Error('Cannot delete the only child profile. Rename it instead.');
+    profiles = profiles.filter(p => p.id !== childId);
+
+    if (profiles.length === 0) {
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        if (chrome.storage.local) {
+          await chrome.storage.local.set({ [this.STORAGE_KEY_PROFILES]: [] });
+          await chrome.storage.local.remove([this.STORAGE_KEY_ACTIVE_ID]);
+        }
+        if (chrome.storage.sync) {
+          await chrome.storage.sync.set({ [this.STORAGE_KEY_PROFILES]: [] });
+          await chrome.storage.sync.remove([this.STORAGE_KEY_ACTIVE_ID]);
+        }
+      }
+      return { success: true, activeProfile: null, remainingCount: 0 };
     }
 
-    profiles = profiles.filter(p => p.id !== childId);
     const newActiveId = profiles[0].id;
-
     await this.saveProfiles(profiles, newActiveId);
-    return { success: true, activeProfile: profiles[0] };
+    return { success: true, activeProfile: profiles[0], remainingCount: profiles.length };
   }
 
   /**

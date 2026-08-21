@@ -82,14 +82,19 @@ describe('ChildManager & Multi-Child Partitioning', () => {
     expect(active.folderId).toBe('folder_abc');
   });
 
-  it('should prevent deleting the only remaining child profile', async () => {
+  it('should allow deleting the only remaining child profile and return null activeProfile', async () => {
     const created = await ChildManager.createProfile('Daarshnic');
     const profiles = await ChildManager.getProfiles();
     expect(profiles).toHaveLength(1);
 
-    await expect(ChildManager.deleteProfile(created.id)).rejects.toThrow(
-      'Cannot delete the only child profile. Rename it instead.'
-    );
+    const res = await ChildManager.deleteProfile(created.id);
+    expect(res.success).toBe(true);
+    expect(res.activeProfile).toBeNull();
+    expect(res.remainingCount).toBe(0);
+
+    const remaining = await ChildManager.getProfiles();
+    expect(remaining).toHaveLength(0);
+    expect(await ChildManager.hasConfiguredChild()).toBe(false);
   });
 
   it('should delete a secondary profile and fallback active child correctly', async () => {
@@ -99,11 +104,12 @@ describe('ChildManager & Multi-Child Partitioning', () => {
     mockStorage[ChildManager.STORAGE_KEY_PROFILES] = [prof1, prof2];
     mockStorage[ChildManager.STORAGE_KEY_ACTIVE_ID] = prof2.id;
 
-    expect((await ChildManager.getActiveProfile()).id).toBe('child_ananya');
+    expect((await ChildManager.getActiveProfile())?.id).toBe('child_ananya');
 
     const res = await ChildManager.deleteProfile('child_ananya');
     expect(res.success).toBe(true);
-    expect(res.activeProfile.id).toBe('child_daarshnic');
+    expect(res.activeProfile?.id).toBe('child_daarshnic');
+    expect(res.remainingCount).toBe(1);
 
     const remaining = await ChildManager.getProfiles();
     expect(remaining.some(p => p.id === 'child_ananya')).toBe(false);
