@@ -1041,7 +1041,7 @@ var StorageRepository = {
 var DriveFolderManager = {
   FOLDER_NAME: 'School Portal MCP Intelligence',
 
-  getOrCreateMcpFolder: function () {
+  getExistingMcpFolder: function () {
     var props = PropertiesService.getUserProperties();
     var folderId = props.getProperty('MCP_ROOT_FOLDER_ID');
     if (folderId) {
@@ -1059,16 +1059,38 @@ var DriveFolderManager = {
         return f;
       }
     }
+    return null;
+  },
+
+  getOrCreateMcpFolder: function () {
+    var existing = this.getExistingMcpFolder();
+    if (existing) return existing;
 
     var newFolder = DriveApp.createFolder(this.FOLDER_NAME);
     newFolder.setDescription('Stores persistent school intelligence cache (WhatsApp messages, PDFs, images, configurations). Modifying or deleting files in this folder directly affects Gemini Spark.');
-    props.setProperty('MCP_ROOT_FOLDER_ID', newFolder.getId());
+    PropertiesService.getUserProperties().setProperty('MCP_ROOT_FOLDER_ID', newFolder.getId());
     return newFolder;
   },
 
   getFolderInfo: function () {
-    var folder = this.getOrCreateMcpFolder();
+    var folder = this.getExistingMcpFolder();
+    var userEmail = '';
+    try {
+      userEmail = Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail() || '';
+    } catch (e) {}
+
+    if (!folder) {
+      return {
+        isCreated: false,
+        accountEmail: userEmail,
+        folderName: this.FOLDER_NAME,
+        folderUrl: '',
+        message: 'Awaiting first verified school group capture before creating Google Drive folder.'
+      };
+    }
     return {
+      isCreated: true,
+      accountEmail: userEmail,
       folderId: folder.getId(),
       folderName: folder.getName(),
       folderUrl: folder.getUrl(),
@@ -1085,7 +1107,9 @@ var WhatsAppStorage = {
     var fileId = props.getProperty('WHATSAPP_ARCHIVE_FILE_ID');
     if (fileId) return fileId;
 
-    var folder = DriveFolderManager.getOrCreateMcpFolder();
+    var folder = DriveFolderManager.getExistingMcpFolder();
+    if (!folder) return null;
+
     var files = folder.getFilesByName(this.ARCHIVE_FILE_NAME);
     if (files.hasNext()) {
       var id = files.next().getId();
@@ -1124,7 +1148,7 @@ var WhatsAppStorage = {
     if (messageContext) {
       messageContext.attachment = fileRecord;
       if (ocrText) {
-        messageContext.body = (messageContext.body || '') + '\n[Auto-OCR Extracted from ' + fileName + ']:\n' + ocrText;
+        messageContext.body = (messageContext.body || '') + '\\n[Auto-OCR Extracted from ' + fileName + ']:\\n' + ocrText;
       }
       this.saveMessages([messageContext]);
     }

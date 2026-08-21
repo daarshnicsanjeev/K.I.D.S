@@ -17,7 +17,15 @@ export interface WhatsAppMessage {
   isStarred?: boolean;
 }
 
+export interface TrackedWhatsAppChat {
+  id: string;
+  title: string;
+  isGroup: boolean;
+  addedAt: string;
+}
+
 export interface WhatsAppChatSummary {
+  id?: string;
   chatName: string;
   unreadCount: number;
   lastMessageSnippet: string;
@@ -27,6 +35,84 @@ export interface WhatsAppChatSummary {
 
 export class WhatsAppExtractor {
   private static URL_REGEX = /(https?:\/\/[^\s]+)/g;
+
+  private static TITLE_BLACKLIST = ['profile details', 'contact info', 'group info', 'search...', 'chats', 'communities', 'channels', 'starred messages', 'settings'];
+
+  /**
+   * Extracts clean, reliable active conversation title (excluding drawer/profile sidebar titles).
+   */
+  public static getActiveChatTitle(): string {
+    // 1. Primary: In main conversation header
+    const mainTitleEl = document.querySelector('#main header div[role="button"] span[title], #main header span[data-testid="conversation-info-header-chat-title"], #main header span[title], #main header span[dir="auto"]');
+    if (mainTitleEl) {
+      const t = (mainTitleEl.getAttribute('title') || mainTitleEl.textContent || '').trim();
+      if (t && !this.TITLE_BLACKLIST.includes(t.toLowerCase())) return t;
+    }
+
+    // 2. Active item in conversation sidebar
+    const activeSidebarEl = document.querySelector('div[role="listitem"][aria-selected="true"] span[title], div[data-testid="cell-frame-container"][aria-selected="true"] span[title], div[role="listitem"][aria-selected="true"] span[dir="auto"]');
+    if (activeSidebarEl) {
+      const t = (activeSidebarEl.getAttribute('title') || activeSidebarEl.textContent || '').trim();
+      if (t && !this.TITLE_BLACKLIST.includes(t.toLowerCase())) return t;
+    }
+
+    // 3. Fallback inside #main
+    const fallbackEl = document.querySelector('#main header span');
+    if (fallbackEl) {
+      const t = (fallbackEl.getAttribute('title') || fallbackEl.textContent || '').trim();
+      if (t && !this.TITLE_BLACKLIST.includes(t.toLowerCase())) return t;
+    }
+
+    return '';
+  }
+
+  /**
+   * Extracts permanent metadata (unique JID/ID and Title) for the currently open chat/group.
+   */
+  public static getActiveChatMetadata(): TrackedWhatsAppChat | null {
+    const title = this.getActiveChatTitle();
+    if (!title) return null;
+
+    let chatId = '';
+
+    // Check active item in sidebar
+    const activeItem = document.querySelector('div[role="listitem"][aria-selected="true"], div[data-testid="cell-frame-container"][aria-selected="true"]');
+    if (activeItem) {
+      const img = activeItem.querySelector('img') as HTMLImageElement | null;
+      if (img && img.src) {
+        const match = img.src.match(/u=([^&]+)/);
+        if (match && match[1]) {
+          chatId = decodeURIComponent(match[1]);
+        }
+      }
+    }
+
+    // Check header avatar
+    if (!chatId) {
+      const headerImg = document.querySelector('#main header img, header img') as HTMLImageElement | null;
+      if (headerImg && headerImg.src) {
+        const match = headerImg.src.match(/u=([^&]+)/);
+        if (match && match[1]) {
+          chatId = decodeURIComponent(match[1]);
+        }
+      }
+    }
+
+    // Fallback deterministic ID from slugified title
+    if (!chatId) {
+      chatId = 'wa_chat_' + title.toLowerCase().replace(/[^a-z0-9]/g, '_');
+    }
+
+    const subtitleEl = document.querySelector('#main header span[data-testid="conversation-info-header-chat-subtitle"], #main header span._ak8j');
+    const isGroup = subtitleEl ? (subtitleEl.textContent || '').includes(',') || (subtitleEl.textContent || '').toLowerCase().includes('click here') || (subtitleEl.textContent || '').toLowerCase().includes('group') : true;
+
+    return {
+      id: chatId,
+      title: title,
+      isGroup: isGroup,
+      addedAt: new Date().toISOString()
+    };
+  }
 
   /**
    * Lists visible chats and groups from the WhatsApp Web sidebar.
@@ -41,18 +127,23 @@ export class WhatsAppExtractor {
         const title = titleEl ? (titleEl.getAttribute('title') || titleEl.textContent || '').trim() : '';
         if (!title) return;
 
-        // Skip duplicates
         if (results.some(c => c.chatName.toLowerCase() === title.toLowerCase())) return;
 
-        // Unread badge
+        let chatId = '';
+        const img = el.querySelector('img') as HTMLImageElement | null;
+        if (img && img.src) {
+          const match = img.src.match(/u=([^&]+)/);
+          if (match && match[1]) chatId = decodeURIComponent(match[1]);
+        }
+
         const unreadEl = el.querySelector('span[aria-label*="unread"], span[data-testid="unread-count"]');
         const unreadCount = unreadEl ? parseInt(unreadEl.textContent || '0', 10) || 0 : 0;
 
-        // Last snippet & time
         const snippetEl = el.querySelector('span[data-testid="last-msg-status"], div._ak8k, div._ak8l');
         const snippet = snippetEl ? snippetEl.textContent || '' : '';
 
         results.push({
+          id: chatId,
           chatName: title,
           unreadCount,
           lastMessageSnippet: snippet,
@@ -70,17 +161,25 @@ export class WhatsAppExtractor {
   /**
    * Extracts messages from the currently active conversation in WhatsApp Web.
    */
-  public static extractActiveChatMessages(targetChatFilter?: string[]): WhatsAppMessage[] {
+  public static extractActiveChatMessages(targetChatFilter?: Array<string | TrackedWhatsAppChat>): WhatsAppMessage[] {
     const messages: WhatsAppMessage[] = [];
 
-    // Detect currently open chat header
-    const headerTitleEl = document.querySelector('header span[title], header div[title], header span[dir="auto"]');
-    const currentChatName = headerTitleEl ? (headerTitleEl.getAttribute('title') || headerTitleEl.textContent || '').trim() : 'Unknown Chat';
+    const activeMeta = this.getActiveChatMetadata();
+    const currentChatName = activeMeta?.title || 'Active School Chat';
+    const currentChatId = activeMeta?.id || '';
 
-    // If target filter is specified, ensure current chat matches
+    // If target filter is specified, check against either ID or Title
     if (targetChatFilter && targetChatFilter.length > 0) {
-      const lowerChat = currentChatName.toLowerCase();
-      const matches = targetChatFilter.some(t => lowerChat.includes(t.toLowerCase().trim()));
+      const matches = targetChatFilter.some(target => {
+        if (typeof target === 'string') {
+          return currentChatName.toLowerCase().includes(target.toLowerCase().trim()) || (currentChatId && currentChatId.toLowerCase() === target.toLowerCase().trim());
+        } else if (target && typeof target === 'object') {
+          return (target.id && currentChatId && target.id.toLowerCase() === currentChatId.toLowerCase()) ||
+                 (target.title && currentChatName.toLowerCase().includes(target.title.toLowerCase().trim()));
+        }
+        return false;
+      });
+
       if (!matches) {
         return [];
       }

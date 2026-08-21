@@ -6,6 +6,48 @@
   if ((window as any).__school_mcp_interceptor_injected) return;
   (window as any).__school_mcp_interceptor_injected = true;
 
+  let lastKnownDocTitle = '';
+
+  // Intercept anchor click to capture download filename
+  const originalAnchorClick = HTMLAnchorElement.prototype.click;
+  HTMLAnchorElement.prototype.click = function () {
+    try {
+      const dlName = this.download || this.getAttribute('download') || '';
+      if (dlName) lastKnownDocTitle = dlName;
+    } catch (e) {}
+    return originalAnchorClick.apply(this, arguments as any);
+  };
+
+  // Intercept window.URL.createObjectURL for decrypted document Blobs at page start
+  const originalCreateObjectURL = window.URL.createObjectURL;
+  window.URL.createObjectURL = function (blob: any) {
+    const url = originalCreateObjectURL.apply(this, arguments as any);
+    try {
+      if (blob instanceof Blob) {
+        if (blob.type === 'application/pdf' || blob.type === 'application/octet-stream' || blob.type.includes('document') || blob.type.includes('sheet') || blob.size > 2048) {
+          const capturedName = lastKnownDocTitle;
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = reader.result as string;
+            if (res && res.includes(',')) {
+              const base64Data = res.split(',')[1];
+              window.postMessage({
+                type: 'CAPTURED_PDF_STREAM',
+                url,
+                fileName: capturedName || undefined,
+                mimeType: blob.type || 'application/pdf',
+                size: blob.size,
+                base64Data
+              }, '*');
+            }
+          };
+          reader.readAsDataURL(blob);
+        }
+      }
+    } catch (e) {}
+    return url;
+  };
+
   // Intercept window.fetch
   const originalFetch = window.fetch;
   window.fetch = async function (...args) {

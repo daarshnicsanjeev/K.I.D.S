@@ -10,7 +10,8 @@
     "scripting",
     "storage",
     "cookies",
-    "identity"
+    "identity",
+    "downloads"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -27,6 +28,17 @@
     {
       "matches": ["https://script.google.com/create*", "https://script.google.com/home/projects/*"],
       "js": ["autoDeployScript.js"]
+    },
+    {
+      "matches": ["https://web.whatsapp.com/*", "https://web.telegram.org/*"],
+      "js": ["injected.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://web.whatsapp.com/*", "https://web.telegram.org/*"],
+      "js": ["content.js"],
+      "run_at": "document_start"
     }
   ],
   "oauth2": {

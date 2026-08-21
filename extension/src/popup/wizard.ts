@@ -4,16 +4,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cardStep2 = document.getElementById('step2Card') as HTMLElement;
   const cardStep3 = document.getElementById('step3Card') as HTMLElement;
   const cardStep4 = document.getElementById('step4Card') as HTMLElement;
+  const cardStep5 = document.getElementById('step5Card') as HTMLElement;
 
   const btnOpenClassroom = document.getElementById('btnOpenClassroom') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
-  const classroomStatusBox = document.getElementById('classroomStatusBox') as HTMLElement;
-  const apiSettingsBox = document.getElementById('apiSettingsBox') as HTMLElement;
   const btnOpenApiSettings = document.getElementById('btnOpenApiSettings') as HTMLButtonElement;
   const btnOpenAuthScreen = document.getElementById('btnOpenAuthScreen') as HTMLButtonElement;
   const gasUrlInput = document.getElementById('gasUrlInput') as HTMLInputElement;
 
-  btnOpenApiSettings.addEventListener('click', async () => {
+  btnOpenApiSettings?.addEventListener('click', async () => {
     const authUserParam = await detectSchoolAccountParam();
     const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
     const settingsUrl = `https://script.google.com${accountIndex}home/usersettings`;
@@ -21,7 +20,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showSuccess('Opening Google Apps Script Settings... Please toggle "Google Apps Script API" to ON.');
   });
 
-  btnOpenAuthScreen.addEventListener('click', async () => {
+  btnOpenAuthScreen?.addEventListener('click', async () => {
     const stateNow = await sendMessage({ type: 'GET_STATE' });
     const authUserParam = await detectSchoolAccountParam();
     
@@ -41,11 +40,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const mcpUrlDisplay = document.getElementById('mcpUrlDisplay') as HTMLInputElement;
   const step3McpUrlDisplay = document.getElementById('step3McpUrlDisplay') as HTMLInputElement;
-  const featureDomainInput = document.getElementById('featureDomainInput') as HTMLInputElement;
-  const featureNameInput = document.getElementById('featureNameInput') as HTMLInputElement;
 
   const btnVerifyStep1 = document.getElementById('btnVerifyStep1') as HTMLButtonElement;
-  const btnTestStep2 = document.getElementById('btnTestStep2') as HTMLButtonElement;
   const btnCopyUrl = document.getElementById('btnCopyUrl') as HTMLButtonElement;
   const btnAddAnotherPlatform = document.getElementById('btnAddAnotherPlatform') as HTMLButtonElement;
 
@@ -61,7 +57,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const errorReportBanner = document.getElementById('errorReportBanner') as HTMLElement;
   const errorMessageText = document.getElementById('errorMessageText') as HTMLElement;
   const btnSendReport = document.getElementById('btnSendReport') as HTMLButtonElement;
-  const registeredToolsList = document.getElementById('registeredToolsList') as HTMLUListElement;
 
   const txtActivityLog = document.getElementById('txtActivityLog') as HTMLTextAreaElement;
   const btnCopyActivityLog = document.getElementById('btnCopyActivityLog') as HTMLButtonElement;
@@ -141,57 +136,222 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   let lastErrorContext: any = null;
 
-  btnOpenApiSettings.addEventListener('click', async () => {
-    const authUserParam = await detectSchoolAccountParam();
-    const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
-    const settingsUrl = `https://script.google.com${accountIndex}home/usersettings`;
-    chrome.tabs.create({ url: settingsUrl, active: true });
-    showSuccess('Opening Google Apps Script Settings... Please toggle "Google Apps Script API" to ON.');
-  });
-
   // WhatsApp & Universal Web Bridge UI elements
   const waConnectionStatus = document.getElementById('waConnectionStatus') as HTMLParagraphElement;
-  const advisoryTitle = document.getElementById('advisoryTitle') as HTMLElement;
-  const advisoryMessage = document.getElementById('advisoryMessage') as HTMLElement;
-  const txtTargetWhatsAppChats = document.getElementById('txtTargetWhatsAppChats') as HTMLInputElement;
-  const chkWhatsAppDriveCache = document.getElementById('chkWhatsAppDriveCache') as HTMLInputElement;
-  const btnSyncWhatsApp = document.getElementById('btnSyncWhatsApp') as HTMLButtonElement;
-  const btnExtractActiveTab = document.getElementById('btnExtractActiveTab') as HTMLButtonElement;
+  const btnCaptureActiveChat = document.getElementById('btnCaptureActiveChat') as HTMLButtonElement;
+  const trackedChatsEmpty = document.getElementById('trackedChatsEmpty') as HTMLDivElement;
+  const trackedChatsList = document.getElementById('trackedChatsList') as HTMLUListElement;
+
+  function renderTrackedChats(chats: any[]) {
+    if (!trackedChatsList || !trackedChatsEmpty) return;
+    trackedChatsList.innerHTML = '';
+    if (!chats || chats.length === 0) {
+      trackedChatsEmpty.style.display = 'block';
+      return;
+    }
+    trackedChatsEmpty.style.display = 'none';
+
+    chats.forEach((c: any) => {
+      const li = document.createElement('li');
+      li.style.cssText = 'display: flex; justify-content: space-between; align-items: center; background: #064e3b; padding: 6px 10px; border-radius: 6px; font-size: 0.8rem; border: 1px solid #059669; margin-bottom: 4px;';
+
+      const infoDiv = document.createElement('div');
+      infoDiv.style.cssText = 'flex: 1; margin-right: 8px; line-height: 1.3; overflow: hidden;';
+      
+      const titleSpan = document.createElement('div');
+      titleSpan.style.cssText = 'font-weight: 700; color: #f0fdf4; word-break: break-word;';
+      titleSpan.innerHTML = `💬 <strong>Group Name:</strong> ${c.title}`;
+      
+      const idSpan = document.createElement('div');
+      idSpan.style.cssText = 'font-size: 0.7rem; color: #a7f3d0; opacity: 0.9; margin-top: 2px; font-family: monospace; word-break: break-all;';
+      idSpan.innerHTML = `🆔 <strong>Unique ID:</strong> ${c.id || 'Active'}`;
+
+      infoDiv.appendChild(titleSpan);
+      infoDiv.appendChild(idSpan);
+
+      const removeBtn = document.createElement('button');
+      removeBtn.className = 'btn btn-danger btn-sm';
+      removeBtn.innerHTML = '🗑️ Stop Tracking';
+      removeBtn.title = 'Remove this chat from tracked list';
+      removeBtn.style.cssText = 'padding: 4px 8px; font-size: 0.7rem; white-space: nowrap;';
+      removeBtn.addEventListener('click', async () => {
+        const res = await sendMessage({
+          type: 'REMOVE_TRACKED_WHATSAPP_CHAT',
+          payload: { id: c.id }
+        });
+        renderTrackedChats(res.trackedChats);
+        showSuccess(`Removed "${c.title}" from tracking.`);
+      });
+
+      li.appendChild(infoDiv);
+      li.appendChild(removeBtn);
+      trackedChatsList.appendChild(li);
+    });
+  }
+
+  // Step 1 Personal Google Account UI Elements
+  const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
+  const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
+  const step1ConnectedActions = document.getElementById('step1ConnectedActions') as HTMLElement;
+  const btnStep1SwitchAccount = document.getElementById('btnStep1SwitchAccount') as HTMLButtonElement;
+  const btnStep1Continue = document.getElementById('btnStep1Continue') as HTMLButtonElement;
+  const lblWhatsAppDriveAccount = document.getElementById('lblWhatsAppDriveAccount') as HTMLElement;
+
+  // Stepper Step Navigation Buttons
+  const btnNavStep2ToStep1 = document.getElementById('btnNavStep2ToStep1') as HTMLButtonElement;
+  const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
+  const btnNavStep3ToStep2 = document.getElementById('btnNavStep3ToStep2') as HTMLButtonElement;
+  const btnNavStep3ToStep4 = document.getElementById('btnNavStep3ToStep4') as HTMLButtonElement;
+  const btnNavStep4ToStep3 = document.getElementById('btnNavStep4ToStep3') as HTMLButtonElement;
+  const btnNavStep4ToStep5 = document.getElementById('btnNavStep4ToStep5') as HTMLButtonElement;
+  const btnNavStep5ToStep4 = document.getElementById('btnNavStep5ToStep4') as HTMLButtonElement;
+
+  let isPersonalAccountConnected = false;
+
+  btnStep1ConnectPersonal?.addEventListener('click', async () => {
+    clearAlerts();
+    btnStep1ConnectPersonal.disabled = true;
+    btnStep1ConnectPersonal.innerText = '⏳ Connecting Account...';
+    try {
+      const res = await sendMessage({ type: 'CONNECT_PERSONAL_DRIVE_ACCOUNT' });
+      isPersonalAccountConnected = true;
+      showSuccess(`🎉 Personal Google Account connected: ${res.email}! Extension functionality is now unlocked.`);
+      await refreshBridgeStatus();
+      renderState(await sendMessage({ type: 'GET_STATE' }));
+    } catch (err: any) {
+      showError(`Account connection cancelled or failed: ${err.message}`);
+    } finally {
+      btnStep1ConnectPersonal.disabled = false;
+      btnStep1ConnectPersonal.innerText = '🔐 Sign in with Personal Google Account';
+    }
+  });
+
+  btnStep1SwitchAccount?.addEventListener('click', async () => {
+    await sendMessage({ type: 'DISCONNECT_PERSONAL_DRIVE_ACCOUNT' });
+    isPersonalAccountConnected = false;
+    showSuccess('Disconnected personal Google account. Please sign in to unlock functionality.');
+    await refreshBridgeStatus();
+    renderState(await sendMessage({ type: 'GET_STATE' }));
+  });
+
+  async function navigateToStep(stepNumber: number, customFocusId?: string) {
+    clearAlerts();
+    const defaultFocus = customFocusId || (
+      stepNumber === 1 ? 'btnStep1ConnectPersonal' :
+      stepNumber === 2 ? 'btnCreateMcpServer' :
+      stepNumber === 3 ? 'btnCopyUrl' :
+      stepNumber === 4 ? 'btnCaptureVerifyPortal' :
+      'btnCaptureActiveChat'
+    );
+    await sendMessage({
+      type: 'UPDATE_STATE',
+      payload: { wizard_current_step: stepNumber, last_focused_element_id: defaultFocus }
+    });
+    const newState = await sendMessage({ type: 'GET_STATE' });
+    renderState(newState);
+    const el = document.getElementById(defaultFocus);
+    if (el && !el.classList.contains('hidden') && el.offsetParent !== null) {
+      setTimeout(() => {
+        try {
+          el.focus();
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (e) {}
+      }, 50);
+    }
+  }
+
+  btnStep1Continue?.addEventListener('click', async () => {
+    if (!isPersonalAccountConnected) {
+      showError('🔒 Please sign in with your Personal Google Account in Step 1 first to unlock the extension.');
+      return;
+    }
+    await navigateToStep(2);
+  });
+
+  btnNavStep2ToStep1?.addEventListener('click', () => navigateToStep(1));
+
+  btnNavStep2ToStep3?.addEventListener('click', async () => {
+    if (!isPersonalAccountConnected) {
+      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
+      return;
+    }
+    await navigateToStep(3);
+  });
+
+  btnNavStep3ToStep2?.addEventListener('click', () => navigateToStep(2));
+
+  btnNavStep3ToStep4?.addEventListener('click', async () => {
+    if (!isPersonalAccountConnected) {
+      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
+      return;
+    }
+    await navigateToStep(4);
+  });
+
+  btnNavStep4ToStep3?.addEventListener('click', () => navigateToStep(3));
+
+  btnNavStep4ToStep5?.addEventListener('click', async () => {
+    if (!isPersonalAccountConnected) {
+      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
+      return;
+    }
+    await navigateToStep(5);
+  });
+
+  btnNavStep5ToStep4?.addEventListener('click', () => navigateToStep(4));
+
+  // Allow clicking stepper dots to navigate directly (with auth protection)
+  for (let i = 1; i <= 5; i++) {
+    const dot = document.getElementById(`dot${i}`);
+    dot?.addEventListener('click', async () => {
+      if (i > 1 && !isPersonalAccountConnected) {
+        showError('🔒 Please complete Step 1 (Sign in with Personal Google Account) first to unlock other steps.');
+        return;
+      }
+      await navigateToStep(i);
+    });
+  }
 
   async function refreshBridgeStatus() {
     try {
       const configRes = await sendMessage({ type: 'GET_WHATSAPP_CONFIG' });
-      if (txtTargetWhatsAppChats && configRes.target_whatsapp_chats) {
-        txtTargetWhatsAppChats.value = configRes.target_whatsapp_chats;
+      renderTrackedChats(configRes.tracked_whatsapp_chats || []);
+
+      const folderRes = await sendMessage({ type: 'GET_MCP_FOLDER_INFO' });
+      const email = folderRes?.accountEmail || '';
+      isPersonalAccountConnected = Boolean(email);
+
+      if (lblStep1AccountEmail) {
+        if (email) {
+          lblStep1AccountEmail.innerText = `🟢 ${email} (Connected & Active)`;
+          btnStep1ConnectPersonal?.classList.add('hidden');
+          step1ConnectedActions?.classList.remove('hidden');
+        } else {
+          lblStep1AccountEmail.innerText = '⚪ Not connected';
+          btnStep1ConnectPersonal?.classList.remove('hidden');
+          step1ConnectedActions?.classList.add('hidden');
+        }
       }
-      if (chkWhatsAppDriveCache && configRes.whatsapp_drive_caching_enabled !== undefined) {
-        chkWhatsAppDriveCache.checked = configRes.whatsapp_drive_caching_enabled;
+
+      if (lblWhatsAppDriveAccount) {
+        lblWhatsAppDriveAccount.innerText = email || 'Personal Account';
+      }
+
+      const linkOpenDriveFolder = document.getElementById('linkOpenDriveFolder') as HTMLAnchorElement;
+      if (folderRes && folderRes.isCreated && folderRes.folderUrl && linkOpenDriveFolder) {
+        linkOpenDriveFolder.href = folderRes.folderUrl;
+        linkOpenDriveFolder.classList.remove('hidden');
       }
 
       const waStatus = await sendMessage({ type: 'GET_WHATSAPP_STATUS' });
       if (waConnectionStatus) {
         if (waStatus.isConnected) {
-          waConnectionStatus.innerText = `🟢 WhatsApp Web Connected (${waStatus.visibleChats?.length || 0} visible chats detected)`;
+          const platformStr = (waStatus.platforms && waStatus.platforms.length > 0) ? waStatus.platforms.join(' & ') : 'Chat Web';
+          waConnectionStatus.innerText = `🟢 ${platformStr} Connected (${waStatus.visibleChats?.length || 0} visible chats detected)`;
           waConnectionStatus.style.color = '#34d399';
         } else {
-          waConnectionStatus.innerText = '⚪ WhatsApp Web Not Open (Open web.whatsapp.com in Chrome to sync)';
+          waConnectionStatus.innerText = '⚪ No Chat Tabs Open (Open WhatsApp Web or Telegram Web in Chrome to sync)';
           waConnectionStatus.style.color = '#94a3b8';
-        }
-      }
-
-      const advisory = await sendMessage({ type: 'GET_BRIDGE_ADVISORY' });
-      if (advisoryTitle && advisoryMessage && advisory) {
-        advisoryTitle.innerText = advisory.title;
-        advisoryMessage.innerText = advisory.message;
-      }
-
-      const folderRes = await sendMessage({ type: 'GET_MCP_FOLDER_INFO' });
-      const linkOpenDriveFolder = document.getElementById('linkOpenDriveFolder') as HTMLAnchorElement;
-      const txtDriveFolderStatus = document.getElementById('txtDriveFolderStatus') as HTMLParagraphElement;
-      if (folderRes && folderRes.folderUrl && linkOpenDriveFolder) {
-        linkOpenDriveFolder.href = folderRes.folderUrl;
-        if (txtDriveFolderStatus) {
-          txtDriveFolderStatus.innerHTML = `Folder: <strong>${folderRes.folderName}</strong> (ID: <code>${folderRes.folderId || 'Active'}</code>)`;
         }
       }
     } catch (e) {}
@@ -199,70 +359,84 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshBridgeStatus();
 
-  txtTargetWhatsAppChats?.addEventListener('input', () => {
-    sendMessage({
-      type: 'SAVE_WHATSAPP_CONFIG',
-      payload: {
-        target_whatsapp_chats: txtTargetWhatsAppChats.value,
-        whatsapp_drive_caching_enabled: chkWhatsAppDriveCache ? chkWhatsAppDriveCache.checked : true
-      }
-    });
-  });
-
-  chkWhatsAppDriveCache?.addEventListener('change', () => {
-    sendMessage({
-      type: 'SAVE_WHATSAPP_CONFIG',
-      payload: {
-        target_whatsapp_chats: txtTargetWhatsAppChats.value,
-        whatsapp_drive_caching_enabled: chkWhatsAppDriveCache.checked
-      }
-    });
-  });
-
-  btnSyncWhatsApp?.addEventListener('click', async () => {
+  // Unified 1-Click Track & Sync Active Chat
+  btnCaptureActiveChat?.addEventListener('click', async () => {
     clearAlerts();
-    btnSyncWhatsApp.disabled = true;
-    btnSyncWhatsApp.innerText = '⏳ Syncing...';
+    btnCaptureActiveChat.disabled = true;
+    btnCaptureActiveChat.innerText = '⏳ Capturing & Syncing Group...';
     try {
-      appendLog('💬 Scanning WhatsApp Web for school group notices...');
-      const res = await sendMessage({
-        type: 'SYNC_WHATSAPP_CHATS',
-        payload: { target_whatsapp_chats: txtTargetWhatsAppChats.value }
-      });
-      appendLog(`✅ Synced ${res.messageCount} messages from "${res.chatName}". Drive Saved: ${res.driveSaved}`);
-      showSuccess(`🎉 Synced ${res.messageCount} messages from "${res.chatName}" to your MCP Server!`);
+      // 1. Capture group metadata & ID
+      const capRes = await sendMessage({ type: 'CAPTURE_ACTIVE_WHATSAPP_CHAT' });
+      renderTrackedChats(capRes.trackedChats);
+      appendLog(`✅ Captured chat: "${capRes.captured.title}" (${capRes.captured.platform || 'Chat'}, ID: ${capRes.captured.id})`);
+
+      // 2. Immediately run sync with smart upward history scrolling and archive to Personal Drive
+      const syncRes = await sendMessage({ type: 'SYNC_WHATSAPP_CHATS', payload: { isManualSync: true } });
+      appendLog(`✅ Synced ${syncRes.messageCount || 0} messages from "${syncRes.chatName}" to Personal Google Drive.`);
+      showSuccess(`🎉 Tracking & Synced "${capRes.captured.title}"! ${syncRes.messageCount || 0} messages saved to your Personal Google Drive.`);
+
+      await refreshBridgeStatus();
+      await loadWhatsAppLogs();
     } catch (err: any) {
-      appendLog(`❌ WhatsApp Sync Error: ${err.message}`);
-      showError(`WhatsApp Sync Failed: ${err.message}`);
+      appendLog(`❌ Track & Sync Failed: ${err.message}`);
+      showError(err.message);
     } finally {
-      btnSyncWhatsApp.disabled = false;
-      btnSyncWhatsApp.innerText = '💬 Sync WhatsApp Notices';
+      btnCaptureActiveChat.disabled = false;
+      btnCaptureActiveChat.innerText = '📸 1-Click Track & Sync Active Chat / Group';
     }
   });
 
-  btnExtractActiveTab?.addEventListener('click', async () => {
-    clearAlerts();
-    btnExtractActiveTab.disabled = true;
-    btnExtractActiveTab.innerText = '⏳ Extracting...';
+  // WhatsApp Diagnostics UI Handlers
+  const txtWhatsAppLogs = document.getElementById('txtWhatsAppLogs') as HTMLTextAreaElement;
+  const btnFetchWhatsAppLogs = document.getElementById('btnFetchWhatsAppLogs') as HTMLButtonElement;
+  const btnCopyWhatsAppLogs = document.getElementById('btnCopyWhatsAppLogs') as HTMLButtonElement;
+  const btnClearWhatsAppLogs = document.getElementById('btnClearWhatsAppLogs') as HTMLButtonElement;
+
+  async function loadWhatsAppLogs() {
     try {
-      appendLog('🌐 Extracting content from active browser tab...');
-      const res = await sendMessage({ type: 'EXTRACT_ACTIVE_WEB_TAB' });
-      appendLog(`✅ Extracted tab: "${res.title}" (${res.domain}) - ${res.structuredContent?.length || 0} characters, ${res.tables?.length || 0} tables.`);
-      showSuccess(`🎉 Extracted "${res.title}" (${res.domain})! Data cached to personal MCP server.`);
-    } catch (err: any) {
-      appendLog(`❌ Web Extract Error: ${err.message}`);
-      showError(`Active Tab Extraction Failed: ${err.message}`);
+      const res = await sendMessage({ type: 'GET_WHATSAPP_DIAGNOSTICS' });
+      if (txtWhatsAppLogs) {
+        txtWhatsAppLogs.value = res.formatted || 'No WhatsApp logs recorded yet.';
+      }
+    } catch (e) {}
+  }
+
+  btnFetchWhatsAppLogs?.addEventListener('click', async () => {
+    btnFetchWhatsAppLogs.disabled = true;
+    btnFetchWhatsAppLogs.innerText = '⏳ Fetching...';
+    try {
+      await loadWhatsAppLogs();
+      showSuccess('Fetched latest WhatsApp diagnostic logs.');
     } finally {
-      btnExtractActiveTab.disabled = false;
-      btnExtractActiveTab.innerText = '🌐 Extract Active Tab';
+      btnFetchWhatsAppLogs.disabled = false;
+      btnFetchWhatsAppLogs.innerText = '🔄 Refresh Logs';
     }
   });
+
+  btnCopyWhatsAppLogs?.addEventListener('click', () => {
+    if (txtWhatsAppLogs && txtWhatsAppLogs.value) {
+      navigator.clipboard.writeText(txtWhatsAppLogs.value);
+      showSuccess('Copied WhatsApp diagnostic report to clipboard!');
+    }
+  });
+
+  btnClearWhatsAppLogs?.addEventListener('click', async () => {
+    await sendMessage({ type: 'CLEAR_WHATSAPP_DIAGNOSTICS' });
+    if (txtWhatsAppLogs) txtWhatsAppLogs.value = 'Logs cleared.';
+    showSuccess('WhatsApp logs cleared.');
+  });
+
+  loadWhatsAppLogs();
 
   const CURRENT_GAS_SCRIPT_VERSION = '2.7.0';
   const btnHeaderUpdateScript = document.getElementById('btnHeaderUpdateScript') as HTMLButtonElement;
 
   if (btnHeaderUpdateScript) {
     btnHeaderUpdateScript.addEventListener('click', async () => {
+      if (!isPersonalAccountConnected) {
+        showError('🔒 Please complete Step 1 (Sign in with Personal Google Account) first.');
+        return;
+      }
       clearAlerts();
       btnHeaderUpdateScript.disabled = true;
       btnHeaderUpdateScript.innerText = '⏳ Updating...';
@@ -287,12 +461,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Global Focus Tracker: Automatically persists user focus across extension reopenings
+  document.addEventListener('focusin', (e) => {
+    const target = e.target as HTMLElement;
+    if (target && target.id) {
+      chrome.storage.local.set({ last_focused_element_id: target.id });
+    }
+  });
+
   // Load Initial State & Probe Classroom Login
   const state = await sendMessage({ type: 'GET_STATE' });
+  isPersonalAccountConnected = Boolean(state?.personal_drive_connected || state?.personal_drive_account_email);
+  await refreshBridgeStatus();
   renderState(state);
   checkClassroomLogin();
 
-  btnOpenClassroom.addEventListener('click', async () => {
+  // Restore focus and position when reopening extension popup
+  const focusId = state?.last_focused_element_id || (state?.wizard_current_step === 4 ? 'btnCaptureVerifyPortal' : undefined);
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el && !el.classList.contains('hidden') && el.offsetParent !== null) {
+      setTimeout(() => {
+        try {
+          el.focus();
+          el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        } catch (e) {}
+      }, 50);
+    }
+  }
+
+  btnOpenClassroom?.addEventListener('click', async () => {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (activeTab && activeTab.id) {
       await chrome.tabs.update(activeTab.id, { url: 'https://classroom.google.com' });
@@ -302,7 +500,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     showSuccess('Navigating current tab to Google Classroom... Please sign into your student account.');
   });
 
-  btnCreateMcpServer.addEventListener('click', async () => {
+  btnCreateMcpServer?.addEventListener('click', async () => {
     clearAlerts();
     btnCreateMcpServer.disabled = true;
     btnCreateMcpServer.innerText = '⏳ Provisioning & Deploying Server in your Google Account...';
@@ -317,7 +515,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderState(await sendMessage({ type: 'GET_STATE' }));
     } catch (err: any) {
       if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization'))) {
-        btnOpenAuthScreen.classList.remove('hidden');
+        btnOpenAuthScreen?.classList.remove('hidden');
         showError('🔐 Google Authorization Required: Please click the "🚀 Open Google Authorization Screen" button to grant permissions.');
       } else {
         showError(`Server Setup Error: ${err.message}`, {
@@ -334,7 +532,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
-  btnVerifyStep1.addEventListener('click', async () => {
+  btnVerifyStep1?.addEventListener('click', async () => {
     clearAlerts();
     const gasUrl = gasUrlInput.value.trim();
 
@@ -430,15 +628,11 @@ You are a Parent Executive School Assistant responsible for tracking student sch
   };
 
   const btnDownloadSkill = document.getElementById('btnDownloadSkill');
-  const btnDownloadSkillStep3 = document.getElementById('btnDownloadSkillStep3');
   if (btnDownloadSkill) btnDownloadSkill.addEventListener('click', downloadSkillHandler);
-  if (btnDownloadSkillStep3) btnDownloadSkillStep3.addEventListener('click', downloadSkillHandler);
 
   const schedulePromptText = `Using the 'Parent School Intelligence Dashboard' skill and School Portal MCP Server, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place.`;
   const btnCopySchedulePrompt = document.getElementById('btnCopySchedulePrompt');
   const schedulePromptBox = document.getElementById('schedulePromptBox');
-  const btnCopySchedulePromptStep3 = document.getElementById('btnCopySchedulePromptStep3');
-  const schedulePromptBoxStep3 = document.getElementById('schedulePromptBoxStep3');
 
   const copySchedulePromptHandler = () => {
     navigator.clipboard.writeText(schedulePromptText);
@@ -447,77 +641,47 @@ You are a Parent Executive School Assistant responsible for tracking student sch
 
   if (btnCopySchedulePrompt) btnCopySchedulePrompt.addEventListener('click', copySchedulePromptHandler);
   if (schedulePromptBox) schedulePromptBox.addEventListener('click', copySchedulePromptHandler);
-  if (btnCopySchedulePromptStep3) btnCopySchedulePromptStep3.addEventListener('click', copySchedulePromptHandler);
-  if (schedulePromptBoxStep3) schedulePromptBoxStep3.addEventListener('click', copySchedulePromptHandler);
-
-  async function goToStep(stepNumber: number) {
-    clearAlerts();
-    await chrome.storage.local.set({ wizard_current_step: stepNumber });
-    const s = await sendMessage({ type: 'GET_STATE' });
-    renderState(s);
-  }
-
-  const dot1 = document.getElementById('dot1');
-  const dot2 = document.getElementById('dot2');
-  const dot3 = document.getElementById('dot3');
-  const btnNavToStep2 = document.getElementById('btnNavToStep2');
-  const btnNavToStep3 = document.getElementById('btnNavToStep3');
-
-  if (dot1) dot1.addEventListener('click', () => goToStep(1));
-  if (dot2) dot2.addEventListener('click', () => goToStep(2));
-  if (dot3) dot3.addEventListener('click', () => goToStep(3));
-  if (btnNavToStep2) btnNavToStep2.addEventListener('click', () => goToStep(2));
-  if (btnNavToStep3) btnNavToStep3.addEventListener('click', () => goToStep(3));
-
-  btnTestStep2.addEventListener('click', async () => {
-    clearAlerts();
-    btnTestStep2.disabled = true;
-    btnTestStep2.innerText = '⏳ Testing Server Connection...';
-    try {
-      const res = await sendMessage({ type: 'TEST_GEMINI_PING' });
-      showSuccess(`🎉 MCP Server connection verified! Active with ${res.tools ? res.tools.length : 'all'} tools.`);
-      const newState = await sendMessage({ type: 'GET_STATE' });
-      renderState(newState);
-    } catch (err: any) {
-      showError(`Server test failed: ${err.message}`, {
-        domain: 'gemini-spark',
-        feature: 'mcp-bind',
-        errorName: 'ServerPingException',
-        errorMessage: err.message,
-        stackTrace: err.stack
-      });
-    } finally {
-      btnTestStep2.disabled = false;
-      btnTestStep2.innerText = '🧪 Test Server Connection';
-    }
-  });
 
   async function executePortalVerification() {
     clearAlerts();
+    appendLog('🚀 [Step 4] Initiating Portal Connection Verification...');
     btnCaptureVerifyPortal.disabled = true;
     btnCaptureVerifyPortal.innerText = '⏳ Verifying Active Tab Connection...';
     if (connectionStatusBox) connectionStatusBox.classList.remove('hidden');
     if (connectionStatusIcon) connectionStatusIcon.innerText = '⏳';
-    if (connectionStatusText) connectionStatusText.innerText = 'Querying currently active tab...';
+    if (connectionStatusText) connectionStatusText.innerText = 'Querying currently active browser tab...';
 
     try {
-      // Query active tab in the user's last focused browser window
-      let tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-      if (!tabs || tabs.length === 0) {
-        tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      // 1. First try active tab in focused/current window
+      let tab: chrome.tabs.Tab | undefined;
+      const focusedTabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+      tab = focusedTabs.find(t => t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://') && !t.url.startsWith('edge://') && !t.url.startsWith('about:'));
+      
+      // 2. If not found, try all active tabs
+      if (!tab) {
+        const activeTabs = await chrome.tabs.query({ active: true });
+        tab = activeTabs.find(t => t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://') && !t.url.startsWith('edge://') && !t.url.startsWith('about:'));
       }
 
-      const tab = tabs[0];
-      if (!tab || !tab.url || tab.url.startsWith('chrome://') || tab.url.startsWith('chrome-extension://')) {
+      // 3. Fallback: Find any open school or web tab across all windows
+      if (!tab) {
+        const allTabs = await chrome.tabs.query({});
+        const webTabs = allTabs.filter(t => t.url && !t.url.startsWith('chrome://') && !t.url.startsWith('chrome-extension://') && !t.url.startsWith('edge://') && !t.url.startsWith('about:'));
+        tab = webTabs.find(t => t.url && (t.url.includes('edusprint') || t.url.includes('school') || t.url.includes('canvas') || t.url.includes('moodle') || t.url.includes('portal'))) || webTabs[webTabs.length - 1];
+      }
+
+      if (!tab || !tab.url) {
         throw new Error('Please open your school website (e.g. edusprint.in, canvas, moodle) in an active browser tab first.');
       }
 
+      appendLog(`🔎 Detected active web tab: "${tab.title || 'Tab'}" (${tab.url})`);
+
       const urlObj = new URL(tab.url);
       const domain = urlObj.hostname;
-      if (featureDomainInput) featureDomainInput.value = domain;
 
       if (connectionStatusText) connectionStatusText.innerText = `Reading active session cookies for ${domain}...`;
-      const cookies = await getCookiesForDomain(domain);
+      appendLog(`🍪 Extracting session cookies for ${domain}...`);
+      const cookies = await getCookiesForDomain(domain, tab.url);
 
       // Extract DOM HTML snippet from active tab
       let pageData = '';
@@ -536,6 +700,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       }
 
       if (connectionStatusText) connectionStatusText.innerText = `Contacting Apps Script proxy to verify active session for ${domain}...`;
+      appendLog(`📡 Verifying connection with MCP server backend for ${domain}...`);
 
       const res = await sendMessage({
         type: 'VERIFY_AND_ADD_PORTAL_CONNECTION',
@@ -543,18 +708,21 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       });
 
       if (res.success) {
+        appendLog(`✅ Portal connection verified successfully for ${domain}!`);
         showSuccess(`✅ Connection Verified for ${domain}! Unlocking Feature Tool Registration...`);
         if (connectionStatusIcon) connectionStatusIcon.innerText = '✅';
         if (connectionStatusText) connectionStatusText.innerText = `✅ Bi-directional active tab connection verified for ${domain}!`;
         if (featureSection) featureSection.classList.remove('hidden');
+        renderState(await sendMessage({ type: 'GET_STATE' }));
       } else {
         throw new Error(res.message || 'Bi-directional portal connection verification failed.');
       }
     } catch (err: any) {
+      appendLog(`❌ Portal Verification Error: ${err.message}`);
       if (connectionStatusIcon) connectionStatusIcon.innerText = '❌';
       if (connectionStatusText) connectionStatusText.innerText = `❌ ${err.message}`;
       showError(`Connection Verification Error: ${err.message}`, {
-        domain: (featureDomainInput && featureDomainInput.value) ? featureDomainInput.value : 'portal',
+        domain: 'portal',
         feature: 'connection-verify',
         errorName: 'PortalConnectionException',
         errorMessage: err.message,
@@ -632,7 +800,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
   async function executeFeatureRegistration() {
     clearAlerts();
     btnRegisterFeature.disabled = true;
-    btnRegisterFeature.innerText = '⏳ Capturing & Testing Active Feature Methods...';
+    btnRegisterFeature.innerText = '⏳ Auto-Capturing & Testing Active Feature...';
 
     try {
       // 1. Query active tab
@@ -655,38 +823,6 @@ You are a Parent Executive School Assistant responsible for tracking student sch
         func: async () => {
           const summary: string[] = [];
 
-          // 1. AUTO-EXPAND: Expand all HTML5 <details>, Accordions, Nested Tree Nodes, and Collapsible Rows
-          try {
-            // Expand native HTML5 details
-            document.querySelectorAll('details:not([open])').forEach(d => d.setAttribute('open', 'true'));
-
-            // Expand Bootstrap / jQuery / Custom Collapsible Elements & Accordion triggers
-            const toggleTriggers = document.querySelectorAll(
-              '[data-toggle="collapse"].collapsed, ' +
-              '[data-bs-toggle="collapse"].collapsed, ' +
-              '.accordion-button.collapsed, ' +
-              '.treeview.closed, ' +
-              '.expand-btn, ' +
-              '[aria-expanded="false"], ' +
-              'tr.has-child:not(.shown)'
-            );
-            toggleTriggers.forEach(btn => {
-              if (btn instanceof HTMLElement) {
-                try { btn.click(); } catch (e) {}
-              }
-            });
-
-            // Force visibility on hidden collapsible bodies
-            document.querySelectorAll('.collapse:not(.show):not(.in), .panel-collapse:not(.in)').forEach(panel => {
-              if (panel instanceof HTMLElement) {
-                panel.classList.add('in', 'show');
-                panel.style.display = 'block';
-              }
-            });
-
-            await new Promise(r => setTimeout(r, 120)); // Brief pause for DOM transitions
-          } catch (e) {}
-
           // Helper to format structured tables into clean Markdown
           const parseTables = () => {
             const tableSnapshots: string[] = [];
@@ -704,10 +840,10 @@ You are a Parent Executive School Assistant responsible for tracking student sch
               tbl.querySelectorAll('tbody tr, tr').forEach(tr => {
                 const cells: string[] = [];
                 tr.querySelectorAll('td, th').forEach(td => {
-                  const t = td.textContent?.trim().replace(/[\r\n\t]+/g, ' ');
-                  if (t) cells.push(t);
+                  const txt = td.textContent?.trim().replace(/\s+/g, ' ') || '';
+                  if (txt) cells.push(txt);
                 });
-                if (cells.length > 0 && cells.join('') !== headers.join('')) {
+                if (cells.length > 0) {
                   rows.push(`| ${cells.join(' | ')} |`);
                 }
               });
@@ -830,7 +966,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       const extracted = (domResult && domResult[0] && domResult[0].result) ? domResult[0].result : { title: activeTab.title || '', activeNavText: '', h1Text: '', bodyTextSnippet: '' };
       
       // 3. Auto-detect Feature Name from active tab SPA elements
-      const detectedFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1Text, extracted.activeNavText, extracted.bodyTextSnippet);
+      const targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1Text, extracted.activeNavText, extracted.bodyTextSnippet);
 
       let domain = '';
       try {
@@ -842,7 +978,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
         type: 'REGISTER_FEATURE_TOOL',
         payload: {
           domain,
-          feature: detectedFeature,
+          feature: targetFeature,
           endpointUrl: activeTab.url,
           pageData: extracted.bodyTextSnippet,
           pageTitle: extracted.title
@@ -850,7 +986,11 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       });
 
       if (res.success) {
-        showSuccess(`🎉 Successfully captured & verified feature '${res.feature}'! Registered as active MCP tool (Method: ${res.winningStrategy}).`);
+        if (res.isUpdate) {
+          showSuccess(`🎉 Refreshed & verified feature '${res.feature}'! Updated active session data in-place (No duplicates created).`);
+        } else {
+          showSuccess(`🎉 Successfully captured & verified feature '${res.feature}'! Registered as active MCP tool (Method: ${res.winningStrategy}).`);
+        }
         renderState(await sendMessage({ type: 'GET_STATE' }));
       }
     } catch (err: any) {
@@ -863,36 +1003,25 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       });
     } finally {
       btnRegisterFeature.disabled = false;
-      btnRegisterFeature.innerText = '📸 2. Capture & Register Active Feature';
+      btnRegisterFeature.innerText = '📸 2. Auto-Capture & Register Active Feature';
     }
   }
 
-  document.querySelectorAll('.chip-btn').forEach(chip => {
-    chip.addEventListener('click', (e) => {
-      const target = e.currentTarget as HTMLElement;
-      const feature = target.getAttribute('data-feature');
-      if (feature && featureNameInput) {
-        featureNameInput.value = feature;
-      }
-    });
-  });
-
-  btnRegisterFeature.addEventListener('click', executeFeatureRegistration);
-  btnRegisterFeature.addEventListener('keydown', (e) => {
+  btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
+  btnRegisterFeature?.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
       executeFeatureRegistration();
     }
   });
 
-  btnAddAnotherPlatform.addEventListener('click', async () => {
-    await sendMessage({ type: 'UPDATE_STATE', payload: { wizard_current_step: 3, portal_connection_verified: false } });
+  btnAddAnotherPlatform?.addEventListener('click', async () => {
+    await sendMessage({ type: 'UPDATE_STATE', payload: { wizard_current_step: 4, portal_connection_verified: false } });
     if (featureSection) featureSection.classList.add('hidden');
-    if (featureNameInput) featureNameInput.value = '';
     renderState(await sendMessage({ type: 'GET_STATE' }));
   });
 
-  btnSendReport.addEventListener('click', async () => {
+  btnSendReport?.addEventListener('click', async () => {
     if (!lastErrorContext) return;
     try {
       const res = await sendMessage({ type: 'SEND_DIAGNOSTIC_REPORT', payload: lastErrorContext });
@@ -920,30 +1049,35 @@ You are a Parent Executive School Assistant responsible for tracking student sch
 
   async function checkClassroomLogin() {
     if (typeof chrome !== 'undefined' && chrome.cookies) {
-      const cookies = await chrome.cookies.getAll({ domain: 'google.com' });
-      const hasAuth = cookies.some(c => c.name === 'SID' || c.name === 'HSID' || c.name === 'SSID');
-      if (hasAuth) {
-        classroomStatusBox.classList.remove('hidden');
-        apiSettingsBox.classList.remove('hidden');
-        btnCreateMcpServer.classList.remove('hidden');
-      }
+      try {
+        const cookies = await chrome.cookies.getAll({ domain: 'google.com' });
+        const hasAuth = cookies.some(c => c.name === 'SID' || c.name === 'HSID' || c.name === 'SSID');
+        if (hasAuth && btnCreateMcpServer) {
+          btnCreateMcpServer.classList.remove('hidden');
+        }
+      } catch (e) {}
     }
   }
 
   function renderState(s: any) {
-    let step = s.wizard_current_step || (s.mcp_gas_url ? 2 : 1);
-    if (step > 3) step = 3;
+    let step = s.wizard_current_step || 1;
+    if (!isPersonalAccountConnected) {
+      step = 1;
+    }
+    if (step > 5) step = 5;
     if (step < 1) step = 1;
 
-    stepBadge.innerText = `Step ${step} of 3`;
+    stepBadge.innerText = `Step ${step} of 5`;
 
     updateStepperDots(step);
 
     cardStep1.classList.toggle('hidden', step !== 1);
     cardStep2.classList.toggle('hidden', step !== 2);
     cardStep3.classList.toggle('hidden', step !== 3);
+    cardStep4.classList.toggle('hidden', step !== 4);
+    if (cardStep5) cardStep5.classList.toggle('hidden', step !== 5);
 
-    if (step === 3) {
+    if (step === 4) {
       featureSection.classList.toggle('hidden', !s.portal_connection_verified);
       const activeFeaturesBox = document.getElementById('activeFeaturesBox') as HTMLElement;
       const step3ToolsList = document.getElementById('step3RegisteredToolsList') as HTMLUListElement;
@@ -1018,6 +1152,11 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       }
     }
 
+    if (step === 5) {
+      refreshBridgeStatus();
+      loadWhatsAppLogs();
+    }
+
     if (s.mcp_gas_url) {
       const cleanUrl = getCleanCanonicalUrl(s.mcp_gas_url);
       if (gasUrlInput) gasUrlInput.value = cleanUrl;
@@ -1034,15 +1173,29 @@ You are a Parent Executive School Assistant responsible for tracking student sch
   }
 
   function updateStepperDots(currentStep: number) {
-    for (let i = 1; i <= 4; i++) {
+    for (let i = 1; i <= 5; i++) {
       const dot = document.getElementById(`dot${i}`);
       const line = document.getElementById(`line${i}`);
       if (dot) {
         dot.classList.toggle('active', i === currentStep);
         dot.classList.toggle('completed', i < currentStep);
+        if (i > 1 && !isPersonalAccountConnected) {
+          dot.style.opacity = '0.35';
+          dot.style.cursor = 'not-allowed';
+          dot.title = '🔒 Locked: Sign in with Personal Google Account in Step 1 first';
+        } else {
+          dot.style.opacity = '1';
+          dot.style.cursor = 'pointer';
+          dot.title = `Step ${i}`;
+        }
       }
       if (line) {
         line.classList.toggle('completed', i < currentStep);
+        if (!isPersonalAccountConnected) {
+          line.style.opacity = '0.35';
+        } else {
+          line.style.opacity = '1';
+        }
       }
     }
   }
@@ -1070,10 +1223,35 @@ You are a Parent Executive School Assistant responsible for tracking student sch
     errorReportBanner.classList.add('hidden');
   }
 
-  async function getCookiesForDomain(domain: string): Promise<string> {
+  async function getCookiesForDomain(domain: string, url?: string): Promise<string> {
     if (typeof chrome !== 'undefined' && chrome.cookies) {
-      const cookies = await chrome.cookies.getAll({ domain });
-      return cookies.map(c => `${c.name}=${c.value}`).join('; ');
+      const cookieList: any[] = [];
+      if (url) {
+        try {
+          const urlCookies = await chrome.cookies.getAll({ url });
+          cookieList.push(...urlCookies);
+        } catch (e) {}
+      }
+      try {
+        const domainCookies = await chrome.cookies.getAll({ domain });
+        cookieList.push(...domainCookies);
+      } catch (e) {}
+      
+      const parts = domain.split('.');
+      if (parts.length > 2) {
+        const rootDomain = parts.slice(-2).join('.');
+        try {
+          const rootCookies = await chrome.cookies.getAll({ domain: rootDomain });
+          cookieList.push(...rootCookies);
+        } catch (e) {}
+      }
+
+      const unique = new Map<string, string>();
+      cookieList.forEach(c => {
+        if (c && c.name && c.value) unique.set(c.name, c.value);
+      });
+
+      return Array.from(unique.entries()).map(([k, v]) => `${k}=${v}`).join('; ');
     }
     return '';
   }

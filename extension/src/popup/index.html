@@ -15,22 +15,57 @@
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
         <button id="btnHeaderUpdateScript" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;" title="Update Google Apps Script Server Backend">⚡ Update Script</button>
-        <span id="stepBadge" class="badge">Step 1 of 3</span>
+        <span id="stepBadge" class="badge">Step 1 of 5</span>
       </div>
     </header>
 
     <div class="stepper" style="cursor: pointer;" title="Click any step to navigate">
-      <div class="step-dot active" id="dot1" title="Step 1: Workspace Setup">1</div>
+      <div class="step-dot active" id="dot1" title="Step 1: Personal Account (Parent Storage)">1</div>
       <div class="step-line" id="line1"></div>
-      <div class="step-dot" id="dot2" title="Step 2: Connect to Gemini Spark">2</div>
+      <div class="step-dot" id="dot2" title="Step 2: Student Classroom & MCP Server">2</div>
       <div class="step-line" id="line2"></div>
-      <div class="step-dot" id="dot3" title="Step 3: School Portal Features">3</div>
+      <div class="step-dot" id="dot3" title="Step 3: Connect to Gemini Spark">3</div>
+      <div class="step-line" id="line3"></div>
+      <div class="step-dot" id="dot4" title="Step 4: School Portal Features">4</div>
+      <div class="step-line" id="line4"></div>
+      <div class="step-dot" id="dot5" title="Step 5: WhatsApp & Web Bridge">5</div>
     </div>
 
     <main class="main-content">
-      <!-- Step 1: Connect School Workspace -->
+      <!-- Step 1: Sign in with Personal Google Account (Parent Storage) -->
       <section id="step1Card" class="card">
-        <h2>Step 1: Connect Google Classroom & MCP Server</h2>
+        <h2>Step 1: Sign in with Personal Google Account</h2>
+        <p class="subtitle" style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 8px;">
+          Connect your <strong>Personal Google Account</strong> (e.g. Gmail). This account is remembered permanently and used exclusively for your private Google Drive WhatsApp archive, OCR, and configs — completely isolated from school-managed student accounts.
+        </p>
+
+        <div class="status-box mb-2" style="background: #0f172a; border-left: 3px solid #38bdf8;">
+          <span class="status-icon">🔒</span>
+          <div>
+            <strong>Personal Account:</strong>
+            <span id="lblStep1AccountEmail" style="color: #38bdf8; font-weight: 600; display: block;">Not connected</span>
+          </div>
+        </div>
+
+        <button id="btnStep1ConnectPersonal" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button">
+          🔐 Sign in with Personal Google Account
+        </button>
+
+        <div id="step1ConnectedActions" class="hidden">
+          <div style="display: flex; gap: 6px;">
+            <button id="btnStep1SwitchAccount" class="btn btn-secondary btn-sm" style="flex: 1;">
+              🔄 Switch Account
+            </button>
+            <button id="btnStep1Continue" class="btn btn-success btn-sm" style="flex: 1.5; font-weight: 700;">
+              ➡️ Continue to Step 2 (Classroom Setup)
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 2: Connect School Workspace & Create MCP Server -->
+      <section id="step2Card" class="card hidden">
+        <h2>Step 2: Connect Google Classroom & MCP Server</h2>
 
         <!-- Action 1: Open Google Classroom -->
         <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button">
@@ -66,11 +101,16 @@
           <input type="url" id="gasUrlInput" placeholder="https://script.google.com/macros/s/.../exec">
           <button id="btnVerifyStep1" class="btn btn-secondary mt-1" tabindex="0" role="button">Verify Server Link</button>
         </div>
+
+        <div style="display: flex; gap: 6px; margin-top: 8px;">
+          <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back to Step 1</button>
+          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm" style="flex: 1.5;">➡️ Continue to Step 3</button>
+        </div>
       </section>
 
-      <!-- Step 2: Bind Gemini Spark MCP -->
-      <section id="step2Card" class="card hidden">
-        <h2>Step 2: Connect to Gemini Spark</h2>
+      <!-- Step 3: Bind Gemini Spark MCP -->
+      <section id="step3Card" class="card hidden">
+        <h2>Step 3: Connect to Gemini Spark</h2>
         <p class="subtitle">Your school assistant server is active! Follow the steps below to connect your server to Gemini Spark.</p>
         
         <div class="url-copy-box">
@@ -133,17 +173,19 @@
           <p style="font-size: 0.75rem; color: #cbd5e1; margin-top: 4px;">
             🏷️ <strong>App Name Notice:</strong> Please keep the connected app name as <strong>School Portal MCP Server</strong> so the skill connects automatically.
           </p>
-        <div style="display: flex; gap: 8px; margin-top: 8px;">
-          <button id="btnTestStep2" class="btn btn-outline" style="flex: 1;">🧪 Test Server Connection</button>
-          <button id="btnNavToStep3" class="btn btn-secondary" style="flex: 1;">➡️ Go to Step 3: School Features</button>
+        </div>
+
+        <div style="display: flex; gap: 6px; margin-top: 8px;">
+          <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back to Step 2</button>
+          <button id="btnNavStep3ToStep4" class="btn btn-primary btn-sm" style="flex: 1.5;">➡️ Continue to Step 4</button>
         </div>
       </section>
 
-      <!-- Step 3: Add & Manage School Portal Features -->
-      <section id="step3Card" class="card hidden">
+      <!-- Step 4: Add & Manage School Portal Features -->
+      <section id="step4Card" class="card hidden">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h2>Step 3: Tracked School Features</h2>
-          <button id="btnNavToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 2 (Server Link)</button>
+          <h2>Step 4: Tracked School Portals</h2>
+          <button id="btnNavStep4ToStep3" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 3</button>
         </div>
 
         <!-- Permanent Copyable MCP Server Link -->
@@ -155,7 +197,7 @@
           </div>
         </div>
         
-        <!-- Phase 1: Portal Connection Verification (Visible initially) -->
+        <!-- Phase 1: Portal Connection Verification -->
         <div id="connectionSection">
           <p class="subtitle">1. Log in to your school website (e.g. EduSprint, Canvas, Moodle) in an active browser tab.<br>2. Right after login, click below to verify portal connection.</p>
           
@@ -169,7 +211,7 @@
           </div>
         </div>
 
-        <!-- Phase 2: Feature Tool Registration (Hidden until connection verified) -->
+        <!-- Phase 2: Feature Tool Registration -->
         <div id="featureSection" class="hidden mt-2" aria-live="polite">
           <div class="status-box mb-2">
             <span class="status-icon">✅</span>
@@ -177,118 +219,95 @@
           </div>
 
           <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2" tabindex="0" role="button" aria-label="Capture and Register Active Feature">
-            📸 2. Capture & Register Active Feature
+            📸 2. Auto-Capture & Register Active Feature
           </button>
 
-          <div id="activeFeaturesBox" class="mt-2 hidden">
-            <label style="font-size: 0.85rem; font-weight: 600; color: var(--success-color);">Tracked Features on Your MCP Server:</label>
-            <p class="subtitle mb-1" style="font-size: 0.75rem;">Only the features listed below are tracked and passed to Gemini Spark.</p>
-            <ul id="step3RegisteredToolsList" class="tools-list mt-1 mb-2"></ul>
-          </div>
-
-          <!-- Permanent Copyable MCP Server Link & Gemini Spark Guidance -->
-          <div class="guidance-box mt-2 mb-2">
-            <p class="guidance-title">✨ Connect to Gemini Spark Anytime:</p>
-
-            <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 8px;">
-              <a href="https://gemini.google.com/spark/apps" target="_blank" class="btn btn-primary btn-sm text-center" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center;">
-                ✨ Open Connected Apps
-              </a>
-              <button id="btnDownloadSkillStep3" class="btn btn-secondary btn-sm" style="flex: 1;">
-                📥 Download SKILL.md
-              </button>
-              <a href="https://gemini.google.com/spark/skills" target="_blank" class="btn btn-secondary btn-sm text-center" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center;">
-                ✨ Open Skills
-              </a>
-            </div>
-
-            <div id="schedulePromptBoxStep3" class="prompt-copy-box mt-1" tabindex="0" role="button" title="Click to copy schedule prompt">
-              "Using the 'Parent School Intelligence Dashboard' skill and School Portal MCP Server, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place."
-            </div>
-            <button id="btnCopySchedulePromptStep3" class="btn btn-secondary btn-sm mt-1">📋 Copy Schedule Prompt</button>
-
-            <p style="font-size: 0.75rem; color: #fbbf24; margin-top: 6px; font-weight: 600;">
-              🔓 <strong>1-Click Master Authorization:</strong> Spark only requests 1 single approval for all connected tools!
-            </p>
+          <!-- Active Registered Features Box -->
+          <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden">
+            <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--accent-color);">✨ Active Tracked Features:</h4>
+            <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0;"></ul>
           </div>
         </div>
 
-        <button id="btnAddAnotherPlatform" class="btn btn-outline text-center mt-2">
-          🔄 Reset / Connect Another Portal
-        </button>
+        <div style="display: flex; gap: 6px; margin-top: 8px;">
+          <button id="btnAddAnotherPlatform" class="btn btn-outline btn-sm" style="flex: 1;">
+            🔄 Reset Portal
+          </button>
+          <button id="btnNavStep4ToStep5" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">
+            ➡️ Continue to Step 5 (School Chat Groups)
+          </button>
+        </div>
       </section>
 
-      <!-- 💬 WhatsApp School Groups & Universal Web Bridge -->
-      <div class="card mt-2" style="background: #064e3b; border: 1px solid #059669; border-radius: 8px; padding: 12px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-          <h3 style="font-size: 0.95rem; font-weight: 700; color: #6ee7b7; margin: 0;">
-            💬 WhatsApp & Universal Web Bridge
-          </h3>
+      <!-- Step 5: 💬 School Chat Groups & Communities (WhatsApp, Telegram, etc.) -->
+      <section id="step5Card" class="card hidden">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h2>Step 5: School Chat Groups & Communities</h2>
+          <button id="btnNavStep5ToStep4" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 4</button>
         </div>
 
-        <!-- Smart Advisory / Mode Validation Banner -->
-        <div id="bridgeAdvisoryBanner" style="background: #022c22; border-left: 3px solid #34d399; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #a7f3d0; margin-bottom: 8px;">
-          <strong id="advisoryTitle">💡 Smart Integration Advisory:</strong>
-          <span id="advisoryMessage">Checking active browser tab...</span>
-        </div>
+        <div style="background: #064e3b; border: 1px solid #059669; border-radius: 8px; padding: 12px; margin-bottom: 10px;">
+          <!-- Privacy & Storage Account Indicator + Browser Availability Notice -->
+          <div style="background: #022c22; border-left: 3px solid #34d399; padding: 8px 10px; border-radius: 4px; font-size: 0.75rem; color: #a7f3d0; margin-bottom: 10px; line-height: 1.45;">
+            🔒 <strong>Personal Drive Storage:</strong> School chat notices and files are archived directly to your Personal Google Drive (<span id="lblWhatsAppDriveAccount" style="font-weight: 700; color: #6ee7b7;">Connected in Step 1</span>).
+            <hr style="border: 0; border-top: 1px solid #065f46; margin: 6px 0;">
+            💡 <strong>Background Availability Note:</strong> Live chats sync while your browser is open with your chat tab (WhatsApp Web, Telegram Web, etc.) open in the background. You can keep the tab <strong>minimized or pinned</strong> while doing other tasks. If your computer is turned off or the browser is closed, syncing will pause and automatically resume once you are back online.
+          </div>
 
-        <!-- Prerequisite Note -->
-        <div style="background: #042f2e; border: 1px dashed #14b8a6; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #ccfbf1; margin-bottom: 8px;">
-          <strong>ℹ️ Prerequisite:</strong> Keep <a href="https://web.whatsapp.com" target="_blank" style="color: #5eead4; text-decoration: underline;">web.whatsapp.com</a> open and signed in. Personal chats are strictly ignored; only your configured target school groups are scanned.
-        </div>
+          <p id="waConnectionStatus" style="font-size: 0.8rem; font-weight: 600; color: #a7f3d0; margin-bottom: 8px;">
+            🟢 Checking open chat tabs (WhatsApp, Telegram)...
+          </p>
 
-        <p id="waConnectionStatus" style="font-size: 0.8rem; font-weight: 600; color: #a7f3d0; margin-bottom: 6px;">
-          🟢 Checking WhatsApp Web tab...
-        </p>
-
-        <label for="txtTargetWhatsAppChats" style="font-size: 0.8rem; font-weight: 600; color: #e6fffa; display: block; margin-bottom: 4px;">
-          🎯 Tracked School Chats / Groups (Comma separated):
-        </label>
-        <input type="text" id="txtTargetWhatsAppChats" class="input mb-2" placeholder="e.g. Grade 3B CAIE, School Bus 14, Parents Group" style="width: 100%; font-size: 0.8rem; padding: 6px 8px; border-radius: 6px; border: 1px solid #059669; background: #022c22; color: #f0fdf4;" />
-
-        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px;">
-          <input type="checkbox" id="chkWhatsAppDriveCache" checked />
-          <label for="chkWhatsAppDriveCache" style="font-size: 0.75rem; color: #d1fae5;">
-            📁 Cache in Google Drive (<code>whatsapp_school_archive.json</code>) for historical Q&A
-          </label>
-        </div>
-
-        <div style="display: flex; gap: 6px;">
-          <button id="btnSyncWhatsApp" class="btn btn-primary btn-sm" style="flex: 1; background: #059669; border-color: #047857;">
-            💬 Sync WhatsApp Notices
+          <!-- Single 1-Click Track & Sync Active Chat Button -->
+          <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm mb-2" style="width: 100%; background: #10b981; border-color: #059669; font-weight: 700; padding: 8px;">
+            📸 1-Click Track & Sync Active Chat / Group
           </button>
-          <button id="btnExtractActiveTab" class="btn btn-secondary btn-sm" style="flex: 1;">
-            🌐 Extract Active Tab
-          </button>
+
+          <!-- Tracked Chats & Groups List -->
+          <div id="trackedChatsContainer" class="mb-2" style="background: #022c22; border: 1px solid #065f46; border-radius: 6px; padding: 8px;">
+            <label style="font-size: 0.75rem; font-weight: 700; color: #6ee7b7; display: block; margin-bottom: 4px;">
+              🎯 Tracked School Chats & Groups (WhatsApp, Telegram):
+            </label>
+            <div id="trackedChatsEmpty" style="font-size: 0.75rem; color: #94a3b8; font-style: italic;">
+              No school chats tracked yet. Open your school group in WhatsApp Web or Telegram Web and click "1-Click Track & Sync" above.
+            </div>
+            <ul id="trackedChatsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
+          </div>
+
+          <!-- Link to Personal Drive Folder -->
+          <div style="margin-top: 6px;">
+            <a id="linkOpenDriveFolder" href="#" target="_blank" class="btn btn-outline btn-sm hidden" style="width: 100%; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center; font-size: 0.75rem;">
+              📁 Open School Intelligence Archive on Personal Google Drive
+            </a>
+          </div>
+
+          <div style="margin-top: 8px; font-size: 0.75rem; color: #6ee7b7; display: flex; align-items: center; gap: 4px;">
+            <span>🟢</span>
+            <span><strong>Passive Auto-Scanner:</strong> Active (Auto-syncs in background)</span>
+          </div>
         </div>
 
-        <div style="margin-top: 8px; font-size: 0.75rem; color: #6ee7b7; display: flex; align-items: center; gap: 4px;">
-          <span>🟢</span>
-          <span><strong>Passive Auto-Scanner:</strong> Active (Continuously indexes open school chats & attachments)</span>
+        <!-- 🔍 WhatsApp Sync Diagnostics & Troubleshooting Card -->
+        <div class="card mt-2" style="background: #022c22; border: 1px solid #059669; border-radius: 8px; padding: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <label for="txtWhatsAppLogs" style="font-weight: 600; font-size: 0.85rem; color: #6ee7b7;">
+              🔍 WhatsApp Diagnostics & Troubleshooting Logs:
+            </label>
+          </div>
+          <textarea id="txtWhatsAppLogs" readonly aria-live="polite" rows="6" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #059669; border-radius: 6px; background: #011c14; color: #a7f3d0; resize: vertical;" placeholder="Click 'Fetch WhatsApp Logs' to inspect tab status, group matching, extraction counts, and Personal Drive uploads..."></textarea>
+          <div style="display: flex; gap: 6px; margin-top: 6px;">
+            <button id="btnFetchWhatsAppLogs" class="btn btn-primary btn-sm" style="flex: 1; background: #059669; border-color: #047857;">
+              🔄 Refresh Logs
+            </button>
+            <button id="btnCopyWhatsAppLogs" class="btn btn-secondary btn-sm" style="flex: 1;">
+              📋 Copy Diagnostics
+            </button>
+            <button id="btnClearWhatsAppLogs" class="btn btn-secondary btn-sm" style="flex: 0.8; color: #fca5a5;">
+              🧹 Clear
+            </button>
+          </div>
         </div>
-      </div>
-
-      <!-- 📁 Google Drive MCP Intelligence Folder Card -->
-      <div class="card mt-2" style="background: #1e293b; border: 1px solid #334155; border-radius: 8px; padding: 12px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-          <h3 style="font-size: 0.9rem; font-weight: 700; color: #93c5fd; margin: 0;">
-            📁 Personal Google Drive MCP Archive Folder
-          </h3>
-        </div>
-
-        <p id="txtDriveFolderStatus" style="font-size: 0.75rem; color: #cbd5e1; margin-bottom: 6px;">
-          Folder: <code>School Portal MCP Intelligence</code> (Stores WhatsApp history, OCR attachments, & configs).
-        </p>
-
-        <a id="linkOpenDriveFolder" href="#" target="_blank" class="btn btn-primary btn-sm" style="display: flex; align-items: center; justify-content: center; text-decoration: none; margin-bottom: 8px;">
-          📁 Open Folder in Google Drive
-        </a>
-
-        <!-- Warning Notice -->
-        <div style="background: #451a03; border-left: 3px solid #f59e0b; padding: 6px 8px; border-radius: 4px; font-size: 0.75rem; color: #fef3c7;">
-          <strong>⚠️ Critical Notice:</strong> This Google Drive folder stores your persistent school intelligence cache (WhatsApp messages, PDFs, images, configurations). Modifying or deleting files in this folder will directly alter or remove data used by Gemini Spark.
-        </div>
-      </div>
+      </section>
 
       <!-- Status Alerts -->
       <div id="statusAlert" class="alert hidden"></div>
@@ -300,7 +319,7 @@
             📡 MCP Server Execution Logs (Gemini Spark Activity):
           </label>
         </div>
-        <textarea id="txtServerLogs" readonly aria-live="polite" rows="8" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #4338ca; border-radius: 6px; background: #0f0b29; color: #e0e7ff; resize: vertical;" placeholder="Click 'Fetch MCP Server Logs' to view live execution logs from Gemini Spark..."></textarea>
+        <textarea id="txtServerLogs" readonly aria-live="polite" rows="6" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #4338ca; border-radius: 6px; background: #0f0b29; color: #e0e7ff; resize: vertical;" placeholder="Click 'Fetch MCP Server Logs' to view live execution logs from Gemini Spark..."></textarea>
         <div style="display: flex; gap: 6px; margin-top: 6px;">
           <button id="btnFetchServerLogs" class="btn btn-primary btn-sm" style="flex: 1;">
             🔄 Fetch MCP Server Logs
@@ -311,12 +330,12 @@
         </div>
       </div>
 
-      <!-- Live Activity & Extension Diagnostic Log Box (Accessible & Copy-Ready) -->
+      <!-- Live Activity & Extension Diagnostic Log Box (Visible Across All Steps) -->
       <div class="card mt-2" style="background: #0f172a; border: 1px solid #334155; border-radius: 8px; padding: 10px;">
         <label for="txtActivityLog" style="font-weight: 600; font-size: 0.85rem; color: #38bdf8; display: block; margin-bottom: 6px;">
           📋 Extension Activity & Setup Logs:
         </label>
-        <textarea id="txtActivityLog" readonly aria-live="polite" rows="8" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #334155; border-radius: 6px; background: #020617; color: #e2e8f0; resize: vertical;" placeholder="Activity logs will stream here live as actions run..."></textarea>
+        <textarea id="txtActivityLog" readonly aria-live="polite" rows="6" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #334155; border-radius: 6px; background: #020617; color: #e2e8f0; resize: vertical;" placeholder="Activity logs will stream here live as actions run..."></textarea>
         <button id="btnCopyActivityLog" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">
           📋 Copy Setup Log
         </button>
