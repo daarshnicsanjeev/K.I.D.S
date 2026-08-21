@@ -8,129 +8,61 @@
   // Show floating status banner
   const banner = createStatusBanner('⚡ School MCP Engine: Automating server creation in your school account...');
 
-  await sleep(2500);
-
-  const SERVER_CODE = `/**
- * Personal School MCP Sync Engine - Google Apps Script Server
- * Auto-Provisioned for Student/Parent Workspace Account
- */
-function doPost(e) {
-  try {
-    var request = JSON.parse(e.postData.contents);
-    var method = request.method;
-    var params = request.params || {};
-    var id = request.id || null;
-    var result = null;
-
-    if (method === 'tools/list') {
-      result = handleToolsList();
-    } else if (method === 'tools/call') {
-      result = handleToolsCall(params.name, params.arguments);
-    } else if (method === 'register_mcp_tool') {
-      result = handleRegisterTool(params);
-    } else if (method === 'test_preflight_proxy') {
-      result = handlePreflightProxy(params);
-    } else {
-      return jsonRpcError(-32601, 'Method not found: ' + method, id);
-    }
-    return jsonRpcSuccess(result, id);
-  } catch (err) {
-    return jsonRpcError(-32603, 'Internal error: ' + err.toString(), null);
-  }
-}
-
-function handleToolsList() {
-  var nativeTools = [
-    { name: 'get_google_classroom_work', description: 'Fetch student courses and homework from Google Classroom.', inputSchema: { type: 'object', properties: {} } },
-    { name: 'get_school_gmail_messages', description: 'Fetch school circulars and announcements from Gmail.', inputSchema: { type: 'object', properties: {} } },
-    { name: 'get_calendar_events', description: 'Fetch school calendar events and deadlines.', inputSchema: { type: 'object', properties: {} } }
-  ];
-  var props = PropertiesService.getUserProperties();
-  var raw = props.getProperty('REGISTERED_PORTAL_TOOLS');
-  var registered = raw ? JSON.parse(raw) : [];
-  var portalTools = registered.map(function (t) {
-    return { name: t.name, description: 'Fetch ' + t.feature + ' data from ' + t.domain, inputSchema: { type: 'object', properties: {} } };
-  });
-  return { tools: nativeTools.concat(portalTools) };
-}
-
-function handleToolsCall(name, args) {
-  if (name === 'get_google_classroom_work') {
-    var res = UrlFetchApp.fetch('https://classroom.googleapis.com/v1/courses', { headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() }, muteHttpExceptions: true });
-    return JSON.parse(res.getContentText());
-  } else if (name === 'get_school_gmail_messages') {
-    var threads = GmailApp.search('label:school OR subject:homework OR subject:circular', 0, 10);
-    var messages = threads.map(function(t) { return { subject: t.getFirstUserMessageSubject(), snippet: t.getSnippet() }; });
-    return { messages: messages };
-  } else if (name === 'get_calendar_events') {
-    var events = CalendarApp.getDefaultCalendar().getEventsForDay(new Date());
-    return { events: events.map(function(e) { return { title: e.getTitle() }; }) };
-  }
-  throw new Error('Tool not found: ' + name);
-}
-
-function handleRegisterTool(params) {
-  var props = PropertiesService.getUserProperties();
-  var raw = props.getProperty('REGISTERED_PORTAL_TOOLS');
-  var tools = raw ? JSON.parse(raw) : [];
-  var toolName = ('portal_' + params.domain + '_' + params.feature).toLowerCase().replace(/[^a-z0-9_]/g, '_');
-  tools.push({ name: toolName, domain: params.domain, feature: params.feature, endpoint_spec: params.endpoint_spec, auth_spec: params.auth_spec });
-  props.setProperty('REGISTERED_PORTAL_TOOLS', JSON.stringify(tools));
-  return { registered: true, toolName: toolName };
-}
-
-function handlePreflightProxy(params) {
-  var spec = params.endpoint_spec;
-  var options = { method: spec.method || 'GET', headers: spec.headers || {}, muteHttpExceptions: true };
-  if (params.auth_spec && params.auth_spec.cookies) options.headers['Cookie'] = params.auth_spec.cookies;
-  var res = UrlFetchApp.fetch(spec.url, options);
-  return { success: true, data: res.getContentText() };
-}
-
-function jsonRpcSuccess(result, id) {
-  return ContentService.createTextOutput(JSON.stringify({ jsonrpc: '2.0', result: result, id: id })).setMimeType(ContentService.MimeType.JSON);
-}
-
-function jsonRpcError(code, message, id) {
-  return ContentService.createTextOutput(JSON.stringify({ jsonrpc: '2.0', error: { code: code, message: message }, id: id })).setMimeType(ContentService.MimeType.JSON);
-}`;
-
-  // Step 1: Inject Code into Monaco Editor
-  updateBanner(banner, '📝 Injecting server code into Apps Script editor...');
-  injectCodeToEditor(SERVER_CODE);
-
+  // Check if this is an automated authorization run
   await sleep(1500);
 
-  // Step 2: Trigger Deploy Menu
-  updateBanner(banner, '🚀 Opening Deployment configuration...');
-  clickDeployMenu();
+  // Look for Run button or testAuth function
+  triggerRunAndAuthorize(banner);
 
-  await sleep(1500);
-
-  // Step 3: Monitor for generated Web App URL in DOM
-  updateBanner(banner, '🔑 Please click "Authorize access" if Google prompts on screen...');
-  monitorAndExtractWebAppUrl(banner);
-
-  function injectCodeToEditor(code: string) {
-    if ((window as any).monaco && (window as any).monaco.editor) {
-      const models = (window as any).monaco.editor.getModels();
-      if (models && models.length > 0) {
-        models[0].setValue(code);
+  function triggerRunAndAuthorize(bannerEl: HTMLElement) {
+    let attempts = 0;
+    const interval = setInterval(() => {
+      attempts++;
+      
+      // Look for the "Review permissions" button in case Google modal is already up
+      const allButtons = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+      const reviewBtn = allButtons.find(b => b.textContent && b.textContent.trim().toLowerCase().includes('review permissions'));
+      if (reviewBtn) {
+        updateBanner(bannerEl, '🔐 Google Authorization Prompt Ready: Click "Review Permissions" below to grant access!');
+        (reviewBtn as HTMLElement).click();
+        clearInterval(interval);
         return;
       }
-    }
-    // Fallback: Copy to clipboard if Monaco model is sandboxed
-    try {
-      navigator.clipboard.writeText(code);
-    } catch (e) {}
-  }
 
-  function clickDeployMenu() {
-    const buttons = Array.from(document.querySelectorAll('button, div[role="button"]'));
-    const deployBtn = buttons.find(b => b.textContent && b.textContent.trim().toLowerCase().includes('deploy'));
-    if (deployBtn) {
-      (deployBtn as HTMLElement).click();
-    }
+      // Look for the "Run" button in Apps Script editor toolbar
+      const runBtn = allButtons.find(b => {
+        const text = (b.textContent || '').trim().toLowerCase();
+        const label = (b.getAttribute('aria-label') || '').toLowerCase();
+        const tooltip = (b.getAttribute('data-tooltip') || '').toLowerCase();
+        return (text === 'run' || label.includes('run') || tooltip.includes('run execution') || tooltip === 'run');
+      });
+
+      if (runBtn) {
+        updateBanner(bannerEl, '⚡ Triggering 1-time Google Authorization...');
+        (runBtn as HTMLElement).click();
+        clearInterval(interval);
+
+        // Monitor for permission dialog appearing
+        let modalWait = 0;
+        const modalInterval = setInterval(() => {
+          modalWait++;
+          const btnsNow = Array.from(document.querySelectorAll('button, div[role="button"], span'));
+          const permBtn = btnsNow.find(b => b.textContent && b.textContent.trim().toLowerCase().includes('review permissions'));
+          if (permBtn) {
+            updateBanner(bannerEl, '🔑 Click "Review permissions" -> select your student account -> click "Allow"!');
+            (permBtn as HTMLElement).click();
+            clearInterval(modalInterval);
+          }
+          if (modalWait > 15) {
+            clearInterval(modalInterval);
+          }
+        }, 800);
+      }
+
+      if (attempts > 30) {
+        clearInterval(interval);
+      }
+    }, 1000);
   }
 
   function monitorAndExtractWebAppUrl(bannerEl: HTMLElement) {
