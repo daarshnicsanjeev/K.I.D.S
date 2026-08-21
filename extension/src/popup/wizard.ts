@@ -168,19 +168,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function openGoogleAuthScreenDirectly(customUrl?: string) {
     try {
       const stateNow = await sendMessage({ type: 'GET_STATE' });
-      const authUserParam = await detectSchoolAccountParam();
-      
-      let targetUrl = customUrl || stateNow.mcp_gas_url;
-      if (targetUrl) {
-        if (authUserParam && !targetUrl.includes('authuser=')) {
-          targetUrl = targetUrl.includes('?') ? `${targetUrl}&${authUserParam.replace('?', '')}` : `${targetUrl}${authUserParam}`;
-        }
-      } else if (stateNow.mcp_gas_script_id) {
-        const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
-        targetUrl = `https://script.google.com${accountIndex}home/projects/${stateNow.mcp_gas_script_id}`;
+      let targetUrl = '';
+      if (stateNow.mcp_gas_script_id) {
+        targetUrl = `https://script.google.com/home/projects/${stateNow.mcp_gas_script_id}/edit`;
+      } else if (customUrl || stateNow.mcp_gas_url) {
+        targetUrl = getCleanCanonicalUrl(customUrl || stateNow.mcp_gas_url);
       } else {
-        const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
-        targetUrl = `https://script.google.com${accountIndex}home/projects`;
+        targetUrl = 'https://script.google.com/home/projects';
       }
 
       await chrome.tabs.create({ url: targetUrl, active: true });
@@ -346,6 +340,72 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
+  // Account Guidance Modal Elements
+  const accountGuidanceModal = document.getElementById('accountGuidanceModal') as HTMLElement;
+  const guidanceModalIcon = document.getElementById('guidanceModalIcon') as HTMLElement;
+  const guidanceModalTitle = document.getElementById('guidanceModalTitle') as HTMLElement;
+  const guidanceModalMessage = document.getElementById('guidanceModalMessage') as HTMLElement;
+  const btnCancelGuidanceModal = document.getElementById('btnCancelGuidanceModal') as HTMLButtonElement;
+  const btnProceedGuidanceModal = document.getElementById('btnProceedGuidanceModal') as HTMLButtonElement;
+
+  function showAccountGuidance(config: {
+    icon: string;
+    title: string;
+    targetAccountType: 'parent' | 'child';
+    childName?: string;
+    primaryAccountLabel: string;
+    prohibitedAccountLabel: string;
+    reason: string;
+  }): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!accountGuidanceModal) return resolve(true);
+
+      if (guidanceModalIcon) guidanceModalIcon.innerText = config.icon;
+      if (guidanceModalTitle) guidanceModalTitle.innerText = config.title;
+      
+      const themeColor = config.targetAccountType === 'parent' ? '#38bdf8' : '#34d399';
+      if (guidanceModalMessage) {
+        guidanceModalMessage.style.borderLeftColor = themeColor;
+        guidanceModalMessage.innerHTML = `
+          <div style="margin-bottom: 10px;">
+            <div style="font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: ${themeColor}; font-weight: 700;">Account to choose on Google screen:</div>
+            <div style="font-size: 0.94rem; font-weight: 800; color: #ffffff; margin-top: 4px; background: #1e293b; padding: 7px 10px; border-radius: 6px; border: 1px solid ${themeColor};">
+              👉 ${config.primaryAccountLabel}
+            </div>
+          </div>
+          <div style="margin-bottom: 10px; font-size: 0.78rem; color: #94a3b8; line-height: 1.45;">
+            ${config.reason}
+          </div>
+          <div style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 6px; padding: 6px 8px; font-size: 0.76rem; color: #fca5a5;">
+            🚫 <strong>DO NOT SELECT:</strong> ${config.prohibitedAccountLabel}
+          </div>
+        `;
+      }
+
+      accountGuidanceModal.classList.remove('hidden');
+
+      const onProceed = () => {
+        accountGuidanceModal.classList.add('hidden');
+        cleanup();
+        resolve(true);
+      };
+
+      const onCancel = () => {
+        accountGuidanceModal.classList.add('hidden');
+        cleanup();
+        resolve(false);
+      };
+
+      const cleanup = () => {
+        btnProceedGuidanceModal?.removeEventListener('click', onProceed);
+        btnCancelGuidanceModal?.removeEventListener('click', onCancel);
+      };
+
+      btnProceedGuidanceModal?.addEventListener('click', onProceed);
+      btnCancelGuidanceModal?.addEventListener('click', onCancel);
+    });
+  }
+
   // Step 1 Personal Google Account & Child Setup UI Elements
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
@@ -405,6 +465,16 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnStep1ConnectPersonal?.addEventListener('click', async () => {
     clearAlerts();
+    const proceed = await showAccountGuidance({
+      icon: '👨‍👩‍👧',
+      title: 'Step 1: Sign in with Parent Account',
+      targetAccountType: 'parent',
+      primaryAccountLabel: 'PARENT Personal Google Account (e.g. your Gmail)',
+      prohibitedAccountLabel: 'Your child\'s school or student account',
+      reason: 'This account will store your private Google Drive school archives, WhatsApp backups, OCR notes, and configs.'
+    });
+    if (!proceed) return;
+
     btnStep1ConnectPersonal.disabled = true;
     btnStep1ConnectPersonal.innerText = '⏳ Connecting Account...';
     try {
@@ -664,19 +734,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         return;
       }
       clearAlerts();
+      const activeChild = await ChildManager.getActiveProfile();
+      const childName = activeChild?.name || 'Your Child';
+
+      const proceed = await showAccountGuidance({
+        icon: '⚡',
+        title: `Update ${childName}'s MCP Server`,
+        targetAccountType: 'child',
+        childName: childName,
+        primaryAccountLabel: `${childName}'s SCHOOL Google Account`,
+        prohibitedAccountLabel: 'Your Parent Personal Google Account',
+        reason: `Updates the MCP Server backend code deployed inside ${childName}'s school Google account.`
+      });
+      if (!proceed) return;
+
       btnHeaderUpdateScript.disabled = true;
       btnHeaderUpdateScript.innerText = '⏳ Updating...';
       try {
         const res = await sendMessage({ type: 'AUTO_UPDATE_GAS_SCRIPT' });
+        const cleanUrl = res.webAppUrl ? getCleanCanonicalUrl(res.webAppUrl) : '';
+        if (res.needsAuth && cleanUrl) {
+          chrome.tabs.create({ url: cleanUrl, active: true });
+        }
         showSuccess(`🎉 MCP Server script updated to v${CURRENT_GAS_SCRIPT_VERSION}! (${res.verifiedTools ? res.verifiedTools.length : 'All'} tools active with Classroom, Drive OCR, WhatsApp, & School Portal).`);
         const newState = await sendMessage({ type: 'GET_STATE' });
         renderState(newState);
         if (newState.mcp_gas_url) {
-          const cleanUrl = getCleanCanonicalUrl(newState.mcp_gas_url);
-          if (gasUrlInput) gasUrlInput.value = cleanUrl;
-          if (mcpUrlDisplay) mcpUrlDisplay.value = cleanUrl;
+          const cleanUrlState = getCleanCanonicalUrl(newState.mcp_gas_url);
+          if (gasUrlInput) gasUrlInput.value = cleanUrlState;
+          if (mcpUrlDisplay) mcpUrlDisplay.value = cleanUrlState;
           const step3UrlEl = document.getElementById('step3McpUrlDisplay') as HTMLInputElement;
-          if (step3UrlEl) step3UrlEl.value = cleanUrl;
+          if (step3UrlEl) step3UrlEl.value = cleanUrlState;
         }
       } catch (err: any) {
         showError(`Script update failed: ${err.message}`);
@@ -728,30 +816,46 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnCreateMcpServer?.addEventListener('click', async () => {
     clearAlerts();
+    const activeChild = await ChildManager.getActiveProfile();
+    const childName = activeChild?.name || 'Your Child';
+
+    const proceed = await showAccountGuidance({
+      icon: '🎓',
+      title: `Step 2: Connect ${childName}'s School Account`,
+      targetAccountType: 'child',
+      childName: childName,
+      primaryAccountLabel: `${childName}'s SCHOOL / Google Classroom Account`,
+      prohibitedAccountLabel: 'Your Parent Personal Google Account',
+      reason: `This allows the AI to access ${childName}'s Google Classroom coursework, timetables, and teacher announcements.`
+    });
+    if (!proceed) return;
+
     btnCreateMcpServer.disabled = true;
-    btnCreateMcpServer.innerText = '⏳ Provisioning & Deploying Server in your Google Account...';
+    btnCreateMcpServer.innerText = '🔐 Opening Google Authorization...';
 
     try {
+      // Step 1: Open Google Authorization screen popup
+      const authRes = await sendMessage({ type: 'REQUEST_INTERACTIVE_OAUTH' });
+      if (!authRes || !authRes.token) {
+        throw new Error('Google Authorization was not completed. Please allow access to proceed.');
+      }
+
+      btnCreateMcpServer.innerText = '⏳ Provisioning & Deploying Server in your Google Account...';
       const res = await sendMessage({ type: 'AUTO_PROVISION_GAS_WORKSPACE' });
       if (res.isReused) {
-        showSuccess(`🎉 Found existing MCP Server project in your Google Account! Updated backend code to latest version without creating duplicates (${res.verifiedTools.length} active tools).`);
+        showSuccess(`🎉 Found existing MCP Server project in your Google Account! Updated backend code to latest version without creating duplicates (${res.verifiedTools ? res.verifiedTools.length : 6} active tools).`);
       } else {
-        showSuccess(`Server Created & Verified via Google API! Active with ${res.verifiedTools.length} tools.`);
+        showSuccess(`🎉 Personal MCP Server Created & Deployed! Active with ${res.verifiedTools ? res.verifiedTools.length : 6} tools (Classroom, Drive, Calendar, WhatsApp, Portal).`);
       }
       renderState(await sendMessage({ type: 'GET_STATE' }));
     } catch (err: any) {
-      if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization') || err.message.includes('permission tab') || err.message.includes('401') || err.message.includes('403'))) {
-        await openGoogleAuthScreenDirectly();
-        showSuccess('🚀 Direct Authorization: Opening Google Authorization tab directly in your browser. Please click "Review Permissions -> Allow", then return to verify!');
-      } else {
-        showError(`Server Setup Error: ${err.message}`, {
-          domain: 'gas-backend',
-          feature: 'auto-provisioning',
-          errorName: 'AutoProvisionException',
-          errorMessage: err.message,
-          stackTrace: err.stack
-        });
-      }
+      showError(`Server Setup Error: ${err.message}`, {
+        domain: 'gas-backend',
+        feature: 'auto-provisioning',
+        errorName: 'AutoProvisionException',
+        errorMessage: err.message,
+        stackTrace: err.stack
+      });
     } finally {
       btnCreateMcpServer.disabled = false;
       btnCreateMcpServer.innerText = '⚡ 3. Create My Personal MCP Server';

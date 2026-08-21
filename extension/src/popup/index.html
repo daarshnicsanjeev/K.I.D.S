@@ -19,6 +19,23 @@
       </div>
     </header>
 
+    <!-- Explicit Pre-Authentication Account Selection Guidance Modal -->
+    <div id="accountGuidanceModal" class="hidden" style="position: fixed; inset: 0; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(4px); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 14px;">
+      <div style="background: #1e293b; border: 2px solid #38bdf8; border-radius: 12px; padding: 18px; max-width: 360px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); text-align: center;">
+        <div id="guidanceModalIcon" style="font-size: 2.4rem; margin-bottom: 6px;">👨‍👩‍👧</div>
+        <h3 id="guidanceModalTitle" style="font-size: 1.02rem; font-weight: 700; color: #f8fafc; margin-bottom: 8px;">Account Selection</h3>
+        
+        <div id="guidanceModalMessage" style="background: #0f172a; padding: 12px; border-radius: 8px; font-size: 0.82rem; line-height: 1.45; color: #e2e8f0; margin-bottom: 14px; text-align: left; border-left: 4px solid #38bdf8;">
+          <!-- Dynamic message injected via wizard.ts -->
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <button id="btnCancelGuidanceModal" class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 0.82rem;">Cancel</button>
+          <button id="btnProceedGuidanceModal" class="btn btn-primary" style="flex: 2; padding: 8px; font-size: 0.85rem; font-weight: 700;">Continue to Google ➔</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Multi-Child Profile Switcher Bar -->
     <div class="child-switcher-bar" style="display: flex; align-items: center; justify-content: space-between; background: #1e293b; padding: 5px 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
       <div style="display: flex; align-items: center; gap: 6px; flex: 1;">

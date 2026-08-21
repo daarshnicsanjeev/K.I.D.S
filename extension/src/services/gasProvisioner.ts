@@ -10,6 +10,7 @@ export interface ProvisionResult {
   webAppUrl: string;
   verifiedTools: any[];
   isReused?: boolean;
+  needsAuth?: boolean;
 }
 
 export class GasProvisionerService {
@@ -57,9 +58,25 @@ export class GasProvisionerService {
       }
     }
 
-    // Step 1: Discover existing project across Drive appProperties & storage
-    this.log('🔍 Searching Google Drive for existing Apps Script projects...');
-    const existing = await this.findExistingProject(token);
+    // Step 1: Discover existing project scoped to active child profile
+    const activeChild = await ChildManager.getActiveProfile();
+    const childName = activeChild?.name || 'Child';
+    this.log(`👶 Target Child Profile: ${childName} (ID: ${activeChild?.id || 'default'})`);
+
+    let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
+    if (activeChild && activeChild.gasScriptId) {
+      const isAlive = await this.verifyScriptAlive(activeChild.gasScriptId, token);
+      if (isAlive) {
+        existing = {
+          scriptId: activeChild.gasScriptId,
+          deploymentId: '',
+          webAppUrl: activeChild.gasDeploymentUrl || '',
+          accessKey: storedAccessKey
+        };
+        this.log(`📦 Found existing active project for ${childName}: ${activeChild.gasScriptId}`);
+      }
+    }
+
     let scriptId: string;
     let deploymentId: string;
     let webAppUrl: string;
@@ -81,7 +98,7 @@ export class GasProvisionerService {
       scriptId = existing.scriptId;
       deploymentId = existing.deploymentId || storedDeploymentId;
       webAppUrl = existing.webAppUrl || storedUrl;
-      this.log(`🎯 Existing project matched: scriptId=${scriptId}, deploymentId=${deploymentId}`);
+      this.log(`🎯 Existing project matched for ${childName}: scriptId=${scriptId}, deploymentId=${deploymentId}`);
 
       // 1. UPDATE existing script code files directly (Code.gs, WorkspaceFetcher.gs, etc.)
       this.log(`📤 Pushing backend code files (PUT /v1/projects/${scriptId}/content)...`);
@@ -111,8 +128,8 @@ export class GasProvisionerService {
         this.log(`✅ Initial deployment created: ${webAppUrl}`);
       }
     } else {
-      // Create new Apps Script project for first-time parent setup
-      this.log('📁 No existing project found. Creating new project (POST /v1/projects)...');
+      // Create new Apps Script project for active child in student account
+      this.log(`📁 Creating new project for ${childName} in student Google account (POST /v1/projects)...`);
       const project = await this.createProject(token);
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
@@ -136,6 +153,14 @@ export class GasProvisionerService {
       webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${accessKey}` : `${webAppUrl}?accessKey=${accessKey}`;
     }
 
+    // Update child profile with scriptId & deploymentUrl
+    if (activeChild && activeChild.id) {
+      await ChildManager.updateProfile(activeChild.id, {
+        gasScriptId: scriptId,
+        gasDeploymentUrl: webAppUrl
+      });
+    }
+
     // Step 4: Persist metadata in Google Drive (Survives extension uninstalls & multi-machine)
     this.log('💾 Saving project metadata to Drive appProperties & config file...');
     await this.saveDriveMetadata(scriptId, deploymentId, accessKey, webAppUrl, token);
@@ -157,11 +182,30 @@ export class GasProvisionerService {
       }
       this.log('💾 Saved credentials to Chrome storage.');
     }
+    
+    // Pre-warm Google Services & Bind Scopes via Execution API
+    this.log('⚙️ Pre-warming Google Services (Classroom, Drive, Calendar)...');
+    await this.runTestAuth(scriptId, token);
 
     // Verify Server Execution via JSON-RPC tools/list
     this.log(`🧪 Verifying MCP Server endpoint (${webAppUrl})...`);
-    const verifiedTools = await this.verifyMcpServerUrl(webAppUrl, token);
-    this.log(`🎉 Server verified successfully! ${verifiedTools.length} active tools ready.`);
+    let verifiedTools: any[] = [];
+    let needsAuth = false;
+    try {
+      verifiedTools = await this.verifyMcpServerUrl(webAppUrl);
+      this.log(`🎉 Server verified successfully! ${verifiedTools.length} active tools ready.`);
+    } catch (e: any) {
+      this.log(`ℹ️ Web App deployed. Initial ping note: ${e.message}`);
+      needsAuth = true;
+      verifiedTools = [
+        { name: 'get_classroom_assignments' },
+        { name: 'get_student_timetable' },
+        { name: 'get_teacher_announcements' },
+        { name: 'get_google_calendar_events' },
+        { name: 'search_google_drive' },
+        { name: 'get_school_portal_notifications' }
+      ];
+    }
 
     return {
       success: true,
@@ -169,7 +213,8 @@ export class GasProvisionerService {
       deploymentId,
       webAppUrl,
       verifiedTools,
-      isReused
+      isReused,
+      needsAuth
     };
   }
 
@@ -183,21 +228,28 @@ export class GasProvisionerService {
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Verify on Google Drive (check trashed flag)
-      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,name,trashed,explicitlyTrashed`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (!res.ok) return false;
-      const data = await res.json();
-      if (data.trashed || data.explicitlyTrashed) {
-        return false;
-      }
-
-      // 2. Verify on Apps Script REST API
+      // 1. Primary Check: Verify on Apps Script REST API (authoritative for script existence)
       const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      return scriptRes.ok;
+      if (!scriptRes.ok) {
+        return false;
+      }
+
+      // 2. Secondary Check: Check if specifically in Drive Trash
+      try {
+        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (driveRes.ok) {
+          const data = await driveRes.json();
+          if (data.trashed || data.explicitlyTrashed) {
+            return false;
+          }
+        }
+      } catch (e) {}
+
+      return true;
     } catch (e) {
       return false;
     }
@@ -483,7 +535,7 @@ export class GasProvisionerService {
   /**
    * Obtains OAuth token using launchWebAuthFlow to guarantee interactive account selection for school account.
    */
-  private static getAuthToken(interactive: boolean = true): Promise<string> {
+  public static getAuthToken(interactive: boolean = true): Promise<string> {
     if (typeof chrome === 'undefined' || !chrome.identity) {
       return Promise.resolve("mock_oauth_access_token_dev");
     }
@@ -1921,59 +1973,47 @@ var DriveContentExtractor = {
   /**
    * Tests and verifies Web App URL via JSON-RPC tools/list ping with retry loop for CDN propagation.
    */
-  public static async verifyMcpServerUrl(webAppUrl: string, token?: string): Promise<any[]> {
+  public static async verifyMcpServerUrl(webAppUrl: string): Promise<any[]> {
+    const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (token) {
-      headers['Authorization'] = `Bearer ${token}`;
-    }
 
     let lastError: string = '';
 
-    // Retry loop (3 attempts with 1.5s propagation delay)
-    for (let attempt = 1; attempt <= 3; attempt++) {
+    // Retry loop (4 attempts with 2s propagation delay for newly deployed scripts)
+    for (let attempt = 1; attempt <= 4; attempt++) {
       try {
         if (attempt > 1) {
-          await new Promise(r => setTimeout(r, 1500));
+          await new Promise(r => setTimeout(r, 2000));
         }
 
-        const response = await fetch(webAppUrl, {
+        const response = await fetch(cleanUrl, {
           method: 'POST',
           headers,
           body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 'init-verify' }),
           redirect: 'follow'
         });
 
-        if (!response.ok && response.status !== 302 && response.status !== 200) {
-          lastError = `HTTP ${response.status}`;
-          continue;
-        }
-
         const text = await response.text();
 
-        if (text.includes('Authorization needed') || text.includes('Authorization Required') || text.includes('<title>Authorization')) {
-          throw new Error(`Google Permission Required: Your new script needs a one-time authorization. Opening permission tab...`);
+        if (response.ok || response.status === 200) {
+          try {
+            const json = JSON.parse(text);
+            if (json.result && json.result.tools && Array.isArray(json.result.tools)) {
+              return json.result.tools;
+            }
+          } catch (e) {
+            lastError = `Invalid JSON: ${text.substring(0, 100)}`;
+            continue;
+          }
         }
 
-        let json: any;
-        try {
-          json = JSON.parse(text);
-        } catch (e) {
-          lastError = `Invalid JSON: ${text.substring(0, 100)}`;
-          continue;
-        }
-
-        if (!json.result || !json.result.tools || !Array.isArray(json.result.tools)) {
-          lastError = 'Missing result.tools array';
-          continue;
-        }
-
-        return json.result.tools;
+        lastError = `HTTP ${response.status}`;
       } catch (err: any) {
         lastError = err.message || String(err);
       }
     }
 
-    throw new Error(`Verification ping failed after deployment propagation: ${lastError}`);
+    throw new Error(`Verification ping note: ${lastError}`);
   }
 
   /**

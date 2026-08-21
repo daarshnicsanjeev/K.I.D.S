@@ -86,6 +86,11 @@ async function handleMessage(message: { type: string; payload?: any }) {
       return await GasProvisionerService.checkAccountAndApiStatus();
     }
 
+    case 'REQUEST_INTERACTIVE_OAUTH': {
+      const token = await GasProvisionerService.getAuthToken(true);
+      return { token };
+    }
+
     case 'AUTO_PROVISION_GAS_WORKSPACE': {
       const result = await GasProvisionerService.provision();
       await chrome.storage.local.set({
