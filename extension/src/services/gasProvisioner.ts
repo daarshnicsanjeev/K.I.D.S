@@ -1,3 +1,5 @@
+import { ChildManager } from './childManager';
+
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
  */
@@ -519,6 +521,14 @@ export class GasProvisionerService {
    * Creates a new Google Apps Script project via REST API.
    */
   private static async createProject(token: string): Promise<any> {
+    let projectTitle = 'Personal School MCP Sync Engine';
+    try {
+      const active = await ChildManager.getActiveProfile();
+      if (active && active.name) {
+        projectTitle = `School Portal MCP Server - ${active.name}`;
+      }
+    } catch (e) {}
+
     const response = await fetch('https://script.googleapis.com/v1/projects', {
       method: 'POST',
       headers: {
@@ -526,7 +536,7 @@ export class GasProvisionerService {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        title: 'Personal School MCP Sync Engine'
+        title: projectTitle
       })
     });
 

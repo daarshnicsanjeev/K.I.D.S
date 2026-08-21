@@ -1,8 +1,4 @@
-/**
- * PersonalDriveService
- * Directly manages WhatsApp archiving and attachment storage on the PARENT'S PERSONAL Google Drive,
- * ensuring complete privacy isolation from school-administered student accounts.
- */
+import { ChildManager } from './childManager';
 
 export interface PersonalDriveFolderInfo {
   isCreated: boolean;
@@ -10,6 +6,8 @@ export interface PersonalDriveFolderInfo {
   folderId?: string;
   folderName: string;
   folderUrl?: string;
+  childFolderId?: string;
+  childFolderName?: string;
 }
 
 export class PersonalDriveService {
@@ -71,6 +69,12 @@ export class PersonalDriveService {
             personal_drive_connected: true
           });
 
+          // Also update active child profile with account email
+          const active = await ChildManager.getActiveProfile();
+          if (active) {
+            await ChildManager.updateProfile(active.id, { accountEmail: email });
+          }
+
           resolve({ token, email });
         } catch (e: any) {
           reject(new Error(`Failed to retrieve profile: ${e.message}`));
@@ -101,47 +105,46 @@ export class PersonalDriveService {
       'https://www.googleapis.com/auth/drive.file'
     ].join(' ');
 
-    const email = state.personal_drive_account_email || '';
-    let authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
       `client_id=${encodeURIComponent(clientId)}` +
       `&response_type=token` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&scope=${encodeURIComponent(scopes)}`;
 
-    if (email) {
-      authUrl += `&login_hint=${encodeURIComponent(email)}`;
-    }
-
     return new Promise((resolve, reject) => {
-      // 1. Try silent background refresh
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: false }, async (responseUrl) => {
-        if (!chrome.runtime.lastError && responseUrl) {
+        if (chrome.runtime.lastError || !responseUrl) {
+          // If non-interactive refresh fails, prompt interactively
+          chrome.identity.launchWebAuthFlow({ url: `${authUrl}&prompt=select_account`, interactive: true }, async (interactiveUrl) => {
+            if (chrome.runtime.lastError || !interactiveUrl) {
+              return reject(new Error('Google Drive authorization required. Please reconnect your account.'));
+            }
+            try {
+              const urlParams = new URLSearchParams(new URL(interactiveUrl).hash.substring(1));
+              const token = urlParams.get('access_token');
+              if (token) {
+                await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
+                return resolve(token);
+              }
+              reject(new Error('No access token returned by Google Sign-In.'));
+            } catch (e: any) {
+              reject(new Error(`Failed to parse auth token: ${e.message}`));
+            }
+          });
+          return;
+        }
+
+        try {
           const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
           const token = urlParams.get('access_token');
           if (token) {
             await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
             return resolve(token);
           }
-        }
-
-        // 2. Fallback to existing token if available
-        if (state.personal_drive_auth_token && !forceRefresh) {
-          return resolve(state.personal_drive_auth_token);
-        }
-
-        // 3. Fallback to interactive sign-in
-        chrome.identity.launchWebAuthFlow({ url: authUrl + '&prompt=select_account', interactive: true }, async (interactiveUrl) => {
-          if (chrome.runtime.lastError || !interactiveUrl) {
-            return reject(new Error(chrome.runtime.lastError?.message || 'Authentication failed.'));
-          }
-          const urlParams = new URLSearchParams(new URL(interactiveUrl).hash.substring(1));
-          const token = urlParams.get('access_token');
-          if (token) {
-            await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
-            return resolve(token);
-          }
           reject(new Error('No access token returned by Google Sign-In.'));
-        });
+        } catch (e: any) {
+          reject(new Error(`Failed to parse auth token: ${e.message}`));
+        }
       });
     });
   }
@@ -172,71 +175,115 @@ export class PersonalDriveService {
   }
 
   /**
-   * Retrieves existing Personal Drive folder info (without creating it if not present).
+   * Resolves child name for scoped folder and artifact naming.
    */
-  public static async getPersonalFolderInfo(token?: string): Promise<PersonalDriveFolderInfo> {
+  private static async resolveChildName(childName?: string): Promise<string> {
+    if (childName && childName.trim()) {
+      return ChildManager.sanitizeName(childName);
+    }
+    try {
+      const active = await ChildManager.getActiveProfile();
+      return ChildManager.sanitizeName(active.name) || 'Child_1';
+    } catch (e) {
+      return 'Child_1';
+    }
+  }
+
+  /**
+   * Retrieves existing Personal Drive folder info for the given child.
+   */
+  public static async getPersonalFolderInfo(token?: string, childName?: string): Promise<PersonalDriveFolderInfo> {
     const state = await chrome.storage.local.get(['personal_drive_account_email', 'personal_drive_folder_id']);
     const email = state.personal_drive_account_email || '';
+    const resolvedChild = await this.resolveChildName(childName);
 
-    if (state.personal_drive_folder_id) {
+    let rootFolderId = state.personal_drive_folder_id;
+    let rootFolderUrl = '';
+
+    if (rootFolderId) {
       try {
         const res = await this.fetchWithAuth(
-          `https://www.googleapis.com/drive/v3/files/${state.personal_drive_folder_id}?fields=id,name,webViewLink,trashed`,
+          `https://www.googleapis.com/drive/v3/files/${rootFolderId}?fields=id,name,webViewLink,trashed`,
           {},
           token
         );
         if (res.ok) {
           const data = await res.json();
           if (!data.trashed) {
-            return {
-              isCreated: true,
-              accountEmail: email,
-              folderId: data.id,
-              folderName: data.name,
-              folderUrl: data.webViewLink
-            };
+            rootFolderUrl = data.webViewLink;
+          } else {
+            rootFolderId = undefined;
+          }
+        }
+      } catch (e) {
+        rootFolderId = undefined;
+      }
+    }
+
+    // Check root folder by name if not found
+    if (!rootFolderId) {
+      try {
+        const q = encodeURIComponent(`name = '${this.FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+        const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, token);
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          if (searchData.files && searchData.files.length > 0) {
+            rootFolderId = searchData.files[0].id;
+            rootFolderUrl = searchData.files[0].webViewLink;
+            await chrome.storage.local.set({ personal_drive_folder_id: rootFolderId });
           }
         }
       } catch (e) {}
     }
 
-    // Check by name
+    if (!rootFolderId) {
+      return {
+        isCreated: false,
+        accountEmail: email,
+        folderName: this.FOLDER_NAME
+      };
+    }
+
+    // Search for child subfolder inside root folder
     try {
-      const q = encodeURIComponent(`name = '${this.FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, token);
-      if (searchRes.ok) {
-        const searchData = await searchRes.json();
-        if (searchData.files && searchData.files.length > 0) {
-          const folder = searchData.files[0];
-          await chrome.storage.local.set({ personal_drive_folder_id: folder.id });
+      const childQ = encodeURIComponent(`name = '${resolvedChild}' and '${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const childSearchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${childQ}&fields=files(id,name,webViewLink)`, {}, token);
+      if (childSearchRes.ok) {
+        const childData = await childSearchRes.json();
+        if (childData.files && childData.files.length > 0) {
           return {
             isCreated: true,
             accountEmail: email,
-            folderId: folder.id,
-            folderName: folder.name,
-            folderUrl: folder.webViewLink
+            folderId: rootFolderId,
+            folderName: this.FOLDER_NAME,
+            folderUrl: rootFolderUrl,
+            childFolderId: childData.files[0].id,
+            childFolderName: childData.files[0].name
           };
         }
       }
     } catch (e) {}
 
     return {
-      isCreated: false,
+      isCreated: true,
       accountEmail: email,
-      folderName: this.FOLDER_NAME
+      folderId: rootFolderId,
+      folderName: this.FOLDER_NAME,
+      folderUrl: rootFolderUrl
     };
   }
 
   /**
-   * Gets or creates the folder on the Personal Google Drive lazily.
+   * Gets or creates the root folder on Personal Google Drive.
    */
-  public static async getOrCreatePersonalFolder(token?: string): Promise<{ id: string; webViewLink?: string }> {
-    const existing = await this.getPersonalFolderInfo(token);
+  public static async getOrCreateRootFolder(token?: string): Promise<{ id: string; webViewLink?: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const existing = await this.getPersonalFolderInfo(validToken);
     if (existing.isCreated && existing.folderId) {
       return { id: existing.folderId, webViewLink: existing.folderUrl };
     }
 
-    // Create new folder on Personal Drive
+    // Create root folder on Personal Drive
     const res = await this.fetchWithAuth(
       'https://www.googleapis.com/drive/v3/files',
       {
@@ -248,11 +295,11 @@ export class PersonalDriveService {
           description: 'Personal Google Drive School Intelligence Archive (Private Parent Storage)'
         })
       },
-      token
+      validToken
     );
 
     if (!res.ok) {
-      throw new Error(`Failed to create personal Drive folder: HTTP ${res.status}`);
+      throw new Error(`Failed to create personal Drive root folder: HTTP ${res.status}`);
     }
 
     const created = await res.json();
@@ -261,26 +308,80 @@ export class PersonalDriveService {
   }
 
   /**
-   * Saves messages to whatsapp_school_archive.json on the Personal Drive folder.
+   * Gets or creates the dedicated child subfolder inside School Portal MCP Intelligence.
    */
-  public static async saveMessagesToPersonalDrive(token?: string, newMessages: any[] = []): Promise<{ saved: number; total: number }> {
+  public static async getOrCreatePersonalFolder(token?: string, childName?: string): Promise<{ id: string; webViewLink?: string; rootId: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const rootFolder = await this.getOrCreateRootFolder(validToken);
+    const resolvedChild = await this.resolveChildName(childName);
+
+    // Search for existing child subfolder
+    const childQ = encodeURIComponent(`name = '${resolvedChild}' and '${rootFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const childSearchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${childQ}&fields=files(id,name,webViewLink)`, {}, validToken);
+
+    if (childSearchRes.ok) {
+      const childData = await childSearchRes.json();
+      if (childData.files && childData.files.length > 0) {
+        return {
+          id: childData.files[0].id,
+          webViewLink: childData.files[0].webViewLink,
+          rootId: rootFolder.id
+        };
+      }
+    }
+
+    // Create child subfolder
+    const res = await this.fetchWithAuth(
+      'https://www.googleapis.com/drive/v3/files',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: resolvedChild,
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [rootFolder.id],
+          description: `School Intelligence Archive for ${resolvedChild}`
+        })
+      },
+      validToken
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to create child folder "${resolvedChild}": HTTP ${res.status}`);
+    }
+
+    const created = await res.json();
+    return { id: created.id, webViewLink: created.webViewLink, rootId: rootFolder.id };
+  }
+
+  /**
+   * Saves messages to [ChildName]_whatsapp_school_archive.json in the child's folder.
+   */
+  public static async saveMessagesToPersonalDrive(
+    token?: string,
+    newMessages: any[] = [],
+    childName?: string
+  ): Promise<{ saved: number; total: number }> {
     if (!newMessages || newMessages.length === 0) return { saved: 0, total: 0 };
 
-    const folder = await this.getOrCreatePersonalFolder(token);
+    const validToken = token || await this.getValidToken(false);
+    const resolvedChild = await this.resolveChildName(childName);
+    const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+    const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
-    // 1. Search for existing archive file inside the folder
+    // 1. Search for existing archive file inside child's folder
     let fileId: string | null = null;
     let existingMessages: any[] = [];
 
-    const q = encodeURIComponent(`name = '${this.ARCHIVE_FILE_NAME}' and '${folder.id}' in parents and trashed = false`);
-    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
+    const q = encodeURIComponent(`name = '${archiveFileName}' and '${folder.id}' in parents and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
 
     if (searchRes.ok) {
       const searchData = await searchRes.json();
       if (searchData.files && searchData.files.length > 0) {
         fileId = searchData.files[0].id;
         try {
-          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, token);
+          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
           if (downloadRes.ok) {
             existingMessages = await downloadRes.json();
           }
@@ -298,6 +399,9 @@ export class PersonalDriveService {
     let updatedCount = 0;
     newMessages.forEach((m: any) => {
       const key = `${m.chatName}_${m.timestamp}_${m.body}`;
+      // Tag message with childName
+      m.childName = resolvedChild;
+
       if (!seen.has(key)) {
         seen.set(key, m);
         existingMessages.unshift(m);
@@ -327,7 +431,7 @@ export class PersonalDriveService {
           headers: { 'Content-Type': 'application/json' },
           body: payload
         },
-        token
+        validToken
       );
     } else {
       const boundary = '-------314159265358979323846';
@@ -335,7 +439,7 @@ export class PersonalDriveService {
       const closeDelimiter = `\r\n--${boundary}--`;
 
       const metadata = {
-        name: this.ARCHIVE_FILE_NAME,
+        name: archiveFileName,
         mimeType: 'application/json',
         parents: [folder.id]
       };
@@ -356,7 +460,7 @@ export class PersonalDriveService {
           headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
           body: multipartBody
         },
-        token
+        validToken
       );
     }
 
@@ -366,15 +470,22 @@ export class PersonalDriveService {
   private static TRACKED_CHATS_FILE_NAME = 'tracked_whatsapp_chats.json';
 
   /**
-   * Saves tracked WhatsApp groups metadata to Personal Drive (School Portal MCP Intelligence).
+   * Saves tracked WhatsApp groups metadata to child's Personal Drive folder.
    */
-  public static async saveTrackedChatsToPersonalDrive(token?: string, trackedChats: any[] = []): Promise<void> {
+  public static async saveTrackedChatsToPersonalDrive(
+    token?: string,
+    trackedChats: any[] = [],
+    childName?: string
+  ): Promise<void> {
     try {
-      const folder = await this.getOrCreatePersonalFolder(token);
+      const validToken = token || await this.getValidToken(false);
+      const resolvedChild = await this.resolveChildName(childName);
+      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+      const trackedFileName = `${resolvedChild}_${this.TRACKED_CHATS_FILE_NAME}`;
 
       // Search for existing tracked chats file in folder
-      const q = encodeURIComponent(`name = '${this.TRACKED_CHATS_FILE_NAME}' and '${folder.id}' in parents and trashed = false`);
-      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
+      const q = encodeURIComponent(`name = '${trackedFileName}' and '${folder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
 
       const payload = JSON.stringify(trackedChats, null, 2);
 
@@ -389,7 +500,7 @@ export class PersonalDriveService {
               headers: { 'Content-Type': 'application/json' },
               body: payload
             },
-            token
+            validToken
           );
           return;
         }
@@ -400,7 +511,7 @@ export class PersonalDriveService {
       const delimiter = `\r\n--${boundary}\r\n`;
       const closeDelimiter = `\r\n--${boundary}--`;
       const metadata = {
-        name: this.TRACKED_CHATS_FILE_NAME,
+        name: trackedFileName,
         mimeType: 'application/json',
         parents: [folder.id]
       };
@@ -420,27 +531,26 @@ export class PersonalDriveService {
           headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
           body: multipartBody
         },
-        token
+        validToken
       );
     } catch (e) {
       console.warn('[PersonalDriveService] Could not backup tracked chats to Drive:', e);
     }
   }
 
-  /**
-   * Loads tracked WhatsApp groups from Personal Drive if available.
-   */
   private static ATTACHMENTS_FOLDER_NAME = 'Attachments';
 
   /**
-   * Gets or creates the Attachments subfolder inside the School Portal MCP Intelligence folder.
+   * Gets or creates the Attachments subfolder inside the Child's folder.
    */
-  public static async getOrCreateAttachmentsFolder(token?: string): Promise<{ id: string; webViewLink?: string }> {
-    const parentFolder = await this.getOrCreatePersonalFolder(token);
+  public static async getOrCreateAttachmentsFolder(token?: string, childName?: string): Promise<{ id: string; webViewLink?: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const resolvedChild = await this.resolveChildName(childName);
+    const parentFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
 
     // Search for existing Attachments folder
     const q = encodeURIComponent(`name = '${this.ATTACHMENTS_FOLDER_NAME}' and '${parentFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, token);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, validToken);
 
     if (searchRes.ok) {
       const searchData = await searchRes.json();
@@ -459,14 +569,14 @@ export class PersonalDriveService {
           name: this.ATTACHMENTS_FOLDER_NAME,
           mimeType: 'application/vnd.google-apps.folder',
           parents: [parentFolder.id],
-          description: 'School Notices, Homework PDFs & Image Attachments'
+          description: `School Notices, Homework PDFs & Image Attachments for ${resolvedChild}`
         })
       },
-      token
+      validToken
     );
 
     if (!res.ok) {
-      throw new Error(`Failed to create Attachments folder: HTTP ${res.status}`);
+      throw new Error(`Failed to create Attachments folder for ${resolvedChild}: HTTP ${res.status}`);
     }
 
     const created = await res.json();
@@ -474,17 +584,19 @@ export class PersonalDriveService {
   }
 
   /**
-   * Directly uploads a PDF, image, or document attachment to the Attachments folder on Personal Drive.
+   * Directly uploads a PDF, image, or document attachment to the child's Attachments folder with name prefix.
    */
   public static async uploadAttachmentFile(
     token: string | undefined,
-    fileData: { name: string; mimeType: string; base64Content: string }
+    fileData: { name: string; mimeType: string; base64Content: string },
+    childName?: string
   ): Promise<{ fileId: string; webViewLink: string; name: string } | null> {
     try {
       if (!fileData || !fileData.base64Content) return null;
 
       const validToken = token || await this.getValidToken(false);
-      const folder = await this.getOrCreateAttachmentsFolder(validToken);
+      const resolvedChild = await this.resolveChildName(childName);
+      const folder = await this.getOrCreateAttachmentsFolder(validToken, resolvedChild);
       // Convert base64 to binary ArrayBuffer
       const byteCharacters = atob(fileData.base64Content);
       const byteNumbers = new Array(byteCharacters.length);
@@ -493,7 +605,9 @@ export class PersonalDriveService {
       }
       const byteArray = new Uint8Array(byteNumbers);
 
-      let finalName = (fileData.name || `attachment_${Date.now()}`).replace(/[\\/:*?"<>|]/g, '_');
+      // Prefix artifact with child's name if not already prefixed
+      const rawName = (fileData.name || `attachment_${Date.now()}`).replace(/[\\/:*?"<>|]/g, '_');
+      let finalName = rawName.startsWith(`${resolvedChild}_`) ? rawName : `${resolvedChild}_${rawName}`;
 
       // Check if file with same name already exists in Attachments folder (Smart Deduplication & Versioning)
       const q = encodeURIComponent(`name = '${finalName}' and '${folder.id}' in parents and trashed = false`);
@@ -512,7 +626,7 @@ export class PersonalDriveService {
             };
           }
 
-          // If content was modified (different size), auto-version it: "FileName (v2).pdf"
+          // If content was modified (different size), auto-version it: "[ChildName]_[FileName] (v2).pdf"
           const lastDot = finalName.lastIndexOf('.');
           const baseName = lastDot > 0 ? finalName.substring(0, lastDot) : finalName;
           const ext = lastDot > 0 ? finalName.substring(lastDot) : '';
@@ -581,21 +695,23 @@ export class PersonalDriveService {
   }
 
   /**
-   * Loads tracked WhatsApp groups from Personal Drive if available.
+   * Loads tracked WhatsApp groups from child's Personal Drive folder.
    */
-  public static async loadTrackedChatsFromPersonalDrive(token?: string): Promise<any[] | null> {
+  public static async loadTrackedChatsFromPersonalDrive(token?: string, childName?: string): Promise<any[] | null> {
     try {
-      const folder = await this.getPersonalFolderInfo(token);
-      if (!folder.isCreated || !folder.folderId) return null;
+      const validToken = token || await this.getValidToken(false);
+      const resolvedChild = await this.resolveChildName(childName);
+      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+      const trackedFileName = `${resolvedChild}_${this.TRACKED_CHATS_FILE_NAME}`;
 
-      const q = encodeURIComponent(`name = '${this.TRACKED_CHATS_FILE_NAME}' and '${folder.folderId}' in parents and trashed = false`);
-      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
+      const q = encodeURIComponent(`name = '${trackedFileName}' and '${folder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
 
       if (searchRes.ok) {
         const data = await searchRes.json();
         if (data.files && data.files.length > 0) {
           const fileId = data.files[0].id;
-          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, token);
+          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
           if (downloadRes.ok) {
             return await downloadRes.json();
           }

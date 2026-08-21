@@ -19,6 +19,30 @@
       </div>
     </header>
 
+    <!-- Multi-Child Profile Switcher Bar -->
+    <div class="child-switcher-bar" style="display: flex; align-items: center; justify-content: space-between; background: #1e293b; padding: 5px 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
+      <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
+        <span style="font-size: 0.88rem;">👶</span>
+        <select id="selChildProfile" style="background: #0f172a; color: #f8fafc; border: 1px solid #334155; border-radius: 6px; padding: 2px 6px; font-size: 0.8rem; font-weight: 600; cursor: pointer; flex: 1; max-width: 170px;">
+          <!-- Options populated dynamically: e.g. <option value="id">Daarshnic</option> -->
+        </select>
+      </div>
+      <div style="display: flex; gap: 4px; align-items: center;">
+        <button id="btnAddChild" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.7rem;" title="Add Another Child Profile">➕ Add</button>
+        <button id="btnRenameChild" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.7rem;" title="Rename Active Child">✏️</button>
+        <button id="btnDeleteChild" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.7rem; color: #f87171;" title="Delete Active Child Profile">🗑️</button>
+      </div>
+    </div>
+
+    <!-- Add/Rename Child Inline Editor Bar -->
+    <div id="childModalBar" class="hidden" style="background: #0f172a; padding: 6px 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #38bdf8;">
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <input type="text" id="txtChildNameInput" placeholder="Child First Name (e.g. Daarshnic)" style="flex: 1; background: #1e293b; color: #f8fafc; border: 1px solid #38bdf8; border-radius: 4px; padding: 3px 6px; font-size: 0.78rem;" />
+        <button id="btnSaveChildName" class="btn btn-primary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">Save</button>
+        <button id="btnCancelChildName" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.72rem;">Cancel</button>
+      </div>
+    </div>
+
     <div class="stepper" style="cursor: pointer;" title="Click any step to navigate">
       <div class="step-dot active" id="dot1" title="Step 1: Personal Account (Parent Storage)">1</div>
       <div class="step-line" id="line1"></div>

@@ -1,3 +1,5 @@
+import { ChildManager } from '../services/childManager';
+
 document.addEventListener('DOMContentLoaded', async () => {
   const stepBadge = document.getElementById('stepBadge') as HTMLElement;
   const cardStep1 = document.getElementById('step1Card') as HTMLElement;
@@ -5,6 +7,122 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cardStep3 = document.getElementById('step3Card') as HTMLElement;
   const cardStep4 = document.getElementById('step4Card') as HTMLElement;
   const cardStep5 = document.getElementById('step5Card') as HTMLElement;
+
+  // Multi-Child UI Elements
+  const selChildProfile = document.getElementById('selChildProfile') as HTMLSelectElement;
+  const btnAddChild = document.getElementById('btnAddChild') as HTMLButtonElement;
+  const btnRenameChild = document.getElementById('btnRenameChild') as HTMLButtonElement;
+  const btnDeleteChild = document.getElementById('btnDeleteChild') as HTMLButtonElement;
+  const childModalBar = document.getElementById('childModalBar') as HTMLElement;
+  const txtChildNameInput = document.getElementById('txtChildNameInput') as HTMLInputElement;
+  const btnSaveChildName = document.getElementById('btnSaveChildName') as HTMLButtonElement;
+  const btnCancelChildName = document.getElementById('btnCancelChildName') as HTMLButtonElement;
+
+  let activeChildAction: 'add' | 'rename' | null = null;
+
+  async function renderChildProfiles() {
+    try {
+      const profiles = await ChildManager.getProfiles();
+      const active = await ChildManager.getActiveProfile();
+
+      if (selChildProfile) {
+        selChildProfile.innerHTML = '';
+        profiles.forEach(p => {
+          const opt = document.createElement('option');
+          opt.value = p.id;
+          opt.textContent = `👶 ${p.name}`;
+          if (p.id === active.id) {
+            opt.selected = true;
+          }
+          selChildProfile.appendChild(opt);
+        });
+      }
+    } catch (e) {}
+  }
+
+  selChildProfile?.addEventListener('change', async () => {
+    const selectedId = selChildProfile.value;
+    const active = await ChildManager.setActiveProfileId(selectedId);
+    if (active) {
+      showSuccess(`Switched active profile to "${active.name}".`);
+      await refreshBridgeStatus();
+      const stateNow = await sendMessage({ type: 'GET_STATE' });
+      renderState(stateNow);
+    }
+  });
+
+  btnAddChild?.addEventListener('click', () => {
+    activeChildAction = 'add';
+    if (txtChildNameInput) {
+      txtChildNameInput.value = '';
+      txtChildNameInput.placeholder = 'Child First Name (e.g. Daarshnic)';
+    }
+    childModalBar?.classList.remove('hidden');
+    txtChildNameInput?.focus();
+  });
+
+  btnRenameChild?.addEventListener('click', async () => {
+    activeChildAction = 'rename';
+    const active = await ChildManager.getActiveProfile();
+    if (txtChildNameInput) {
+      txtChildNameInput.value = active.name;
+    }
+    childModalBar?.classList.remove('hidden');
+    txtChildNameInput?.focus();
+  });
+
+  btnDeleteChild?.addEventListener('click', async () => {
+    const active = await ChildManager.getActiveProfile();
+    if (confirm(`Are you sure you want to remove the profile for "${active.name}"?`)) {
+      try {
+        const res = await ChildManager.deleteProfile(active.id);
+        await renderChildProfiles();
+        await refreshBridgeStatus();
+        const stateNow = await sendMessage({ type: 'GET_STATE' });
+        renderState(stateNow);
+        showSuccess(`Removed profile. Switched to ${res.activeProfile.name}.`);
+      } catch (e: any) {
+        showError(e.message);
+      }
+    }
+  });
+
+  btnCancelChildName?.addEventListener('click', () => {
+    childModalBar?.classList.add('hidden');
+    activeChildAction = null;
+  });
+
+  btnSaveChildName?.addEventListener('click', async () => {
+    const rawName = txtChildNameInput?.value || '';
+    const cleanName = ChildManager.sanitizeName(rawName);
+    if (!cleanName) {
+      showError('Please enter a valid first name.');
+      return;
+    }
+
+    if (activeChildAction === 'add') {
+      const created = await ChildManager.createProfile(cleanName);
+      childModalBar?.classList.add('hidden');
+      activeChildAction = null;
+      await renderChildProfiles();
+      await refreshBridgeStatus();
+      const stateNow = await sendMessage({ type: 'GET_STATE' });
+      renderState(stateNow);
+      showSuccess(`Created and switched to profile: "${created.name}"`);
+    } else if (activeChildAction === 'rename') {
+      const active = await ChildManager.getActiveProfile();
+      await ChildManager.updateProfile(active.id, { name: cleanName });
+      childModalBar?.classList.add('hidden');
+      activeChildAction = null;
+      await renderChildProfiles();
+      await refreshBridgeStatus();
+      const stateNow = await sendMessage({ type: 'GET_STATE' });
+      renderState(stateNow);
+      showSuccess(`Renamed profile to: "${cleanName}"`);
+    }
+  });
+
+  await renderChildProfiles();
 
   const btnOpenClassroom = document.getElementById('btnOpenClassroom') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;

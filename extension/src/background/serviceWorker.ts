@@ -5,6 +5,7 @@ import { GasProvisionerService } from '../services/gasProvisioner';
 import { BridgeAdvisor } from '../services/bridgeAdvisor';
 import { PersonalDriveService } from '../services/personalDriveService';
 import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
+import { ChildManager } from '../services/childManager';
 
 export interface StorageState {
   wizard_current_step: number;
@@ -1375,18 +1376,21 @@ async function handleMessage(message: { type: string; payload?: any }) {
       }
 
       const extractedMessages = extraction.messages || [];
+      const activeChild = await ChildManager.getActiveProfile();
+      const childName = activeChild ? activeChild.name : 'Child_1';
 
       // Process attachments and upload directly to Personal Google Drive
       let uploadCount = 0;
       for (const m of extractedMessages) {
         if (m.rawAttachment && m.rawAttachment.base64Content) {
           try {
-            const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, m.rawAttachment);
+            const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, m.rawAttachment, childName);
             if (uploadRes) {
               m.driveAttachmentUrl = uploadRes.webViewLink;
               m.driveFileName = uploadRes.name;
               uploadCount++;
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Uploaded attachment "${uploadRes.name}" to Personal Drive`, {
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Uploaded attachment "${uploadRes.name}" to Personal Drive for ${childName}`, {
+                childName,
                 fileName: uploadRes.name,
                 driveUrl: uploadRes.webViewLink
               });
@@ -1402,7 +1406,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
         }
       }
 
-      await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `Extracted ${extractedMessages.length} messages (${uploadCount} attachments uploaded) from "${extraction.chatName}"`, {
+      await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `Extracted ${extractedMessages.length} messages (${uploadCount} attachments uploaded) from "${extraction.chatName}" for ${childName}`, {
+        childName,
         chatName: extraction.chatName,
         messageCount: extractedMessages.length,
         attachmentsUploaded: uploadCount
@@ -1412,8 +1417,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
       let personalDriveResult: any = null;
       if (state.personal_drive_connected && state.personal_drive_auth_token && extractedMessages.length > 0) {
         try {
-          personalDriveResult = await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, extractedMessages);
-          await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Archived ${personalDriveResult.saved} new messages into Personal Google Drive`, {
+          personalDriveResult = await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, extractedMessages, childName);
+          await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Archived ${personalDriveResult.saved} new messages into Personal Google Drive for ${childName}`, {
+            childName,
             account: state.personal_drive_account_email,
             saved: personalDriveResult.saved,
             totalArchived: personalDriveResult.total
@@ -1553,28 +1559,31 @@ async function handleMessage(message: { type: string; payload?: any }) {
         return { success: false, reason: 'No base64 stream payload' };
       }
 
+      const activeChild = await ChildManager.getActiveProfile();
+      const childName = activeChild ? activeChild.name : 'Child_1';
       const cleanDocName = (stream.fileName || 'School_Document.pdf').replace(/^View\s*["']?|["']$/gi, '').trim();
       const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, {
         name: cleanDocName,
         mimeType: stream.mimeType || 'application/pdf',
         base64Content: stream.base64Data
-      });
+      }, childName);
 
       if (uploadRes) {
-        await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Auto-captured live PDF stream "${uploadRes.name}" (${Math.round((stream.size || 0) / 1024)} KB) and uploaded to Personal Drive`, {
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Auto-captured live PDF stream "${uploadRes.name}" (${Math.round((stream.size || 0) / 1024)} KB) and uploaded to Personal Drive for ${childName}`, {
+          childName,
           fileName: uploadRes.name,
           driveUrl: uploadRes.webViewLink
         });
 
         // Also backfill this attachment into existing archive
         await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, [{
-          chatName: '3B Cambridge 2026 - 27',
+          chatName: 'School Group',
           sender: 'Teacher/Parent',
           timestamp: new Date().toLocaleTimeString(),
           body: `[Document: ${uploadRes.name}]`,
           driveAttachmentUrl: uploadRes.webViewLink,
           driveFileName: uploadRes.name
-        }]);
+        }], childName);
 
         return { success: true, uploadRes };
       }
@@ -1588,17 +1597,19 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
     case 'GET_MCP_FOLDER_INFO': {
       const state = await chrome.storage.local.get(['personal_drive_connected', 'personal_drive_auth_token', 'personal_drive_account_email', 'mcp_gas_url']);
+      const activeChild = await ChildManager.getActiveProfile();
+      const childName = activeChild ? activeChild.name : 'Child_1';
       
       // If personal account is connected, prioritize personal Google Drive
       if (state.personal_drive_connected && state.personal_drive_auth_token) {
         try {
-          const personalInfo = await PersonalDriveService.getPersonalFolderInfo(state.personal_drive_auth_token);
-          return { ...personalInfo, isPersonalConnected: true };
+          const personalInfo = await PersonalDriveService.getPersonalFolderInfo(state.personal_drive_auth_token, childName);
+          return { ...personalInfo, isPersonalConnected: true, activeChildName: childName };
         } catch (pe) {}
       }
 
       if (!state.mcp_gas_url) {
-        return { isCreated: false, isPersonalConnected: false, folderName: 'School Portal MCP Intelligence', folderUrl: '', notice: 'Connect personal account or provision MCP server to manage Drive storage.' };
+        return { isCreated: false, isPersonalConnected: false, folderName: 'School Portal MCP Intelligence', folderUrl: '', activeChildName: childName, notice: 'Connect personal account or provision MCP server to manage Drive storage.' };
       }
 
       try {
@@ -1612,9 +1623,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
           })
         });
         const json = await res.json();
-        return { ...(json.result || { folderName: 'School Portal MCP Intelligence', folderUrl: '' }), isPersonalConnected: false };
+        return { ...(json.result || { folderName: 'School Portal MCP Intelligence', folderUrl: '' }), isPersonalConnected: false, activeChildName: childName };
       } catch (e) {
-        return { isCreated: false, isPersonalConnected: false, folderName: 'School Portal MCP Intelligence', folderUrl: '', notice: 'Could not fetch folder info' };
+        return { isCreated: false, isPersonalConnected: false, folderName: 'School Portal MCP Intelligence', folderUrl: '', activeChildName: childName, notice: 'Could not fetch folder info' };
       }
     }
 
@@ -1623,10 +1634,13 @@ async function handleMessage(message: { type: string; payload?: any }) {
       const incomingMsgs = message.payload?.messages || [];
       if (incomingMsgs.length === 0) return { status: 'skipped' };
 
+      const activeChild = await ChildManager.getActiveProfile();
+      const childName = activeChild ? activeChild.name : 'Child_1';
+
       // Save to Personal Drive if connected
       if (state.personal_drive_connected && state.personal_drive_auth_token) {
         try {
-          await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, incomingMsgs);
+          await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, incomingMsgs, childName);
         } catch (pe) {}
       }
 
