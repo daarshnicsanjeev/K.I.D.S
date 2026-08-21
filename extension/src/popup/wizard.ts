@@ -163,8 +163,29 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnOpenClassroom = document.getElementById('btnOpenClassroom') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
   const btnOpenApiSettings = document.getElementById('btnOpenApiSettings') as HTMLButtonElement;
-  const btnOpenAuthScreen = document.getElementById('btnOpenAuthScreen') as HTMLButtonElement;
   const gasUrlInput = document.getElementById('gasUrlInput') as HTMLInputElement;
+
+  async function openGoogleAuthScreenDirectly(customUrl?: string) {
+    try {
+      const stateNow = await sendMessage({ type: 'GET_STATE' });
+      const authUserParam = await detectSchoolAccountParam();
+      
+      let targetUrl = customUrl || stateNow.mcp_gas_url;
+      if (targetUrl) {
+        if (authUserParam && !targetUrl.includes('authuser=')) {
+          targetUrl = targetUrl.includes('?') ? `${targetUrl}&${authUserParam.replace('?', '')}` : `${targetUrl}${authUserParam}`;
+        }
+      } else if (stateNow.mcp_gas_script_id) {
+        const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
+        targetUrl = `https://script.google.com${accountIndex}home/projects/${stateNow.mcp_gas_script_id}`;
+      } else {
+        const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
+        targetUrl = `https://script.google.com${accountIndex}home/projects`;
+      }
+
+      await chrome.tabs.create({ url: targetUrl, active: true });
+    } catch (e) {}
+  }
 
   btnOpenApiSettings?.addEventListener('click', async () => {
     const authUserParam = await detectSchoolAccountParam();
@@ -172,24 +193,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const settingsUrl = `https://script.google.com${accountIndex}home/usersettings`;
     chrome.tabs.create({ url: settingsUrl, active: true });
     showSuccess('Opening Google Apps Script Settings... Please toggle "Google Apps Script API" to ON.');
-  });
-
-  btnOpenAuthScreen?.addEventListener('click', async () => {
-    const stateNow = await sendMessage({ type: 'GET_STATE' });
-    const authUserParam = await detectSchoolAccountParam();
-    
-    let targetUrl = stateNow.mcp_gas_url;
-    if (targetUrl) {
-      if (authUserParam && !targetUrl.includes('authuser=')) {
-        targetUrl = targetUrl.includes('?') ? `${targetUrl}&${authUserParam.replace('?', '')}` : `${targetUrl}${authUserParam}`;
-      }
-    } else {
-      const accountIndex = authUserParam ? `/u/${authUserParam.replace('?authuser=', '')}/` : '/';
-      targetUrl = `https://script.google.com${accountIndex}home/projects`;
-    }
-
-    chrome.tabs.create({ url: targetUrl, active: true });
-    showSuccess('Opening Google Authorization tab... Click "Review Permissions -> Allow", then click Verify Server Link below!');
   });
 
   const mcpUrlDisplay = document.getElementById('mcpUrlDisplay') as HTMLInputElement;
@@ -737,9 +740,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       renderState(await sendMessage({ type: 'GET_STATE' }));
     } catch (err: any) {
-      if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization'))) {
-        btnOpenAuthScreen?.classList.remove('hidden');
-        showError('🔐 Google Authorization Required: Please click the "🚀 Open Google Authorization Screen" button to grant permissions.');
+      if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization') || err.message.includes('permission tab') || err.message.includes('401') || err.message.includes('403'))) {
+        await openGoogleAuthScreenDirectly();
+        showSuccess('🚀 Direct Authorization: Opening Google Authorization tab directly in your browser. Please click "Review Permissions -> Allow", then return to verify!');
       } else {
         showError(`Server Setup Error: ${err.message}`, {
           domain: 'gas-backend',
@@ -770,13 +773,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       const newState = await sendMessage({ type: 'GET_STATE' });
       renderState(newState);
     } catch (err: any) {
-      showError(`Workspace verification failed: ${err.message}`, {
-        domain: 'gas-backend',
-        feature: 'workspace-verification',
-        errorName: 'WorkspaceConnectionException',
-        errorMessage: err.message,
-        stackTrace: err.stack
-      });
+      if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization') || err.message.includes('permission tab') || err.message.includes('401') || err.message.includes('403'))) {
+        await openGoogleAuthScreenDirectly(gasUrl);
+        showSuccess('🚀 Direct Authorization: Opening Google Authorization tab directly in your browser. Please click "Review Permissions -> Allow", then return to verify!');
+      } else {
+        showError(`Workspace verification failed: ${err.message}`, {
+          domain: 'gas-backend',
+          feature: 'workspace-verification',
+          errorName: 'WorkspaceConnectionException',
+          errorMessage: err.message,
+          stackTrace: err.stack
+        });
+      }
     }
   });
 
