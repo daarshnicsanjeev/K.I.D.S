@@ -23,6 +23,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function renderChildProfiles() {
     try {
+      const hasChild = await ChildManager.hasConfiguredChild();
+      const childSwitcherBar = document.querySelector('.child-switcher-bar') as HTMLElement;
+      if (!hasChild) {
+        if (childSwitcherBar) childSwitcherBar.style.display = 'none';
+        return;
+      }
+
       const profiles = await ChildManager.getProfiles();
       const active = await ChildManager.getActiveProfile();
 
@@ -38,6 +45,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           selChildProfile.appendChild(opt);
         });
       }
+      if (childSwitcherBar) childSwitcherBar.style.display = 'flex';
     } catch (e) {}
   }
 

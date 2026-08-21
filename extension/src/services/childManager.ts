@@ -31,7 +31,10 @@ export class ChildManager {
    */
   public static async hasConfiguredChild(): Promise<boolean> {
     const profiles = await this.getProfiles(false);
-    return profiles.length > 0 && profiles.some(p => p.name && p.name.trim() !== '');
+    return profiles.length > 0 && profiles.some(p => {
+      const n = (p.name || '').trim().toLowerCase();
+      return n !== '' && n !== 'child 1' && n !== 'child_1' && n !== 'child1';
+    });
   }
 
   /**
@@ -149,7 +152,18 @@ export class ChildManager {
       throw new Error('Child first name is required.');
     }
 
-    const profiles = await this.getProfiles(false);
+    let profiles = await this.getProfiles(false);
+
+    // If the only existing profile is a placeholder ("Child 1"), rename it instead of duplicating
+    if (profiles.length === 1) {
+      const n = (profiles[0].name || '').toLowerCase();
+      if (n === 'child 1' || n === 'child_1' || n === 'child1') {
+        profiles[0].name = cleanName;
+        await this.saveProfiles(profiles, profiles[0].id);
+        return profiles[0];
+      }
+    }
+
     const newProfile: ChildProfile = {
       id: `child_${cleanName.toLowerCase()}_${Date.now()}`,
       name: cleanName,
