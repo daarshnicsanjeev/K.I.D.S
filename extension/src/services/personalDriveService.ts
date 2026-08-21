@@ -183,7 +183,7 @@ export class PersonalDriveService {
     }
     try {
       const active = await ChildManager.getActiveProfile();
-      return ChildManager.sanitizeName(active.name) || 'Child_1';
+      return (active && active.name) ? (ChildManager.sanitizeName(active.name) || 'Child_1') : 'Child_1';
     } catch (e) {
       return 'Child_1';
     }
@@ -719,6 +719,96 @@ export class PersonalDriveService {
       }
     } catch (e) {
       console.warn('[PersonalDriveService] Could not load tracked chats from Drive:', e);
+    }
+    return null;
+  }
+
+  private static PROFILES_CONFIG_FILE = 'child_profiles.json';
+
+  /**
+   * Saves multi-child profiles to root Personal Drive folder for cross-device recovery.
+   */
+  public static async saveProfilesToDrive(token?: string, profiles: any[] = []): Promise<void> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const root = await this.getOrCreateRootFolder(validToken);
+
+      const q = encodeURIComponent(`name = '${this.PROFILES_CONFIG_FILE}' and '${root.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
+
+      const payload = JSON.stringify(profiles, null, 2);
+
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          const fileId = data.files[0].id;
+          await this.fetchWithAuth(
+            `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload
+            },
+            validToken
+          );
+          return;
+        }
+      }
+
+      const boundary = '-------314159265358979323846';
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelimiter = `\r\n--${boundary}--`;
+      const metadata = {
+        name: this.PROFILES_CONFIG_FILE,
+        mimeType: 'application/json',
+        parents: [root.id]
+      };
+      const multipartBody =
+        delimiter +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        JSON.stringify(metadata) +
+        delimiter +
+        'Content-Type: application/json\r\n\r\n' +
+        payload +
+        closeDelimiter;
+
+      await this.fetchWithAuth(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+          body: multipartBody
+        },
+        validToken
+      );
+    } catch (e) {
+      console.warn('[PersonalDriveService] Could not backup child profiles to Drive:', e);
+    }
+  }
+
+  /**
+   * Loads multi-child profiles from root Personal Drive folder for cross-device recovery.
+   */
+  public static async loadProfilesFromDrive(token?: string): Promise<any[] | null> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const root = await this.getOrCreateRootFolder(validToken);
+
+      const q = encodeURIComponent(`name = '${this.PROFILES_CONFIG_FILE}' and '${root.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
+
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          const fileId = data.files[0].id;
+          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
+          if (downloadRes.ok) {
+            return await downloadRes.json();
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[PersonalDriveService] Could not load child profiles from Drive:', e);
     }
     return null;
   }

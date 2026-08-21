@@ -1,6 +1,6 @@
 /**
  * Child Profile Manager
- * Handles multi-child state, active child context, and storage scoping.
+ * Handles multi-child state, cross-machine sync (chrome.storage.sync & Drive), and onboarding lifecycle.
  */
 
 export interface ChildProfile {
@@ -27,40 +27,60 @@ export class ChildManager {
   }
 
   /**
-   * Loads all child profiles from storage.
-   * Automatically migrates legacy single-child state if no profiles exist.
+   * Checks if user has already configured at least one named child profile.
    */
-  public static async getProfiles(): Promise<ChildProfile[]> {
-    const data = await chrome.storage.local.get([
-      this.STORAGE_KEY_PROFILES,
-      'personal_drive_account_email',
-      'personal_drive_folder_id',
-      'mcp_gas_url',
-      'mcp_script_id',
-      'tracked_whatsapp_chats'
-    ]);
+  public static async hasConfiguredChild(): Promise<boolean> {
+    const profiles = await this.getProfiles(false);
+    return profiles.length > 0 && profiles.some(p => p.name && p.name.trim() !== '');
+  }
 
-    let profiles: ChildProfile[] = data[this.STORAGE_KEY_PROFILES] || [];
+  /**
+   * Loads all child profiles from storage (checking sync storage first for cross-machine persistence).
+   */
+  public static async getProfiles(autoCreate = false): Promise<ChildProfile[]> {
+    let syncData: any = {};
+    let localData: any = {};
 
-    // Auto-migration for existing single-child installations
-    if (profiles.length === 0) {
-      const defaultName = 'Child 1';
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.sync) {
+        try {
+          syncData = await chrome.storage.sync.get([this.STORAGE_KEY_PROFILES, this.STORAGE_KEY_ACTIVE_ID]);
+        } catch (e) {}
+      }
+      if (chrome.storage.local) {
+        try {
+          localData = await chrome.storage.local.get([
+            this.STORAGE_KEY_PROFILES,
+            this.STORAGE_KEY_ACTIVE_ID,
+            'personal_drive_account_email',
+            'personal_drive_folder_id',
+            'mcp_gas_url',
+            'mcp_script_id',
+            'tracked_whatsapp_chats'
+          ]);
+        } catch (e) {}
+      }
+    }
+
+    let profiles: ChildProfile[] = syncData[this.STORAGE_KEY_PROFILES] || localData[this.STORAGE_KEY_PROFILES] || [];
+
+    // Filter out invalid/empty entries
+    profiles = profiles.filter(p => p && p.id && p.name);
+
+    if (profiles.length === 0 && autoCreate) {
       const initialProfile: ChildProfile = {
         id: `child_${Date.now()}`,
-        name: defaultName,
+        name: 'Child 1',
         createdAt: Date.now(),
-        accountEmail: data.personal_drive_account_email || undefined,
-        folderId: data.personal_drive_folder_id || undefined,
-        gasScriptId: data.mcp_script_id || undefined,
-        gasDeploymentUrl: data.mcp_gas_url || undefined,
-        trackedChats: data.tracked_whatsapp_chats || []
+        accountEmail: localData.personal_drive_account_email || undefined,
+        folderId: localData.personal_drive_folder_id || undefined,
+        gasScriptId: localData.mcp_script_id || undefined,
+        gasDeploymentUrl: localData.mcp_gas_url || undefined,
+        trackedChats: localData.tracked_whatsapp_chats || []
       };
 
       profiles = [initialProfile];
-      await chrome.storage.local.set({
-        [this.STORAGE_KEY_PROFILES]: profiles,
-        [this.STORAGE_KEY_ACTIVE_ID]: initialProfile.id
-      });
+      await this.saveProfiles(profiles, initialProfile.id);
     }
 
     return profiles;
@@ -69,45 +89,67 @@ export class ChildManager {
   /**
    * Gets the active child profile.
    */
-  public static async getActiveProfile(): Promise<ChildProfile> {
-    const profiles = await this.getProfiles();
-    const activeData = await chrome.storage.local.get([this.STORAGE_KEY_ACTIVE_ID]);
-    const activeId = activeData[this.STORAGE_KEY_ACTIVE_ID];
+  public static async getActiveProfile(): Promise<ChildProfile | null> {
+    const profiles = await this.getProfiles(false);
+    if (profiles.length === 0) return null;
+
+    let activeId: string | undefined;
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      const syncData = chrome.storage.sync ? await chrome.storage.sync.get([this.STORAGE_KEY_ACTIVE_ID]) : {};
+      const localData = chrome.storage.local ? await chrome.storage.local.get([this.STORAGE_KEY_ACTIVE_ID]) : {};
+      activeId = syncData[this.STORAGE_KEY_ACTIVE_ID] || localData[this.STORAGE_KEY_ACTIVE_ID];
+    }
 
     const found = profiles.find(p => p.id === activeId);
     if (found) return found;
 
-    // Fallback to first profile
-    if (profiles.length > 0) {
-      await chrome.storage.local.set({ [this.STORAGE_KEY_ACTIVE_ID]: profiles[0].id });
-      return profiles[0];
+    return profiles[0];
+  }
+
+  /**
+   * Saves profiles to both sync and local storage for cross-machine resilience.
+   */
+  private static async saveProfiles(profiles: ChildProfile[], activeId?: string): Promise<void> {
+    const payload: Record<string, any> = {
+      [this.STORAGE_KEY_PROFILES]: profiles
+    };
+    if (activeId) {
+      payload[this.STORAGE_KEY_ACTIVE_ID] = activeId;
     }
 
-    // Create default if somehow empty
-    const created = await this.createProfile('Child 1');
-    return created;
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.local) {
+        await chrome.storage.local.set(payload).catch(() => {});
+      }
+      if (chrome.storage.sync) {
+        await chrome.storage.sync.set(payload).catch(() => {});
+      }
+    }
   }
 
   /**
    * Sets the active child ID.
    */
   public static async setActiveProfileId(childId: string): Promise<ChildProfile | null> {
-    const profiles = await this.getProfiles();
+    const profiles = await this.getProfiles(false);
     const found = profiles.find(p => p.id === childId);
     if (found) {
-      await chrome.storage.local.set({ [this.STORAGE_KEY_ACTIVE_ID]: childId });
+      await this.saveProfiles(profiles, childId);
       return found;
     }
     return null;
   }
 
   /**
-   * Creates a new child profile.
+   * Creates a new child profile and sets it active.
    */
   public static async createProfile(name: string): Promise<ChildProfile> {
-    const cleanName = this.sanitizeName(name) || `Child_${Date.now().toString().slice(-4)}`;
-    const profiles = await this.getProfiles();
+    const cleanName = this.sanitizeName(name);
+    if (!cleanName) {
+      throw new Error('Child first name is required.');
+    }
 
+    const profiles = await this.getProfiles(false);
     const newProfile: ChildProfile = {
       id: `child_${cleanName.toLowerCase()}_${Date.now()}`,
       name: cleanName,
@@ -116,11 +158,7 @@ export class ChildManager {
     };
 
     profiles.push(newProfile);
-    await chrome.storage.local.set({
-      [this.STORAGE_KEY_PROFILES]: profiles,
-      [this.STORAGE_KEY_ACTIVE_ID]: newProfile.id
-    });
-
+    await this.saveProfiles(profiles, newProfile.id);
     return newProfile;
   }
 
@@ -128,7 +166,7 @@ export class ChildManager {
    * Updates an existing child profile.
    */
   public static async updateProfile(childId: string, updates: Partial<ChildProfile>): Promise<ChildProfile | null> {
-    const profiles = await this.getProfiles();
+    const profiles = await this.getProfiles(false);
     const idx = profiles.findIndex(p => p.id === childId);
     if (idx === -1) return null;
 
@@ -137,7 +175,7 @@ export class ChildManager {
     }
 
     profiles[idx] = { ...profiles[idx], ...updates };
-    await chrome.storage.local.set({ [this.STORAGE_KEY_PROFILES]: profiles });
+    await this.saveProfiles(profiles);
     return profiles[idx];
   }
 
@@ -145,25 +183,40 @@ export class ChildManager {
    * Deletes a child profile.
    */
   public static async deleteProfile(childId: string): Promise<{ success: boolean; activeProfile: ChildProfile }> {
-    let profiles = await this.getProfiles();
+    let profiles = await this.getProfiles(false);
     if (profiles.length <= 1) {
       throw new Error('Cannot delete the only child profile. Rename it instead.');
     }
 
     profiles = profiles.filter(p => p.id !== childId);
-    const activeData = await chrome.storage.local.get([this.STORAGE_KEY_ACTIVE_ID]);
-    let newActiveId = activeData[this.STORAGE_KEY_ACTIVE_ID];
+    const newActiveId = profiles[0].id;
 
-    if (newActiveId === childId) {
-      newActiveId = profiles[0].id;
+    await this.saveProfiles(profiles, newActiveId);
+    return { success: true, activeProfile: profiles[0] };
+  }
+
+  /**
+   * Imports or merges profiles restored from Google Drive.
+   */
+  public static async mergeRestoredProfiles(restoredProfiles: ChildProfile[]): Promise<ChildProfile[]> {
+    if (!restoredProfiles || !Array.isArray(restoredProfiles) || restoredProfiles.length === 0) {
+      return await this.getProfiles(false);
     }
 
-    await chrome.storage.local.set({
-      [this.STORAGE_KEY_PROFILES]: profiles,
-      [this.STORAGE_KEY_ACTIVE_ID]: newActiveId
+    const current = await this.getProfiles(false);
+    const map = new Map<string, ChildProfile>();
+
+    restoredProfiles.forEach(p => {
+      if (p && p.name) map.set(p.name.toLowerCase(), p);
     });
 
-    const activeProfile = profiles.find(p => p.id === newActiveId) || profiles[0];
-    return { success: true, activeProfile };
+    current.forEach(p => {
+      if (p && p.name) map.set(p.name.toLowerCase(), { ...map.get(p.name.toLowerCase()), ...p });
+    });
+
+    const merged = Array.from(map.values());
+    const active = merged[0];
+    await this.saveProfiles(merged, active ? active.id : undefined);
+    return merged;
   }
 }

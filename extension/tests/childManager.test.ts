@@ -32,20 +32,20 @@ describe('ChildManager & Multi-Child Partitioning', () => {
     };
   });
 
-  it('should auto-migrate legacy single-child configuration into Child 1 profile', async () => {
+  it('should auto-migrate legacy single-child configuration when autoCreate is true', async () => {
     mockStorage['personal_drive_account_email'] = 'parent@gmail.com';
     mockStorage['personal_drive_folder_id'] = 'folder_123';
     mockStorage['mcp_gas_url'] = 'https://script.google.com/macros/s/exec';
 
-    const profiles = await ChildManager.getProfiles();
+    const profiles = await ChildManager.getProfiles(true);
     expect(profiles).toHaveLength(1);
     expect(profiles[0].name).toBe('Child 1');
     expect(profiles[0].accountEmail).toBe('parent@gmail.com');
     expect(profiles[0].folderId).toBe('folder_123');
 
     const active = await ChildManager.getActiveProfile();
-    expect(active.id).toBe(profiles[0].id);
-    expect(active.name).toBe('Child 1');
+    expect(active?.id).toBe(profiles[0].id);
+    expect(active?.name).toBe('Child 1');
   });
 
   it('should create and switch to a new child profile with sanitized name', async () => {
@@ -83,10 +83,11 @@ describe('ChildManager & Multi-Child Partitioning', () => {
   });
 
   it('should prevent deleting the only remaining child profile', async () => {
+    const created = await ChildManager.createProfile('Daarshnic');
     const profiles = await ChildManager.getProfiles();
     expect(profiles).toHaveLength(1);
 
-    await expect(ChildManager.deleteProfile(profiles[0].id)).rejects.toThrow(
+    await expect(ChildManager.deleteProfile(created.id)).rejects.toThrow(
       'Cannot delete the only child profile. Rename it instead.'
     );
   });
@@ -106,6 +107,27 @@ describe('ChildManager & Multi-Child Partitioning', () => {
 
     const remaining = await ChildManager.getProfiles();
     expect(remaining.some(p => p.id === 'child_ananya')).toBe(false);
+  });
+
+  it('should correctly evaluate hasConfiguredChild status', async () => {
+    expect(await ChildManager.hasConfiguredChild()).toBe(false);
+
+    await ChildManager.createProfile('Daarshnic');
+    expect(await ChildManager.hasConfiguredChild()).toBe(true);
+  });
+
+  it('should merge profiles restored from Google Drive', async () => {
+    const driveProfiles = [
+      { id: 'child_daarshnic', name: 'Daarshnic', createdAt: 1000, folderId: 'folder_drive_1' },
+      { id: 'child_ananya', name: 'Ananya', createdAt: 2000, folderId: 'folder_drive_2' }
+    ];
+
+    const merged = await ChildManager.mergeRestoredProfiles(driveProfiles);
+    expect(merged).toHaveLength(2);
+    expect(merged.map(m => m.name)).toEqual(['Daarshnic', 'Ananya']);
+
+    const active = await ChildManager.getActiveProfile();
+    expect(active?.name).toBe('Daarshnic');
   });
 
   it('should sanitize child names cleanly', () => {

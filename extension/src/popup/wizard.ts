@@ -1,4 +1,5 @@
 import { ChildManager } from '../services/childManager';
+import { PersonalDriveService } from '../services/personalDriveService';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const stepBadge = document.getElementById('stepBadge') as HTMLElement;
@@ -31,7 +32,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           const opt = document.createElement('option');
           opt.value = p.id;
           opt.textContent = `👶 ${p.name}`;
-          if (p.id === active.id) {
+          if (active && p.id === active.id) {
             opt.selected = true;
           }
           selChildProfile.appendChild(opt);
@@ -64,7 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnRenameChild?.addEventListener('click', async () => {
     activeChildAction = 'rename';
     const active = await ChildManager.getActiveProfile();
-    if (txtChildNameInput) {
+    if (active && txtChildNameInput) {
       txtChildNameInput.value = active.name;
     }
     childModalBar?.classList.remove('hidden');
@@ -73,6 +74,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnDeleteChild?.addEventListener('click', async () => {
     const active = await ChildManager.getActiveProfile();
+    if (!active) return;
     if (confirm(`Are you sure you want to remove the profile for "${active.name}"?`)) {
       try {
         const res = await ChildManager.deleteProfile(active.id);
@@ -111,7 +113,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       showSuccess(`Created and switched to profile: "${created.name}"`);
     } else if (activeChildAction === 'rename') {
       const active = await ChildManager.getActiveProfile();
-      await ChildManager.updateProfile(active.id, { name: cleanName });
+      if (active) {
+        await ChildManager.updateProfile(active.id, { name: cleanName });
+      }
       childModalBar?.classList.add('hidden');
       activeChildAction = null;
       await renderChildProfiles();
@@ -307,13 +311,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Step 1 Personal Google Account UI Elements
+  // Step 1 Personal Google Account & Child Setup UI Elements
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
+  const step1ChildSetupBox = document.getElementById('step1ChildSetupBox') as HTMLElement;
+  const txtStep1ChildName = document.getElementById('txtStep1ChildName') as HTMLInputElement;
+  const btnStep1SaveChild = document.getElementById('btnStep1SaveChild') as HTMLButtonElement;
+  const step1ChildConfirmedBadge = document.getElementById('step1ChildConfirmedBadge') as HTMLElement;
+  const lblStep1ActiveChild = document.getElementById('lblStep1ActiveChild') as HTMLElement;
   const step1ConnectedActions = document.getElementById('step1ConnectedActions') as HTMLElement;
   const btnStep1SwitchAccount = document.getElementById('btnStep1SwitchAccount') as HTMLButtonElement;
   const btnStep1Continue = document.getElementById('btnStep1Continue') as HTMLButtonElement;
   const lblWhatsAppDriveAccount = document.getElementById('lblWhatsAppDriveAccount') as HTMLElement;
+
+  async function confirmStep1ChildName() {
+    clearAlerts();
+    const rawName = txtStep1ChildName?.value || '';
+    const cleanName = ChildManager.sanitizeName(rawName);
+    if (!cleanName) {
+      showError('Please enter your child\'s first name.');
+      txtStep1ChildName?.focus();
+      return;
+    }
+
+    try {
+      const created = await ChildManager.createProfile(cleanName);
+      // Backup to Drive for cross-device recovery
+      try {
+        const profiles = await ChildManager.getProfiles();
+        await PersonalDriveService.saveProfilesToDrive(undefined, profiles);
+      } catch (e) {}
+
+      showSuccess(`🎉 Profile confirmed for "${created.name}"! You can now proceed to Step 2.`);
+      await renderChildProfiles();
+      await refreshBridgeStatus();
+      const stateNow = await sendMessage({ type: 'GET_STATE' });
+      renderState(stateNow);
+    } catch (e: any) {
+      showError(e.message);
+    }
+  }
+
+  btnStep1SaveChild?.addEventListener('click', confirmStep1ChildName);
+  txtStep1ChildName?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') confirmStep1ChildName();
+  });
 
   // Stepper Step Navigation Buttons
   const btnNavStep2ToStep1 = document.getElementById('btnNavStep2ToStep1') as HTMLButtonElement;
@@ -333,7 +375,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const res = await sendMessage({ type: 'CONNECT_PERSONAL_DRIVE_ACCOUNT' });
       isPersonalAccountConnected = true;
-      showSuccess(`🎉 Personal Google Account connected: ${res.email}! Extension functionality is now unlocked.`);
+
+      // Auto-restore child profiles from Personal Drive if available
+      try {
+        const driveProfiles = await PersonalDriveService.loadProfilesFromDrive(res.token);
+        if (driveProfiles && Array.isArray(driveProfiles) && driveProfiles.length > 0) {
+          await ChildManager.mergeRestoredProfiles(driveProfiles);
+          appendLog(`✅ Restored ${driveProfiles.length} child profile(s) from Personal Google Drive.`);
+        }
+      } catch (e) {}
+
+      showSuccess(`🎉 Personal Google Account connected: ${res.email}!`);
+      await renderChildProfiles();
       await refreshBridgeStatus();
       renderState(await sendMessage({ type: 'GET_STATE' }));
     } catch (err: any) {
@@ -354,6 +407,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   async function navigateToStep(stepNumber: number, customFocusId?: string) {
     clearAlerts();
+    const hasChild = await ChildManager.hasConfiguredChild();
+    if (stepNumber > 1 && (!isPersonalAccountConnected || !hasChild)) {
+      if (!isPersonalAccountConnected) {
+        showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
+      } else {
+        showError('👶 Please enter and confirm your Child\'s Name in Step 1 before proceeding.');
+        txtStep1ChildName?.focus();
+      }
+      return;
+    }
+
     const defaultFocus = customFocusId || (
       stepNumber === 1 ? 'btnStep1ConnectPersonal' :
       stepNumber === 2 ? 'btnCreateMcpServer' :
@@ -379,8 +443,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   btnStep1Continue?.addEventListener('click', async () => {
+    const hasChild = await ChildManager.hasConfiguredChild();
     if (!isPersonalAccountConnected) {
-      showError('🔒 Please sign in with your Personal Google Account in Step 1 first to unlock the extension.');
+      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
+      return;
+    }
+    if (!hasChild) {
+      showError('👶 Please enter and confirm your Child\'s Name in Step 1 before continuing.');
+      txtStep1ChildName?.focus();
       return;
     }
     await navigateToStep(2);
@@ -389,43 +459,27 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnNavStep2ToStep1?.addEventListener('click', () => navigateToStep(1));
 
   btnNavStep2ToStep3?.addEventListener('click', async () => {
-    if (!isPersonalAccountConnected) {
-      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
-      return;
-    }
     await navigateToStep(3);
   });
 
   btnNavStep3ToStep2?.addEventListener('click', () => navigateToStep(2));
 
   btnNavStep3ToStep4?.addEventListener('click', async () => {
-    if (!isPersonalAccountConnected) {
-      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
-      return;
-    }
     await navigateToStep(4);
   });
 
   btnNavStep4ToStep3?.addEventListener('click', () => navigateToStep(3));
 
   btnNavStep4ToStep5?.addEventListener('click', async () => {
-    if (!isPersonalAccountConnected) {
-      showError('🔒 Please sign in with your Personal Google Account in Step 1 first.');
-      return;
-    }
     await navigateToStep(5);
   });
 
   btnNavStep5ToStep4?.addEventListener('click', () => navigateToStep(4));
 
-  // Allow clicking stepper dots to navigate directly (with auth protection)
+  // Allow clicking stepper dots to navigate directly (with auth & child protection)
   for (let i = 1; i <= 5; i++) {
     const dot = document.getElementById(`dot${i}`);
     dot?.addEventListener('click', async () => {
-      if (i > 1 && !isPersonalAccountConnected) {
-        showError('🔒 Please complete Step 1 (Sign in with Personal Google Account) first to unlock other steps.');
-        return;
-      }
       await navigateToStep(i);
     });
   }
@@ -439,15 +493,34 @@ document.addEventListener('DOMContentLoaded', async () => {
       const email = folderRes?.accountEmail || '';
       isPersonalAccountConnected = Boolean(email);
 
+      const hasChild = await ChildManager.hasConfiguredChild();
+      const activeChild = await ChildManager.getActiveProfile();
+      const childSwitcherBar = document.querySelector('.child-switcher-bar') as HTMLElement;
+
       if (lblStep1AccountEmail) {
         if (email) {
           lblStep1AccountEmail.innerText = `🟢 ${email} (Connected & Active)`;
           btnStep1ConnectPersonal?.classList.add('hidden');
-          step1ConnectedActions?.classList.remove('hidden');
+
+          if (!hasChild || !activeChild) {
+            step1ChildSetupBox?.classList.remove('hidden');
+            step1ChildConfirmedBadge?.classList.add('hidden');
+            step1ConnectedActions?.classList.add('hidden');
+            if (childSwitcherBar) childSwitcherBar.style.display = 'none';
+          } else {
+            step1ChildSetupBox?.classList.add('hidden');
+            step1ChildConfirmedBadge?.classList.remove('hidden');
+            if (lblStep1ActiveChild) lblStep1ActiveChild.innerText = activeChild.name;
+            step1ConnectedActions?.classList.remove('hidden');
+            if (childSwitcherBar) childSwitcherBar.style.display = 'flex';
+          }
         } else {
           lblStep1AccountEmail.innerText = '⚪ Not connected';
           btnStep1ConnectPersonal?.classList.remove('hidden');
+          step1ChildSetupBox?.classList.add('hidden');
+          step1ChildConfirmedBadge?.classList.add('hidden');
           step1ConnectedActions?.classList.add('hidden');
+          if (childSwitcherBar) childSwitcherBar.style.display = 'none';
         }
       }
 
@@ -1290,17 +1363,22 @@ You are a Parent Executive School Assistant responsible for tracking student sch
     }
   }
 
-  function updateStepperDots(currentStep: number) {
+  async function updateStepperDots(currentStep: number) {
+    const hasChild = await ChildManager.hasConfiguredChild();
+    const isUnlocked = isPersonalAccountConnected && hasChild;
+
     for (let i = 1; i <= 5; i++) {
       const dot = document.getElementById(`dot${i}`);
       const line = document.getElementById(`line${i}`);
       if (dot) {
         dot.classList.toggle('active', i === currentStep);
         dot.classList.toggle('completed', i < currentStep);
-        if (i > 1 && !isPersonalAccountConnected) {
+        if (i > 1 && !isUnlocked) {
           dot.style.opacity = '0.35';
           dot.style.cursor = 'not-allowed';
-          dot.title = '🔒 Locked: Sign in with Personal Google Account in Step 1 first';
+          dot.title = !isPersonalAccountConnected
+            ? '🔒 Locked: Sign in with Personal Google Account in Step 1 first'
+            : '👶 Locked: Enter Child Name in Step 1 first';
         } else {
           dot.style.opacity = '1';
           dot.style.cursor = 'pointer';
@@ -1309,7 +1387,7 @@ You are a Parent Executive School Assistant responsible for tracking student sch
       }
       if (line) {
         line.classList.toggle('completed', i < currentStep);
-        if (!isPersonalAccountConnected) {
+        if (!isUnlocked) {
           line.style.opacity = '0.35';
         } else {
           line.style.opacity = '1';

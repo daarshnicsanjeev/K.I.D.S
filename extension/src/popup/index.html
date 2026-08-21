@@ -75,6 +75,26 @@
           🔐 Sign in with Personal Google Account
         </button>
 
+        <!-- Dedicated Child Setup Box (Directly Prompts Child Name after Login) -->
+        <div id="step1ChildSetupBox" class="hidden mb-2" style="background: #1e293b; padding: 10px 12px; border-radius: 8px; border: 1px solid #38bdf8;">
+          <label style="font-size: 0.8rem; font-weight: 600; color: #f8fafc; display: block; margin-bottom: 6px;">
+            👶 Enter Child's First Name to continue:
+          </label>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="txtStep1ChildName" placeholder="Child First Name (e.g. Daarshnic)" style="flex: 1; background: #0f172a; color: #f8fafc; border: 1px solid #38bdf8; border-radius: 6px; padding: 5px 8px; font-size: 0.82rem;" />
+            <button id="btnStep1SaveChild" class="btn btn-primary btn-sm" style="font-weight: 700; padding: 5px 12px;">Confirm Child</button>
+          </div>
+        </div>
+
+        <!-- Active Child Confirmation Badge -->
+        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" style="background: #0f172a; border-left: 3px solid #34d399;">
+          <span class="status-icon">👶</span>
+          <div>
+            <strong>Active Child Profile:</strong>
+            <span id="lblStep1ActiveChild" style="color: #34d399; font-weight: 600; display: block;"></span>
+          </div>
+        </div>
+
         <div id="step1ConnectedActions" class="hidden">
           <div style="display: flex; gap: 6px;">
             <button id="btnStep1SwitchAccount" class="btn btn-secondary btn-sm" style="flex: 1;">
