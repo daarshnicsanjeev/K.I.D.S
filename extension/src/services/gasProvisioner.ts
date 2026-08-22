@@ -196,13 +196,13 @@ export class GasProvisionerService {
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
     await this.runTestAuth(scriptId, token);
 
-    // Verify Server Execution directly via Google Cloud Execution API (scripts.run)
-    this.log(`🧪 Verifying MCP Server tools via direct Google Cloud REST API (scripts.run)...`);
+    // Verify Server Execution via authenticated Web App ping & Execution API
+    this.log(`🧪 Verifying MCP Server tools (Authenticated Bearer Token & Execution API)...`);
     let verifiedTools: any[] = [];
     let needsAuth = false;
     try {
       verifiedTools = await this.verifyMcpServerUrl(webAppUrl, scriptId, token, accessKey);
-      this.log(`🎉 Server verified successfully! ${verifiedTools.length} active tools ready.`);
+      this.log(`🎉 Server verified successfully (HTTP 200)! ${verifiedTools.length} active tools ready.`);
     } catch (e: any) {
       this.log(`ℹ️ Server deployed. Initial ping note: ${e.message}`);
       needsAuth = true;
