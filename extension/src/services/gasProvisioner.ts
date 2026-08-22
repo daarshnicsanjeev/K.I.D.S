@@ -752,26 +752,19 @@ function testAuth() {
 }
 
 function doGet(e) {
-  if (!e || !e.parameter || !e.parameter.accessKey || e.parameter.authInit === 'true') {
+  // 1. One-time Parent Consent Handshake
+  if (!e || !e.parameter || !e.parameter.accessKey || e.parameter.auth === 'true' || e.parameter.authInit === 'true') {
     return HtmlService.createHtmlOutput(
-      '<!DOCTYPE html>' +
-      '<html><head><meta charset="utf-8"><title>School MCP Server Connected</title>' +
-      '<style>' +
-      'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px; background: #f8fafc; color: #1e293b; margin: 0; }' +
-      '.card { background: white; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); display: inline-block; max-width: 420px; border: 1px solid #e2e8f0; }' +
-      '.icon { font-size: 48px; margin-bottom: 12px; }' +
-      'h2 { color: #15803d; margin: 0 0 8px 0; font-size: 22px; }' +
-      'p { color: #64748b; font-size: 14px; line-height: 1.5; margin: 0 0 16px 0; }' +
-      '.badge { background: #dcfce7; color: #166534; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; display: inline-block; }' +
-      '</style></head><body>' +
-      '<div class="card">' +
-      '<div class="icon">✅</div>' +
-      '<h2>School MCP Server Connected!</h2>' +
-      '<p>Authorization complete. Your server is active with Google Classroom, Drive & Calendar.</p>' +
-      '<div class="badge">Window closing automatically...</div>' +
-      '</div>' +
-      '<script>setTimeout(function() { window.close(); }, 1800);</script>' +
-      '</body></html>'
+      '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;background:#f8fafc;margin:0;color:#0f172a;}' +
+      '.box{background:white;padding:36px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.06);text-align:center;max-width:380px;border:1px solid #e2e8f0;}' +
+      '.icon{font-size:44px;margin-bottom:12px;}' +
+      'h3{color:#16a34a;margin:0 0 8px 0;font-size:20px;}' +
+      'p{color:#64748b;font-size:14px;line-height:1.5;margin:0 0 16px 0;}' +
+      '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;}' +
+      '</style></head>' +
+      '<body><div class="box"><div class="icon">✅</div><h3>MCP Server Authorized!</h3><p>Your student data sync is now live with Google Classroom & Drive.</p><div class="badge">Closing automatically in 2s...</div></div>' +
+      '<script>setTimeout(function(){ window.close(); }, 2000);</script></body></html>'
     ).setTitle('School MCP Server Connected');
   }
 
@@ -792,9 +785,9 @@ function doGet(e) {
     })).setMimeType(ContentService.MimeType.JSON);
   }
   return ContentService.createTextOutput(JSON.stringify({
-    status: "ok",
-    mcpVersion: "1.0",
-    name: "School Portal MCP Server"
+    status: 'online',
+    server: 'School Portal MCP Server',
+    accessKey: e.parameter ? e.parameter.accessKey : null
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -2187,7 +2180,7 @@ var DriveContentExtractor = {
 
   /**
    * Proactively detects if Google requires 1-time interactive script authorization.
-   * If <title>Authorization needed</title> is returned, opens a focused window pointing to the project editor so the user clicks "Allow".
+   * Prompts the clean Google consent dialog (Review Permissions -> Allow) and auto-closes.
    */
   public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
@@ -2200,10 +2193,10 @@ var DriveContentExtractor = {
       const responseText = await pingRes.text();
 
       if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403) {
-        const authUrl = scriptId ? `https://script.google.com/d/${scriptId}/edit` : cleanUrl;
+        const authUrl = cleanUrl.includes('?') ? `${cleanUrl}&auth=true` : `${cleanUrl}?auth=true`;
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
-        this.log(`🚀 Opening authorization window for project ID: ${scriptId || 'active script'}...`);
-        this.log('⏳ In the window, click "Run" (or "Review permissions") -> select your account -> click "Allow".');
+        this.log('🚀 Prompting one-time Google Workspace authorization...');
+        this.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
 
         if (typeof chrome !== 'undefined' && chrome.windows) {
           await new Promise<void>((resolve) => {
@@ -2211,8 +2204,8 @@ var DriveContentExtractor = {
               {
                 url: authUrl,
                 type: 'popup',
-                width: 800,
-                height: 700,
+                width: 520,
+                height: 650,
                 focused: true
               },
               (win) => {
