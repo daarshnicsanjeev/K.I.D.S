@@ -188,6 +188,10 @@ export class GasProvisionerService {
     this.log('⚙️ Pre-warming Google Services (Classroom, Drive, Calendar)...');
     await this.runTestAuth(scriptId, token);
 
+    // Prompt 1-time Google authorization in a focused modal (auto-closes upon Allow)
+    this.log('🔐 Triggering 1-time Google authorization modal...');
+    await this.promptInTabAuthorization(webAppUrl);
+
     // Verify Server Execution via JSON-RPC tools/list
     this.log(`🧪 Verifying MCP Server endpoint (${webAppUrl})...`);
     let verifiedTools: any[] = [];
@@ -739,6 +743,29 @@ function testAuth() {
 }
 
 function doGet(e) {
+  if (e && e.parameter && e.parameter.authInit === 'true') {
+    return HtmlService.createHtmlOutput(
+      '<!DOCTYPE html>' +
+      '<html><head><meta charset="utf-8"><title>School MCP Server Authorization</title>' +
+      '<style>' +
+      'body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; padding: 40px; background: #f8fafc; color: #1e293b; margin: 0; }' +
+      '.card { background: white; padding: 32px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.08); display: inline-block; max-width: 420px; border: 1px solid #e2e8f0; }' +
+      '.icon { font-size: 48px; margin-bottom: 12px; }' +
+      'h2 { color: #15803d; margin: 0 0 8px 0; font-size: 22px; }' +
+      'p { color: #64748b; font-size: 14px; line-height: 1.5; margin: 0 0 16px 0; }' +
+      '.badge { background: #dcfce7; color: #166534; padding: 6px 14px; border-radius: 20px; font-weight: 600; font-size: 13px; display: inline-block; }' +
+      '</style></head><body>' +
+      '<div class="card">' +
+      '<div class="icon">✅</div>' +
+      '<h2>Authorization Successful!</h2>' +
+      '<p>Your School MCP Sync Server is now active with Google Classroom, Drive & Calendar.</p>' +
+      '<div class="badge">Window closing automatically...</div>' +
+      '</div>' +
+      '<script>setTimeout(function() { window.close(); }, 1800);</script>' +
+      '</body></html>'
+    ).setTitle('School MCP Server - Authorized');
+  }
+
   if (!e || !e.parameter || e.parameter.accessKey !== CONFIG.accessKey) {
     return ContentService.createTextOutput(JSON.stringify({ error: "Unauthorized access key." }))
       .setMimeType(ContentService.MimeType.JSON);
@@ -2025,5 +2052,52 @@ var DriveContentExtractor = {
       console.warn('[School MCP] Automated testAuth warning:', e);
     }
     return null;
+  }
+
+  /**
+   * Prompts 1-time end-user Google authorization in a focused popup modal.
+   * Auto-closes automatically when authorization completes.
+   */
+  public static promptInTabAuthorization(webAppUrl: string): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.windows) {
+      return Promise.resolve();
+    }
+
+    const cleanBaseUrl = webAppUrl.split('?')[0];
+    const authUrl = `${cleanBaseUrl}?authInit=true`;
+
+    return new Promise((resolve) => {
+      try {
+        chrome.windows.create(
+          {
+            url: authUrl,
+            type: 'popup',
+            width: 520,
+            height: 650,
+            focused: true
+          },
+          (createdWindow) => {
+            if (!createdWindow || !createdWindow.id) {
+              resolve();
+              return;
+            }
+
+            const windowId = createdWindow.id;
+
+            // Listen for when user completes authorization (window auto-closes or is manually closed)
+            const checkClosed = (closedWinId: number) => {
+              if (closedWinId === windowId) {
+                chrome.windows.onRemoved.removeListener(checkClosed);
+                resolve();
+              }
+            };
+
+            chrome.windows.onRemoved.addListener(checkClosed);
+          }
+        );
+      } catch (e) {
+        resolve();
+      }
+    });
   }
 }
