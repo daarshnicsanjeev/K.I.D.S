@@ -754,18 +754,24 @@ function testAuth() {
 function doGet(e) {
   // 1. One-time Parent Consent Handshake
   if (!e || !e.parameter || !e.parameter.accessKey || e.parameter.auth === 'true' || e.parameter.authInit === 'true') {
+    // Calling Classroom/Drive here forces Google's runtime engine to present the permission prompt
+    try {
+      Classroom.Courses.list({ pageSize: 1 });
+    } catch (err) {}
+
     return HtmlService.createHtmlOutput(
       '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;background:#f8fafc;margin:0;color:#0f172a;}' +
-      '.box{background:white;padding:36px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.06);text-align:center;max-width:380px;border:1px solid #e2e8f0;}' +
-      '.icon{font-size:44px;margin-bottom:12px;}' +
-      'h3{color:#16a34a;margin:0 0 8px 0;font-size:20px;}' +
-      'p{color:#64748b;font-size:14px;line-height:1.5;margin:0 0 16px 0;}' +
+      '<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;margin:0;background:#f8fafc;color:#0f172a;}' +
+      '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:360px;}' +
+      'h3{color:#16a34a;margin-top:0;font-size:20px;}' +
+      'p{color:#64748b;font-size:14px;line-height:1.5;}' +
       '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;}' +
       '</style></head>' +
-      '<body><div class="box"><div class="icon">✅</div><h3>MCP Server Authorized!</h3><p>Your student data sync is now live with Google Classroom & Drive.</p><div class="badge">Closing automatically in 2s...</div></div>' +
+      '<body><div class="box"><h3>✅ MCP Server Connected!</h3>' +
+      '<p>Google Workspace permissions approved. This window will close automatically...</p>' +
+      '<div class="badge">Closing automatically in 2s...</div></div>' +
       '<script>setTimeout(function(){ window.close(); }, 2000);</script></body></html>'
-    ).setTitle('School MCP Server Connected');
+    ).setTitle('MCP Server Authorization');
   }
 
   if (e.parameter.accessKey !== CONFIG.accessKey) {
@@ -2182,6 +2188,41 @@ var DriveContentExtractor = {
    * Proactively detects if Google requires 1-time interactive script authorization.
    * Prompts the clean Google consent dialog (Review Permissions -> Allow) routed to the student account.
    */
+  /**
+   * Resolves the authenticated user's email via Drive about API or userinfo endpoint.
+   */
+  public static async getAuthenticatedUserEmail(token: string): Promise<string | null> {
+    try {
+      const driveRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user(emailAddress)', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (driveRes.ok) {
+        const driveData = await driveRes.json();
+        if (driveData && driveData.user && driveData.user.emailAddress) {
+          return driveData.user.emailAddress;
+        }
+      }
+    } catch (e) {}
+
+    try {
+      const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (userRes.ok) {
+        const userData = await userRes.json();
+        if (userData && userData.email) {
+          return userData.email;
+        }
+      }
+    } catch (e) {}
+
+    return null;
+  }
+
+  /**
+   * Proactively detects if Google requires 1-time interactive script authorization.
+   * Prompts the clean Google consent dialog (Review Permissions -> Allow) routed to the student account.
+   */
   public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     try {
@@ -2192,19 +2233,11 @@ var DriveContentExtractor = {
 
       const responseText = await pingRes.text();
 
-      if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403) {
+      if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403 || !responseText.includes('online')) {
         // Resolve student email to avoid /u/0/ multi-account conflict
         let targetEmail = studentEmail;
         if (!targetEmail) {
-          try {
-            const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
-              headers: { 'Authorization': `Bearer ${token}` }
-            });
-            if (userRes.ok) {
-              const userData = await userRes.json();
-              targetEmail = userData.email;
-            }
-          } catch (e) {}
+          targetEmail = (await this.getAuthenticatedUserEmail(token)) || undefined;
         }
 
         const urlObj = new URL(cleanUrl);
