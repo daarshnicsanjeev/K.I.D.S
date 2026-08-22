@@ -2050,9 +2050,10 @@ var DriveContentExtractor = {
     // 2. Direct Execution API Fallback (Bypasses Web App domain policies & 404 proxy routing)
     if (scriptId && token) {
       try {
+        this.log('🚀 Running direct tool discovery via Google Apps Script Execution API (scripts.run)...');
         const toolsResult = await this.executeMcpCommand(token, scriptId, 'handleToolsList', []);
         if (toolsResult && toolsResult.tools && Array.isArray(toolsResult.tools)) {
-          this.log('🎉 Verified server execution via Google Cloud Execution API (scripts.run)!');
+          this.log(`🎉 Successfully verified ${toolsResult.tools.length} active MCP tools via Google Cloud Execution API!`);
           return toolsResult.tools;
         }
       } catch (e: any) {
