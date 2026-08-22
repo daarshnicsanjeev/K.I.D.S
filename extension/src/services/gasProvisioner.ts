@@ -2237,6 +2237,7 @@ var DriveContentExtractor = {
         // Resolve student email to avoid /u/0/ multi-account conflict
         let targetEmail = studentEmail;
         if (!targetEmail) {
+          this.log('🔍 Resolving authenticated student email via Google Drive User API...');
           targetEmail = (await this.getAuthenticatedUserEmail(token)) || undefined;
         }
 
@@ -2244,14 +2245,14 @@ var DriveContentExtractor = {
         urlObj.searchParams.set('auth', 'true');
         if (targetEmail) {
           urlObj.searchParams.set('authuser', targetEmail);
+          this.log(`📧 Routing authorization specifically to Google account: ${targetEmail}`);
+        } else {
+          this.log('⚠️ Could not resolve student email address; opening standard authorization modal.');
         }
         const authUrl = urlObj.toString();
 
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
         this.log(`🔍 Preflight Check: HTTP ${pingRes.status} — Google demands 1-time permissions handshake.`);
-        if (targetEmail) {
-          this.log(`📧 Routing authorization specifically to Google account: ${targetEmail}`);
-        }
         this.log(`🔗 Modal URL: ${authUrl}`);
         this.log('🚀 Opening focused Google Authorization window...');
         this.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
