@@ -188,19 +188,15 @@ export class GasProvisionerService {
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
     await this.runTestAuth(scriptId, token);
 
-    // Prompt 1-time Google authorization in a focused modal (auto-closes upon Allow)
-    this.log('🔐 Launching Google authorization window for Classroom, Drive & Calendar access...');
-    await this.promptInTabAuthorization(webAppUrl);
-
-    // Verify Server Execution via JSON-RPC tools/list
-    this.log(`🧪 Verifying MCP Server endpoint (${webAppUrl})...`);
+    // Verify Server Execution directly via Google Cloud Execution API (scripts.run)
+    this.log(`🧪 Verifying MCP Server tools via direct Google Cloud REST API (scripts.run)...`);
     let verifiedTools: any[] = [];
     let needsAuth = false;
     try {
       verifiedTools = await this.verifyMcpServerUrl(webAppUrl, scriptId, token);
-      this.log(`🎉 Server verified successfully (HTTP 200)! ${verifiedTools.length} active tools ready.`);
+      this.log(`🎉 Server verified successfully via Google Cloud Execution API! ${verifiedTools.length} active tools ready.`);
     } catch (e: any) {
-      this.log(`ℹ️ Web App deployed. Initial ping note: ${e.message}`);
+      this.log(`ℹ️ Server deployed. Initial ping note: ${e.message}`);
       needsAuth = true;
       verifiedTools = [
         { name: 'get_classroom_assignments' },
