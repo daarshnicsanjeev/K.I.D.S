@@ -843,13 +843,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       btnCreateMcpServer.innerText = '⏳ Provisioning & Deploying Server in your Google Account...';
       const res = await sendMessage({ type: 'AUTO_PROVISION_GAS_WORKSPACE' });
       
-      if (res.scriptId) {
-        // Open project in Chrome tab so autoDeployScript triggers the native Google Authorization modal
-        const authUrl = `https://script.google.com/home/projects/${res.scriptId}/edit`;
-        chrome.tabs.create({ url: authUrl, active: true });
-        showSuccess(`🎉 Project deployed! Opening Google Authorization prompt in your browser — click "Review Permissions -> Allow" to activate Classroom & Drive!`);
+      if (res.isReused) {
+        showSuccess(`🎉 Found existing MCP Server project in your Google Account! Updated backend code to latest version without creating duplicates (${res.verifiedTools ? res.verifiedTools.length : 6} active tools).`);
       } else {
-        showSuccess(`🎉 Personal MCP Server Created & Deployed! Active with ${res.verifiedTools ? res.verifiedTools.length : 6} tools.`);
+        showSuccess(`🎉 Personal MCP Server Created & Deployed! Active with ${res.verifiedTools ? res.verifiedTools.length : 6} tools (Classroom, Drive, Calendar, WhatsApp, Portal).`);
       }
       renderState(await sendMessage({ type: 'GET_STATE' }));
     } catch (err: any) {

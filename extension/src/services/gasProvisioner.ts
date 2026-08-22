@@ -1,4 +1,5 @@
 import { ChildManager } from './childManager';
+import { AuthService } from './authService';
 
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
@@ -533,25 +534,10 @@ export class GasProvisionerService {
   }
 
   /**
-   * Obtains OAuth token using launchWebAuthFlow to guarantee interactive account selection for school account.
+   * Obtains OAuth token using AuthService (with local expiry caching and auto-prompting).
    */
   public static getAuthToken(interactive: boolean = true): Promise<string> {
-    if (typeof chrome === 'undefined' || !chrome.identity) {
-      return Promise.resolve("mock_oauth_access_token_dev");
-    }
-
-    if (interactive) {
-      return this.launchGoogleWebAuthFlow();
-    }
-
-    return new Promise((resolve, reject) => {
-      chrome.identity.getAuthToken({ interactive: false }, (token) => {
-        if (!chrome.runtime.lastError && token) {
-          return resolve(token);
-        }
-        reject(new Error("No silent OAuth token available."));
-      });
-    });
+    return AuthService.getValidAuthToken(interactive);
   }
 
   /**
