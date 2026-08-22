@@ -2260,7 +2260,7 @@ var DriveContentExtractor = {
         this.log(`🔍 Preflight Check: HTTP ${pingRes.status} — Google demands 1-time permissions handshake.`);
         this.log(`🔗 Modal URL: ${authUrl}`);
         this.log('🚀 Opening focused Google Authorization window...');
-        this.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
+        this.log('⏳ Active background monitor started: window will auto-close the moment you click "Allow".');
 
         if (typeof chrome !== 'undefined' && chrome.windows) {
           await new Promise<void>((resolve) => {
