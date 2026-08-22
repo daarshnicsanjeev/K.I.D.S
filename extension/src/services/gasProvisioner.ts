@@ -197,7 +197,7 @@ export class GasProvisionerService {
     await this.runTestAuth(scriptId, token);
 
     // Interactive Authorization Check if required by Google Apps Script runtime
-    await this.ensureScriptAuthorized(webAppUrl, token, scriptId);
+    await this.ensureScriptAuthorized(webAppUrl, token, scriptId, activeChild?.accountEmail);
 
     // Verify Server Execution via authenticated Web App ping & Execution API
     this.log(`🧪 Verifying MCP Server tools (Authenticated Bearer Token & Execution API)...`);
@@ -2180,9 +2180,9 @@ var DriveContentExtractor = {
 
   /**
    * Proactively detects if Google requires 1-time interactive script authorization.
-   * Prompts the clean Google consent dialog (Review Permissions -> Allow) and auto-closes.
+   * Prompts the clean Google consent dialog (Review Permissions -> Allow) routed to the student account.
    */
-  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string): Promise<void> {
+  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     try {
       const pingRes = await fetch(cleanUrl, {
@@ -2193,9 +2193,29 @@ var DriveContentExtractor = {
       const responseText = await pingRes.text();
 
       if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403) {
-        const authUrl = cleanUrl.includes('?') ? `${cleanUrl}&auth=true` : `${cleanUrl}?auth=true`;
+        // Resolve student email to avoid /u/0/ multi-account conflict
+        let targetEmail = studentEmail;
+        if (!targetEmail) {
+          try {
+            const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (userRes.ok) {
+              const userData = await userRes.json();
+              targetEmail = userData.email;
+            }
+          } catch (e) {}
+        }
+
+        const urlObj = new URL(cleanUrl);
+        urlObj.searchParams.set('auth', 'true');
+        if (targetEmail) {
+          urlObj.searchParams.set('authuser', targetEmail);
+        }
+        const authUrl = urlObj.toString();
+
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
-        this.log('🚀 Prompting one-time Google Workspace authorization...');
+        this.log(`🚀 Prompting one-time Google Workspace authorization${targetEmail ? ` for ${targetEmail}` : ''}...`);
         this.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
 
         if (typeof chrome !== 'undefined' && chrome.windows) {
