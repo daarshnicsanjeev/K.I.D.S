@@ -235,33 +235,31 @@ export class GasProvisionerService {
   /**
    * Search-First ("Find or Create") Pattern: Checks Storage -> Drive Config File -> Drive Search.
   /**
-   * Checks if an Apps Script project is actually alive and NOT in the Google Drive trash.
+   * Checks if an Apps Script project is actually alive and NOT in the Google Drive trash/bin.
    */
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Primary Check: Verify on Apps Script REST API (authoritative for script existence)
-      const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
+      // 1. Primary Check: Query Drive API directly for trashed status
+      const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (!scriptRes.ok) {
+      if (driveRes.ok) {
+        const data = await driveRes.json();
+        if (data.trashed === true || data.explicitlyTrashed === true) {
+          console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
+          return false;
+        }
+      } else if (driveRes.status === 404) {
+        console.warn(`[School MCP] Project ${scriptId} was permanently deleted (404).`);
         return false;
       }
 
-      // 2. Secondary Check: Check if specifically in Drive Trash
-      try {
-        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (driveRes.ok) {
-          const data = await driveRes.json();
-          if (data.trashed || data.explicitlyTrashed) {
-            return false;
-          }
-        }
-      } catch (e) {}
-
-      return true;
+      // 2. Secondary Check: Verify on Apps Script REST API
+      const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      return scriptRes.ok;
     } catch (e) {
       return false;
     }
@@ -305,7 +303,11 @@ export class GasProvisionerService {
       if (isAlive) {
         return configFromDrive;
       } else {
-        this.log(`⚠️ Drive config project ${configFromDrive.scriptId} was deleted or trashed by user. Creating fresh server...`);
+        this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is in the Bin/Trash or deleted. Discarding old config and creating a fresh project...`);
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']).catch(() => {});
+          if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']).catch(() => {});
+        }
       }
     }
 
