@@ -2066,6 +2066,8 @@ var DriveContentExtractor = {
     const cleanBaseUrl = webAppUrl.split('?')[0];
     const authUrl = `${cleanBaseUrl}?authInit=true`;
 
+    this.log('🚀 Opening focused Google Authorization window...');
+
     return new Promise((resolve) => {
       try {
         chrome.windows.create(
@@ -2083,11 +2085,13 @@ var DriveContentExtractor = {
             }
 
             const windowId = createdWindow.id;
+            GasProvisionerService.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
 
             // Listen for when user completes authorization (window auto-closes or is manually closed)
             const checkClosed = (closedWinId: number) => {
               if (closedWinId === windowId) {
                 chrome.windows.onRemoved.removeListener(checkClosed);
+                GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
                 resolve();
               }
             };
@@ -2095,7 +2099,8 @@ var DriveContentExtractor = {
             chrome.windows.onRemoved.addListener(checkClosed);
           }
         );
-      } catch (e) {
+      } catch (e: any) {
+        GasProvisionerService.log(`⚠️ Note on authorization window: ${e.message}`);
         resolve();
       }
     });
