@@ -197,7 +197,7 @@ export class GasProvisionerService {
     await this.runTestAuth(scriptId, token);
 
     // Interactive Authorization Check if required by Google Apps Script runtime
-    await this.ensureScriptAuthorized(webAppUrl, token);
+    await this.ensureScriptAuthorized(webAppUrl, token, scriptId);
 
     // Verify Server Execution via authenticated Web App ping & Execution API
     this.log(`🧪 Verifying MCP Server tools (Authenticated Bearer Token & Execution API)...`);
@@ -2187,9 +2187,9 @@ var DriveContentExtractor = {
 
   /**
    * Proactively detects if Google requires 1-time interactive script authorization.
-   * If <title>Authorization needed</title> is returned, opens a focused window so the user clicks "Allow".
+   * If <title>Authorization needed</title> is returned, opens a focused window pointing to the project editor so the user clicks "Allow".
    */
-  public static async ensureScriptAuthorized(webAppUrl: string, token: string): Promise<void> {
+  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     try {
       const pingRes = await fetch(cleanUrl, {
@@ -2200,17 +2200,19 @@ var DriveContentExtractor = {
       const responseText = await pingRes.text();
 
       if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403) {
+        const authUrl = scriptId ? `https://script.google.com/d/${scriptId}/edit` : cleanUrl;
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
-        this.log('🚀 Opening authorization window... Please click "Review permissions" -> "Allow" in the popup window!');
+        this.log(`🚀 Opening authorization window for project ID: ${scriptId || 'active script'}...`);
+        this.log('⏳ In the window, click "Run" (or "Review permissions") -> select your account -> click "Allow".');
 
         if (typeof chrome !== 'undefined' && chrome.windows) {
           await new Promise<void>((resolve) => {
             chrome.windows.create(
               {
-                url: cleanUrl,
+                url: authUrl,
                 type: 'popup',
-                width: 550,
-                height: 650,
+                width: 800,
+                height: 700,
                 focused: true
               },
               (win) => {
