@@ -766,11 +766,16 @@ function doGet(e) {
       'h3{color:#16a34a;margin-top:0;font-size:20px;}' +
       'p{color:#64748b;font-size:14px;line-height:1.5;}' +
       '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;}' +
-      '</style></head>' +
       '<body><div class="box"><h3>✅ MCP Server Connected!</h3>' +
       '<p>Google Workspace permissions approved. This window will close automatically...</p>' +
       '<div class="badge">Closing automatically in 2s...</div></div>' +
-      '<script>setTimeout(function(){ window.close(); }, 2000);</script></body></html>'
+      '<script>' +
+      'setTimeout(function(){' +
+      '  try { google.script.host.close(); } catch(e) {}' +
+      '  try { window.top.close(); } catch(e) {}' +
+      '  try { window.close(); } catch(e) {}' +
+      '}, 1500);' +
+      '</script></body></html>'
     ).setTitle('MCP Server Authorization');
   }
 
@@ -2273,11 +2278,43 @@ var DriveContentExtractor = {
                   return;
                 }
 
+                const windowId = win.id;
+                let isHandled = false;
+
+                // 1. Active Polling: Auto-close window as soon as Google Web App returns 200/authorized
+                const pollInterval = setInterval(async () => {
+                  if (isHandled) {
+                    clearInterval(pollInterval);
+                    return;
+                  }
+                  try {
+                    const checkRes = await fetch(cleanUrl, {
+                      method: 'GET',
+                      headers: { 'Authorization': `Bearer ${token}` }
+                    });
+                    const checkText = await checkRes.text();
+                    if (checkRes.ok && (checkText.includes('online') || checkText.includes('MCP Server Connected') || checkText.includes('status'))) {
+                      isHandled = true;
+                      clearInterval(pollInterval);
+                      try {
+                        await chrome.windows.remove(windowId);
+                      } catch (e) {}
+                      GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
+                      resolve();
+                    }
+                  } catch (e) {}
+                }, 1500);
+
+                // 2. Window Closed Listener (if user closes it or auto-closed)
                 const listener = (closedWinId: number) => {
-                  if (closedWinId === win.id) {
+                  if (closedWinId === windowId) {
                     chrome.windows.onRemoved.removeListener(listener);
-                    GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
-                    resolve();
+                    if (!isHandled) {
+                      isHandled = true;
+                      clearInterval(pollInterval);
+                      GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
+                      resolve();
+                    }
                   }
                 };
                 chrome.windows.onRemoved.addListener(listener);
