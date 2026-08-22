@@ -134,16 +134,16 @@ export class GasProvisionerService {
       const project = await this.createProject(token);
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
-      this.log('📤 Uploading server code files...');
+      this.log('📤 Uploading server code files and manifest (appsscript.json)...');
       await this.updateProjectContent(scriptId, accessKey, token);
-      this.log('🏷️ Creating version 1...');
+      this.log('🏷️ Creating version 1 (POST /v1/projects/.../versions)...');
       const version = await this.createVersion(scriptId, token);
-      this.log('🚀 Deploying Web App...');
+      this.log('🚀 Deploying Web App with manifest appsscript (POST /v1/projects/.../deployments)...');
       const deployment = await this.createDeployment(scriptId, version.versionNumber || 1, token);
       deploymentId = deployment.deploymentId;
       const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
       webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec`;
-      this.log(`✅ New Web App deployed: ${webAppUrl}`);
+      this.log(`✅ Web App deployed successfully: ${webAppUrl}`);
     }
 
     // Strip any Google multi-account index (/u/1/) to form the clean canonical Web App URL
@@ -185,11 +185,11 @@ export class GasProvisionerService {
     }
     
     // Pre-warm Google Services & Bind Scopes via Execution API
-    this.log('⚙️ Pre-warming Google Services (Classroom, Drive, Calendar)...');
+    this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
     await this.runTestAuth(scriptId, token);
 
     // Prompt 1-time Google authorization in a focused modal (auto-closes upon Allow)
-    this.log('🔐 Triggering 1-time Google authorization modal...');
+    this.log('🔐 Launching Google authorization window for Classroom, Drive & Calendar access...');
     await this.promptInTabAuthorization(webAppUrl);
 
     // Verify Server Execution via JSON-RPC tools/list
@@ -198,7 +198,7 @@ export class GasProvisionerService {
     let needsAuth = false;
     try {
       verifiedTools = await this.verifyMcpServerUrl(webAppUrl);
-      this.log(`🎉 Server verified successfully! ${verifiedTools.length} active tools ready.`);
+      this.log(`🎉 Server verified successfully (HTTP 200)! ${verifiedTools.length} active tools ready.`);
     } catch (e: any) {
       this.log(`ℹ️ Web App deployed. Initial ping note: ${e.message}`);
       needsAuth = true;
