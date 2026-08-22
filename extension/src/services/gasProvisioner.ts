@@ -2215,7 +2215,12 @@ var DriveContentExtractor = {
         const authUrl = urlObj.toString();
 
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
-        this.log(`🚀 Prompting one-time Google Workspace authorization${targetEmail ? ` for ${targetEmail}` : ''}...`);
+        this.log(`🔍 Preflight Check: HTTP ${pingRes.status} — Google demands 1-time permissions handshake.`);
+        if (targetEmail) {
+          this.log(`📧 Routing authorization specifically to Google account: ${targetEmail}`);
+        }
+        this.log(`🔗 Modal URL: ${authUrl}`);
+        this.log('🚀 Opening focused Google Authorization window...');
         this.log('⏳ Please click "Review permissions" -> select your account -> click "Allow" in the popup window.');
 
         if (typeof chrome !== 'undefined' && chrome.windows) {
@@ -2249,6 +2254,7 @@ var DriveContentExtractor = {
       }
     } catch (e: any) {
       console.warn('[School MCP] ensureScriptAuthorized check:', e.message);
+      this.log(`ℹ️ Preflight note: ${e.message}`);
     }
   }
 }
