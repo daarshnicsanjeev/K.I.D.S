@@ -196,6 +196,9 @@ export class GasProvisionerService {
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
     await this.runTestAuth(scriptId, token);
 
+    // Interactive Authorization Check if required by Google Apps Script runtime
+    await this.ensureScriptAuthorized(webAppUrl, token);
+
     // Verify Server Execution via authenticated Web App ping & Execution API
     this.log(`🧪 Verifying MCP Server tools (Authenticated Bearer Token & Execution API)...`);
     let verifiedTools: any[] = [];
@@ -2178,5 +2181,57 @@ var DriveContentExtractor = {
         resolve();
       }
     });
+  }
+
+  /**
+   * Proactively detects if Google requires 1-time interactive script authorization.
+   * If <title>Authorization needed</title> is returned, opens a focused window so the user clicks "Allow".
+   */
+  public static async ensureScriptAuthorized(webAppUrl: string, token: string): Promise<void> {
+    const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
+    try {
+      const pingRes = await fetch(cleanUrl, {
+        method: 'GET',
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+
+      const responseText = await pingRes.text();
+
+      if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403) {
+        this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
+        this.log('🚀 Opening authorization window... Please click "Review permissions" -> "Allow" in the popup window!');
+
+        if (typeof chrome !== 'undefined' && chrome.windows) {
+          await new Promise<void>((resolve) => {
+            chrome.windows.create(
+              {
+                url: cleanUrl,
+                type: 'popup',
+                width: 550,
+                height: 650,
+                focused: true
+              },
+              (win) => {
+                if (!win || !win.id) {
+                  resolve();
+                  return;
+                }
+
+                const listener = (closedWinId: number) => {
+                  if (closedWinId === win.id) {
+                    chrome.windows.onRemoved.removeListener(listener);
+                    GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
+                    resolve();
+                  }
+                };
+                chrome.windows.onRemoved.addListener(listener);
+              }
+            );
+          });
+        }
+      }
+    } catch (e: any) {
+      console.warn('[School MCP] ensureScriptAuthorized check:', e.message);
+    }
   }
 }
