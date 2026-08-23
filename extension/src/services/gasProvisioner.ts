@@ -233,33 +233,37 @@ export class GasProvisionerService {
   private static CONFIG_FILE_NAME = 'school_mcp_config.json';
 
   /**
-   * Search-First ("Find or Create") Pattern: Checks Storage -> Drive Config File -> Drive Search.
-  /**
    * Checks if an Apps Script project is actually alive and NOT in the Google Drive trash/bin.
    */
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Primary Check: Query Drive API directly for trashed status
-      const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (driveRes.ok) {
-        const data = await driveRes.json();
-        if (data.trashed === true || data.explicitlyTrashed === true) {
-          console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
-          return false;
-        }
-      } else if (driveRes.status === 404) {
-        console.warn(`[School MCP] Project ${scriptId} was permanently deleted (404).`);
-        return false;
-      }
-
-      // 2. Secondary Check: Verify on Apps Script REST API
+      // 1. Primary Check: Query Apps Script REST API (uses script.projects scope - canonical source of truth)
       const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      return scriptRes.ok;
+      if (!scriptRes.ok) {
+        // If Apps Script API returns 404 or invalid, project does not exist
+        return false;
+      }
+
+      // 2. Secondary Check: Check if specifically in the Drive Bin/Trash (if Drive API has visibility)
+      try {
+        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (driveRes.ok) {
+          const data = await driveRes.json();
+          if (data && (data.trashed === true || data.explicitlyTrashed === true)) {
+            console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
+            return false;
+          }
+        }
+      } catch (e) {
+        // Ignore Drive API 404/errors under drive.file scope when project is confirmed alive on Apps Script API
+      }
+
+      return true;
     } catch (e) {
       return false;
     }
