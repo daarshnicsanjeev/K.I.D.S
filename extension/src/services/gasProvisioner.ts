@@ -240,40 +240,33 @@ export class GasProvisionerService {
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Primary Check: Verify project exists on Apps Script REST API
-      const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
+      // 1. Primary Check: Verify project and content exist on Apps Script REST API
+      const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/content`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (!scriptRes.ok) {
-        // HTTP 404/400 means project was permanently deleted
+        // HTTP 404/400 means project was permanently deleted or invalid
         return false;
       }
 
-      // 2. Drive Bin/Trash Check: Inspect exact trashed flag via Drive API
+      // 2. Drive Bin/Trash Check: Only if Drive API explicitly confirms trashed=true
       try {
         const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,name,trashed,explicitlyTrashed`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
         if (driveRes.ok) {
           const data = await driveRes.json();
-          // If explicitly in the Bin/Trash, mark as dead so fresh project is created
+          // If explicitly marked trashed in Google Drive, mark as dead so fresh project is created
           if (data && (data.trashed === true || data.explicitlyTrashed === true)) {
-            console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
+            console.warn(`[School MCP] Project ${scriptId} is explicitly in Google Drive Trash/Bin.`);
             return false;
           }
-          // If found in Drive and trashed is false, it is active in "My Projects"
-          if (data && data.trashed === false) {
-            return true;
-          }
-        } else if (driveRes.status === 404) {
-          // File not found in Drive
-          return false;
         }
       } catch (e) {
-        console.warn(`[School MCP] verifyScriptAlive Drive check:`, e);
+        // Drive API network or scope limitation: Ignore because Apps Script API confirmed project is active
       }
 
-      // If Apps Script API is HTTP 200 and not trashed, project is alive
+      // Project is confirmed alive on Apps Script API
       return true;
     } catch (e) {
       return false;
