@@ -924,12 +924,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  const downloadSkillHandler = () => {
+  async function getDynamicAppName(): Promise<string> {
+    try {
+      const activeChild = await ChildManager.getActiveProfile();
+      if (activeChild && activeChild.name) {
+        return `School Portal MCP Server - ${activeChild.name}`;
+      }
+    } catch (e) {}
+    return 'School Portal MCP Server';
+  }
+
+  async function updateStep3DynamicNotice() {
+    const dynamicAppName = await getDynamicAppName();
+    const lblDynamicAppName = document.getElementById('lblDynamicAppName');
+    if (lblDynamicAppName) {
+      lblDynamicAppName.textContent = dynamicAppName;
+    }
+    const scheduleBox = document.getElementById('schedulePromptBox');
+    if (scheduleBox) {
+      scheduleBox.textContent = `"Using the 'Parent School Intelligence Dashboard' skill and ${dynamicAppName}, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place."`;
+    }
+  }
+
+  const downloadSkillHandler = async () => {
+    const dynamicAppName = await getDynamicAppName();
     const skillMarkdownContent = `---
 name: parent-school-dashboard
-description: Executive school assistant for parents. Fetches school portal and Google Workspace data via School Portal MCP Server, tracks tasks in a single Google Sheet, and renders a live interactive HTML5 Canvas dashboard.
+description: Executive school assistant for parents. Fetches school portal and Google Workspace data via ${dynamicAppName}, tracks tasks in a single Google Sheet, and renders a live interactive HTML5 Canvas dashboard.
 tools:
-  - School Portal MCP Server
+  - ${dynamicAppName}
 ---
 
 # Parent School Intelligence Dashboard
@@ -938,7 +961,7 @@ tools:
 You are a Parent Executive School Assistant responsible for tracking student school progress across connected platforms.
 
 ## Execution Rules
-1. **Tool Invocation**: Call \`get_all_school_updates\` from \`School Portal MCP Server\` to fetch all student updates at once.
+1. **Tool Invocation**: Call \`get_all_school_updates\` from \`${dynamicAppName}\` to fetch all student updates at once.
 2. **Drive & Document Reading**: All attached PDFs, competition results, dialogues, and worksheet files have their full text extracted by the MCP Server under \`extracted_content_summary\` (in Classroom posts) and \`extracted_drive_attachments\` (in Gmail circulars). **Do NOT say you cannot read Google Drive links.** Read the text from \`extracted_content_summary\` and \`extracted_drive_attachments\` directly in the tool response to display competition winners, dialogues, and scores!
 3. **Single Sheet Persistence**: Use strictly a single Google Sheet to store, retrieve, and update task progress (do not create multiple sheets).
 4. **Interactive Visual Artifact Rendering**: Render this as a live, interactive UI Web Component / Artifact in Canvas preview. **Do NOT output raw HTML code text or markdown code blocks into the chat bubble.** Render the interactive visual dashboard view.
@@ -966,12 +989,13 @@ You are a Parent Executive School Assistant responsible for tracking student sch
   const btnDownloadSkill = document.getElementById('btnDownloadSkill');
   if (btnDownloadSkill) btnDownloadSkill.addEventListener('click', downloadSkillHandler);
 
-  const schedulePromptText = `Using the 'Parent School Intelligence Dashboard' skill and School Portal MCP Server, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place.`;
   const btnCopySchedulePrompt = document.getElementById('btnCopySchedulePrompt');
   const schedulePromptBox = document.getElementById('schedulePromptBox');
 
-  const copySchedulePromptHandler = () => {
-    navigator.clipboard.writeText(schedulePromptText);
+  const copySchedulePromptHandler = async () => {
+    const dynamicAppName = await getDynamicAppName();
+    const promptText = `Using the 'Parent School Intelligence Dashboard' skill and ${dynamicAppName}, run this task on an hourly schedule every 1 hour to automatically sync latest school updates, update my Google Sheet, and refresh the live HTML dashboard in-place.`;
+    navigator.clipboard.writeText(promptText);
     showSuccess('Schedule prompt copied to clipboard!');
   };
 
@@ -1413,6 +1437,9 @@ You are a Parent Executive School Assistant responsible for tracking student sch
     cardStep3.classList.toggle('hidden', step !== 3);
     cardStep4.classList.toggle('hidden', step !== 4);
     if (cardStep5) cardStep5.classList.toggle('hidden', step !== 5);
+    if (step === 3) {
+      await updateStep3DynamicNotice();
+    }
 
     if (step === 4) {
       featureSection.classList.toggle('hidden', !s.portal_connection_verified);
