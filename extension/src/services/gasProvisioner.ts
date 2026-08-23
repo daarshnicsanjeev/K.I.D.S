@@ -2273,6 +2273,10 @@ var DriveContentExtractor = {
 
         this.log('🔐 Interactive Google Apps Script authorization required for Classroom & Drive.');
         this.log(`🔍 Preflight Check: HTTP ${pingRes.status} — Google demands 1-time permissions handshake.`);
+        this.log('📋 STEP-BY-STEP GUIDANCE FOR POPUP WINDOW:');
+        this.log(`👉 1. Account to select: ${targetEmail || "Student's School Account"}`);
+        this.log('👉 2. Action: Click "Review permissions" -> select account -> click "Allow"');
+        this.log('👉 3. Auto-Close: This popup will automatically close upon approval with zero code editor exposure.');
         this.log(`🔗 Modal URL: ${authUrl}`);
         this.log('🚀 Opening focused Google Authorization window...');
         this.log('⏳ Active background monitor started: window will auto-close the moment you click "Allow".');

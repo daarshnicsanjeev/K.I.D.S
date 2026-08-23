@@ -879,6 +879,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       renderState(newState);
     } catch (err: any) {
       if (err.message && (err.message.includes('Permission Required') || err.message.includes('Authorization') || err.message.includes('permission tab') || err.message.includes('401') || err.message.includes('403'))) {
+        const activeChild = await ChildManager.getActiveProfile();
+        const childName = activeChild?.name || 'Your Child';
+        const proceed = await showAccountGuidance({
+          icon: '🔐',
+          title: `Authorize ${childName}'s School Account`,
+          targetAccountType: 'child',
+          childName: childName,
+          primaryAccountLabel: `${childName}'s SCHOOL Google Account`,
+          prohibitedAccountLabel: 'Your Parent Personal Google Account',
+          reason: `Google requires a one-time permissions approval to allow the MCP Server to read ${childName}'s Google Classroom coursework, timetables, and teacher announcements.`
+        });
+        if (!proceed) return;
+
         await openGoogleAuthScreenDirectly(gasUrl);
         showSuccess('🚀 Direct Authorization: Opening Google Authorization tab directly in your browser. Please click "Review Permissions -> Allow", then return to verify!');
       } else {
