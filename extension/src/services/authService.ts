@@ -110,6 +110,11 @@ export class AuthService {
               [AuthService.STORAGE_KEY_EXPIRY]: expiryTimestamp
             });
 
+            // Automatically close any leftover "Authorization Status" Chromium redirect windows
+            setTimeout(() => {
+              AuthService.cleanupAuthRedirectWindows();
+            }, 300);
+
             resolve(accessToken);
           } catch (err: any) {
             reject(new Error(`Failed to parse redirect URL: ${err.message}`));
@@ -117,6 +122,27 @@ export class AuthService {
         }
       );
     });
+  }
+
+  /**
+   * Cleans up and closes any leftover Chrome OAuth "Authorization Status" popup windows.
+   */
+  public static async cleanupAuthRedirectWindows(): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.windows) return;
+    try {
+      const wins = await chrome.windows.getAll({ populate: true });
+      for (const win of wins) {
+        if (win.tabs) {
+          for (const tab of win.tabs) {
+            if (tab.url && (tab.url.includes('chromiumapp.org') || tab.title?.includes('Authorization Status') || tab.url.includes('oauth2/v2/auth'))) {
+              if (win.id) {
+                await chrome.windows.remove(win.id).catch(() => {});
+              }
+            }
+          }
+        }
+      }
+    } catch (e) {}
   }
 
   /**
