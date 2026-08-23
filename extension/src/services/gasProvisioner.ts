@@ -233,12 +233,14 @@ export class GasProvisionerService {
   private static CONFIG_FILE_NAME = 'school_mcp_config.json';
 
   /**
-   * Checks if an Apps Script project is actually alive and NOT in the Google Drive trash/bin.
+   * Hybrid Verification: Combines Apps Script API and Google Drive File API.
+   * - Verifies project existence via Apps Script REST API.
+   * - Verifies active vs Bin/Trash state via Google Drive File metadata (data.trashed).
    */
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Primary Check: Query Apps Script REST API to verify project exists
+      // 1. Primary Check: Verify project exists on Apps Script REST API
       const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -247,44 +249,31 @@ export class GasProvisionerService {
         return false;
       }
 
-      // 2. Strict Drive Bin/Trash Search Check:
-      // In Google Drive, when a project is in the Bin/Trash, querying "trashed = false" returns 0 files.
+      // 2. Drive Bin/Trash Check: Inspect exact trashed flag via Drive API
       try {
-        const query = encodeURIComponent(`id = '${scriptId}' and trashed = false`);
-        const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,trashed)&supportsAllDrives=true`, {
+        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,name,trashed,explicitlyTrashed`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
-        if (searchRes.ok) {
-          const searchData = await searchRes.json();
-          if (searchData.files && Array.isArray(searchData.files)) {
-            if (searchData.files.length === 0) {
-              console.warn(`[School MCP] Project ${scriptId} is in Google Drive Bin/Trash (not found in active files).`);
-              return false;
-            }
-            if (searchData.files[0].trashed === true) {
-              console.warn(`[School MCP] Project ${scriptId} has trashed=true in Drive.`);
-              return false;
-            }
-          }
-        } else {
-          // Direct file check fallback
-          const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,trashed,explicitlyTrashed&supportsAllDrives=true`, {
-            headers: { 'Authorization': `Bearer ${token}` }
-          });
-          if (driveRes.ok) {
-            const data = await driveRes.json();
-            if (data && (data.trashed === true || data.explicitlyTrashed === true)) {
-              console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
-              return false;
-            }
-          } else if (driveRes.status === 404) {
+        if (driveRes.ok) {
+          const data = await driveRes.json();
+          // If explicitly in the Bin/Trash, mark as dead so fresh project is created
+          if (data && (data.trashed === true || data.explicitlyTrashed === true)) {
+            console.warn(`[School MCP] Project ${scriptId} is in Google Drive Trash/Bin.`);
             return false;
           }
+          // If found in Drive and trashed is false, it is active in "My Projects"
+          if (data && data.trashed === false) {
+            return true;
+          }
+        } else if (driveRes.status === 404) {
+          // File not found in Drive
+          return false;
         }
       } catch (e) {
-        console.warn(`[School MCP] verifyScriptAlive Drive check note:`, e);
+        console.warn(`[School MCP] verifyScriptAlive Drive check:`, e);
       }
 
+      // If Apps Script API is HTTP 200 and not trashed, project is alive
       return true;
     } catch (e) {
       return false;
