@@ -2294,13 +2294,15 @@ var DriveContentExtractor = {
                     });
                     const checkText = await checkRes.text();
                     if (checkRes.ok && (checkText.includes('online') || checkText.includes('MCP Server Connected') || checkText.includes('status'))) {
-                      isHandled = true;
-                      clearInterval(pollInterval);
-                      try {
-                        await chrome.windows.remove(windowId);
-                      } catch (e) {}
-                      GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
-                      resolve();
+                      if (!isHandled) {
+                        isHandled = true;
+                        clearInterval(pollInterval);
+                        try {
+                          await chrome.windows.remove(windowId);
+                        } catch (e) {}
+                        GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
+                        resolve();
+                      }
                     }
                   } catch (e) {}
                 }, 1500);
@@ -2309,9 +2311,9 @@ var DriveContentExtractor = {
                 const listener = (closedWinId: number) => {
                   if (closedWinId === windowId) {
                     chrome.windows.onRemoved.removeListener(listener);
+                    clearInterval(pollInterval);
                     if (!isHandled) {
                       isHandled = true;
-                      clearInterval(pollInterval);
                       GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
                       resolve();
                     }
