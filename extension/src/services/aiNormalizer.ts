@@ -183,13 +183,6 @@ export class AiNormalizerService {
         return;
       }
 
-      const timeMatch = line.match(timeRegex);
-      if (timeMatch && (line.length < 30 || line.includes(':') && (line.includes('PM') || line.includes('AM')))) {
-        flushTurn();
-        currentTime = timeMatch[1];
-        return;
-      }
-
       currentBodyLines.push(line);
     });
 
@@ -657,10 +650,22 @@ RULES:
       return `${m}/${d}/${y}`;
     }
     
-    // Explicit date matching (e.g. "8/24/2026", "24/08/2026")
-    const explicitMatch = clean.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+    // Explicit date matching (e.g. "8/24/2026", "24/08/2026", "23.07.2026", "2026-08-24")
+    const explicitMatch = clean.match(/(\d{1,4})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
     if (explicitMatch) {
-      return `${parseInt(explicitMatch[1], 10)}/${parseInt(explicitMatch[2], 10)}/${explicitMatch[3]}`;
+      const p1 = parseInt(explicitMatch[1], 10);
+      const p2 = parseInt(explicitMatch[2], 10);
+      const p3 = parseInt(explicitMatch[3], 10);
+      if (p1 > 1000) {
+        // YYYY-MM-DD
+        return `${p2}/${p3}/${p1}`;
+      }
+      const y = p3 < 100 ? 2000 + p3 : p3;
+      if (p1 > 12 && p2 <= 12) {
+        // DD/MM/YYYY -> MM/DD/YYYY
+        return `${p2}/${p1}/${y}`;
+      }
+      return `${p1}/${p2}/${y}`;
     }
 
     return `${anchor.getMonth() + 1}/${anchor.getDate()}/${anchor.getFullYear()}`;

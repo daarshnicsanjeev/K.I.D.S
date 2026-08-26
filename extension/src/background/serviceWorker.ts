@@ -1050,8 +1050,21 @@ async function handleMessage(message: { type: string; payload?: any }) {
                     const rawInside = bracketMatch[1].trim();
                     const parts = rawInside.split(',').map(p => p.trim());
                     if (parts.length >= 2) {
-                      if (parts[0].includes(':')) { timeStr = parts[0]; dateStr = parts[1]; }
-                      else { dateStr = parts[0]; timeStr = parts[1]; }
+                      let rawDate = '';
+                      if (parts[0].includes(':')) { timeStr = parts[0]; rawDate = parts[1]; }
+                      else { rawDate = parts[0]; timeStr = parts[1]; }
+                      
+                      const dMatch = rawDate.match(/(\d{1,4})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
+                      if (dMatch) {
+                        const p1 = parseInt(dMatch[1], 10);
+                        const p2 = parseInt(dMatch[2], 10);
+                        const p3 = parseInt(dMatch[3], 10);
+                        if (p1 > 1000) dateStr = `${p2}/${p3}/${p1}`;
+                        else if (p1 > 12 && p2 <= 12) dateStr = `${p2}/${p1}/${p3 < 100 ? 2000 + p3 : p3}`;
+                        else dateStr = `${p1}/${p2}/${p3 < 100 ? 2000 + p3 : p3}`;
+                      } else {
+                        dateStr = rawDate;
+                      }
                     }
                   }
                   if (dateStr) clusterDate = dateStr;
