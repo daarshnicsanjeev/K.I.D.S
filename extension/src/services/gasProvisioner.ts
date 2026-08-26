@@ -1,5 +1,8 @@
-import { ChildManager } from './childManager';
+import { ChildManager, ChildProfile } from './childManager';
 import { AuthService } from './authService';
+
+export const CURRENT_GAS_SERVER_VERSION = '2.9.0';
+export const CURRENT_GAS_CHANGELOG = 'Full date-time timestamp preservation, automated homework categorization, and multi-child cross-profile auto-routing';
 
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
@@ -17,6 +20,40 @@ export interface ProvisionResult {
 export class GasProvisionerService {
   public static logCallback?: (msg: string) => void;
 
+  public static async isServerUpdateAvailable(activeChild?: ChildProfile | null): Promise<{ isAvailable: boolean; currentVersion: string; deployedVersion?: string; changelog: string }> {
+    const child = activeChild || (await ChildManager.getActiveProfile());
+    if (!child || (!child.gasScriptId && !child.gasDeploymentUrl)) {
+      return { isAvailable: false, currentVersion: CURRENT_GAS_SERVER_VERSION, changelog: CURRENT_GAS_CHANGELOG };
+    }
+    const deployedVersion = child.deployedGasVersion || '1.0.0';
+    const isAvailable = deployedVersion !== CURRENT_GAS_SERVER_VERSION;
+    return {
+      isAvailable,
+      currentVersion: CURRENT_GAS_SERVER_VERSION,
+      deployedVersion,
+      changelog: CURRENT_GAS_CHANGELOG
+    };
+  }
+
+  public static async getOutdatedProfiles(): Promise<Array<{ profile: ChildProfile; currentVersion: string; deployedVersion: string }>> {
+    const profiles = await ChildManager.getProfiles(false);
+    const outdated: Array<{ profile: ChildProfile; currentVersion: string; deployedVersion: string }> = [];
+
+    for (const p of profiles) {
+      if (p.gasScriptId || p.gasDeploymentUrl) {
+        const deployed = p.deployedGasVersion || '1.0.0';
+        if (deployed !== CURRENT_GAS_SERVER_VERSION) {
+          outdated.push({
+            profile: p,
+            currentVersion: CURRENT_GAS_SERVER_VERSION,
+            deployedVersion: deployed
+          });
+        }
+      }
+    }
+    return outdated;
+  }
+
   public static log(msg: string) {
     console.log(`[School MCP] ${msg}`);
     if (this.logCallback) {
@@ -30,7 +67,7 @@ export class GasProvisionerService {
   /**
    * Main provisioning pipeline: Auth -> Reuse or Create Project -> Update Content -> Deploy -> Verify.
    */
-  public static async provision(): Promise<ProvisionResult> {
+  public static async provision(forceNew: boolean = false): Promise<ProvisionResult> {
     this.log('🔐 Requesting Google OAuth token with required permissions...');
     const token = await this.getAuthToken();
     if (!token) {
@@ -39,51 +76,48 @@ export class GasProvisionerService {
     }
     this.log('✅ Google OAuth token granted successfully.');
 
-    // Check chrome.storage.sync & chrome.storage.local for persistent credentials
-    let storedScriptId = '';
-    let storedDeploymentId = '';
-    let storedAccessKey = '';
-    let storedUrl = '';
-    
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      this.log('💾 Checking chrome.storage.sync and local cache...');
-      const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'access_key', 'mcp_gas_url']) : {};
-      const localData = chrome.storage.local ? await chrome.storage.local.get(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'access_key', 'mcp_gas_url']) : {};
-      
-      storedScriptId = syncData.mcp_gas_script_id || localData.mcp_gas_script_id || '';
-      storedDeploymentId = syncData.mcp_gas_deployment_id || localData.mcp_gas_deployment_id || '';
-      storedAccessKey = syncData.access_key || localData.access_key || '';
-      storedUrl = syncData.mcp_gas_url || localData.mcp_gas_url || '';
-      if (storedScriptId) {
-        this.log(`📦 Found cached project in storage: scriptId=${storedScriptId}, deploymentId=${storedDeploymentId}`);
-      }
-    }
-
-    // Step 1: Discover existing project across active child profile, Drive config file, and Drive Search
     const activeChild = await ChildManager.getActiveProfile();
     const childName = activeChild?.name || 'Child';
     this.log(`👶 Target Child Profile: ${childName} (ID: ${activeChild?.id || 'default'})`);
 
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
-    
-    // Check 1: Active child profile
-    if (activeChild && activeChild.gasScriptId) {
-      const isAlive = await this.verifyScriptAlive(activeChild.gasScriptId, token);
-      if (isAlive) {
-        existing = {
-          scriptId: activeChild.gasScriptId,
-          deploymentId: activeChild.gasDeploymentUrl ? (activeChild.gasDeploymentUrl.match(/\/s\/([^\/]+)\/exec/) || [])[1] || '' : '',
-          webAppUrl: activeChild.gasDeploymentUrl || '',
-          accessKey: storedAccessKey
-        };
-        this.log(`📦 Found existing active project for ${childName}: ${activeChild.gasScriptId}`);
-      }
-    }
 
-    // Check 2: Global Drive search and school_mcp_config.json
-    if (!existing) {
-      this.log('🔍 Searching Google Drive for existing Apps Script project or config file...');
-      existing = await this.findExistingProject(token);
+    if (!forceNew) {
+      this.log('🔍 Searching Google Drive for extension config file (school_mcp_config.json)...');
+      const configFromDrive = await this.loadDriveConfigFile(token);
+      if (configFromDrive && configFromDrive.scriptId) {
+        const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
+        if (isAlive) {
+          existing = configFromDrive;
+          this.log(`📦 Found existing active project from Drive config: ${configFromDrive.scriptId}`);
+        } else {
+          this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is not accessible. Discarding stale config...`);
+        }
+      } else {
+        this.log('ℹ️ No school_mcp_config.json found in Google Drive. Clearing stale local cache for fresh project creation...');
+        if (typeof chrome !== 'undefined' && chrome.storage) {
+          if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
+          if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
+        }
+        if (activeChild && activeChild.id) {
+          await ChildManager.updateProfile(activeChild.id, {
+            gasScriptId: undefined,
+            gasDeploymentUrl: undefined
+          });
+        }
+      }
+    } else {
+      this.log('🔄 Force Fresh Project: Discarding cached credentials...');
+      if (typeof chrome !== 'undefined' && chrome.storage) {
+        if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
+        if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
+      }
+      if (activeChild && activeChild.id) {
+        await ChildManager.updateProfile(activeChild.id, {
+          gasScriptId: undefined,
+          gasDeploymentUrl: undefined
+        });
+      }
     }
 
     let scriptId: string;
@@ -92,12 +126,7 @@ export class GasProvisionerService {
     let isReused = false;
 
     // Use persistent access key if available to preserve exact connection URL
-    let accessKey = (existing && existing.accessKey) || storedAccessKey;
-    if (!accessKey && storedUrl && storedUrl.includes('accessKey=')) {
-      try {
-        accessKey = new URL(storedUrl).searchParams.get('accessKey') || '';
-      } catch (e) {}
-    }
+    let accessKey = (existing && existing.accessKey) || '';
     if (!accessKey) {
       accessKey = 'Key_' + Math.random().toString(36).substring(2, 10) + Math.random().toString(36).substring(2, 10);
     }
@@ -105,13 +134,13 @@ export class GasProvisionerService {
     if (existing && existing.scriptId) {
       isReused = true;
       scriptId = existing.scriptId;
-      deploymentId = existing.deploymentId || storedDeploymentId;
-      webAppUrl = existing.webAppUrl || storedUrl;
+      deploymentId = existing.deploymentId || '';
+      webAppUrl = existing.webAppUrl || '';
       this.log(`🎯 Existing project matched for ${childName}: scriptId=${scriptId}, deploymentId=${deploymentId}`);
 
       // 1. UPDATE existing script code files directly (Code.gs, WorkspaceFetcher.gs, etc.)
       this.log(`📤 Pushing backend code files (PUT /v1/projects/${scriptId}/content)...`);
-      await this.updateProjectContent(scriptId, accessKey, token);
+      await this.updateProjectContent(scriptId, accessKey, token, childName);
       this.log('✅ Code content updated successfully.');
 
       // 2. CREATE a new immutable version
@@ -120,22 +149,13 @@ export class GasProvisionerService {
       const versionNumber = version.versionNumber || 1;
       this.log(`✅ Version ${versionNumber} created.`);
 
-      // 3. UPDATE existing deployment in-place or create initial deployment if missing
-      if (deploymentId) {
-        this.log(`🔄 Updating existing deployment in place (PUT /deployments/${deploymentId})...`);
-        await this.updateDeployment(scriptId, deploymentId, versionNumber, token);
-        if (!webAppUrl) {
-          webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec`;
-        }
-        this.log(`✅ Deployment updated in-place. URL unchanged: ${webAppUrl}`);
-      } else {
-        this.log('🚀 Creating initial deployment for discovered script...');
-        const dep = await this.createDeployment(scriptId, versionNumber, token);
-        deploymentId = dep.deploymentId;
-        const ep = dep.entryPoints ? dep.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
-        webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec`;
-        this.log(`✅ Initial deployment created: ${webAppUrl}`);
+      // 3. Update the existing deployment in place (URL remains 100% permanent & identical)
+      this.log(`🔄 Updating existing deployment in place (PUT /deployments/${deploymentId})...`);
+      await this.updateDeployment(scriptId, deploymentId, versionNumber, token);
+      if (!webAppUrl) {
+        webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${accessKey}`;
       }
+      this.log(`✅ Deployment updated in-place. Permanent URL: ${webAppUrl}`);
     } else {
       // Create new Apps Script project for active child in student account
       this.log(`📁 Creating new project for ${childName} in student Google account (POST /v1/projects)...`);
@@ -143,7 +163,7 @@ export class GasProvisionerService {
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
       this.log('📤 Uploading server code files and manifest (appsscript.json)...');
-      await this.updateProjectContent(scriptId, accessKey, token);
+      await this.updateProjectContent(scriptId, accessKey, token, childName);
       this.log('🏷️ Creating version 1 (POST /v1/projects/.../versions)...');
       const version = await this.createVersion(scriptId, token);
       this.log('🚀 Deploying Web App with manifest appsscript (POST /v1/projects/.../deployments)...');
@@ -152,6 +172,7 @@ export class GasProvisionerService {
       const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
       webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec`;
       this.log(`✅ Web App deployed successfully: ${webAppUrl}`);
+      this.log(`🔒 Security & Access: 'Anyone' (Anonymous execution allowed for Gemini Spark / AI Clients)`);
     }
 
     // Strip any Google multi-account index (/u/1/) to form the clean canonical Web App URL
@@ -162,11 +183,12 @@ export class GasProvisionerService {
       webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${accessKey}` : `${webAppUrl}?accessKey=${accessKey}`;
     }
 
-    // Update child profile with scriptId & deploymentUrl
+    // Update child profile with scriptId & deploymentUrl & deployedGasVersion
     if (activeChild && activeChild.id) {
       await ChildManager.updateProfile(activeChild.id, {
         gasScriptId: scriptId,
-        gasDeploymentUrl: webAppUrl
+        gasDeploymentUrl: webAppUrl,
+        deployedGasVersion: CURRENT_GAS_SERVER_VERSION
       });
     }
 
@@ -206,6 +228,7 @@ export class GasProvisionerService {
     try {
       verifiedTools = await this.verifyMcpServerUrl(webAppUrl, scriptId, token, accessKey);
       this.log(`🎉 Server verified successfully (HTTP 200)! ${verifiedTools.length} active tools ready.`);
+      this.log(`📋 Server URL ready for Gemini Spark: ${webAppUrl}`);
     } catch (e: any) {
       this.log(`ℹ️ Server deployed. Initial ping note: ${e.message}`);
       needsAuth = true;
@@ -233,41 +256,16 @@ export class GasProvisionerService {
   private static CONFIG_FILE_NAME = 'school_mcp_config.json';
 
   /**
-   * Hybrid Verification: Combines Apps Script API and Google Drive File API.
-   * - Verifies project existence via Apps Script REST API.
-   * - Verifies active vs Bin/Trash state via Google Drive File metadata (data.trashed).
+   * Pure Apps Script REST API Verification:
+   * Verifies that the project exists and its content is accessible via Apps Script REST API.
    */
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
-      // 1. Primary Check: Verify project and content exist on Apps Script REST API
       const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/content`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      if (!scriptRes.ok) {
-        // HTTP 404/400 means project was permanently deleted or invalid
-        return false;
-      }
-
-      // 2. Drive Bin/Trash Check: Only if Drive API explicitly confirms trashed=true
-      try {
-        const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,name,trashed,explicitlyTrashed`, {
-          headers: { 'Authorization': `Bearer ${token}` }
-        });
-        if (driveRes.ok) {
-          const data = await driveRes.json();
-          // If explicitly marked trashed in Google Drive, mark as dead so fresh project is created
-          if (data && (data.trashed === true || data.explicitlyTrashed === true)) {
-            console.warn(`[School MCP] Project ${scriptId} is explicitly in Google Drive Trash/Bin.`);
-            return false;
-          }
-        }
-      } catch (e) {
-        // Drive API network or scope limitation: Ignore because Apps Script API confirmed project is active
-      }
-
-      // Project is confirmed alive on Apps Script API
-      return true;
+      return scriptRes.ok;
     } catch (e) {
       return false;
     }
@@ -616,7 +614,7 @@ export class GasProvisionerService {
   }
 
   /**
-   * Creates a new Google Apps Script project via REST API.
+   * Creates a new Google Apps Script project via Apps Script REST API (POST /v1/projects).
    */
   private static async createProject(token: string): Promise<any> {
     let projectTitle = 'Personal School MCP Sync Engine';
@@ -649,15 +647,16 @@ export class GasProvisionerService {
   /**
    * Pushes Code.gs, WorkspaceFetcher.gs, PortalApiFetcher.gs, StorageRepository.gs & appsscript.json.
    */
-  private static async updateProjectContent(scriptId: string, accessKey: string, token: string): Promise<any> {
+  private static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child'): Promise<any> {
     const files = [
       {
         name: 'appsscript',
         type: 'JSON',
         source: JSON.stringify({
-          timeZone: 'Etc/UTC',
+          timeZone: 'Asia/Kolkata',
           exceptionLogging: 'STACKDRIVER',
-          webapp: { access: 'ANYONE', executeAs: 'USER_DEPLOYING' },
+          runtimeVersion: 'V8',
+          webapp: { access: 'ANYONE_ANONYMOUS', executeAs: 'USER_DEPLOYING' },
           executionApi: { access: 'ANYONE' },
           dependencies: {
             enabledAdvancedServices: [
@@ -692,8 +691,7 @@ export class GasProvisionerService {
             'https://www.googleapis.com/auth/presentations',
             'https://www.googleapis.com/auth/presentations.readonly',
             'https://www.googleapis.com/auth/script.external_request'
-          ],
-          runtimeVersion: 'V8'
+          ]
         }, null, 2)
       },
       {
@@ -701,7 +699,8 @@ export class GasProvisionerService {
         type: 'SERVER_JS',
         source: `
 var CONFIG = {
-  accessKey: "${accessKey}"
+  accessKey: "${accessKey}",
+  childName: "${childName.replace(/"/g, '\\"')}"
 };
 
 var McpLogger = {
@@ -805,7 +804,8 @@ function doGet(e) {
   }
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
-    server: 'School Portal MCP Server',
+    server: 'School Portal MCP Server - ' + (CONFIG.childName || 'Child'),
+    childName: CONFIG.childName || 'Child',
     accessKey: e.parameter ? e.parameter.accessKey : null
   })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -835,8 +835,8 @@ function doPost(e) {
           tools: {}
         },
         serverInfo: {
-          name: "School Portal MCP Server",
-          version: "1.0.0"
+          name: "School Portal MCP Server - " + (CONFIG.childName || 'Child'),
+          version: "2.3.0"
         }
       };
       McpLogger.log('INFO', 'initialize', { client: params.clientInfo || 'Gemini Spark' });
@@ -928,7 +928,7 @@ function handleToolsList() {
   var masterTool = [
     {
       name: 'get_all_school_updates',
-      description: 'MASTER TOOL: Unified tool to fetch ALL student school data (Google Classroom, Gmail circulars, Calendar events, EduSprint portal features, and WhatsApp school group announcements) in a single unified call with 1 authorization.',
+      description: 'MASTER TOOL: Unified tool to fetch ALL student school data (Google Classroom, Gmail circulars, Calendar events, EduSprint portal features, and recent WhatsApp class group announcements/homework) in a single unified call with 1 authorization. Always inspect WhatsApp notices for daily homework assignments (such as ICT, Science, Math worksheets) announced by teachers.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -939,22 +939,22 @@ function handleToolsList() {
     },
     {
       name: 'get_whatsapp_school_updates',
-      description: 'WHATSAPP TOOL: Fetches recent school notices, teacher broadcasts, homework reminders, and shared links from user-tracked WhatsApp school groups.',
+      description: 'WHATSAPP TOOL: Fetches recent school notices, teacher broadcasts, homework assignments (e.g. ICT homework, Science, Hindi, Math, English), and shared links from user-tracked WhatsApp school groups.',
       inputSchema: {
         type: 'object',
         properties: {
-          chat_filter: { type: 'string', description: 'Filter by specific chat/group name or keyword (e.g. "Grade 3B CAIE" or "bus")' },
-          max_count: { type: 'number', description: 'Maximum number of recent messages to return (default: 20)' }
+          chat_filter: { type: 'string', description: 'Filter by specific chat/group name or keyword (e.g. "Grade 3B CAIE" or "homework")' },
+          max_count: { type: 'number', description: 'Maximum number of recent messages to return (default: 35)' }
         }
       }
     },
     {
       name: 'query_whatsapp_history',
-      description: 'WHATSAPP ARCHIVE TOOL: Searches historical WhatsApp school messages stored in the user personal Google Drive archive (whatsapp_school_archive.json).',
+      description: 'WHATSAPP ARCHIVE TOOL: Searches historical WhatsApp school messages and homework stored in Google Drive archive (whatsapp_school_archive.json) across all dates and subjects.',
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search term, subject, date, or sender name' }
+          query: { type: 'string', description: 'Search term, subject (e.g. "ICT", "Science", "homework"), date (e.g. "24 August"), or teacher name' }
         },
         required: ['query']
       }
@@ -979,11 +979,11 @@ function handleToolsList() {
     },
     {
       name: 'fetch_drive_file_ocr',
-      description: 'ON-DEMAND OCR TOOL: Extracts full text from any specific Google Drive file (worksheet, PDF, homework, textbook note, image) by file ID on demand.',
+      description: 'ON-DEMAND OCR TOOL: Extracts high-resolution OCR text from PDF attachments or worksheet images stored in Google Drive.',
       inputSchema: {
         type: 'object',
         properties: {
-          fileId: { type: 'string', description: 'The Google Drive file ID to extract text from' }
+          fileId: { type: 'string', description: 'Google Drive File ID to extract OCR text from' }
         },
         required: ['fileId']
       }
@@ -995,14 +995,14 @@ function handleToolsList() {
 
 function handleToolsCall(name, args) {
   if (name === 'get_whatsapp_school_updates') {
-    var msgs = WhatsAppStorage.getRecentMessages(args && args.chat_filter, args && args.max_count);
+    var msgs = WhatsAppStorage.getRecentMessages(args && args.chat_filter, (args && args.max_count) || 35);
     McpLogger.log('INFO', 'whatsapp:get_updates', { filter: args && args.chat_filter, count: msgs.length });
     return {
       timestamp: new Date().toISOString(),
       messages: msgs
     };
   } else if (name === 'query_whatsapp_history') {
-    var results = WhatsAppStorage.getRecentMessages(args && args.query, 50);
+    var results = WhatsAppStorage.queryHistory(args && args.query, 60);
     McpLogger.log('INFO', 'whatsapp:query_history', { query: args && args.query, resultsCount: results.length });
     return {
       timestamp: new Date().toISOString(),
@@ -1037,7 +1037,7 @@ function handleToolsCall(name, args) {
     try { result.school_gmail_circulars = WorkspaceFetcher.getSchoolGmailMessages(args && args.gmail_query); } catch (e) { result.school_gmail_circulars = { error: e.toString() }; }
     try { result.calendar_events = WorkspaceFetcher.getCalendarEvents(); } catch (e) { result.calendar_events = { error: e.toString() }; }
     try {
-      result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 15);
+      result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 35);
       McpLogger.log('INFO', 'whatsapp:school_notices', { count: result.whatsapp_school_notices ? result.whatsapp_school_notices.length : 0 });
     } catch (we) {
       result.whatsapp_school_notices = { error: we.toString() };
@@ -1333,36 +1333,89 @@ var WhatsAppStorage = {
       PropertiesService.getUserProperties().setProperty('WHATSAPP_ARCHIVE_FILE_ID', newFile.getId());
     }
 
-    var recent = existing.slice(0, 30);
-    PropertiesService.getUserProperties().setProperty('WHATSAPP_RECENT_CACHE', JSON.stringify(recent));
     McpLogger.log('INFO', 'whatsapp:archived', { added: addedCount, totalArchived: existing.length });
     return { saved: addedCount, total: existing.length };
   },
 
-  getRecentMessages: function (chatFilter, maxCount) {
-    maxCount = maxCount || 30;
-    var raw = PropertiesService.getUserProperties().getProperty('WHATSAPP_RECENT_CACHE');
-    var list = raw ? JSON.parse(raw) : [];
-    if (!list || list.length === 0) {
-      var fileId = this.getArchiveFileId();
-      if (fileId) {
-        try {
-          var content = DriveApp.getFileById(fileId).getBlob().getDataAsString();
-          list = content ? JSON.parse(content) : [];
-        } catch (e) {}
-      }
+  getAllMessages: function () {
+    var fileId = this.getArchiveFileId();
+    if (!fileId) return [];
+    try {
+      var content = DriveApp.getFileById(fileId).getBlob().getDataAsString();
+      return content ? JSON.parse(content) : [];
+    } catch (e) {
+      return [];
     }
+  },
+
+  getRecentMessages: function (chatFilter, maxCount) {
+    maxCount = maxCount || 40;
+    var list = this.getAllMessages();
 
     if (chatFilter && chatFilter.trim()) {
       var query = chatFilter.toLowerCase().trim();
+      var terms = query.split(/[\s,]+/);
       list = list.filter(function (m) {
-        return (m.chatName && m.chatName.toLowerCase().indexOf(query) !== -1) ||
-               (m.body && m.body.toLowerCase().indexOf(query) !== -1) ||
-               (m.sender && m.sender.toLowerCase().indexOf(query) !== -1);
+        var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
+        return terms.some(function(t) { return t.length > 1 && text.indexOf(t) !== -1; }) || text.indexOf(query) !== -1;
       });
     }
 
-    return list.slice(0, maxCount);
+    return list.slice(0, maxCount).map(function (m) {
+      var body = m.body || '';
+      var isHomework = /homework|assignment|worksheet|submission|due|deadline|task|subject:|practice sheet|chapter/i.test(body);
+      var ts = m.timestamp || '';
+      var parts = ts.includes(',') ? ts.split(',') : [ts];
+      return {
+        chatName: m.chatName,
+        sender: m.sender,
+        timestamp: ts,
+        date: m.date || (parts.length > 1 ? parts[1].trim() : undefined),
+        time: m.time || (parts.length > 1 ? parts[0].trim() : ts),
+        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : 'CLASS_ANNOUNCEMENT',
+        body: body,
+        driveAttachmentUrl: m.driveAttachmentUrl || undefined,
+        driveFileName: m.driveFileName || undefined
+      };
+    });
+  },
+
+  queryHistory: function (query, maxCount) {
+    maxCount = maxCount || 50;
+    var list = this.getAllMessages();
+    if (!query || !query.trim()) return list.slice(0, maxCount);
+
+    var q = query.toLowerCase().trim();
+    var terms = q.split(/[\s,]+/);
+    var results = list.filter(function (m) {
+      var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
+      return terms.every(function(t) { return text.indexOf(t) !== -1; }) || text.indexOf(q) !== -1;
+    });
+
+    if (results.length === 0 && terms.length > 1) {
+      results = list.filter(function (m) {
+        var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
+        return terms.some(function(t) { return t.length > 2 && text.indexOf(t) !== -1; });
+      });
+    }
+
+    return results.slice(0, maxCount).map(function (m) {
+      var body = m.body || '';
+      var isHomework = /homework|assignment|worksheet|submission|due|deadline|task|subject:|practice sheet|chapter/i.test(body);
+      var ts = m.timestamp || '';
+      var parts = ts.includes(',') ? ts.split(',') : [ts];
+      return {
+        chatName: m.chatName,
+        sender: m.sender,
+        timestamp: ts,
+        date: m.date || (parts.length > 1 ? parts[1].trim() : undefined),
+        time: m.time || (parts.length > 1 ? parts[0].trim() : ts),
+        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : 'CLASS_ANNOUNCEMENT',
+        body: body,
+        driveAttachmentUrl: m.driveAttachmentUrl || undefined,
+        driveFileName: m.driveFileName || undefined
+      };
+    });
   }
 };
 

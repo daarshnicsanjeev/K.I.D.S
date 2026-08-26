@@ -8,6 +8,24 @@
 
   let lastKnownDocTitle = '';
 
+  // Intercept all click events to extract active document title from clicked message card
+  document.addEventListener('click', (ev) => {
+    try {
+      const target = ev.target as HTMLElement | null;
+      if (!target) return;
+      const docCard = target.closest('[data-testid="msg-container"], div.message-in, div.message-out, div.document-container, div[data-testid="document-body"], div.copyable-area');
+      if (docCard) {
+        const titleEl = docCard.querySelector('span[data-testid="document-name"], span[title*="."], div[title*="."]');
+        if (titleEl) {
+          const t = (titleEl.getAttribute('title') || titleEl.textContent || '').trim();
+          if (t && !t.toLowerCase().includes('-icon') && t.length > 2) {
+            lastKnownDocTitle = t;
+          }
+        }
+      }
+    } catch (e) {}
+  }, true);
+
   // Intercept anchor click to capture download filename
   const originalAnchorClick = HTMLAnchorElement.prototype.click;
   HTMLAnchorElement.prototype.click = function () {
@@ -24,17 +42,25 @@
     const url = originalCreateObjectURL.apply(this, arguments as any);
     try {
       if (blob instanceof Blob) {
-        if (blob.type === 'application/pdf' || blob.type === 'application/octet-stream' || blob.type.includes('document') || blob.type.includes('sheet') || blob.size > 2048) {
-          const capturedName = lastKnownDocTitle;
+        if (blob.type === 'application/pdf' || blob.type === 'application/octet-stream' || blob.type.includes('document') || blob.type.includes('sheet') || blob.type.includes('image') || blob.size > 1024) {
+          const capturedName = lastKnownDocTitle || 'school_document.pdf';
           const reader = new FileReader();
           reader.onloadend = () => {
             const res = reader.result as string;
             if (res && res.includes(',')) {
               const base64Data = res.split(',')[1];
+              (window as any).__school_mcp_captured_blobs = (window as any).__school_mcp_captured_blobs || new Map();
+              (window as any).__school_mcp_captured_blobs.set(url, {
+                name: capturedName,
+                mime: blob.type || 'application/pdf',
+                size: blob.size,
+                base64: base64Data
+              });
+
               window.postMessage({
                 type: 'CAPTURED_PDF_STREAM',
                 url,
-                fileName: capturedName || undefined,
+                fileName: capturedName,
                 mimeType: blob.type || 'application/pdf',
                 size: blob.size,
                 base64Data
@@ -112,4 +138,38 @@
     });
     return originalSend.apply(this, [body]);
   };
+
+  // Automatically dismiss WhatsApp Web error popups (e.g. "Document unavailable", "no longer on your phone")
+  try {
+    const autoDismissObserver = new MutationObserver(() => {
+      const modalDialogs = document.querySelectorAll('div[data-animate-modal-popup="true"], div[role="dialog"], div.modal, [data-testid="popup-contents"]');
+      modalDialogs.forEach(dialog => {
+        const text = (dialog.textContent || '').toLowerCase();
+        if (
+          text.includes('document unavailable') ||
+          text.includes('no longer on your phone') ||
+          text.includes('media unavailable') ||
+          text.includes('file not found') ||
+          text.includes('download failed') ||
+          text.includes("can't download") ||
+          text.includes('cant download')
+        ) {
+          const okBtn = (dialog.querySelector('button, div[role="button"]') || dialog.querySelector('span')) as HTMLElement | null;
+          if (okBtn) {
+            okBtn.click();
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, bubbles: true }));
+          }
+        }
+      });
+    });
+    if (document.body) {
+      autoDismissObserver.observe(document.body, { childList: true, subtree: true });
+    } else {
+      document.addEventListener('DOMContentLoaded', () => {
+        autoDismissObserver.observe(document.body, { childList: true, subtree: true });
+      });
+    }
+  } catch (e) {}
+
+  console.log('[School MCP Interceptor] Sniffer and Auto-Dismiss initialized.');
 })();

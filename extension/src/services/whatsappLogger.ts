@@ -6,6 +6,7 @@
 
 export interface WhatsAppLogEntry {
   timestamp: string;
+  rawTimestamp?: number;
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
   category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT';
   message: string;
@@ -14,7 +15,7 @@ export interface WhatsAppLogEntry {
 
 export class WhatsAppDiagnosticLogger {
   private static STORAGE_KEY = 'whatsapp_diagnostic_logs';
-  private static MAX_ENTRIES = 150;
+  private static MAX_ENTRIES = 500;
 
   public static async log(
     level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS',
@@ -22,8 +23,10 @@ export class WhatsAppDiagnosticLogger {
     message: string,
     metadata?: Record<string, any>
   ): Promise<void> {
+    const now = Date.now();
     const entry: WhatsAppLogEntry = {
-      timestamp: new Date().toLocaleTimeString(),
+      timestamp: new Date(now).toLocaleTimeString(),
+      rawTimestamp: now,
       level,
       category,
       message,
@@ -45,10 +48,15 @@ export class WhatsAppDiagnosticLogger {
     }
   }
 
-  public static async getLogs(): Promise<WhatsAppLogEntry[]> {
+  public static async getLogs(minutesFilter?: number): Promise<WhatsAppLogEntry[]> {
     try {
       const data = await chrome.storage.local.get([this.STORAGE_KEY]);
-      return data[this.STORAGE_KEY] || [];
+      const logs: WhatsAppLogEntry[] = data[this.STORAGE_KEY] || [];
+      if (minutesFilter && minutesFilter > 0) {
+        const cutoff = Date.now() - minutesFilter * 60 * 1000;
+        return logs.filter(l => !l.rawTimestamp || l.rawTimestamp >= cutoff);
+      }
+      return logs;
     } catch (e) {
       return [];
     }

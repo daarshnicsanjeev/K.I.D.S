@@ -1,5 +1,7 @@
 import { ChildManager } from '../services/childManager';
 import { PersonalDriveService } from '../services/personalDriveService';
+import { GasProvisionerService, CURRENT_GAS_SERVER_VERSION, CURRENT_GAS_CHANGELOG } from '../services/gasProvisioner';
+import { AiNormalizerService } from '../services/aiNormalizer';
 
 document.addEventListener('DOMContentLoaded', async () => {
   const stepBadge = document.getElementById('stepBadge') as HTMLElement;
@@ -8,6 +10,169 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cardStep3 = document.getElementById('step3Card') as HTMLElement;
   const cardStep4 = document.getElementById('step4Card') as HTMLElement;
   const cardStep5 = document.getElementById('step5Card') as HTMLElement;
+
+  // AI Normalizer Status UI Elements
+  const aiStatusBadge = document.getElementById('aiStatusBadge') as HTMLElement;
+  const chkUseAiNormalizer = document.getElementById('chkUseAiNormalizer') as HTMLInputElement;
+
+  async function checkAiNormalizerStatus() {
+    if (!aiStatusBadge) return;
+    try {
+      const avail = await AiNormalizerService.getAvailability();
+      if (avail.status === 'readily') {
+        aiStatusBadge.textContent = '🟢 Ready (Nano)';
+        aiStatusBadge.style.background = '#065f46';
+        aiStatusBadge.style.color = '#34d399';
+        aiStatusBadge.title = 'Chrome Built-in AI is active on this device.';
+      } else if (avail.status === 'after-download') {
+        aiStatusBadge.textContent = '🟡 Download Available';
+        aiStatusBadge.style.background = '#78350f';
+        aiStatusBadge.style.color = '#fcd34d';
+        aiStatusBadge.title = 'Model is available to download.';
+      } else {
+        aiStatusBadge.textContent = '⚪ Rule Engine';
+        aiStatusBadge.style.background = '#334155';
+        aiStatusBadge.style.color = '#cbd5e1';
+      }
+    } catch {
+      aiStatusBadge.textContent = '⚪ Rule Engine';
+    }
+  }
+
+  // Load AI normalizer preference
+  if (chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(['useAiNormalizer'], (res) => {
+      if (chkUseAiNormalizer) {
+        chkUseAiNormalizer.checked = res.useAiNormalizer !== false;
+      }
+    });
+    chkUseAiNormalizer?.addEventListener('change', () => {
+      chrome.storage.local.set({ useAiNormalizer: chkUseAiNormalizer.checked });
+    });
+  }
+
+  // 1-Click AI Launcher Download Handler
+  const btnDownloadAiLauncher = document.getElementById('btnDownloadAiLauncher') as HTMLButtonElement;
+  btnDownloadAiLauncher?.addEventListener('click', () => {
+    const batContent = `@echo off
+title School MCP - Chrome Gemini Nano AI Launcher
+echo ======================================================================
+echo   Starting Google Chrome with Gemini Nano On-Device AI Enabled...
+echo ======================================================================
+echo.
+
+set "CHROME_PATH="
+if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_PATH=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"
+) else if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_PATH=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"
+) else if exist "%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe" (
+    set "CHROME_PATH=%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe"
+)
+
+echo Closing any existing background Chrome instances to apply AI flags...
+taskkill /F /IM chrome.exe >nul 2>&1
+timeout /t 1 >nul
+
+if "%CHROME_PATH%"=="" (
+    start chrome.exe --enable-features=OptimizationGuideModelDownloading,OptimizationGuideOnDeviceModel,PromptAPIForGeminiNano --optimization-guide-on-device-model-execution-override=1
+) else (
+    start "" "%CHROME_PATH%" --enable-features=OptimizationGuideModelDownloading,OptimizationGuideOnDeviceModel,PromptAPIForGeminiNano --optimization-guide-on-device-model-execution-override=1
+)
+
+echo.
+echo [DONE] Chrome restarted with On-Device AI flags active!
+timeout /t 3 >nul
+exit
+`;
+    const blob = new Blob([batContent], { type: 'application/x-bat;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'launch-chrome-ai.bat';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showSuccess('Downloaded "launch-chrome-ai.bat". Double-click to restart Chrome with On-Device AI.');
+  });
+
+  // Step-by-Step AI Diagnostics Inspector
+  const btnRunAiDiagnostics = document.getElementById('btnRunAiDiagnostics') as HTMLButtonElement;
+  const aiDiagnosticsLogBox = document.getElementById('aiDiagnosticsLogBox') as HTMLElement;
+  const aiDownloadTriggerRow = document.getElementById('aiDownloadTriggerRow') as HTMLElement;
+  const lblAiDownloadStatus = document.getElementById('lblAiDownloadStatus') as HTMLElement;
+  const btnTriggerModelDownload = document.getElementById('btnTriggerModelDownload') as HTMLButtonElement;
+
+  btnRunAiDiagnostics?.addEventListener('click', async () => {
+    btnRunAiDiagnostics.disabled = true;
+    btnRunAiDiagnostics.textContent = '⏳ Checking...';
+    if (aiDiagnosticsLogBox) {
+      aiDiagnosticsLogBox.classList.remove('hidden');
+      aiDiagnosticsLogBox.textContent = 'Inspecting Chrome On-Device AI environment...\n';
+    }
+
+    try {
+      let activeTabId: number | undefined;
+      if (chrome.tabs) {
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs && tabs[0]) activeTabId = tabs[0].id;
+      }
+
+      const diag = await AiNormalizerService.runStepByStepDiagnostics(activeTabId);
+      if (aiDiagnosticsLogBox) {
+        aiDiagnosticsLogBox.textContent = diag.report;
+      }
+
+      if (diag.canDownload && aiDownloadTriggerRow) {
+        aiDownloadTriggerRow.classList.remove('hidden');
+      } else if (aiDownloadTriggerRow) {
+        aiDownloadTriggerRow.classList.add('hidden');
+      }
+      await checkAiNormalizerStatus();
+    } catch (e: any) {
+      if (aiDiagnosticsLogBox) {
+        aiDiagnosticsLogBox.textContent += `\n❌ Diagnostic execution error: ${e?.message || String(e)}`;
+      }
+    } finally {
+      btnRunAiDiagnostics.disabled = false;
+      btnRunAiDiagnostics.textContent = '🔍 Check AI';
+    }
+  });
+
+  btnTriggerModelDownload?.addEventListener('click', async () => {
+    btnTriggerModelDownload.disabled = true;
+    btnTriggerModelDownload.textContent = '⏳ Downloading...';
+    if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = 'Starting background model download (~1.5 GB)...';
+
+    try {
+      await AiNormalizerService.triggerModelDownload((pct, loaded, total) => {
+        if (lblAiDownloadStatus) {
+          lblAiDownloadStatus.textContent = `Downloading Gemini Nano: ${pct}% (${Math.round(loaded / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`;
+        }
+      });
+      if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = '✅ Model download completed! Gemini Nano is ready.';
+      showSuccess('Gemini Nano downloaded successfully! On-Device AI is now active.');
+      await checkAiNormalizerStatus();
+      if (btnRunAiDiagnostics) btnRunAiDiagnostics.click();
+    } catch (err: any) {
+      if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = `❌ Download error: ${err?.message || String(err)}`;
+    } finally {
+      btnTriggerModelDownload.disabled = false;
+      btnTriggerModelDownload.textContent = '⚡ Start Download';
+    }
+  });
+
+  checkAiNormalizerStatus();
+
+  // Gas Server Version UI Elements
+  const gasUpdateNotificationCard = document.getElementById('gasUpdateNotificationCard') as HTMLElement;
+  const lblGasUpdateTitle = document.getElementById('lblGasUpdateTitle') as HTMLElement;
+  const lblGasUpdateChangelog = document.getElementById('lblGasUpdateChangelog') as HTMLElement;
+  const btnQuickUpdateGasServer = document.getElementById('btnQuickUpdateGasServer') as HTMLButtonElement;
+  const gasUpToDateBadge = document.getElementById('gasUpToDateBadge') as HTMLElement;
+  const lblGasDeployedVersion = document.getElementById('lblGasDeployedVersion') as HTMLElement;
+  const lblGasDeployedChild = document.getElementById('lblGasDeployedChild') as HTMLElement;
 
   // Multi-Child UI Elements
   const selChildProfile = document.getElementById('selChildProfile') as HTMLSelectElement;
@@ -655,11 +820,35 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshBridgeStatus();
 
-  // Unified 1-Click Track & Sync Active Chat
+  // Unified 1-Click Track & Sync Active Chat & Instant Stop Control
+  const btnStopActiveSync = document.getElementById('btnStopActiveSync') as HTMLButtonElement;
+
+  btnStopActiveSync?.addEventListener('click', async () => {
+    btnStopActiveSync.disabled = true;
+    btnStopActiveSync.innerText = '⏳ Stopping...';
+    try {
+      await sendMessage({ type: 'ABORT_ACTIVE_SYNC' });
+      showSuccess('⏹️ Active sync stopped.');
+      await loadWhatsAppLogs();
+    } catch (e: any) {
+      showError(`Stop error: ${e.message}`);
+    } finally {
+      btnStopActiveSync.classList.add('hidden');
+      btnStopActiveSync.disabled = false;
+      btnStopActiveSync.innerText = '⏹️ Stop Sync';
+      if (btnCaptureActiveChat) {
+        btnCaptureActiveChat.disabled = false;
+        btnCaptureActiveChat.innerText = '📸 1-Click Track & Sync Active Chat / Group';
+      }
+    }
+  });
+
   btnCaptureActiveChat?.addEventListener('click', async () => {
     clearAlerts();
     btnCaptureActiveChat.disabled = true;
     btnCaptureActiveChat.innerText = '⏳ Capturing & Syncing Group...';
+    btnStopActiveSync?.classList.remove('hidden');
+
     try {
       // 1. Capture group metadata & ID
       const capRes = await sendMessage({ type: 'CAPTURE_ACTIVE_WHATSAPP_CHAT' });
@@ -674,9 +863,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       await refreshBridgeStatus();
       await loadWhatsAppLogs();
     } catch (err: any) {
-      appendLog(`❌ Track & Sync Failed: ${err.message}`);
+      appendLog(`❌ Track & Sync: ${err.message}`);
       showError(err.message);
     } finally {
+      btnStopActiveSync?.classList.add('hidden');
       btnCaptureActiveChat.disabled = false;
       btnCaptureActiveChat.innerText = '📸 1-Click Track & Sync Active Chat / Group';
     }
@@ -687,25 +877,60 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnFetchWhatsAppLogs = document.getElementById('btnFetchWhatsAppLogs') as HTMLButtonElement;
   const btnCopyWhatsAppLogs = document.getElementById('btnCopyWhatsAppLogs') as HTMLButtonElement;
   const btnClearWhatsAppLogs = document.getElementById('btnClearWhatsAppLogs') as HTMLButtonElement;
+  const selLogTimeFilter = document.getElementById('selLogTimeFilter') as HTMLSelectElement;
+  const btnDownloadJsonArchive = document.getElementById('btnDownloadJsonArchive') as HTMLButtonElement;
 
   async function loadWhatsAppLogs() {
     try {
-      const res = await sendMessage({ type: 'GET_WHATSAPP_DIAGNOSTICS' });
+      const filterVal = selLogTimeFilter ? selLogTimeFilter.value : '10';
+      const minutes = filterVal === 'all' ? undefined : parseInt(filterVal, 10);
+      const res = await sendMessage({ type: 'GET_WHATSAPP_DIAGNOSTICS', minutesFilter: minutes });
       if (txtWhatsAppLogs) {
-        txtWhatsAppLogs.value = res.formatted || 'No WhatsApp logs recorded yet.';
+        txtWhatsAppLogs.value = res.formatted || 'No WhatsApp logs recorded for this time window.';
       }
     } catch (e) {}
   }
+
+  selLogTimeFilter?.addEventListener('change', () => {
+    loadWhatsAppLogs();
+  });
 
   btnFetchWhatsAppLogs?.addEventListener('click', async () => {
     btnFetchWhatsAppLogs.disabled = true;
     btnFetchWhatsAppLogs.innerText = '⏳ Fetching...';
     try {
       await loadWhatsAppLogs();
-      showSuccess('Fetched latest WhatsApp diagnostic logs.');
+      showSuccess('Fetched WhatsApp logs for selected timeframe.');
     } finally {
       btnFetchWhatsAppLogs.disabled = false;
       btnFetchWhatsAppLogs.innerText = '🔄 Refresh Logs';
+    }
+  });
+
+  btnDownloadJsonArchive?.addEventListener('click', async () => {
+    btnDownloadJsonArchive.disabled = true;
+    btnDownloadJsonArchive.innerText = '⏳ Generating JSON...';
+    try {
+      const res = await sendMessage({ type: 'DOWNLOAD_SCHOOL_ARCHIVE_JSON' });
+      if (res && res.success && res.jsonContent) {
+        const blob = new Blob([res.jsonContent], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = res.fileName || 'Atharva_School_Archive.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showSuccess(`✅ Downloaded "${res.fileName}" successfully!`);
+      } else {
+        showError('No messages found in archive yet. Run a sync on your active chat first.');
+      }
+    } catch (e: any) {
+      showError(`Download failed: ${e.message}`);
+    } finally {
+      btnDownloadJsonArchive.disabled = false;
+      btnDownloadJsonArchive.innerText = '💾 1-Click Download Current School Archive JSON';
     }
   });
 
@@ -724,56 +949,141 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   loadWhatsAppLogs();
 
-  const CURRENT_GAS_SCRIPT_VERSION = '2.7.0';
   const btnHeaderUpdateScript = document.getElementById('btnHeaderUpdateScript') as HTMLButtonElement;
 
-  if (btnHeaderUpdateScript) {
-    btnHeaderUpdateScript.addEventListener('click', async () => {
-      if (!isPersonalAccountConnected) {
-        showError('🔒 Please complete Step 1 (Sign in with Personal Google Account) first.');
+  async function checkGasServerVersionStatus() {
+    try {
+      const activeChild = await ChildManager.getActiveProfile();
+      const outdatedList = await GasProvisionerService.getOutdatedProfiles();
+
+      if (outdatedList.length > 0) {
+        if (gasUpdateNotificationCard) {
+          gasUpdateNotificationCard.classList.remove('hidden');
+          if (outdatedList.length === 1) {
+            if (lblGasUpdateTitle) lblGasUpdateTitle.innerText = `Apps Script Server Update Available (v${CURRENT_GAS_SERVER_VERSION})`;
+            if (lblGasUpdateChangelog) lblGasUpdateChangelog.innerText = `What's new: ${CURRENT_GAS_CHANGELOG} • Target: ${outdatedList[0].profile.name}`;
+            if (btnQuickUpdateGasServer) btnQuickUpdateGasServer.innerText = `🚀 1-Click Update ${outdatedList[0].profile.name}'s Server`;
+          } else {
+            if (lblGasUpdateTitle) lblGasUpdateTitle.innerText = `Apps Script Server Updates Available (${outdatedList.length} Children)`;
+            if (lblGasUpdateChangelog) lblGasUpdateChangelog.innerText = `What's new: ${CURRENT_GAS_CHANGELOG} • Children: ${outdatedList.map(o => o.profile.name).join(', ')}`;
+            if (btnQuickUpdateGasServer) btnQuickUpdateGasServer.innerText = `🚀 1-Click Update All (${outdatedList.length} Children's Servers)`;
+          }
+        }
+        if (gasUpToDateBadge) gasUpToDateBadge.classList.add('hidden');
+        if (btnHeaderUpdateScript) {
+          btnHeaderUpdateScript.innerHTML = `⚡ Update (${outdatedList.length} Server${outdatedList.length > 1 ? 's' : ''})`;
+          btnHeaderUpdateScript.style.background = '#4f46e5';
+          btnHeaderUpdateScript.style.color = '#ffffff';
+        }
         return;
       }
-      clearAlerts();
-      const activeChild = await ChildManager.getActiveProfile();
-      const childName = activeChild?.name || 'Your Child';
 
-      const proceed = await showAccountGuidance({
-        icon: '⚡',
-        title: `Update ${childName}'s MCP Server`,
-        targetAccountType: 'child',
-        childName: childName,
-        primaryAccountLabel: `${childName}'s SCHOOL Google Account`,
-        prohibitedAccountLabel: 'Your Parent Personal Google Account',
-        reason: `Updates the MCP Server backend code deployed inside ${childName}'s school Google account.`
-      });
-      if (!proceed) return;
+      // No outdated profiles found across all children
+      if (gasUpdateNotificationCard) gasUpdateNotificationCard.classList.add('hidden');
+      if (activeChild && (activeChild.gasDeploymentUrl || activeChild.gasScriptId)) {
+        if (gasUpToDateBadge) {
+          gasUpToDateBadge.classList.remove('hidden');
+          if (lblGasDeployedVersion) lblGasDeployedVersion.innerText = `v${activeChild.deployedGasVersion || CURRENT_GAS_SERVER_VERSION}`;
+          if (lblGasDeployedChild) lblGasDeployedChild.innerText = activeChild.name;
+        }
+        if (btnHeaderUpdateScript) {
+          btnHeaderUpdateScript.innerHTML = `✅ v${activeChild.deployedGasVersion || CURRENT_GAS_SERVER_VERSION} Up to Date`;
+          btnHeaderUpdateScript.style.background = '#064e3b';
+          btnHeaderUpdateScript.style.color = '#34d399';
+        }
+      } else {
+        if (gasUpToDateBadge) gasUpToDateBadge.classList.add('hidden');
+        if (btnHeaderUpdateScript) {
+          btnHeaderUpdateScript.innerHTML = '⚡ Setup Server';
+          btnHeaderUpdateScript.style.background = '';
+          btnHeaderUpdateScript.style.color = '';
+        }
+      }
+    } catch (e) {}
+  }
 
+  async function executeServerUpdate() {
+    if (!isPersonalAccountConnected) {
+      showError('🔒 Please complete Step 1 (Sign in with Personal Google Account) first.');
+      return;
+    }
+    clearAlerts();
+
+    const outdatedList = await GasProvisionerService.getOutdatedProfiles();
+    const activeChild = await ChildManager.getActiveProfile();
+    const targets = outdatedList.length > 0 ? outdatedList.map(o => o.profile) : (activeChild ? [activeChild] : []);
+
+    if (targets.length === 0) {
+      showSuccess('All child servers are already up to date!');
+      return;
+    }
+
+    if (btnQuickUpdateGasServer) {
+      btnQuickUpdateGasServer.disabled = true;
+      btnQuickUpdateGasServer.innerText = '⏳ Updating Apps Script Server(s)...';
+    }
+    if (btnHeaderUpdateScript) {
       btnHeaderUpdateScript.disabled = true;
       btnHeaderUpdateScript.innerText = '⏳ Updating...';
-      try {
+    }
+
+    let successCount = 0;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const targetChild = targets[i];
+        const stepNum = targets.length > 1 ? ` (Child ${i + 1} of ${targets.length})` : '';
+
+        const proceed = await showAccountGuidance({
+          icon: '⚡',
+          title: `Update ${targetChild.name}'s Server${stepNum}`,
+          targetAccountType: 'child',
+          childName: targetChild.name,
+          primaryAccountLabel: `${targetChild.name}'s SCHOOL Google Account`,
+          prohibitedAccountLabel: 'Your Parent Personal Google Account',
+          reason: `Updates the MCP Server backend code in-place inside ${targetChild.name}'s school Google account. Permanent Web App URL will remain identical.`
+        });
+        if (!proceed) {
+          showError(`Update cancelled for ${targetChild.name}.`);
+          break;
+        }
+
+        // Activate profile before provisioning
+        await ChildManager.setActiveProfileId(targetChild.id);
+
+        appendLog(`🚀 [Auto-Update] Updating Apps Script server for ${targetChild.name}...`);
         const res = await sendMessage({ type: 'AUTO_UPDATE_GAS_SCRIPT' });
         const cleanUrl = res.webAppUrl ? getCleanCanonicalUrl(res.webAppUrl) : '';
         if (res.needsAuth && cleanUrl) {
           chrome.tabs.create({ url: cleanUrl, active: true });
         }
-        showSuccess(`🎉 MCP Server script updated to v${CURRENT_GAS_SCRIPT_VERSION}! (${res.verifiedTools ? res.verifiedTools.length : 'All'} tools active with Classroom, Drive OCR, WhatsApp, & School Portal).`);
+
+        await ChildManager.updateProfile(targetChild.id, {
+          deployedGasVersion: CURRENT_GAS_SERVER_VERSION
+        });
+        successCount++;
+      }
+
+      if (successCount > 0) {
+        showSuccess(`🎉 Successfully updated ${successCount} server(s) to v${CURRENT_GAS_SERVER_VERSION}! (Permanent URLs preserved).`);
         const newState = await sendMessage({ type: 'GET_STATE' });
         renderState(newState);
-        if (newState.mcp_gas_url) {
-          const cleanUrlState = getCleanCanonicalUrl(newState.mcp_gas_url);
-          if (gasUrlInput) gasUrlInput.value = cleanUrlState;
-          if (mcpUrlDisplay) mcpUrlDisplay.value = cleanUrlState;
-          const step3UrlEl = document.getElementById('step3McpUrlDisplay') as HTMLInputElement;
-          if (step3UrlEl) step3UrlEl.value = cleanUrlState;
-        }
-      } catch (err: any) {
-        showError(`Script update failed: ${err.message}`);
-      } finally {
-        btnHeaderUpdateScript.disabled = false;
-        btnHeaderUpdateScript.innerText = '⚡ Update Script';
+        await renderChildProfiles();
       }
-    });
+    } catch (err: any) {
+      showError(`Script update failed: ${err.message}`);
+    } finally {
+      if (btnQuickUpdateGasServer) {
+        btnQuickUpdateGasServer.disabled = false;
+      }
+      if (btnHeaderUpdateScript) {
+        btnHeaderUpdateScript.disabled = false;
+      }
+      await checkGasServerVersionStatus();
+    }
   }
+
+  btnHeaderUpdateScript?.addEventListener('click', executeServerUpdate);
+  btnQuickUpdateGasServer?.addEventListener('click', executeServerUpdate);
 
   // Global Focus Tracker: Automatically persists user focus across extension reopenings
   document.addEventListener('focusin', (e) => {
@@ -983,16 +1293,18 @@ You are a Parent Executive School Assistant responsible for tracking student sch
    - \`search_google_drive\`: Full-text search and OCR extraction of school documents.
    - \`get_school_portal_notifications\`: School LMS / portal notifications.
    - \`get_whatsapp_school_updates\`: School parent WhatsApp/Telegram chat updates.
-2. **Drive & Document Reading**: All attached PDFs, competition results, dialogues, and worksheet files have their full text extracted by the MCP Server under \`extracted_content_summary\` (in Classroom posts) and \`extracted_drive_attachments\` (in Gmail circulars). **Do NOT say you cannot read Google Drive links.** Read the text from \`extracted_content_summary\` and \`extracted_drive_attachments\` directly in the tool response to display competition winners, dialogues, and scores!
-3. **Single Sheet Persistence**: Use strictly a single Google Sheet to store, retrieve, and update task progress (do not create multiple sheets).
-4. **Interactive Visual Artifact Rendering**: Render this as a live, interactive UI Web Component / Artifact in Canvas preview. **Do NOT output raw HTML code text or markdown code blocks into the chat bubble.** Render the interactive visual dashboard view.
-5. **Dashboard Layout**:
+   - \`query_whatsapp_history\`: Deep search across all historical WhatsApp messages & homework archives.
+2. **WhatsApp Class Announcements & Daily Homework**: Teachers frequently broadcast daily homework, submissions, and tasks directly in class WhatsApp groups (e.g. ICT homework, Science practice sheets, Hindi reading, Math tasks). When asked about today's homework, homework assigned, or daily updates, ALWAYS examine \`whatsapp_school_notices\` (especially items with \`category: "HOMEWORK_OR_TASK_ANNOUNCEMENT"\`) alongside Google Classroom and include them in your homework summary!
+3. **Drive & Document Reading**: All attached PDFs, competition results, dialogues, and worksheet files have their full text extracted by the MCP Server under \`extracted_content_summary\` (in Classroom posts) and \`extracted_drive_attachments\` (in Gmail circulars). **Do NOT say you cannot read Google Drive links.** Read the text from \`extracted_content_summary\` and \`extracted_drive_attachments\` directly in the tool response to display competition winners, dialogues, and scores!
+4. **Single Sheet Persistence**: Use strictly a single Google Sheet to store, retrieve, and update task progress (do not create multiple sheets).
+5. **Interactive Visual Artifact Rendering**: Render this as a live, interactive UI Web Component / Artifact in Canvas preview. **Do NOT output raw HTML code text or markdown code blocks into the chat bubble.** Render the interactive visual dashboard view.
+6. **Dashboard Layout**:
    - 🚨 **URGENT & OVERDUE**: Any task not marked completed past its due date marked as 🔴 **OVERDUE**, urgent circulars, fee deadlines.
    - 🟡 **HIGH PRIORITY**: Any pending homework, project, or task with a due date of 3 days or less.
-   - 📅 **TODAY'S DAILY OVERVIEW**: Today's applicable timetable & periods, assigned homework, classwork covered, attendance.
+   - 📅 **TODAY'S DAILY OVERVIEW**: Today's applicable timetable & periods, assigned homework (combining WhatsApp & Google Classroom), classwork covered, attendance.
    - 📆 **WEEKLY & MONTHLY OUTLOOK**: Weekly project submissions & homework load; Monthly upcoming exams, unit tests, holidays.
-6. **Interactive Checklists**: Include clickable checkboxes (✅ Completed, ⏳ In Progress, 🔴 Overdue, 🟡 Due in ≤ 3 days) that persist status updates back into the single Google Sheet.
-7. **In-Place Refresh**: When triggered on schedule, update the existing visual dashboard and Google Sheet in-place. Do not generate new or duplicate files.
+7. **Interactive Checklists**: Include clickable checkboxes (✅ Completed, ⏳ In Progress, 🔴 Overdue, 🟡 Due in ≤ 3 days) that persist status updates back into the single Google Sheet.
+8. **In-Place Refresh**: When triggered on schedule, update the existing visual dashboard and Google Sheet in-place. Do not generate new or duplicate files.
 `;
 
     const blob = new Blob([skillMarkdownContent], { type: 'text/markdown;charset=utf-8' });
@@ -1555,6 +1867,8 @@ You are a Parent Executive School Assistant responsible for tracking student sch
     if (btnOpenGasProject && s.mcp_gas_script_id) {
       btnOpenGasProject.href = `https://script.google.com/home/projects/${s.mcp_gas_script_id}`;
     }
+
+    await checkGasServerVersionStatus();
   }
 
   async function updateStepperDots(currentStep: number) {

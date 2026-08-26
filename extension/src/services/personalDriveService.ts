@@ -1,4 +1,5 @@
 import { ChildManager } from './childManager';
+import { WhatsAppDiagnosticLogger } from './whatsappLogger';
 
 export interface PersonalDriveFolderInfo {
   isCreated: boolean;
@@ -105,46 +106,49 @@ export class PersonalDriveService {
       'https://www.googleapis.com/auth/drive.file'
     ].join(' ');
 
-    const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
+    const savedEmail = state.personal_drive_account_email;
+    let authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
       `client_id=${encodeURIComponent(clientId)}` +
       `&response_type=token` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
       `&scope=${encodeURIComponent(scopes)}`;
 
+    if (savedEmail) {
+      authUrl += `&login_hint=${encodeURIComponent(savedEmail)}`;
+    }
+
     return new Promise((resolve, reject) => {
+      // 1. Attempt 100% silent background refresh without any UI
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: false }, async (responseUrl) => {
-        if (chrome.runtime.lastError || !responseUrl) {
-          // If non-interactive refresh fails, prompt interactively
-          chrome.identity.launchWebAuthFlow({ url: `${authUrl}&prompt=select_account`, interactive: true }, async (interactiveUrl) => {
-            if (chrome.runtime.lastError || !interactiveUrl) {
-              return reject(new Error('Google Drive authorization required. Please reconnect your account.'));
+        if (!chrome.runtime.lastError && responseUrl) {
+          try {
+            const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
+            const token = urlParams.get('access_token');
+            if (token) {
+              await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
+              return resolve(token);
             }
-            try {
-              const urlParams = new URLSearchParams(new URL(interactiveUrl).hash.substring(1));
-              const token = urlParams.get('access_token');
-              if (token) {
-                await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
-                return resolve(token);
-              }
-              reject(new Error('No access token returned by Google Sign-In.'));
-            } catch (e: any) {
-              reject(new Error(`Failed to parse auth token: ${e.message}`));
-            }
-          });
-          return;
+          } catch (e) {}
         }
 
-        try {
-          const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
-          const token = urlParams.get('access_token');
-          if (token) {
-            await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
-            return resolve(token);
+        // 2. If silent refresh requires consent, use remembered login_hint without prompt=select_account
+        const interactiveUrl = savedEmail ? authUrl : `${authUrl}&prompt=select_account`;
+        chrome.identity.launchWebAuthFlow({ url: interactiveUrl, interactive: true }, async (intUrl) => {
+          if (chrome.runtime.lastError || !intUrl) {
+            return reject(new Error('Google Drive authorization required. Please reconnect your account.'));
           }
-          reject(new Error('No access token returned by Google Sign-In.'));
-        } catch (e: any) {
-          reject(new Error(`Failed to parse auth token: ${e.message}`));
-        }
+          try {
+            const urlParams = new URLSearchParams(new URL(intUrl).hash.substring(1));
+            const token = urlParams.get('access_token');
+            if (token) {
+              await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
+              return resolve(token);
+            }
+            reject(new Error('No access token returned by Google Sign-In.'));
+          } catch (e: any) {
+            reject(new Error(`Failed to parse auth token: ${e.message}`));
+          }
+        });
       });
     });
   }
@@ -283,6 +287,8 @@ export class PersonalDriveService {
       return { id: existing.folderId, webViewLink: existing.folderUrl };
     }
 
+    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_ROOT_CREATE] Creating root folder "${this.FOLDER_NAME}" on Google Drive...`);
+
     // Create root folder on Personal Drive
     const res = await this.fetchWithAuth(
       'https://www.googleapis.com/drive/v3/files',
@@ -299,10 +305,13 @@ export class PersonalDriveService {
     );
 
     if (!res.ok) {
+      const err = await res.text();
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_ROOT_ERROR] Failed to create root folder: HTTP ${res.status} | ${err}`);
       throw new Error(`Failed to create personal Drive root folder: HTTP ${res.status}`);
     }
 
     const created = await res.json();
+    await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[DRIVE_ROOT_SUCCESS] Created root folder "${this.FOLDER_NAME}" (ID: ${created.id})`);
     await chrome.storage.local.set({ personal_drive_folder_id: created.id });
     return { id: created.id, webViewLink: created.webViewLink };
   }
@@ -322,6 +331,7 @@ export class PersonalDriveService {
     if (childSearchRes.ok) {
       const childData = await childSearchRes.json();
       if (childData.files && childData.files.length > 0) {
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_FOUND] Found existing subfolder "${resolvedChild}" (ID: ${childData.files[0].id})`);
         return {
           id: childData.files[0].id,
           webViewLink: childData.files[0].webViewLink,
@@ -329,6 +339,8 @@ export class PersonalDriveService {
         };
       }
     }
+
+    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_CREATE] Creating subfolder "${resolvedChild}" inside root folder (ID: ${rootFolder.id})...`);
 
     // Create child subfolder
     const res = await this.fetchWithAuth(
@@ -347,10 +359,13 @@ export class PersonalDriveService {
     );
 
     if (!res.ok) {
+      const err = await res.text();
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_CHILD_FOLDER_ERROR] Failed to create subfolder "${resolvedChild}": HTTP ${res.status} | ${err}`);
       throw new Error(`Failed to create child folder "${resolvedChild}": HTTP ${res.status}`);
     }
 
     const created = await res.json();
+    await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [DRIVE_CHILD_FOLDER_SUCCESS] Successfully created child folder "${resolvedChild}" (ID: ${created.id})!`);
     return { id: created.id, webViewLink: created.webViewLink, rootId: rootFolder.id };
   }
 
@@ -369,26 +384,41 @@ export class PersonalDriveService {
     const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
     const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
+    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_START] Preparing archive upload for ${resolvedChild} in folder "${folder.id}"`, {
+      folderId: folder.id,
+      archiveFileName,
+      incomingMessageCount: newMessages.length
+    });
+
     // 1. Search for existing archive file inside child's folder
     let fileId: string | null = null;
     let existingMessages: any[] = [];
 
     const q = encodeURIComponent(`name = '${archiveFileName}' and '${folder.id}' in parents and trashed = false`);
-    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
 
     if (searchRes.ok) {
       const searchData = await searchRes.json();
       if (searchData.files && searchData.files.length > 0) {
         fileId = searchData.files[0].id;
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_FOUND] Found existing "${archiveFileName}" (ID: ${fileId}). Downloading existing archive to merge...`, {
+          fileId
+        });
         try {
           const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
           if (downloadRes.ok) {
             existingMessages = await downloadRes.json();
+            await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_DOWNLOADED] Downloaded ${existingMessages.length} existing messages for merge.`);
           }
-        } catch (e) {
+        } catch (e: any) {
           existingMessages = [];
+          await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DOWNLOAD_WARN] Could not parse existing archive content: ${e.message}`);
         }
+      } else {
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_NEW_FILE] No existing "${archiveFileName}" found in folder. Will create brand new file.`);
       }
+    } else {
+      await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_SEARCH_WARN] File search returned HTTP ${searchRes.status}. Proceeding to file creation.`);
     }
 
     // 2. Merge, Deduplicate & Backfill Attachment Links
@@ -416,15 +446,22 @@ export class PersonalDriveService {
       }
     });
 
-    if (existingMessages.length > 500) {
-      existingMessages = existingMessages.slice(0, 500);
+    if (existingMessages.length > 50000) {
+      existingMessages = existingMessages.slice(0, 50000);
     }
 
     const payload = JSON.stringify(existingMessages, null, 2);
 
+    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_PAYLOAD] Prepared ${existingMessages.length} total messages (${payload.length} bytes, ${addedCount} new). Uploading...`, {
+      isUpdate: Boolean(fileId),
+      fileId,
+      totalCount: existingMessages.length,
+      payloadBytes: payload.length
+    });
+
     // 3. Upload/Update to Personal Drive
     if (fileId) {
-      await this.fetchWithAuth(
+      const updateRes = await this.fetchWithAuth(
         `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
         {
           method: 'PATCH',
@@ -433,6 +470,17 @@ export class PersonalDriveService {
         },
         validToken
       );
+
+      if (!updateRes.ok) {
+        const errText = await updateRes.text();
+        await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_PATCH_FAIL] Failed to update "${archiveFileName}" (ID: ${fileId}): HTTP ${updateRes.status} | ${errText}`);
+        throw new Error(`Google Drive update failed: HTTP ${updateRes.status}`);
+      }
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [DRIVE_PATCH_SUCCESS] Updated "${archiveFileName}" (ID: ${fileId}) with ${existingMessages.length} total messages on Google Drive.`, {
+        fileId,
+        total: existingMessages.length
+      });
     } else {
       const boundary = '-------314159265358979323846';
       const delimiter = `\r\n--${boundary}\r\n`;
@@ -453,7 +501,7 @@ export class PersonalDriveService {
         payload +
         closeDelimiter;
 
-      await this.fetchWithAuth(
+      const createRes = await this.fetchWithAuth(
         'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
         {
           method: 'POST',
@@ -462,6 +510,19 @@ export class PersonalDriveService {
         },
         validToken
       );
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_CREATE_FAIL] Failed to create "${archiveFileName}": HTTP ${createRes.status} | ${errText}`);
+        throw new Error(`Google Drive file creation failed: HTTP ${createRes.status}`);
+      }
+
+      const createdData = await createRes.json();
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [DRIVE_CREATE_SUCCESS] Created brand new file "${archiveFileName}" (ID: ${createdData.id}) on Google Drive!`, {
+        fileId: createdData.id,
+        folderId: folder.id,
+        total: existingMessages.length
+      });
     }
 
     return { saved: addedCount, total: existingMessages.length };
@@ -738,49 +799,65 @@ export class PersonalDriveService {
 
       const payload = JSON.stringify(profiles, null, 2);
 
+      let fileId = null;
       if (searchRes.ok) {
         const data = await searchRes.json();
         if (data.files && data.files.length > 0) {
-          const fileId = data.files[0].id;
-          await this.fetchWithAuth(
-            `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
-            {
-              method: 'PATCH',
-              headers: { 'Content-Type': 'application/json' },
-              body: payload
-            },
-            validToken
-          );
-          return;
+          fileId = data.files[0].id;
         }
       }
 
-      const boundary = '-------314159265358979323846';
-      const delimiter = `\r\n--${boundary}\r\n`;
-      const closeDelimiter = `\r\n--${boundary}--`;
-      const metadata = {
-        name: this.PROFILES_CONFIG_FILE,
-        mimeType: 'application/json',
-        parents: [root.id]
-      };
-      const multipartBody =
-        delimiter +
-        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
-        JSON.stringify(metadata) +
-        delimiter +
-        'Content-Type: application/json\r\n\r\n' +
-        payload +
-        closeDelimiter;
+      if (fileId) {
+        const updateRes = await this.fetchWithAuth(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+          },
+          validToken
+        );
+        if (!updateRes.ok) {
+          const errText = await updateRes.text();
+          await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_PATCH_FAIL] Failed to update profiles: HTTP ${updateRes.status} | ${errText}`);
+          throw new Error(`Google Drive update failed: HTTP ${updateRes.status}`);
+        }
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[DRIVE_PATCH_SUCCESS] Successfully updated profiles file (ID: ${fileId})`);
+      } else {
+        const boundary = '-------314159265358979323846';
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelimiter = `\r\n--${boundary}--`;
+        const metadata = {
+          name: this.PROFILES_CONFIG_FILE,
+          mimeType: 'application/json',
+          parents: [root.id]
+        };
+        const multipartBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(metadata) +
+          delimiter +
+          'Content-Type: application/json\r\n\r\n' +
+          payload +
+          closeDelimiter;
 
-      await this.fetchWithAuth(
-        'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-          body: multipartBody
-        },
-        validToken
-      );
+        const createRes = await this.fetchWithAuth(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+            body: multipartBody
+          },
+          validToken
+        );
+        if (!createRes.ok) {
+          const errText = await createRes.text();
+          await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_CREATE_FAIL] Failed to create profiles: HTTP ${createRes.status} | ${errText}`);
+          throw new Error(`Google Drive file creation failed: HTTP ${createRes.status}`);
+        }
+        const createdData = await createRes.json();
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[DRIVE_CREATE_SUCCESS] Successfully created profiles file (ID: ${createdData.id})`);
+      }
     } catch (e) {
       console.warn('[PersonalDriveService] Could not backup child profiles to Drive:', e);
     }

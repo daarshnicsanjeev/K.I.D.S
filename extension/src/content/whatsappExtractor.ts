@@ -9,6 +9,8 @@ export interface WhatsAppMessage {
   chatName: string;
   sender: string;
   timestamp: string;
+  date?: string;
+  time?: string;
   body: string;
   hasMedia: boolean;
   mediaCaption?: string;
@@ -185,32 +187,179 @@ export class WhatsAppExtractor {
       }
     }
 
-    // Query message bubble rows
-    const messageRows = document.querySelectorAll('div[data-testid="msg-container"], div.message-in, div.message-out');
+    const parseDateHeaderString = (rawText: string): string | null => {
+      if (!rawText) return null;
+      const text = rawText.trim().replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
+      const upper = text.toUpperCase();
+      if (upper === 'TODAY') {
+        const now = new Date();
+        return `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+      }
+      if (upper === 'YESTERDAY') {
+        const now = new Date();
+        now.setDate(now.getDate() - 1);
+        return `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+      }
+      const months: Record<string, number> = {
+        'JANUARY': 1, 'FEBRUARY': 2, 'MARCH': 3, 'APRIL': 4, 'MAY': 5, 'JUNE': 6,
+        'JULY': 7, 'AUGUST': 8, 'SEPTEMBER': 9, 'OCTOBER': 10, 'NOVEMBER': 11, 'DECEMBER': 12,
+        'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'JUN': 6, 'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+      };
+      const m1 = upper.match(/^(\d{1,2})\s+([A-Z]+)\s+(\d{4})$/);
+      if (m1 && months[m1[2]]) {
+        return `${months[m1[2]]}/${parseInt(m1[1], 10)}/${m1[3]}`;
+      }
+      const m2 = upper.match(/^([A-Z]+)\s+(\d{1,2}),?\s+(\d{4})$/);
+      if (m2 && months[m2[1]]) {
+        return `${months[m2[1]]}/${parseInt(m2[2], 10)}/${m2[3]}`;
+      }
+      const m3 = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{4})$/);
+      if (m3) {
+        const p1 = parseInt(m3[1], 10);
+        const p2 = parseInt(m3[2], 10);
+        if (p1 > 12) {
+          return `${p2}/${p1}/${m3[3]}`;
+        }
+        return `${p1}/${p2}/${m3[3]}`;
+      }
+      return null;
+    };
 
-    messageRows.forEach((row, idx) => {
+    // Query all chat elements in chronological document order
+    const allChatElements = document.querySelectorAll(
+      'div[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date, ' +
+      'div[data-testid="msg-container"], div.message-in, div.message-out, ' +
+      'div.message, div.bubble, div.Message, .message-content, .bubble-content, ' +
+      'li[id^="chat-messages-"], div[data-qa="message_container"], [class*="message-bubble"]'
+    );
+
+    let currentClusterDate = '';
+
+    allChatElements.forEach((el, idx) => {
       try {
-        // Sender name
-        const senderEl = row.querySelector('span[aria-label*=":"], span._ak8q, div[data-pre-plain-text]');
+        const htmlEl = el as HTMLElement;
+        const isDateHeader = htmlEl.matches && (
+          htmlEl.matches('[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date')
+          || (htmlEl.textContent && /^(TODAY|YESTERDAY|\d{1,2}\s+[A-Za-z]+\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4})$/i.test(htmlEl.textContent.trim()))
+        );
+
+        if (isDateHeader) {
+          const parsed = parseDateHeaderString(htmlEl.textContent || '');
+          if (parsed) {
+            currentClusterDate = parsed;
+          }
+          return;
+        }
+
+        const isMsgRow = htmlEl.matches && htmlEl.matches(
+          'div[data-testid="msg-container"], div.message-in, div.message-out, div.message, div.bubble, div.Message, [class*="message-bubble"], li[id^="chat-messages-"]'
+        );
+        if (!isMsgRow) return;
+
+        const row = htmlEl;
+        // 1. Primary: WhatsApp canonical data-pre-plain-text attribute
+        const prePlainEl = (row.hasAttribute && row.hasAttribute('data-pre-plain-text'))
+          ? row
+          : row.querySelector('div[data-pre-plain-text], [data-pre-plain-text]');
+        const prePlain = prePlainEl ? prePlainEl.getAttribute('data-pre-plain-text') : null;
+
         let sender = 'Teacher/Parent';
-        if (senderEl) {
-          const prePlain = senderEl.getAttribute('data-pre-plain-text');
-          if (prePlain) {
-            // e.g. "[10:15 am, 18/08/2026] Teacher Anita:"
-            const match = prePlain.match(/\]\s*([^:]+):/);
-            if (match && match[1]) sender = match[1].trim();
-          } else {
-            sender = (senderEl.textContent || 'Teacher/Parent').replace(':', '').trim();
+        let timeStr = '';
+        let dateStr = '';
+
+        if (prePlain) {
+          const sMatch = prePlain.match(/\]\s*([^:]+):/);
+          if (sMatch && sMatch[1]) {
+            sender = sMatch[1].trim();
+          }
+          const bracketMatch = prePlain.match(/\[([^\]]+)\]/);
+          if (bracketMatch && bracketMatch[1]) {
+            const rawInside = bracketMatch[1].trim();
+            const parts = rawInside.split(',').map(p => p.trim());
+            if (parts.length >= 2) {
+              if (parts[0].includes(':')) {
+                timeStr = parts[0];
+                dateStr = parts[1];
+              } else {
+                dateStr = parts[0];
+                timeStr = parts[1];
+              }
+            } else if (parts.length === 1) {
+              if (parts[0].includes(':')) {
+                timeStr = parts[0];
+              } else {
+                dateStr = parts[0];
+              }
+            }
+          }
+          if (dateStr) {
+            currentClusterDate = dateStr;
           }
         }
 
-        // Message text
-        const textEl = row.querySelector('span.selectable-text, div.copyable-text, span[dir="ltr"], span[dir="auto"]');
-        const text = textEl ? (textEl.textContent || '').trim() : '';
+        // 2. Sender Fallback
+        if (sender === 'Teacher/Parent') {
+          const authorEl = row.querySelector('span._ak8q, span[data-testid="author"], .message-title, .sender-name');
+          if (authorEl && authorEl.textContent) {
+            const candidate = authorEl.textContent.replace(':', '').trim();
+            if (candidate.length > 0 && candidate.length <= 40 && !candidate.includes('\n')) {
+              sender = candidate;
+            }
+          }
+        }
 
-        // Document / PDF file detection
-        const docTitleEl = row.querySelector('span[title*="."], div[data-testid="document-thumb"] + div span, span[data-testid="document-name"]');
-        const documentTitle = docTitleEl ? (docTitleEl.getAttribute('title') || docTitleEl.textContent || '').trim() : undefined;
+        // 3. Time Fallback
+        if (!timeStr) {
+          const timeEl = row.querySelector('span[data-testid="msg-meta"], div[data-testid="msg-meta"], span.bubble-meta, .time, time, [class*="timestamp"]');
+          timeStr = timeEl ? (timeEl.textContent || '').trim() : '';
+        }
+        timeStr = (timeStr || '').replace(/^Edited\s*/i, '').replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
+
+        // 4. Inherit active date divider for this cluster
+        if (!dateStr && currentClusterDate) {
+          dateStr = currentClusterDate;
+        }
+
+        // 5. Filename date extraction fallback
+        if (!dateStr) {
+          const fnMatch = (row.textContent || '').match(/(\d{1,2})[./](\d{1,2})[./](\d{4})/);
+          if (fnMatch) {
+            dateStr = `${parseInt(fnMatch[2], 10)}/${parseInt(fnMatch[1], 10)}/${fnMatch[3]}`;
+          }
+        }
+
+        const cleanTimestamp = (timeStr && dateStr)
+          ? `${timeStr}, ${dateStr}`
+          : (dateStr || timeStr || new Date().toLocaleTimeString());
+
+        // 4. Message text extraction
+        const textEl = row.querySelector('span.selectable-text, span._ao3e, div.copyable-text span');
+        let text = textEl ? (textEl.textContent || '').trim() : '';
+
+        // Clean up: If body text was erroneously identical to sender label only, clear it
+        if (text === sender) {
+          text = '';
+        }
+
+        // Document / PDF / Office file detection
+        let documentTitle: string | undefined = undefined;
+        const docCandidates = row.querySelectorAll(
+          'span[data-testid="document-name"], div[data-testid="document-thumb"] + div span, div[data-testid="document-thumb"] ~ div span, .document-name, a.document-container span, span[title*="."], div[title*="."]'
+        );
+        for (let dIdx = 0; dIdx < docCandidates.length; dIdx++) {
+          const el = docCandidates[dIdx];
+          const cand = (el.getAttribute('title') || el.textContent || '').trim();
+          if (cand && !cand.toLowerCase().includes('-icon') && !cand.toLowerCase().startsWith('icon-') && cand.length > 2 && cand.length < 150) {
+            documentTitle = cand;
+            break;
+          }
+        }
+        if (!documentTitle && text) {
+          const fnMatch = text.match(/([a-zA-Z0-9_\-.\s]+\.(?:pdf|docx?|xlsx?|pptx?|jpe?g|png))/i);
+          if (fnMatch && fnMatch[1]) {
+            documentTitle = fnMatch[1].trim();
+          }
+        }
 
         // Image / Media caption
         const captionEl = row.querySelector('span[data-testid="media-caption"], div.image-caption');
@@ -236,15 +385,13 @@ export class WhatsAppExtractor {
           });
         }
 
-        // Time
-        const timeEl = row.querySelector('span[data-testid="msg-meta"], div[data-testid="msg-meta"], span.bubble-meta');
-        const timeStr = timeEl ? (timeEl.textContent || '').trim() : '';
-
         messages.push({
           id: `wa_${Date.now()}_${idx}`,
           chatName: currentChatName,
           sender: sender || 'Sender',
-          timestamp: timeStr || new Date().toLocaleTimeString(),
+          timestamp: cleanTimestamp,
+          date: dateStr || undefined,
+          time: timeStr || undefined,
           body: fullBody,
           hasMedia,
           mediaCaption: mediaCaption || documentTitle,
@@ -254,6 +401,22 @@ export class WhatsAppExtractor {
         // Skip malformed row
       }
     });
+
+    // Local Date Propagation: safely fill in missing dates from immediate adjacent neighbors
+    for (let fIdx = 0; fIdx < messages.length; fIdx++) {
+      const m = messages[fIdx];
+      if (!m.date) {
+        const prev = fIdx > 0 ? messages[fIdx - 1] : null;
+        const next = fIdx < messages.length - 1 ? messages[fIdx + 1] : null;
+        const inherited = (prev && prev.date) || (next && next.date);
+        if (inherited) {
+          m.date = inherited;
+          m.timestamp = (m.time && inherited) ? `${m.time}, ${inherited}` : (inherited || m.timestamp);
+        }
+      } else if (m.time && m.date && (!m.timestamp || !m.timestamp.includes(','))) {
+        m.timestamp = `${m.time}, ${m.date}`;
+      }
+    }
 
     return messages;
   }

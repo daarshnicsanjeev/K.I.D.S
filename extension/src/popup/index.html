@@ -51,6 +51,41 @@
       </div>
     </div>
 
+    <!-- On-Device Gemini Nano AI Normalizer Status Bar -->
+    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 4px 10px; border-radius: 6px; margin-bottom: 6px; border: 1px solid #334155; font-size: 0.75rem;">
+      <div style="display: flex; align-items: center; gap: 5px;">
+        <span>✨</span>
+        <span style="color: #94a3b8; font-weight: 500;">Built-in AI:</span>
+        <span id="aiStatusBadge" style="background: #334155; color: #cbd5e1; font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; font-weight: 600;">Checking...</span>
+      </div>
+      <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; color: #38bdf8; font-size: 0.72rem; margin: 0;">
+        <input type="checkbox" id="chkUseAiNormalizer" checked style="cursor: pointer;" />
+        <span>Universal AI</span>
+      </label>
+    </div>
+
+    <!-- 1-Click AI Launcher & Step-by-Step Diagnostic Box -->
+    <div id="aiLauncherDownloadBox" style="background: #1e1b4b; border: 1px solid #6366f1; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; font-size: 0.75rem;">
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
+        <span style="color: #c7d2fe; font-weight: 500;">🤖 AI Setup & Inspector:</span>
+        <div style="display: flex; gap: 4px;">
+          <button id="btnRunAiDiagnostics" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.7rem; border-color: #38bdf8; color: #38bdf8;" title="Inspect browser version, flags, and model status">
+            🔍 Check AI
+          </button>
+          <button id="btnDownloadAiLauncher" class="btn btn-primary btn-sm" style="padding: 2px 6px; font-size: 0.7rem; background: #4f46e5; border-color: #6366f1;">
+            ⬇️ .bat
+          </button>
+        </div>
+      </div>
+      <div id="aiDownloadTriggerRow" class="hidden mt-1" style="display: flex; align-items: center; justify-content: space-between; background: #312e81; padding: 4px 6px; border-radius: 4px;">
+        <span id="lblAiDownloadStatus" style="font-size: 0.68rem; color: #fcd34d;">Model download required (~1.5 GB).</span>
+        <button id="btnTriggerModelDownload" class="btn btn-warning btn-sm" style="padding: 2px 6px; font-size: 0.68rem;">
+          ⚡ Start Download
+        </button>
+      </div>
+      <div id="aiDiagnosticsLogBox" class="hidden mt-1" style="background: #020617; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-family: monospace; font-size: 0.68rem; color: #cbd5e1; white-space: pre-wrap; max-height: 140px; overflow-y: auto;"></div>
+    </div>
+
     <!-- Add/Rename Child Inline Editor Bar -->
     <div id="childModalBar" class="hidden" style="background: #0f172a; padding: 6px 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid #38bdf8;">
       <div style="display: flex; gap: 6px; align-items: center;">
@@ -128,15 +163,47 @@
       <section id="step2Card" class="card hidden">
         <h2>Step 2: Connect Google Classroom & MCP Server</h2>
 
+        <!-- Server Update Available Notification Banner -->
+        <div id="gasUpdateNotificationCard" class="hidden mb-2" style="background: linear-gradient(135deg, #1e1b4b, #312e81); border: 1px solid #6366f1; border-radius: 8px; padding: 10px 12px;">
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <span style="font-size: 1.2rem;">⚡</span>
+            <div style="flex: 1;">
+              <div style="font-weight: 700; color: #e0e7ff; font-size: 0.85rem;" id="lblGasUpdateTitle">Apps Script Server Update Available (v2.8.0)</div>
+              <div style="font-size: 0.74rem; color: #c7d2fe; margin-top: 2px;" id="lblGasUpdateChangelog">What's new: Full Drive archive search for WhatsApp & expanded tool schemas.</div>
+              <div style="margin-top: 8px;">
+                <button id="btnQuickUpdateGasServer" class="btn btn-primary btn-sm" style="font-weight: 700; padding: 5px 12px; background: #4f46e5; width: 100%;">
+                  🚀 1-Click Update Server (Permanent URL Preserved)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Server Up-To-Date Badge -->
+        <div id="gasUpToDateBadge" class="status-box mb-2 hidden" style="background: #064e3b; border-left: 3px solid #34d399;">
+          <span class="status-icon">✅</span>
+          <div style="font-size: 0.78rem; color: #ecfdf5;">
+            <strong>Apps Script Server is Up to Date</strong> (<span id="lblGasDeployedVersion">v2.8.0</span>)
+            <div style="font-size: 0.72rem; color: #a7f3d0; margin-top: 1px;">Deployed for <span id="lblGasDeployedChild">Child</span> • No update needed.</div>
+          </div>
+        </div>
+
+        <!-- Prominent Account Selection Guide -->
+        <div class="guidance-box mb-2" style="background: #0f172a; border-left: 3px solid #38bdf8;">
+          <p class="guidance-title" style="color: #38bdf8; margin-bottom: 4px;">👤 Account Selection Guide:</p>
+          <div style="font-size: 0.75rem; color: #cbd5e1; line-height: 1.4;">
+            When the Google Authorization prompt appears:
+            <ul style="margin-left: 14px; margin-top: 3px; margin-bottom: 2px;">
+              <li><strong>Select:</strong> <span style="color: #67e8f9; font-weight: 600;">Child's School Google Account</span> (the one enrolled in Google Classroom).</li>
+              <li><strong>Do NOT select:</strong> Parent personal/work account (parent account was already connected in Step 1).</li>
+            </ul>
+          </div>
+        </div>
+
         <!-- Action 1: Open Google Classroom -->
         <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button">
           🌐 1. Open Google Classroom & Sign In
         </button>
-
-        <div class="status-box mb-2">
-          <span class="status-icon">📌</span>
-          <span><strong>Account Guidance:</strong> Please ensure to select your official school Google Classroom account. Make sure your personal Google account is not logged in before proceeding.</span>
-        </div>
 
         <!-- Action 2: Enable Apps Script API -->
         <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-2" tabindex="0" role="button">
@@ -150,7 +217,7 @@
 
         <!-- Action 3: Create Personal MCP Server -->
         <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2" tabindex="0" role="button">
-          ⚡ 3. Create My Personal MCP Server
+          ⚡ 3. Create / Update My Personal MCP Server
         </button>
 
         <div class="url-input-container">
@@ -318,10 +385,15 @@
             🟢 Checking open chat tabs (WhatsApp, Telegram)...
           </p>
 
-          <!-- Single 1-Click Track & Sync Active Chat Button -->
-          <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm mb-2" style="width: 100%; background: #10b981; border-color: #059669; font-weight: 700; padding: 8px;">
-            📸 1-Click Track & Sync Active Chat / Group
-          </button>
+          <!-- Single 1-Click Track & Sync Active Chat Button with Instant Stop Button -->
+          <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+            <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm" style="flex: 1; background: #10b981; border-color: #059669; font-weight: 700; padding: 8px;">
+              📸 1-Click Track & Sync Active Chat / Group
+            </button>
+            <button id="btnStopActiveSync" class="btn btn-danger btn-sm hidden" style="padding: 8px 12px; font-weight: 700; white-space: nowrap; background: #dc2626; border-color: #b91c1c;">
+              ⏹️ Stop Sync
+            </button>
+          </div>
 
           <!-- Tracked Chats & Groups List -->
           <div id="trackedChatsContainer" class="mb-2" style="background: #022c22; border: 1px solid #065f46; border-radius: 6px; padding: 8px;">
@@ -334,11 +406,14 @@
             <ul id="trackedChatsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
           </div>
 
-          <!-- Link to Personal Drive Folder -->
-          <div style="margin-top: 6px;">
+          <!-- Link to Personal Drive Folder & Direct Download -->
+          <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
             <a id="linkOpenDriveFolder" href="#" target="_blank" class="btn btn-outline btn-sm hidden" style="width: 100%; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center; font-size: 0.75rem;">
               📁 Open School Intelligence Archive on Personal Google Drive
             </a>
+            <button id="btnDownloadJsonArchive" class="btn btn-secondary btn-sm" style="width: 100%; background: #065f46; color: #a7f3d0; border: 1px solid #10b981; font-weight: 600; font-size: 0.75rem;">
+              💾 1-Click Download Current School Archive JSON
+            </button>
           </div>
 
           <div style="margin-top: 8px; font-size: 0.75rem; color: #6ee7b7; display: flex; align-items: center; gap: 4px;">
@@ -351,8 +426,14 @@
         <div class="card mt-2" style="background: #022c22; border: 1px solid #059669; border-radius: 8px; padding: 10px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
             <label for="txtWhatsAppLogs" style="font-weight: 600; font-size: 0.85rem; color: #6ee7b7;">
-              🔍 WhatsApp Diagnostics & Troubleshooting Logs:
+              🔍 WhatsApp Diagnostics & Logs:
             </label>
+            <select id="selLogTimeFilter" style="font-size: 0.72rem; padding: 2px 6px; background: #011c14; color: #6ee7b7; border: 1px solid #059669; border-radius: 4px; cursor: pointer;">
+              <option value="10" selected>⏱️ Last 10 Mins</option>
+              <option value="30">⏱️ Last 30 Mins</option>
+              <option value="60">⏱️ Last 1 Hour</option>
+              <option value="all">📜 All Logs</option>
+            </select>
           </div>
           <textarea id="txtWhatsAppLogs" readonly aria-live="polite" rows="6" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #059669; border-radius: 6px; background: #011c14; color: #a7f3d0; resize: vertical;" placeholder="Click 'Fetch WhatsApp Logs' to inspect tab status, group matching, extraction counts, and Personal Drive uploads..."></textarea>
           <div style="display: flex; gap: 6px; margin-top: 6px;">

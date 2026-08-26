@@ -12,6 +12,8 @@ export interface ChildProfile {
   folderUrl?: string;
   gasScriptId?: string;
   gasDeploymentUrl?: string;
+  deployedGasVersion?: string;
+  deployedGasHash?: string;
   trackedChats?: any[];
 }
 
