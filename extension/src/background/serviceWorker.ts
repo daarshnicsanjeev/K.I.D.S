@@ -1415,10 +1415,6 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 const allChatElements = document.querySelectorAll('#main div, #main span, #main button, [data-testid="conversation-panel-body"] div, [data-testid="conversation-panel-body"] span, [role="button"]');
                 for (let i = 0; i < allChatElements.length; i++) {
                   const el = allChatElements[i];
-                  // Safety guard: skip individual message containers
-                  if (el.closest('div[data-testid="msg-container"], div.message-in, div.message-out, div.copyable-text, [data-testid="document-thumb"], div._amk6, span[data-icon]')) {
-                    continue;
-                  }
                   const txt = (el.textContent || '').trim().toLowerCase();
                   const isPhoneSyncBanner = (
                     (txt.includes('older messages') || txt.includes('old messages') || txt.includes('load older') || txt.includes('load old') || txt.includes('get older')) &&
@@ -1619,6 +1615,13 @@ async function handleMessage(message: { type: string; payload?: any }) {
           // 3. Reposition viewport back down to the bottom on latest message
           if (scrollContainer) {
             try {
+              const scrollDownBtn = document.querySelector('button[aria-label="Scroll to bottom"], span[data-icon="ic-chevron-down-wide"]') as HTMLElement | null;
+              if (scrollDownBtn) {
+                try {
+                  const btnTarget = (scrollDownBtn.closest('button') || scrollDownBtn) as HTMLElement;
+                  btnTarget.click();
+                } catch (e) {}
+              }
               scrollContainer.scrollTop = scrollContainer.scrollHeight;
               scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
               await new Promise(resolve => setTimeout(resolve, 300));
