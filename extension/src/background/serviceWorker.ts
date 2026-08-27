@@ -1337,10 +1337,12 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
           const existingPointer = chatSyncPointers && currentChatName ? chatSyncPointers[currentChatName] : null;
           const isFirstRun = !existingPointer;
+          const isManualTrigger = Boolean(isManualSync);
+          const isDeepScan = isManualTrigger || isFirstRun;
 
-          // Check if existing pointer is visible in the initial bottom view
+          // Check if existing pointer is visible in the initial bottom view (only for automated background runs)
           let isPointerInInitialView = false;
-          if (!isFirstRun && existingPointer) {
+          if (!isDeepScan && existingPointer) {
             for (const m of extractedMessagesMap.values()) {
               if (
                 (existingPointer.id && m.id && m.id === existingPointer.id) ||
@@ -1360,13 +1362,13 @@ async function handleMessage(message: { type: string; payload?: any }) {
             });
             showInPageToast(`⚡ Checkpoint found! Synced latest messages on screen for "${currentChatName}". Background sync is active.`, 'success', 4000);
           } else {
-            if (isFirstRun) {
+            if (isDeepScan) {
               diagLogs.push({
                 level: 'INFO',
                 category: 'CONN',
-                message: `🚀 [FIRST_RUN] Initial deep scan for "${currentChatName}". Full historical scan in progress. Please keep WhatsApp tab in foreground.`
+                message: `🚀 [FULL_TIMELINE_SCAN] Full historical scan in progress for "${currentChatName}". Please keep WhatsApp tab in foreground.`
               });
-              showInPageToast(`🚀 Initial Setup: Scanning historical messages for "${currentChatName}". Please keep this WhatsApp tab in the foreground until finished.`, 'info', 10000);
+              showInPageToast(`🚀 Full Scan: Scanning full chat history for "${currentChatName}". Please keep this WhatsApp tab open until finished.`, 'info', 10000);
             } else {
               diagLogs.push({
                 level: 'WARN',
@@ -1383,8 +1385,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
             let lastPhoneSyncStep = -999;
             let spinnerCycles = 0;
             const scanStartTime = Date.now();
-            const MAX_SCAN_DURATION_MS = isFirstRun ? 35000 : 15000;
-            const MAX_SCAN_STEPS = isFirstRun ? 40 : 15;
+            const MAX_SCAN_DURATION_MS = isDeepScan ? 60000 : 20000;
+            const MAX_SCAN_STEPS = isDeepScan ? 120 : 25;
 
             // Reset abort flags for new sync run
             document.body.removeAttribute('data-mcp-sync-abort');
@@ -1556,8 +1558,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 // Auto-dismiss again after scraping
                 dismissWhatsAppModals();
 
-                // If not first run, check if we reached the existingPointer
-                if (!isFirstRun && existingPointer) {
+                // For automated background catch-up runs, check if we reached the existingPointer
+                if (!isDeepScan && existingPointer) {
                   let reachedCheckpoint = false;
                   for (const m of extractedMessagesMap.values()) {
                     if (
