@@ -52,38 +52,12 @@
     </div>
 
     <!-- On-Device Gemini Nano AI Normalizer Status Bar -->
-    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 4px 10px; border-radius: 6px; margin-bottom: 6px; border: 1px solid #334155; font-size: 0.75rem;">
+    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 4px 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid #334155; font-size: 0.75rem;">
       <div style="display: flex; align-items: center; gap: 5px;">
         <span>✨</span>
         <span style="color: #94a3b8; font-weight: 500;">Built-in AI:</span>
         <span id="aiStatusBadge" style="background: #334155; color: #cbd5e1; font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; font-weight: 600;">Checking...</span>
       </div>
-      <label style="display: flex; align-items: center; gap: 4px; cursor: pointer; color: #38bdf8; font-size: 0.72rem; margin: 0;">
-        <input type="checkbox" id="chkUseAiNormalizer" checked style="cursor: pointer;" />
-        <span>Universal AI</span>
-      </label>
-    </div>
-
-    <!-- 1-Click AI Launcher & Step-by-Step Diagnostic Box -->
-    <div id="aiLauncherDownloadBox" style="background: #1e1b4b; border: 1px solid #6366f1; border-radius: 6px; padding: 6px 10px; margin-bottom: 8px; font-size: 0.75rem;">
-      <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px;">
-        <span style="color: #c7d2fe; font-weight: 500;">🤖 AI Setup & Inspector:</span>
-        <div style="display: flex; gap: 4px;">
-          <button id="btnRunAiDiagnostics" class="btn btn-secondary btn-sm" style="padding: 2px 6px; font-size: 0.7rem; border-color: #38bdf8; color: #38bdf8;" title="Inspect browser version, flags, and model status">
-            🔍 Check AI
-          </button>
-          <button id="btnDownloadAiLauncher" class="btn btn-primary btn-sm" style="padding: 2px 6px; font-size: 0.7rem; background: #4f46e5; border-color: #6366f1;">
-            ⬇️ .bat
-          </button>
-        </div>
-      </div>
-      <div id="aiDownloadTriggerRow" class="hidden mt-1" style="display: flex; align-items: center; justify-content: space-between; background: #312e81; padding: 4px 6px; border-radius: 4px;">
-        <span id="lblAiDownloadStatus" style="font-size: 0.68rem; color: #fcd34d;">Model download required (~1.5 GB).</span>
-        <button id="btnTriggerModelDownload" class="btn btn-warning btn-sm" style="padding: 2px 6px; font-size: 0.68rem;">
-          ⚡ Start Download
-        </button>
-      </div>
-      <div id="aiDiagnosticsLogBox" class="hidden mt-1" style="background: #020617; border: 1px solid #334155; border-radius: 4px; padding: 6px; font-family: monospace; font-size: 0.68rem; color: #cbd5e1; white-space: pre-wrap; max-height: 140px; overflow-y: auto;"></div>
     </div>
 
     <!-- Add/Rename Child Inline Editor Bar -->
@@ -406,14 +380,11 @@
             <ul id="trackedChatsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
           </div>
 
-          <!-- Link to Personal Drive Folder & Direct Download -->
+          <!-- Link to Personal Drive Folder -->
           <div style="margin-top: 6px; display: flex; flex-direction: column; gap: 6px;">
             <a id="linkOpenDriveFolder" href="#" target="_blank" class="btn btn-outline btn-sm hidden" style="width: 100%; text-align: center; text-decoration: none; display: flex; align-items: center; justify-content: center; font-size: 0.75rem;">
               📁 Open School Intelligence Archive on Personal Google Drive
             </a>
-            <button id="btnDownloadJsonArchive" class="btn btn-secondary btn-sm" style="width: 100%; background: #065f46; color: #a7f3d0; border: 1px solid #10b981; font-weight: 600; font-size: 0.75rem;">
-              💾 1-Click Download Current School Archive JSON
-            </button>
           </div>
 
           <div style="margin-top: 8px; font-size: 0.75rem; color: #6ee7b7; display: flex; align-items: center; gap: 4px;">
@@ -428,12 +399,6 @@
             <label for="txtWhatsAppLogs" style="font-weight: 600; font-size: 0.85rem; color: #6ee7b7;">
               🔍 WhatsApp Diagnostics & Logs:
             </label>
-            <select id="selLogTimeFilter" style="font-size: 0.72rem; padding: 2px 6px; background: #011c14; color: #6ee7b7; border: 1px solid #059669; border-radius: 4px; cursor: pointer;">
-              <option value="10" selected>⏱️ Last 10 Mins</option>
-              <option value="30">⏱️ Last 30 Mins</option>
-              <option value="60">⏱️ Last 1 Hour</option>
-              <option value="all">📜 All Logs</option>
-            </select>
           </div>
           <textarea id="txtWhatsAppLogs" readonly aria-live="polite" rows="6" style="width: 100%; font-family: monospace; font-size: 0.75rem; padding: 8px; border: 1px solid #059669; border-radius: 6px; background: #011c14; color: #a7f3d0; resize: vertical;" placeholder="Click 'Fetch WhatsApp Logs' to inspect tab status, group matching, extraction counts, and Personal Drive uploads..."></textarea>
           <div style="display: flex; gap: 6px; margin-top: 6px;">

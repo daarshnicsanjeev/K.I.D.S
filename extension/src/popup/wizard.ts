@@ -13,7 +13,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // AI Normalizer Status UI Elements
   const aiStatusBadge = document.getElementById('aiStatusBadge') as HTMLElement;
-  const chkUseAiNormalizer = document.getElementById('chkUseAiNormalizer') as HTMLInputElement;
 
   async function checkAiNormalizerStatus() {
     if (!aiStatusBadge) return;
@@ -38,130 +37,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       aiStatusBadge.textContent = '⚪ Rule Engine';
     }
   }
-
-  // Load AI normalizer preference
-  if (chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(['useAiNormalizer'], (res) => {
-      if (chkUseAiNormalizer) {
-        chkUseAiNormalizer.checked = res.useAiNormalizer !== false;
-      }
-    });
-    chkUseAiNormalizer?.addEventListener('change', () => {
-      chrome.storage.local.set({ useAiNormalizer: chkUseAiNormalizer.checked });
-    });
-  }
-
-  // 1-Click AI Launcher Download Handler
-  const btnDownloadAiLauncher = document.getElementById('btnDownloadAiLauncher') as HTMLButtonElement;
-  btnDownloadAiLauncher?.addEventListener('click', () => {
-    const batContent = `@echo off
-title School MCP - Chrome Gemini Nano AI Launcher
-echo ======================================================================
-echo   Starting Google Chrome with Gemini Nano On-Device AI Enabled...
-echo ======================================================================
-echo.
-
-set "CHROME_PATH="
-if exist "%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe" (
-    set "CHROME_PATH=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe"
-) else if exist "%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe" (
-    set "CHROME_PATH=%ProgramFiles(x86)%\\Google\\Chrome\\Application\\chrome.exe"
-) else if exist "%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe" (
-    set "CHROME_PATH=%LocalAppData%\\Google\\Chrome\\Application\\chrome.exe"
-)
-
-echo Closing any existing background Chrome instances to apply AI flags...
-taskkill /F /IM chrome.exe >nul 2>&1
-timeout /t 1 >nul
-
-if "%CHROME_PATH%"=="" (
-    start chrome.exe --enable-features=OptimizationGuideModelDownloading,OptimizationGuideOnDeviceModel,PromptAPIForGeminiNano --optimization-guide-on-device-model-execution-override=1
-) else (
-    start "" "%CHROME_PATH%" --enable-features=OptimizationGuideModelDownloading,OptimizationGuideOnDeviceModel,PromptAPIForGeminiNano --optimization-guide-on-device-model-execution-override=1
-)
-
-echo.
-echo [DONE] Chrome restarted with On-Device AI flags active!
-timeout /t 3 >nul
-exit
-`;
-    const blob = new Blob([batContent], { type: 'application/x-bat;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = 'launch-chrome-ai.bat';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    showSuccess('Downloaded "launch-chrome-ai.bat". Double-click to restart Chrome with On-Device AI.');
-  });
-
-  // Step-by-Step AI Diagnostics Inspector
-  const btnRunAiDiagnostics = document.getElementById('btnRunAiDiagnostics') as HTMLButtonElement;
-  const aiDiagnosticsLogBox = document.getElementById('aiDiagnosticsLogBox') as HTMLElement;
-  const aiDownloadTriggerRow = document.getElementById('aiDownloadTriggerRow') as HTMLElement;
-  const lblAiDownloadStatus = document.getElementById('lblAiDownloadStatus') as HTMLElement;
-  const btnTriggerModelDownload = document.getElementById('btnTriggerModelDownload') as HTMLButtonElement;
-
-  btnRunAiDiagnostics?.addEventListener('click', async () => {
-    btnRunAiDiagnostics.disabled = true;
-    btnRunAiDiagnostics.textContent = '⏳ Checking...';
-    if (aiDiagnosticsLogBox) {
-      aiDiagnosticsLogBox.classList.remove('hidden');
-      aiDiagnosticsLogBox.textContent = 'Inspecting Chrome On-Device AI environment...\n';
-    }
-
-    try {
-      let activeTabId: number | undefined;
-      if (chrome.tabs) {
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs && tabs[0]) activeTabId = tabs[0].id;
-      }
-
-      const diag = await AiNormalizerService.runStepByStepDiagnostics(activeTabId);
-      if (aiDiagnosticsLogBox) {
-        aiDiagnosticsLogBox.textContent = diag.report;
-      }
-
-      if (diag.canDownload && aiDownloadTriggerRow) {
-        aiDownloadTriggerRow.classList.remove('hidden');
-      } else if (aiDownloadTriggerRow) {
-        aiDownloadTriggerRow.classList.add('hidden');
-      }
-      await checkAiNormalizerStatus();
-    } catch (e: any) {
-      if (aiDiagnosticsLogBox) {
-        aiDiagnosticsLogBox.textContent += `\n❌ Diagnostic execution error: ${e?.message || String(e)}`;
-      }
-    } finally {
-      btnRunAiDiagnostics.disabled = false;
-      btnRunAiDiagnostics.textContent = '🔍 Check AI';
-    }
-  });
-
-  btnTriggerModelDownload?.addEventListener('click', async () => {
-    btnTriggerModelDownload.disabled = true;
-    btnTriggerModelDownload.textContent = '⏳ Downloading...';
-    if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = 'Starting background model download (~1.5 GB)...';
-
-    try {
-      await AiNormalizerService.triggerModelDownload((pct, loaded, total) => {
-        if (lblAiDownloadStatus) {
-          lblAiDownloadStatus.textContent = `Downloading Gemini Nano: ${pct}% (${Math.round(loaded / 1024 / 1024)}MB / ${Math.round(total / 1024 / 1024)}MB)`;
-        }
-      });
-      if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = '✅ Model download completed! Gemini Nano is ready.';
-      showSuccess('Gemini Nano downloaded successfully! On-Device AI is now active.');
-      await checkAiNormalizerStatus();
-      if (btnRunAiDiagnostics) btnRunAiDiagnostics.click();
-    } catch (err: any) {
-      if (lblAiDownloadStatus) lblAiDownloadStatus.textContent = `❌ Download error: ${err?.message || String(err)}`;
-    } finally {
-      btnTriggerModelDownload.disabled = false;
-      btnTriggerModelDownload.textContent = '⚡ Start Download';
-    }
-  });
 
   checkAiNormalizerStatus();
 
@@ -850,6 +725,12 @@ exit
     btnStopActiveSync?.classList.remove('hidden');
 
     try {
+      // 0. Auto-check On-Device AI Status and log environment readiness
+      await checkAiNormalizerStatus();
+      const aiAvail = await AiNormalizerService.getAvailability();
+      const aiEngineName = aiAvail.status === 'readily' ? 'Gemini Nano (On-Device AI)' : 'Deterministic Pattern Parser';
+      appendLog(`✨ AI Engine: Active (${aiEngineName})`);
+
       // 1. Capture group metadata & ID
       const capRes = await sendMessage({ type: 'CAPTURE_ACTIVE_WHATSAPP_CHAT' });
       renderTrackedChats(capRes.trackedChats);
@@ -877,60 +758,25 @@ exit
   const btnFetchWhatsAppLogs = document.getElementById('btnFetchWhatsAppLogs') as HTMLButtonElement;
   const btnCopyWhatsAppLogs = document.getElementById('btnCopyWhatsAppLogs') as HTMLButtonElement;
   const btnClearWhatsAppLogs = document.getElementById('btnClearWhatsAppLogs') as HTMLButtonElement;
-  const selLogTimeFilter = document.getElementById('selLogTimeFilter') as HTMLSelectElement;
-  const btnDownloadJsonArchive = document.getElementById('btnDownloadJsonArchive') as HTMLButtonElement;
 
   async function loadWhatsAppLogs() {
     try {
-      const filterVal = selLogTimeFilter ? selLogTimeFilter.value : '10';
-      const minutes = filterVal === 'all' ? undefined : parseInt(filterVal, 10);
-      const res = await sendMessage({ type: 'GET_WHATSAPP_DIAGNOSTICS', minutesFilter: minutes });
+      const res = await sendMessage({ type: 'GET_WHATSAPP_DIAGNOSTICS' });
       if (txtWhatsAppLogs) {
-        txtWhatsAppLogs.value = res.formatted || 'No WhatsApp logs recorded for this time window.';
+        txtWhatsAppLogs.value = res.formatted || 'No WhatsApp logs recorded yet.';
       }
     } catch (e) {}
   }
-
-  selLogTimeFilter?.addEventListener('change', () => {
-    loadWhatsAppLogs();
-  });
 
   btnFetchWhatsAppLogs?.addEventListener('click', async () => {
     btnFetchWhatsAppLogs.disabled = true;
     btnFetchWhatsAppLogs.innerText = '⏳ Fetching...';
     try {
       await loadWhatsAppLogs();
-      showSuccess('Fetched WhatsApp logs for selected timeframe.');
+      showSuccess('Fetched latest WhatsApp diagnostics and sync logs.');
     } finally {
       btnFetchWhatsAppLogs.disabled = false;
       btnFetchWhatsAppLogs.innerText = '🔄 Refresh Logs';
-    }
-  });
-
-  btnDownloadJsonArchive?.addEventListener('click', async () => {
-    btnDownloadJsonArchive.disabled = true;
-    btnDownloadJsonArchive.innerText = '⏳ Generating JSON...';
-    try {
-      const res = await sendMessage({ type: 'DOWNLOAD_SCHOOL_ARCHIVE_JSON' });
-      if (res && res.success && res.jsonContent) {
-        const blob = new Blob([res.jsonContent], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = res.fileName || 'Atharva_School_Archive.json';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-        showSuccess(`✅ Downloaded "${res.fileName}" successfully!`);
-      } else {
-        showError('No messages found in archive yet. Run a sync on your active chat first.');
-      }
-    } catch (e: any) {
-      showError(`Download failed: ${e.message}`);
-    } finally {
-      btnDownloadJsonArchive.disabled = false;
-      btnDownloadJsonArchive.innerText = '💾 1-Click Download Current School Archive JSON';
     }
   });
 
