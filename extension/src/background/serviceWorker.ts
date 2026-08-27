@@ -1214,11 +1214,11 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 const isUnloadedPlaceholder = fullBody.toLowerCase().includes("this message couldn't load") || fullBody.toLowerCase().includes("open the message on your phone to view it");
 
                 if (!isUnloadedPlaceholder) {
-                  // Click download buttons and document icons on visible attachments with synthetic mouse click events (strictly once per element)
+                  // Click specific download icons on visible attachments (strictly once per element, never click whole document thumb to avoid opening viewer)
                   const downloadBtns = row.querySelectorAll(
                     'span[data-icon="download"], div[data-icon="download"], ' +
                     'button[data-testid="document-download-btn"], button[data-testid="media-download-btn"], ' +
-                    'div[role="button"][title*="Download"], button[title*="Download"], div[data-testid="document-thumb"]'
+                    'div[role="button"][title*="Download"], button[title*="Download"], button[aria-label*="Download"], div[role="button"][aria-label*="Download"]'
                   );
                   downloadBtns.forEach(btn => {
                     const hEl = btn as HTMLElement;
@@ -1277,18 +1277,29 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
           const dismissWhatsAppModals = () => {
             try {
-              // 1. Close full-screen Media/PDF Viewers (Back button or Close button)
+              // 1. Close full-screen Media/PDF Viewers (Back button, X button, Close button)
               const mediaViewerCloseBtns = document.querySelectorAll(
-                'span[data-icon="back"], span[data-icon="x"], button[aria-label="Back"], div[role="button"][aria-label="Back"], ' +
+                'span[data-icon="back"], span[data-icon="x"], span[data-icon="x-viewer"], span[data-icon="chevron-left"], ' +
+                'button[aria-label="Back"], div[role="button"][aria-label="Back"], div[data-testid="btn-back"], ' +
                 'button[aria-label="Close"], div[role="button"][aria-label="Close"], div[data-testid="btn-close"], ' +
-                'div[data-testid="media-viewer-modal"] button, div[data-testid="media-viewer-modal"] div[role="button"]'
+                'div[data-testid="media-viewer-modal"] button, div[data-testid="media-viewer-modal"] div[role="button"], ' +
+                'header button[aria-label="Back"], header div[role="button"][aria-label="Back"], ' +
+                'header button[aria-label="Close"], header div[role="button"][aria-label="Close"]'
               );
               mediaViewerCloseBtns.forEach(btn => {
-                try { (btn as HTMLElement).click(); } catch (e) {}
+                try {
+                  const h = btn as HTMLElement;
+                  h.click();
+                  if (h.parentElement) h.parentElement.click();
+                } catch (e) {}
               });
 
               // Dispatch Escape key to dismiss any open media viewer overlays
-              window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+              const escKeyInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true, view: window };
+              window.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
+              window.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
+              document.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
+              document.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
 
               // 2. Target all modal dialog containers in WhatsApp Web (e.g. "Document unavailable")
               const dialogEls = document.querySelectorAll(
@@ -1299,7 +1310,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 for (let i = 0; i < clickables.length; i++) {
                   const el = clickables[i] as HTMLElement;
                   const t = (el.textContent || '').trim().toUpperCase();
-                  if (t === 'OK' || t === 'DISMISS' || t === 'CLOSE') {
+                  if (t === 'OK' || t === 'DISMISS' || t === 'CLOSE' || t === 'CANCEL') {
                     el.click();
                     break;
                   }
