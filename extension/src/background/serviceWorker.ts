@@ -808,6 +808,22 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
           const blacklist = ['profile details', 'contact info', 'group info', 'search...', 'chats', 'communities', 'channels', 'starred messages', 'settings'];
 
+          // Auto-select tracked chat from sidebar if WhatsApp is currently on landing page or chat was closed
+          if (!document.querySelector('#main, [data-testid="conversation-panel-body"], .chat-info')) {
+            const targetName = (tracked && tracked.length > 0 && tracked[0]?.title) || (stringFilt && stringFilt[0]) || '';
+            if (targetName) {
+              const sidebarItems = document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"]');
+              for (let i = 0; i < sidebarItems.length; i++) {
+                const item = sidebarItems[i] as HTMLElement;
+                if ((item.textContent || '').toLowerCase().includes(targetName.toLowerCase())) {
+                  item.click();
+                  await new Promise(resolve => setTimeout(resolve, 1500));
+                  break;
+                }
+              }
+            }
+          }
+
           let currentChatName = '';
           // 1. WhatsApp Header
           const mainTitleEl = document.querySelector('#main header div[role="button"] span[title], #main header span[data-testid="conversation-info-header-chat-title"], #main header span[title], #main header span[dir="auto"]');
@@ -1277,36 +1293,22 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
           const dismissWhatsAppModals = () => {
             try {
-              // 1. Close full-screen Media/PDF Viewers (Back button, X button, Close button)
-              const mediaViewerCloseBtns = document.querySelectorAll(
-                'span[data-icon="back"], span[data-icon="x"], span[data-icon="x-viewer"], span[data-icon="chevron-left"], ' +
-                'button[aria-label="Back"], div[role="button"][aria-label="Back"], div[data-testid="btn-back"], ' +
-                'button[aria-label="Close"], div[role="button"][aria-label="Close"], div[data-testid="btn-close"], ' +
-                'div[data-testid="media-viewer-modal"] button, div[data-testid="media-viewer-modal"] div[role="button"], ' +
-                'header button[aria-label="Back"], header div[role="button"][aria-label="Back"], ' +
-                'header button[aria-label="Close"], header div[role="button"][aria-label="Close"]'
-              );
-              mediaViewerCloseBtns.forEach(btn => {
-                try {
-                  const h = btn as HTMLElement;
-                  h.click();
-                  if (h.parentElement) h.parentElement.click();
-                } catch (e) {}
-              });
+              // 1. Check if an actual full-screen media viewer or popup container is present
+              const viewerContainer = document.querySelector('div[data-testid="media-viewer-modal"], div[data-testid="media-viewer"], div[data-animate-modal-popup="true"]');
+              if (viewerContainer) {
+                const closeBtn = viewerContainer.querySelector('span[data-icon="x-viewer"], span[data-icon="x"], span[data-icon="back"], button[aria-label="Close"], div[aria-label="Close"], button, div[role="button"]') as HTMLElement | null;
+                if (closeBtn) {
+                  try { closeBtn.click(); } catch (e) {}
+                }
+                const escKeyInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true, view: window };
+                viewerContainer.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
+                viewerContainer.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
+              }
 
-              // Dispatch Escape key to dismiss any open media viewer overlays
-              const escKeyInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true, view: window };
-              window.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
-              window.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
-              document.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
-              document.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
-
-              // 2. Target all modal dialog containers in WhatsApp Web (e.g. "Document unavailable")
-              const dialogEls = document.querySelectorAll(
-                'div[role="dialog"], div[role="alertdialog"], div[data-animate-modal-popup="true"], [data-testid="popup-contents"], div._ak8k'
-              );
-              dialogEls.forEach(dialog => {
-                const clickables = dialog.querySelectorAll('button, div[role="button"], span');
+              // 2. Check if an alert/dialog popup is present (e.g. "Document unavailable")
+              const dialogEl = document.querySelector('div[role="dialog"], div[role="alertdialog"], [data-testid="popup-contents"], div._ak8k');
+              if (dialogEl) {
+                const clickables = dialogEl.querySelectorAll('button, div[role="button"], span');
                 for (let i = 0; i < clickables.length; i++) {
                   const el = clickables[i] as HTMLElement;
                   const t = (el.textContent || '').trim().toUpperCase();
@@ -1315,15 +1317,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
                     break;
                   }
                 }
-              });
-
-              // 3. Direct button selectors
-              const modalButtons = document.querySelectorAll(
-                'button[data-testid="popup-controls-ok"], div[data-testid="popup-controls-ok"], button._ak8l, div[role="dialog"] button'
-              );
-              modalButtons.forEach(btn => {
-                try { (btn as HTMLElement).click(); } catch (e) {}
-              });
+              }
             } catch (e) {}
           };
 
