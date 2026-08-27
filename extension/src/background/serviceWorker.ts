@@ -794,6 +794,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
         const isManual = Boolean(message.payload?.isManualSync);
         const targetTab = openTabs[0];
+
+        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🚀 [SYNC_START] Initiated sync on tab ${targetTab.id} (${targetTab.title || targetTab.url}). Target: "${targetFilterStr || 'All Tracked'}", Mode: ${isManual ? 'Manual Deep Scan' : 'Automated Background'}`);
+
         const results = await chrome.scripting.executeScript({
           target: { tabId: targetTab.id! },
           world: 'MAIN',
@@ -1651,11 +1654,11 @@ async function handleMessage(message: { type: string; payload?: any }) {
                   consecutiveNoNewMessageCycles = 0;
                 }
 
-                if (sc % 10 === 0) {
+                if (sc % 5 === 0 || sc === 1) {
                   diagLogs.push({
                     level: 'INFO',
                     category: 'CONN',
-                    message: `[UNBOUNDED_SCROLL step ${sc}] Dynamically accumulated ${extractedMessagesMap.size} messages across timeline.`
+                    message: `[TIMELINE_SCROLL step ${sc}] Collected: ${extractedMessagesMap.size} msgs | Top: ${scrollContainer.scrollTop}px | Settle: ${consecutiveNoNewMessageCycles}/${requiredSettleCycles} | PhoneSyncs: ${phoneSyncClickCount}`
                   });
                 }
               }
@@ -1933,9 +1936,11 @@ async function handleMessage(message: { type: string; payload?: any }) {
           ...extraction.lastMessagePointer,
           lastSyncedAt: new Date().toISOString()
         };
-        await chrome.storage.local.set({ chat_sync_pointers: currentPointers });
         await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}".`);
       }
+
+      const totalDurationSec = ((Date.now() - now) / 1000).toFixed(1);
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'CONN', `🏁 [SYNC_COMPLETE] Finished sync for "${extraction.chatName}" in ${totalDurationSec}s. Notices: ${extractedMessages.length}, Attachments Uploaded: ${uploadCount}, Child Profile: "${childName}".`);
 
       return {
         chatName: extraction.chatName,
