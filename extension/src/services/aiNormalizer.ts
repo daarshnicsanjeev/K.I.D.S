@@ -361,6 +361,87 @@ Return JSON with:
   }
 
   /**
+   * Performs deep evaluation of Chrome Version vs Flag State and returns specific user guidance.
+   */
+  public static async checkAiReadinessDetailed(): Promise<{
+    status: 'ready' | 'outdated_chrome' | 'disabled_or_flag_off' | 'downloading' | 'unsupported';
+    chromeVersion: number;
+    badgeLabel: string;
+    badgeColor: string;
+    badgeBg: string;
+    userAdviceTitle: string;
+    userAdviceMessage: string;
+    actionType?: 'update_chrome' | 'enable_flags' | 'start_download';
+    actionUrl?: string;
+    flagSteps?: string[];
+  }> {
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+    const chromeMatch = ua.match(/Chrome\/([0-9]+)/);
+    const chromeVer = chromeMatch ? parseInt(chromeMatch[1], 10) : 0;
+
+    // 1. Check if Chrome is outdated (Built-in AI requires Chrome 128+)
+    if (chromeVer > 0 && chromeVer < 128) {
+      return {
+        status: 'outdated_chrome',
+        chromeVersion: chromeVer,
+        badgeLabel: `🔴 Update Chrome (v${chromeVer})`,
+        badgeBg: '#7f1d1d',
+        badgeColor: '#fca5a5',
+        userAdviceTitle: 'Chrome Browser Needs an Update',
+        userAdviceMessage: `Chrome Gemini Nano Built-in AI is standard in modern Google Chrome (v128+), but your browser is running Chrome v${chromeVer}.\n\nPlease update Chrome to enable on-device AI. In the meantime, all features will operate seamlessly using the high-performance Rule Engine.`,
+        actionType: 'update_chrome',
+        actionUrl: 'chrome://settings/help'
+      };
+    }
+
+    // 2. Check active Prompt API availability
+    const avail = await this.getAvailability();
+    if (avail.status === 'readily') {
+      return {
+        status: 'ready',
+        chromeVersion: chromeVer,
+        badgeLabel: '🟢 Ready (Gemini Nano)',
+        badgeBg: '#065f46',
+        badgeColor: '#34d399',
+        userAdviceTitle: 'Chrome Gemini Nano AI is Active',
+        userAdviceMessage: 'Google Chrome Built-in AI (Gemini Nano) is fully enabled and operating on-device for high-speed school notice extraction.'
+      };
+    }
+
+    if (avail.status === 'after-download') {
+      return {
+        status: 'downloading',
+        chromeVersion: chromeVer,
+        badgeLabel: '🟡 Model Download Available',
+        badgeBg: '#78350f',
+        badgeColor: '#fcd34d',
+        userAdviceTitle: 'Gemini Nano Download Required',
+        userAdviceMessage: 'Gemini Nano is supported on your browser and waiting to download the on-device model package (~1.5 GB).',
+        actionType: 'start_download'
+      };
+    }
+
+    // 3. Chrome version is modern (>= 128), but Prompt API is disabled or flags are inactive
+    return {
+      status: 'disabled_or_flag_off',
+      chromeVersion: chromeVer,
+      badgeLabel: '🟡 Enable Gemini Nano',
+      badgeBg: '#78350f',
+      badgeColor: '#fcd34d',
+      userAdviceTitle: 'Enable Chrome Gemini Nano',
+      userAdviceMessage: `Your Chrome (v${chromeVer || '128+'}) supports Built-in AI, but Gemini Nano is currently disabled or flags are not active.\n\nTo enable Built-in AI:\n1. Open chrome://flags\n2. Set "Prompt API for Gemini Nano" to Enabled\n3. Set "Enables optimization guide on device" to Enabled BypassPerfRequirement\n4. Relaunch Chrome.`,
+      actionType: 'enable_flags',
+      actionUrl: 'chrome://flags',
+      flagSteps: [
+        '1. Open chrome://flags in your Chrome address bar.',
+        '2. Search "Prompt API for Gemini Nano" and select "Enabled".',
+        '3. Search "Enables optimization guide on device" and select "Enabled BypassPerfRequirement".',
+        '4. Click "Relaunch" at the bottom of Chrome.'
+      ]
+    };
+  }
+
+  /**
    * Runs an in-depth step-by-step diagnostic inspection of Chrome On-Device AI prerequisites.
    */
   public static async runStepByStepDiagnostics(targetTabId?: number): Promise<{ report: string; success: boolean; canDownload: boolean }> {

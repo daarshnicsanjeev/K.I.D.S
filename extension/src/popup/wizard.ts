@@ -11,32 +11,99 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cardStep4 = document.getElementById('step4Card') as HTMLElement;
   const cardStep5 = document.getElementById('step5Card') as HTMLElement;
 
-  // AI Normalizer Status UI Elements
+  // AI Normalizer Status & Guidance UI Elements
+  const aiStatusPillBar = document.getElementById('aiStatusPillBar') as HTMLElement;
   const aiStatusBadge = document.getElementById('aiStatusBadge') as HTMLElement;
+  const aiGuidanceModal = document.getElementById('aiGuidanceModal') as HTMLElement;
+  const aiGuidanceIcon = document.getElementById('aiGuidanceIcon') as HTMLElement;
+  const aiGuidanceTitle = document.getElementById('aiGuidanceTitle') as HTMLElement;
+  const aiGuidanceMessage = document.getElementById('aiGuidanceMessage') as HTMLElement;
+  const btnCloseAiGuidance = document.getElementById('btnCloseAiGuidance') as HTMLButtonElement;
+  const btnActionAiGuidance = document.getElementById('btnActionAiGuidance') as HTMLButtonElement;
+
+  let currentAiReadiness: any = null;
 
   async function checkAiNormalizerStatus() {
     if (!aiStatusBadge) return;
     try {
-      const avail = await AiNormalizerService.getAvailability();
-      if (avail.status === 'readily') {
-        aiStatusBadge.textContent = '🟢 Ready (Nano)';
-        aiStatusBadge.style.background = '#065f46';
-        aiStatusBadge.style.color = '#34d399';
-        aiStatusBadge.title = 'Chrome Built-in AI is active on this device.';
-      } else if (avail.status === 'after-download') {
-        aiStatusBadge.textContent = '🟡 Download Available';
-        aiStatusBadge.style.background = '#78350f';
-        aiStatusBadge.style.color = '#fcd34d';
-        aiStatusBadge.title = 'Model is available to download.';
-      } else {
-        aiStatusBadge.textContent = '⚪ Rule Engine';
-        aiStatusBadge.style.background = '#334155';
-        aiStatusBadge.style.color = '#cbd5e1';
-      }
+      currentAiReadiness = await AiNormalizerService.checkAiReadinessDetailed();
+      aiStatusBadge.textContent = currentAiReadiness.badgeLabel;
+      aiStatusBadge.style.background = currentAiReadiness.badgeBg;
+      aiStatusBadge.style.color = currentAiReadiness.badgeColor;
+      aiStatusBadge.title = currentAiReadiness.userAdviceTitle;
     } catch {
       aiStatusBadge.textContent = '⚪ Rule Engine';
+      aiStatusBadge.style.background = '#334155';
+      aiStatusBadge.style.color = '#cbd5e1';
     }
   }
+
+  function showAiGuidance() {
+    if (!aiGuidanceModal || !currentAiReadiness) return;
+
+    if (aiGuidanceIcon) {
+      aiGuidanceIcon.innerText = currentAiReadiness.status === 'ready' ? '🟢' :
+                                 currentAiReadiness.status === 'outdated_chrome' ? '🔴' : '🟡';
+    }
+    if (aiGuidanceTitle) {
+      aiGuidanceTitle.innerText = currentAiReadiness.userAdviceTitle;
+    }
+    if (aiGuidanceMessage) {
+      aiGuidanceMessage.innerText = currentAiReadiness.userAdviceMessage;
+    }
+
+    if (btnActionAiGuidance) {
+      if (currentAiReadiness.status === 'outdated_chrome') {
+        btnActionAiGuidance.innerText = '📋 Copy Update Link';
+        btnActionAiGuidance.classList.remove('hidden');
+      } else if (currentAiReadiness.status === 'disabled_or_flag_off') {
+        btnActionAiGuidance.innerText = '📋 Copy Flag Guide';
+        btnActionAiGuidance.classList.remove('hidden');
+      } else if (currentAiReadiness.status === 'downloading') {
+        btnActionAiGuidance.innerText = '⚡ Start Download';
+        btnActionAiGuidance.classList.remove('hidden');
+      } else {
+        btnActionAiGuidance.classList.add('hidden');
+      }
+    }
+
+    aiGuidanceModal.classList.remove('hidden');
+  }
+
+  aiStatusPillBar?.addEventListener('click', () => {
+    showAiGuidance();
+  });
+
+  btnCloseAiGuidance?.addEventListener('click', () => {
+    aiGuidanceModal?.classList.add('hidden');
+  });
+
+  btnActionAiGuidance?.addEventListener('click', async () => {
+    if (!currentAiReadiness) return;
+    if (currentAiReadiness.actionType === 'update_chrome') {
+      await navigator.clipboard.writeText('chrome://settings/help');
+      showSuccess('Copied "chrome://settings/help" to clipboard! Paste in Chrome address bar to update.');
+      aiGuidanceModal?.classList.add('hidden');
+    } else if (currentAiReadiness.actionType === 'enable_flags') {
+      const instructions = `Steps to Enable Chrome Gemini Nano AI:\n1. Open: chrome://flags\n2. Set "Prompt API for Gemini Nano" -> Enabled\n3. Set "Enables optimization guide on device" -> Enabled BypassPerfRequirement\n4. Relaunch Chrome.`;
+      await navigator.clipboard.writeText(instructions);
+      showSuccess('Copied Flag Instructions to clipboard! Paste into notepad or browser to configure.');
+      aiGuidanceModal?.classList.add('hidden');
+    } else if (currentAiReadiness.actionType === 'start_download') {
+      btnActionAiGuidance.disabled = true;
+      btnActionAiGuidance.innerText = '⏳ Downloading...';
+      try {
+        await AiNormalizerService.triggerModelDownload(() => {});
+        showSuccess('✅ Model download started/completed!');
+        await checkAiNormalizerStatus();
+      } catch (e: any) {
+        showError(`Download error: ${e?.message || String(e)}`);
+      } finally {
+        btnActionAiGuidance.disabled = false;
+        btnActionAiGuidance.innerText = '⚡ Start Download';
+      }
+    }
+  });
 
   checkAiNormalizerStatus();
 
@@ -727,9 +794,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       // 0. Auto-check On-Device AI Status and log environment readiness
       await checkAiNormalizerStatus();
-      const aiAvail = await AiNormalizerService.getAvailability();
-      const aiEngineName = aiAvail.status === 'readily' ? 'Gemini Nano (On-Device AI)' : 'Deterministic Pattern Parser';
-      appendLog(`✨ AI Engine: Active (${aiEngineName})`);
+      if (currentAiReadiness) {
+        if (currentAiReadiness.status === 'ready') {
+          appendLog('✨ AI Engine: Gemini Nano (On-Device Local AI Active)');
+        } else if (currentAiReadiness.status === 'outdated_chrome') {
+          appendLog(`⚠️ AI Status: Chrome v${currentAiReadiness.chromeVersion} is outdated. Update at chrome://settings/help to enable Gemini Nano. Operating via Rule Engine.`);
+        } else {
+          appendLog('ℹ️ AI Status: Gemini Nano is disabled. Enable at chrome://flags to use local AI. Operating via Rule Engine.');
+        }
+      }
 
       // 1. Capture group metadata & ID
       const capRes = await sendMessage({ type: 'CAPTURE_ACTIVE_WHATSAPP_CHAT' });

@@ -36,6 +36,22 @@
       </div>
     </div>
 
+    <!-- AI Guidance / Troubleshooting Modal -->
+    <div id="aiGuidanceModal" class="hidden" style="position: fixed; inset: 0; background: rgba(15, 23, 42, 0.92); backdrop-filter: blur(4px); z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 14px;">
+      <div style="background: #1e293b; border: 2px solid #38bdf8; border-radius: 12px; padding: 18px; max-width: 360px; width: 100%; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5); text-align: center;">
+        <div id="aiGuidanceIcon" style="font-size: 2.2rem; margin-bottom: 6px;">✨</div>
+        <h3 id="aiGuidanceTitle" style="font-size: 1rem; font-weight: 700; color: #f8fafc; margin-bottom: 8px;">Chrome Gemini Nano AI</h3>
+        
+        <div id="aiGuidanceMessage" style="background: #0f172a; padding: 12px; border-radius: 8px; font-size: 0.8rem; line-height: 1.45; color: #e2e8f0; margin-bottom: 14px; text-align: left; border-left: 4px solid #38bdf8; white-space: pre-line;">
+        </div>
+
+        <div style="display: flex; gap: 8px;">
+          <button id="btnCloseAiGuidance" class="btn btn-secondary" style="flex: 1; padding: 8px; font-size: 0.8rem;">Close</button>
+          <button id="btnActionAiGuidance" class="btn btn-primary" style="flex: 1.5; padding: 8px; font-size: 0.8rem; font-weight: 700;">Copy Instructions</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Multi-Child Profile Switcher Bar -->
     <div class="child-switcher-bar" style="display: flex; align-items: center; justify-content: space-between; background: #1e293b; padding: 5px 10px; border-radius: 8px; margin-bottom: 8px; border: 1px solid rgba(255, 255, 255, 0.1);">
       <div style="display: flex; align-items: center; gap: 6px; flex: 1;">
@@ -52,12 +68,13 @@
     </div>
 
     <!-- On-Device Gemini Nano AI Normalizer Status Bar -->
-    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 4px 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid #334155; font-size: 0.75rem;">
+    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #0f172a; padding: 4px 10px; border-radius: 6px; margin-bottom: 8px; border: 1px solid #334155; font-size: 0.75rem; cursor: pointer;" title="Click to view Gemini Nano AI status and setup instructions">
       <div style="display: flex; align-items: center; gap: 5px;">
         <span>✨</span>
         <span style="color: #94a3b8; font-weight: 500;">Built-in AI:</span>
-        <span id="aiStatusBadge" style="background: #334155; color: #cbd5e1; font-size: 0.7rem; padding: 1px 6px; border-radius: 4px; font-weight: 600;">Checking...</span>
+        <span id="aiStatusBadge" style="background: #334155; color: #cbd5e1; font-size: 0.7rem; padding: 2px 7px; border-radius: 4px; font-weight: 600;">Checking...</span>
       </div>
+      <span style="font-size: 0.72rem; color: #38bdf8; font-weight: 600;">ℹ️ Help</span>
     </div>
 
     <!-- Add/Rename Child Inline Editor Bar -->
