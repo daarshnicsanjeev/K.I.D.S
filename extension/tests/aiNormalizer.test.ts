@@ -68,4 +68,32 @@ Hope this helps!`;
     const availability = await AiNormalizerService.getAvailability();
     expect(['readily', 'after-download', 'no', 'unsupported']).toContain(availability.status);
   });
+
+  it('should stitch fragmented continuation turns seamlessly', () => {
+    const fragmentedRawChat = `[11:49 AM, 7/1/2026] +91 93216 80087: Dear Parents,
+Greetings!
+We are delighted to invite you to our Coffee Meet.
+Venue: Seminar Hall
+[11:49 AM, 8/27/2026] +91 93216 80087: 7:45 a.m. – 9:30 a.m.
+Grades 2, 3 & 4
+10:30 a.m. – 11:45 a.m.
+We sincerely look forward to meeting you over a cup of coffee.`;
+
+    const turns = AiNormalizerService.extractRawTurns(fragmentedRawChat, new Date('2026-08-27T12:00:00Z'));
+    expect(turns).toHaveLength(1);
+    expect(turns[0].date).toBe('7/1/2026');
+    expect(turns[0].rawBody).toContain('Venue: Seminar Hall');
+    expect(turns[0].rawBody).toContain('7:45 a.m. – 9:30 a.m.');
+    expect(turns[0].rawBody).toContain('over a cup of coffee');
+  });
+
+  it('should filter out dummy attachment clock pills and star chips', () => {
+    const rawWithPills = `[8:22 AM, 6/25/2026] Bhoomi: [Document Attachment: 7:12 PM]
+[8:22 AM, 6/25/2026] Bhoomi: Dear Parents, please find attached the revised schedule.
+[12:25 AM, 8/4/2026] Bhoomi: [Document Attachment: star]`;
+
+    const turns = AiNormalizerService.extractRawTurns(rawWithPills, new Date('2026-08-27T12:00:00Z'));
+    expect(turns).toHaveLength(1);
+    expect(turns[0].rawBody).toContain('Dear Parents, please find attached the revised schedule.');
+  });
 });

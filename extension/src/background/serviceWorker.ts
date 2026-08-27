@@ -1178,14 +1178,19 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 // Auto-dismiss any "Document unavailable" modal popups or media viewer overlays from WhatsApp
                 dismissWhatsAppModals();
 
+                // Filter out dummy standalone attachment pills / media clock chips (e.g. "[Document Attachment: 7:12 PM]", "star")
+                const isDummyAttachmentChip = /^\[(?:Document Attachment|Photo\/Image Attachment|Document|Photo|Image):\s*(?:\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|star)\]$/i.test(fullBody.trim()) || /^(?:star|forms\.gle)$/i.test(fullBody.trim());
+                if (isDummyAttachmentChip) return;
+
                 // Normalized body fingerprint for robust deduplication across scroll cycles
                 const normBodyKey = fullBody.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
                 if (extractedMessagesMap.has(normBodyKey)) {
                   const existing = extractedMessagesMap.get(normBodyKey);
-                  // Merge with better metadata if available
+                  // Merge with better author metadata if available
                   if (existing.sender.startsWith('+91') && !sender.startsWith('+91')) {
                     existing.sender = sender;
                   }
+                  // Preserve canonical earlier time and date if already present
                   if (!existing.time && timeStr) {
                     existing.time = timeStr;
                     existing.timestamp = `${timeStr}, ${existing.date || dateStr}`;

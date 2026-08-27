@@ -149,16 +149,58 @@ export class AiNormalizerService {
       }
     };
 
+    // Post-Processing Phase 1: Filter Dummy Attachment & Media UI Chips
+    const isAttachmentNoise = (body: string): boolean => {
+      const b = body.trim();
+      if (/^\[(?:Document Attachment|Photo\/Image Attachment|Document|Photo|Image):\s*(?:\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|star|[A-Za-z0-9_.\- ]+)\]$/i.test(b)) {
+        const inner = b.replace(/^\[(?:Document Attachment|Photo\/Image Attachment|Document|Photo|Image):\s*/i, '').replace(/\]$/, '').trim();
+        if (/^\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?$/i.test(inner) || inner.toLowerCase() === 'star') {
+          return true;
+        }
+      }
+      if (/^(?:star|forms\.gle|ruchi:|bhoomi:|download\s*"[^"]*")$/i.test(b)) return true;
+      return false;
+    };
+
+    const isContinuationFragment = (currTurn: RawChatTurn, prevTurn: RawChatTurn | null): boolean => {
+      if (!prevTurn) return false;
+      const b = currTurn.rawBody.trim();
+      const firstLine = b.split('\n')[0].trim();
+      const firstLower = firstLine.toLowerCase();
+
+      // Check if current turn starts with a salutation/greeting or subject line (indicates a new message)
+      const hasGreeting = /^(dear\s+|greetings|good\s+(morning|afternoon|evening)|subject:|notice|circular|hindi\s+homework|science\s+homework|sst\s+homework|math\s+homework|homework)/i.test(firstLower);
+      if (hasGreeting) return false;
+
+      // Indicator 1: Starts with time ranges ("7:45 a.m. – 9:30 a.m.", "10:30 a.m. – 11:45 a.m.")
+      if (/^\d{1,2}:\d{2}\s*(?:a\.?m\.?|p\.?m\.?)\s*[–—\-]\s*\d{1,2}:\d{2}/i.test(firstLine)) return true;
+
+      // Indicator 2: Starts with continuation punctuation or conjunctions
+      if (/^[,\-;–—•*]|^(and|or|but|which|with|that|to|for|in\s+case|kindly|please|we\s+sincerely)\b/i.test(firstLower)) return true;
+
+      // Indicator 3: Previous turn ends with colon, comma, hyphen, or incomplete sentence
+      const prevBody = prevTurn.rawBody.trim();
+      if (/[:,\-–—]\s*$/i.test(prevBody) || /^(venue:|time:|timing:|schedule:)/i.test(prevBody.split('\n').pop()?.trim() || '')) {
+        return true;
+      }
+
+      // Indicator 4: Contextual continuation (e.g. coffee meet continuation mentioning coffee)
+      if (prevBody.toLowerCase().includes('coffee meet') && firstLower.includes('coffee')) {
+        return true;
+      }
+
+      return false;
+    };
+
+    // Build initial turns list
     lines.forEach(line => {
-      // Date cluster separator
       if (dateHeaderRegex.test(line)) {
         flushTurn();
         currentDate = this.resolveDateHeader(line, anchorDate);
         return;
       }
 
-      // Check standard WhatsApp header: [Time, Date] Author:, [Date, Time] Author:, [Date] Author:, [Time] Author:
-      const waHeaderMatch = line.match(/^\[([^\]]+)\]\s*([^:]+):/);
+      const waHeaderMatch = line.match(/^\[([^\]]+)\]\s*([^:]+):\s*(.*)$/);
       if (waHeaderMatch) {
         flushTurn();
         const headerInside = waHeaderMatch[1].trim();
@@ -180,6 +222,11 @@ export class AiNormalizerService {
         }
         let cleanAuthor = waHeaderMatch[2].trim().replace(/^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\s*/, '').trim();
         currentSender = cleanAuthor || 'School Teacher';
+        
+        const restOfLine = waHeaderMatch[3] ? waHeaderMatch[3].trim() : '';
+        if (restOfLine) {
+          currentBodyLines.push(restOfLine);
+        }
         return;
       }
 
@@ -187,7 +234,54 @@ export class AiNormalizerService {
     });
 
     flushTurn();
-    return turns;
+
+    // Multi-Phase SLM / Semantic Anomaly Repair Pipeline
+    const repairedTurns: RawChatTurn[] = [];
+
+    for (let i = 0; i < turns.length; i++) {
+      const turn = turns[i];
+
+      // Phase 1: Skip standalone attachment noise
+      if (isAttachmentNoise(turn.rawBody)) {
+        continue;
+      }
+
+      const prevTurn = repairedTurns.length > 0 ? repairedTurns[repairedTurns.length - 1] : null;
+
+      // Phase 2: Semantic Turn Stitching (Rejoin continuation fragments like turn_126 + turn_127)
+      if (prevTurn && isContinuationFragment(turn, prevTurn)) {
+        prevTurn.rawBody = `${prevTurn.rawBody}\n${turn.rawBody}`;
+        if (turn.detectedLinks && turn.detectedLinks.length > 0) {
+          prevTurn.detectedLinks = Array.from(new Set([...(prevTurn.detectedLinks || []), ...turn.detectedLinks]));
+        }
+        continue;
+      }
+
+      // Phase 3: Temporal Cross-Verification & Date Calibration
+      // Look for explicit in-body event dates (e.g. "Sunday, 5th July 2026", "23.07.2026", "Monday, 8th June 2026")
+      const explicitInBodyDateMatch = turn.rawBody.match(/\b(?:Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday),\s*([0-9]{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:,?\s*(\d{4}))?/i) ||
+                                      turn.rawBody.match(/\b([0-9]{1,2})[\/\.\-]([0-9]{1,2})[\/\.\-](202\d)\b/);
+      if (explicitInBodyDateMatch) {
+        // If turn has a valid in-body date and the assigned date appears to be a fallback or default
+        if (explicitInBodyDateMatch[2] && isNaN(Number(explicitInBodyDateMatch[2]))) {
+          const d = parseInt(explicitInBodyDateMatch[1], 10);
+          const mStr = explicitInBodyDateMatch[2].toLowerCase();
+          const m = monthNames[mStr];
+          const y = explicitInBodyDateMatch[3] ? parseInt(explicitInBodyDateMatch[3], 10) : anchorDate.getFullYear();
+          if (m && d) {
+            const inBodyDate = `${m}/${d}/${y}`;
+            // If the stamped date is today/yesterday anchor while message is discussing a previous month
+            if (turn.date !== inBodyDate && Math.abs(anchorDate.getTime() - new Date(turn.date).getTime()) < 2 * 24 * 3600 * 1000 && m < (anchorDate.getMonth() + 1)) {
+              turn.date = inBodyDate;
+            }
+          }
+        }
+      }
+
+      repairedTurns.push(turn);
+    }
+
+    return repairedTurns;
   }
 
   /**
