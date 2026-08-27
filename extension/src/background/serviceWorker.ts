@@ -59,6 +59,9 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   }
 });
 
+let isSyncInProgress = false;
+let syncInProgressSince = 0;
+
 // Listener for runtime messages
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   handleMessage(message)
@@ -478,11 +481,12 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
     case 'GET_WHATSAPP_CONFIG': {
       const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled']) : {};
-      const localData = await chrome.storage.local.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled']);
+      const localData = await chrome.storage.local.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled', 'chat_sync_pointers']);
       return {
         target_whatsapp_chats: syncData.target_whatsapp_chats || localData.target_whatsapp_chats || '',
         tracked_whatsapp_chats: syncData.tracked_whatsapp_chats || localData.tracked_whatsapp_chats || [],
-        whatsapp_drive_caching_enabled: syncData.whatsapp_drive_caching_enabled ?? localData.whatsapp_drive_caching_enabled ?? true
+        whatsapp_drive_caching_enabled: syncData.whatsapp_drive_caching_enabled ?? localData.whatsapp_drive_caching_enabled ?? true,
+        chat_sync_pointers: localData.chat_sync_pointers || {}
       };
     }
 
@@ -756,36 +760,45 @@ async function handleMessage(message: { type: string; payload?: any }) {
     }
 
     case 'SYNC_WHATSAPP_CHATS': {
-      const state = await chrome.storage.local.get(null);
-      const chatQueryUrls = [
-        '*://web.whatsapp.com/*',
-        '*://web.telegram.org/*',
-        '*://discord.com/*',
-        '*://app.slack.com/*',
-        '*://teams.microsoft.com/*',
-        '*://teams.live.com/*'
-      ];
-      let openTabs: chrome.tabs.Tab[] = [];
-      for (const urlPattern of chatQueryUrls) {
-        const found = await chrome.tabs.query({ url: urlPattern });
-        if (found && found.length > 0) openTabs = openTabs.concat(found);
+      const now = Date.now();
+      if (isSyncInProgress && (now - syncInProgressSince < 45000)) {
+        await WhatsAppDiagnosticLogger.log('WARN', 'CONN', '⏳ [SYNC_IN_PROGRESS] A sync execution is already actively running. Skipping duplicate trigger.');
+        return { status: 'already_running', message: 'Sync already in progress' };
       }
+      isSyncInProgress = true;
+      syncInProgressSince = now;
 
-      if (openTabs.length === 0) {
-        throw new Error('No open chat tab found. Please open WhatsApp Web or Telegram Web in a browser tab.');
-      }
+      try {
+        const state = await chrome.storage.local.get(null);
+        const chatQueryUrls = [
+          '*://web.whatsapp.com/*',
+          '*://web.telegram.org/*',
+          '*://discord.com/*',
+          '*://app.slack.com/*',
+          '*://teams.microsoft.com/*',
+          '*://teams.live.com/*'
+        ];
+        let openTabs: chrome.tabs.Tab[] = [];
+        for (const urlPattern of chatQueryUrls) {
+          const found = await chrome.tabs.query({ url: urlPattern });
+          if (found && found.length > 0) openTabs = openTabs.concat(found);
+        }
 
-      const trackedChats = state.tracked_whatsapp_chats || [];
-      const targetFilterStr = message.payload?.target_whatsapp_chats || state.target_whatsapp_chats || '';
-      const stringFilters = targetFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+        if (openTabs.length === 0) {
+          throw new Error('No open chat tab found. Please open WhatsApp Web or Telegram Web in a browser tab.');
+        }
 
-      const isManual = Boolean(message.payload?.isManualSync);
-      const targetTab = openTabs[0];
-      const results = await chrome.scripting.executeScript({
-        target: { tabId: targetTab.id! },
-        world: 'MAIN',
-        args: [trackedChats, stringFilters, isManual],
-        func: async (tracked: any[], stringFilt: string[], isManualSync: boolean) => {
+        const trackedChats = state.tracked_whatsapp_chats || [];
+        const targetFilterStr = message.payload?.target_whatsapp_chats || state.target_whatsapp_chats || '';
+        const stringFilters = targetFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+
+        const isManual = Boolean(message.payload?.isManualSync);
+        const targetTab = openTabs[0];
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: targetTab.id! },
+          world: 'MAIN',
+          args: [trackedChats, stringFilters, isManual, state.chat_sync_pointers || {}],
+          func: async (tracked: any[], stringFilt: string[], isManualSync: boolean, chatSyncPointers: Record<string, any>) => {
           // Anti-throttling shim: ensure WhatsApp Web React virtual scroller continues rendering even when tab is in background
           try {
             Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
@@ -871,6 +884,54 @@ async function handleMessage(message: { type: string; payload?: any }) {
           const origAnchorClick = HTMLAnchorElement.prototype.click;
           const origOpen = window.open;
           const origCreateElement = document.createElement.bind(document);
+
+          const showInPageToast = (msg: string, type: 'info' | 'warn' | 'success' = 'info', durationMs = 6000) => {
+            try {
+              const existing = document.getElementById('school-mcp-toast');
+              if (existing) existing.remove();
+              const toast = document.createElement('div');
+              toast.id = 'school-mcp-toast';
+              toast.style.position = 'fixed';
+              toast.style.top = '16px';
+              toast.style.left = '50%';
+              toast.style.transform = 'translateX(-50%)';
+              toast.style.zIndex = '9999999';
+              toast.style.padding = '12px 20px';
+              toast.style.borderRadius = '10px';
+              toast.style.fontSize = '13.5px';
+              toast.style.fontWeight = '600';
+              toast.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+              toast.style.boxShadow = '0 8px 24px rgba(0,0,0,0.4)';
+              toast.style.display = 'flex';
+              toast.style.alignItems = 'center';
+              toast.style.gap = '10px';
+              toast.style.maxWidth = '90vw';
+              toast.style.transition = 'all 0.3s ease';
+
+              if (type === 'warn') {
+                toast.style.backgroundColor = '#b45309';
+                toast.style.color = '#fef3c7';
+                toast.style.border = '1px solid #f59e0b';
+              } else if (type === 'success') {
+                toast.style.backgroundColor = '#065f46';
+                toast.style.color = '#d1fae5';
+                toast.style.border = '1px solid #10b981';
+              } else {
+                toast.style.backgroundColor = '#1e293b';
+                toast.style.color = '#f1f5f9';
+                toast.style.border = '1px solid #3b82f6';
+              }
+
+              toast.innerHTML = `<span>${msg}</span><button style="background:transparent;border:none;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;" onclick="this.parentElement.remove()">✕</button>`;
+              document.body.appendChild(toast);
+
+              if (durationMs > 0) {
+                setTimeout(() => {
+                  try { toast.remove(); } catch (e) {}
+                }, durationMs);
+              }
+            } catch (e) {}
+          };
 
           try {
             // Prevent premature revocation of blob URLs by WhatsApp
@@ -1263,157 +1324,304 @@ async function handleMessage(message: { type: string; payload?: any }) {
             message: `[SCROLL_BOTTOM_VIEW] Captured initial ${extractedMessagesMap.size} newest messages at chat bottom.`
           });
 
-          // 2. Pure Unbounded Dynamic Scrolling: scrolls until the absolute start of chat is conclusively reached
-          let consecutiveNoNewMessageCycles = 0;
-          let sc = 0;
+          const existingPointer = chatSyncPointers && currentChatName ? chatSyncPointers[currentChatName] : null;
+          const isFirstRun = !existingPointer;
 
-          // Reset abort flags for new sync run
-          document.body.removeAttribute('data-mcp-sync-abort');
-          (window as any).__school_mcp_abort_sync = false;
-
-          if (scrollContainer) {
-            while (true) {
-              // Check if user requested immediate sync stop
-              if (document.body.getAttribute('data-mcp-sync-abort') === 'true' || (window as any).__school_mcp_abort_sync) {
-                diagLogs.push({ level: 'WARN', category: 'CONN', message: `[SYNC_STOPPED] Sync was stopped immediately by user request at step ${sc}.` });
+          // Check if existing pointer is visible in the initial bottom view
+          let isPointerInInitialView = false;
+          if (!isFirstRun && existingPointer) {
+            for (const m of extractedMessagesMap.values()) {
+              if (
+                (existingPointer.id && m.id && m.id === existingPointer.id) ||
+                (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
+              ) {
+                isPointerInInitialView = true;
                 break;
               }
+            }
+          }
 
-              sc++;
-              const countBefore = extractedMessagesMap.size;
-
-              // Auto-dismiss any obstructive popups or media viewer overlays before scrolling
-              dismissWhatsAppModals();
-
-              // Click the exact "Click here to get older messages from your phone" pill banner shown in chat
-              let phoneSyncClicked = false;
-              const allChatElements = document.querySelectorAll('#main div, #main span, #main button, [data-testid="conversation-panel-body"] div, [data-testid="conversation-panel-body"] span');
-              for (let i = 0; i < allChatElements.length; i++) {
-                const el = allChatElements[i];
-                // Safety guard: skip individual message containers
-                if (el.closest('div[data-testid="msg-container"], div.message-in, div.message-out, div.copyable-text, [data-testid="document-thumb"], div._amk6, span[data-icon]')) {
-                  continue;
-                }
-                const txt = (el.textContent || '').trim().toLowerCase();
-                if (
-                  (txt.includes('click here to get older messages') && txt.length < 90) ||
-                  (txt.includes('get older messages from your phone') && txt.length < 90) ||
-                  txt === 'load older messages'
-                ) {
-                  try {
-                    const targetEl = (el as HTMLElement);
-                    
-                    // 1. Direct React Fiber / Props onClick invocation
-                    try {
-                      let curr: any = targetEl;
-                      for (let depth = 0; depth < 3 && curr; depth++) {
-                        const reactPropKey = Object.keys(curr).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEvents$') || k.startsWith('__reactFiber$'));
-                        if (reactPropKey && curr[reactPropKey]) {
-                          const p = curr[reactPropKey];
-                          if (typeof p.onClick === 'function') p.onClick({ bubbles: true, cancelable: true, defaultPrevented: false });
-                          if (typeof p.onPointerDown === 'function') p.onPointerDown({ bubbles: true, cancelable: true });
-                          if (typeof p.onPointerUp === 'function') p.onPointerUp({ bubbles: true, cancelable: true });
-                        }
-                        curr = curr.parentElement;
-                      }
-                    } catch (rErr) {}
-
-                    // 2. Coordinate-based synthetic pointer & mouse sequence
-                    try {
-                      const rect = targetEl.getBoundingClientRect();
-                      const clientX = rect.left + rect.width / 2;
-                      const clientY = rect.top + rect.height / 2;
-                      const evtInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY };
-                      targetEl.dispatchEvent(new PointerEvent('pointerdown', evtInit));
-                      targetEl.dispatchEvent(new MouseEvent('mousedown', evtInit));
-                      targetEl.dispatchEvent(new PointerEvent('pointerup', evtInit));
-                      targetEl.dispatchEvent(new MouseEvent('mouseup', evtInit));
-                      targetEl.dispatchEvent(new MouseEvent('click', evtInit));
-                      targetEl.click();
-                      if (targetEl.parentElement) targetEl.parentElement.click();
-                    } catch (peErr) {}
-
-                    phoneSyncClicked = true;
-                    consecutiveNoNewMessageCycles = 0;
-                    diagLogs.push({ level: 'INFO', category: 'CONN', message: `[PHONE_SYNC] Clicked "${txt}" on step ${sc}. Phone sync initiated!` });
-                    break;
-                  } catch (e) {}
-                }
-              }
-
-              // Scroll upwards in steps and dispatch synthetic WheelEvent + ScrollEvent on all candidate containers
-              const prevTop = scrollContainer.scrollTop;
-              scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - scrollContainer.clientHeight * 2);
-              
-              const wheelEvt = new WheelEvent('wheel', { deltaY: -1200, deltaMode: 0, bubbles: true, cancelable: true, view: window });
-              scrollContainer.dispatchEvent(wheelEvt);
-              if (scrollContainer.parentElement) scrollContainer.parentElement.dispatchEvent(wheelEvt);
-              const mainPanel = document.querySelector('#main') || document.querySelector('[data-testid="conversation-panel-body"]');
-              if (mainPanel) mainPanel.dispatchEvent(wheelEvt);
-
-              scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-              scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
-
-              // If top reached, bounce scroll position and send Home key to trigger top-edge intersection observers
-              if (scrollContainer.scrollTop === 0) {
-                try { (scrollContainer as HTMLElement).focus(); } catch (e) {}
-                scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', code: 'Home', keyCode: 36, which: 36, bubbles: true }));
-                window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
-                if (prevTop === 0) {
-                  scrollContainer.scrollTop = 350;
-                  scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                  await new Promise(resolve => setTimeout(resolve, 100));
-                  scrollContainer.scrollTop = 0;
-                  scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                  scrollContainer.dispatchEvent(wheelEvt);
-                }
-              }
-
-              await new Promise(resolve => setTimeout(resolve, phoneSyncClicked ? 1600 : 600));
-              scrapeCurrentVisibleMessages();
-
-              // Auto-dismiss again after scraping
-              dismissWhatsAppModals();
-
-              // Check if absolute group creation / end-to-end encryption system banner is reached
-              const hasTrueTopSystemBanner = Array.from(document.querySelectorAll('div[data-testid="msg-system"], div._ak72, div._ak73, [data-testid="conversation-panel-body"] > div')).some(el => {
-                const text = (el.textContent || '').toLowerCase();
-                return text.includes('created group') || text.includes('created this group') || text.includes('end-to-end encrypted') || text.includes('you were added') || text.includes('group created');
+          if (isPointerInInitialView) {
+            diagLogs.push({
+              level: 'INFO',
+              category: 'CONN',
+              message: `⚡ [FAST_POINTER_MATCH] Pointer checkpoint found in current view for "${currentChatName}". No deep scroll needed.`
+            });
+            showInPageToast(`⚡ Checkpoint found! Synced latest messages on screen for "${currentChatName}". Background sync is active.`, 'success', 4000);
+          } else {
+            if (isFirstRun) {
+              diagLogs.push({
+                level: 'INFO',
+                category: 'CONN',
+                message: `🚀 [FIRST_RUN] Initial deep scan for "${currentChatName}". Full historical scan in progress. Please keep WhatsApp tab in foreground.`
               });
+              showInPageToast(`🚀 Initial Setup: Scanning historical messages for "${currentChatName}". Please keep this WhatsApp tab in the foreground until finished.`, 'info', 10000);
+            } else {
+              diagLogs.push({
+                level: 'WARN',
+                category: 'CONN',
+                message: `⚠️ [CATCH_UP_TRIGGERED] Previous checkpoint not on screen. Catching up... Please keep WhatsApp tab in foreground.`
+              });
+              showInPageToast(`⚠️ WhatsApp Catch-Up: Please keep this WhatsApp tab in the foreground for a moment while catching up on messages.`, 'warn', 10000);
+            }
 
-              const countAfter = extractedMessagesMap.size;
-              // If system creation banner is present, 10 settle cycles confirm top; if not yet reached, allow up to 60 settle cycles to fetch older months (June, May, etc.)
-              const requiredSettleCycles = hasTrueTopSystemBanner ? 10 : 60;
+            // 2. Dynamic Scrolling: scrolls until absolute start of chat or checkpoint is reached
+            let consecutiveNoNewMessageCycles = 0;
+            let sc = 0;
+            let phoneSyncClickCount = 0;
+            let lastPhoneSyncStep = -999;
+            let spinnerCycles = 0;
+            const scanStartTime = Date.now();
+            const MAX_SCAN_DURATION_MS = isFirstRun ? 35000 : 15000;
+            const MAX_SCAN_STEPS = isFirstRun ? 40 : 15;
 
-              if (countAfter === countBefore && scrollContainer.scrollTop === 0 && !phoneSyncClicked) {
-                consecutiveNoNewMessageCycles++;
-                if (consecutiveNoNewMessageCycles === 25 && !hasTrueTopSystemBanner) {
+            // Reset abort flags for new sync run
+            document.body.removeAttribute('data-mcp-sync-abort');
+            (window as any).__school_mcp_abort_sync = false;
+
+            if (scrollContainer) {
+              while (true) {
+                // Check if user requested immediate sync stop
+                if (document.body.getAttribute('data-mcp-sync-abort') === 'true' || (window as any).__school_mcp_abort_sync) {
+                  diagLogs.push({ level: 'WARN', category: 'CONN', message: `[SYNC_STOPPED] Sync was stopped immediately by user request at step ${sc}.` });
+                  break;
+                }
+
+                // Hard safety bound: prevent runaway executions or Chrome port timeouts
+                if (sc >= MAX_SCAN_STEPS || (Date.now() - scanStartTime > MAX_SCAN_DURATION_MS)) {
                   diagLogs.push({
                     level: 'INFO',
                     category: 'CONN',
-                    message: `[PULLING_OLDER_MONTHS step ${sc}] Reached top of current cache. Actively requesting older history (June/May). If prompted on WhatsApp Web, unlock phone to complete phone-sync.`
+                    message: `[SCAN_WINDOW_COMPLETED step ${sc}] Reached optimal timeline scan window (${extractedMessagesMap.size} messages collected). Proceeding to save and archive.`
                   });
+                  break;
                 }
-                if (consecutiveNoNewMessageCycles >= requiredSettleCycles) {
-                  diagLogs.push({
-                    level: 'SUCCESS',
-                    category: 'CONN',
-                    message: `[TRUE_TOP_REACHED] Conclusively reached the absolute start of conversation at step ${sc} (Group creation banner verified: ${hasTrueTopSystemBanner}). Total accumulated: ${extractedMessagesMap.size} messages.`
-                  });
-                  break; // Absolute physical start of conversation reached
-                }
-              } else {
-                consecutiveNoNewMessageCycles = 0;
-              }
 
-              if (sc % 10 === 0) {
-                diagLogs.push({
-                  level: 'INFO',
-                  category: 'CONN',
-                  message: `[UNBOUNDED_SCROLL step ${sc}] Dynamically accumulated ${extractedMessagesMap.size} messages across timeline.`
+                sc++;
+                const countBefore = extractedMessagesMap.size;
+
+                // Auto-dismiss any obstructive popups or media viewer overlays before scrolling
+                dismissWhatsAppModals();
+
+                // Click the exact "Click here to get older messages from your phone" pill banner with Enter key simulation
+                let phoneSyncClicked = false;
+                const allChatElements = document.querySelectorAll('#main div, #main span, #main button, [data-testid="conversation-panel-body"] div, [data-testid="conversation-panel-body"] span, [role="button"]');
+                for (let i = 0; i < allChatElements.length; i++) {
+                  const el = allChatElements[i];
+                  // Safety guard: skip individual message containers
+                  if (el.closest('div[data-testid="msg-container"], div.message-in, div.message-out, div.copyable-text, [data-testid="document-thumb"], div._amk6, span[data-icon]')) {
+                    continue;
+                  }
+                  const txt = (el.textContent || '').trim().toLowerCase();
+                  const isPhoneSyncBanner = (
+                    (txt.includes('older messages') || txt.includes('old messages') || txt.includes('load older') || txt.includes('load old') || txt.includes('get older')) &&
+                    txt.length < 120 &&
+                    !txt.includes('starred messages') &&
+                    !txt.includes('disappearing messages') &&
+                    !txt.includes('delete messages')
+                  );
+
+                  if (isPhoneSyncBanner && (sc - lastPhoneSyncStep >= 5) && phoneSyncClickCount < 2) {
+                    try {
+                      const targetEl = (el as HTMLElement);
+                      
+                      // 1. Focus and dispatch genuine Enter key sequence (WhatsApp accessibility model)
+                      try {
+                        targetEl.focus();
+                        const keyEvtInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: 13, bubbles: true, cancelable: true, view: window };
+                        targetEl.dispatchEvent(new KeyboardEvent('keydown', keyEvtInit));
+                        targetEl.dispatchEvent(new KeyboardEvent('keypress', keyEvtInit));
+                        targetEl.dispatchEvent(new KeyboardEvent('keyup', keyEvtInit));
+                        if (targetEl.parentElement) {
+                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keydown', keyEvtInit));
+                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keypress', keyEvtInit));
+                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keyup', keyEvtInit));
+                        }
+                      } catch (kErr) {}
+
+                      // 2. Direct React Fiber / Props onClick invocation
+                      try {
+                        let curr: any = targetEl;
+                        for (let depth = 0; depth < 3 && curr; depth++) {
+                          const reactPropKey = Object.keys(curr).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEvents$') || k.startsWith('__reactFiber$'));
+                          if (reactPropKey && curr[reactPropKey]) {
+                            const p = curr[reactPropKey];
+                            if (typeof p.onClick === 'function') p.onClick({ bubbles: true, cancelable: true, defaultPrevented: false });
+                            if (typeof p.onPointerDown === 'function') p.onPointerDown({ bubbles: true, cancelable: true });
+                            if (typeof p.onPointerUp === 'function') p.onPointerUp({ bubbles: true, cancelable: true });
+                          }
+                          curr = curr.parentElement;
+                        }
+                      } catch (rErr) {}
+
+                      // 3. Coordinate-based synthetic pointer & mouse sequence
+                      try {
+                        const rect = targetEl.getBoundingClientRect();
+                        const clientX = rect.left + rect.width / 2;
+                        const clientY = rect.top + rect.height / 2;
+                        const evtInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY };
+                        targetEl.dispatchEvent(new PointerEvent('pointerdown', evtInit));
+                        targetEl.dispatchEvent(new MouseEvent('mousedown', evtInit));
+                        targetEl.dispatchEvent(new PointerEvent('pointerup', evtInit));
+                        targetEl.dispatchEvent(new MouseEvent('mouseup', evtInit));
+                        targetEl.dispatchEvent(new MouseEvent('click', evtInit));
+                        targetEl.click();
+                        if (targetEl.parentElement) targetEl.parentElement.click();
+                      } catch (peErr) {}
+
+                      phoneSyncClickCount++;
+                      lastPhoneSyncStep = sc;
+                      phoneSyncClicked = true;
+                      consecutiveNoNewMessageCycles = 0;
+                      diagLogs.push({ level: 'INFO', category: 'CONN', message: `[PHONE_SYNC #${phoneSyncClickCount}] Triggered phone sync via Enter key & click on step ${sc}. Waiting for phone data...` });
+                      showInPageToast(`📱 Phone Sync Triggered (${phoneSyncClickCount}/2): Fetching older history from your phone. Please ensure phone is unlocked.`, 'info', 7000);
+                      await new Promise(resolve => setTimeout(resolve, 2500));
+                      break;
+                    } catch (e) {}
+                  }
+                }
+
+                // Scroll upwards in steps and dispatch synthetic WheelEvent + ScrollEvent on all candidate containers
+                const prevTop = scrollContainer.scrollTop;
+                scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - scrollContainer.clientHeight * 2);
+                
+                // Also scroll top message into view to force virtual scroller update
+                const earliestMsg = document.querySelector('#main div[data-testid="msg-container"], #main div.message-in, #main div.message-out, #main div.copyable-text, #main div[data-id], #main div[role="row"]');
+                if (earliestMsg) {
+                  try {
+                    (earliestMsg as HTMLElement).scrollIntoView({ block: 'start', behavior: 'instant' as any });
+                  } catch (e) {}
+                }
+
+                const wheelEvt = new WheelEvent('wheel', { deltaY: -1200, deltaMode: 0, bubbles: true, cancelable: true, view: window });
+                scrollContainer.dispatchEvent(wheelEvt);
+                if (scrollContainer.parentElement) scrollContainer.parentElement.dispatchEvent(wheelEvt);
+                const mainPanel = document.querySelector('#main') || document.querySelector('[data-testid="conversation-panel-body"]');
+                if (mainPanel) mainPanel.dispatchEvent(wheelEvt);
+
+                scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
+
+                // Check if WhatsApp is showing loading spinner (fetching older messages from IndexedDB/WebSocket)
+                const hasSpinnerInDom = Boolean(
+                  document.querySelector('#main div[role="progressbar"], #main svg[data-icon="spinner"], #main circle, #main div._alzi, #main div[data-testid="spinner"], #main span[data-icon="spinner"]')
+                );
+
+                let isSpinnerLoading = false;
+                if (hasSpinnerInDom) {
+                  spinnerCycles++;
+                  if (spinnerCycles <= 3) {
+                    isSpinnerLoading = true;
+                    consecutiveNoNewMessageCycles = 0;
+                    diagLogs.push({ level: 'INFO', category: 'CONN', message: `[SPINNER_ACTIVE step ${sc}] WhatsApp is loading older messages (${spinnerCycles}/3)...` });
+                    scrollContainer.scrollTop = 180;
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    scrollContainer.scrollTop = 0;
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                  }
+                } else {
+                  spinnerCycles = 0;
+                }
+
+                // If top reached, bounce scroll position and send Home key to trigger top-edge intersection observers
+                if (scrollContainer.scrollTop === 0) {
+                  try { (scrollContainer as HTMLElement).focus(); } catch (e) {}
+                  scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', code: 'Home', keyCode: 36, which: 36, bubbles: true }));
+                  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
+                  if (prevTop === 0) {
+                    scrollContainer.scrollTop = 350;
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                    await new Promise(resolve => setTimeout(resolve, 150));
+                    scrollContainer.scrollTop = 0;
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                    scrollContainer.dispatchEvent(wheelEvt);
+                  }
+                }
+
+                await new Promise(resolve => setTimeout(resolve, (phoneSyncClicked || isSpinnerLoading) ? 1400 : 600));
+                scrapeCurrentVisibleMessages();
+
+                // Auto-dismiss again after scraping
+                dismissWhatsAppModals();
+
+                // If not first run, check if we reached the existingPointer
+                if (!isFirstRun && existingPointer) {
+                  let reachedCheckpoint = false;
+                  for (const m of extractedMessagesMap.values()) {
+                    if (
+                      (existingPointer.id && m.id && m.id === existingPointer.id) ||
+                      (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
+                    ) {
+                      reachedCheckpoint = true;
+                      break;
+                    }
+                  }
+                  if (reachedCheckpoint) {
+                    diagLogs.push({
+                      level: 'SUCCESS',
+                      category: 'CONN',
+                      message: `🎯 [CHECKPOINT_REACHED] Reached previous sync pointer at step ${sc}. Catch-up complete!`
+                    });
+                    break;
+                  }
+                }
+
+                // Check if absolute group creation / end-to-end encryption system banner is reached
+                const hasTrueTopSystemBanner = Array.from(document.querySelectorAll('div[data-testid="msg-system"], div._ak72, div._ak73, [data-testid="conversation-panel-body"] > div')).some(el => {
+                  const text = (el.textContent || '').toLowerCase();
+                  return text.includes('created group') || text.includes('created this group') || text.includes('end-to-end encrypted') || text.includes('you were added') || text.includes('group created');
                 });
+
+                const countAfter = extractedMessagesMap.size;
+                // If system creation banner is present, 15 settle cycles confirm top; if not yet reached, allow up to 35 settle cycles to fetch older months (June, May, etc.)
+                const requiredSettleCycles = hasTrueTopSystemBanner ? 15 : 35;
+
+                if (countAfter === countBefore && scrollContainer.scrollTop === 0 && !isSpinnerLoading) {
+                  consecutiveNoNewMessageCycles++;
+                  if (consecutiveNoNewMessageCycles === 15 && !hasTrueTopSystemBanner) {
+                    diagLogs.push({
+                      level: 'INFO',
+                      category: 'CONN',
+                      message: `[PULLING_OLDER_MONTHS step ${sc}] Reached top of current cache. Finalizing full history capture...`
+                    });
+                  }
+                  if (consecutiveNoNewMessageCycles >= requiredSettleCycles) {
+                    diagLogs.push({
+                      level: 'SUCCESS',
+                      category: 'CONN',
+                      message: `[TRUE_TOP_REACHED] Conclusively reached the absolute start of conversation at step ${sc} (Group creation banner verified: ${hasTrueTopSystemBanner}). Total accumulated: ${extractedMessagesMap.size} messages.`
+                    });
+                    break; // Absolute physical start of conversation reached
+                  }
+                } else {
+                  consecutiveNoNewMessageCycles = 0;
+                }
+
+                if (sc % 10 === 0) {
+                  diagLogs.push({
+                    level: 'INFO',
+                    category: 'CONN',
+                    message: `[UNBOUNDED_SCROLL step ${sc}] Dynamically accumulated ${extractedMessagesMap.size} messages across timeline.`
+                  });
+                }
               }
             }
+          }
+
+          // 3. Reposition viewport back down to the bottom on latest message
+          if (scrollContainer) {
+            try {
+              scrollContainer.scrollTop = scrollContainer.scrollHeight;
+              scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+              await new Promise(resolve => setTimeout(resolve, 300));
+              const allMsgs = document.querySelectorAll('#main div[data-testid="msg-container"], #main div.message-in, #main div.message-out');
+              if (allMsgs.length > 0) {
+                const lastMsgEl = allMsgs[allMsgs.length - 1] as HTMLElement;
+                lastMsgEl.scrollIntoView({ block: 'end', behavior: 'instant' as any });
+              }
+              await new Promise(resolve => setTimeout(resolve, 400));
+            } catch (e) {}
           }
 
           const finalScrollHeight = scrollContainer ? scrollContainer.scrollHeight : 0;
@@ -1459,6 +1667,17 @@ async function handleMessage(message: { type: string; payload?: any }) {
             return `${header ? header + ' ' : ''}${m.sender}:\n${m.body}`;
           }).join('\n\n');
 
+          const latestMsg = accumulatedMessages.length > 0 ? accumulatedMessages[accumulatedMessages.length - 1] : null;
+          const lastMessagePointer = latestMsg ? {
+            id: latestMsg.id || null,
+            sender: latestMsg.sender || '',
+            body: (latestMsg.body || '').substring(0, 300),
+            time: latestMsg.time || '',
+            date: latestMsg.date || ''
+          } : null;
+
+          showInPageToast(`🎉 Sync complete for "${currentChatName}"! Checkpoint pointer saved at latest message.`, 'success', 4500);
+
           return {
             success: true,
             chatName: currentChatName,
@@ -1466,7 +1685,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
             rawAttachments: rawAttachmentsList,
             messages: accumulatedMessages,
             diagLogs,
-            filteredOut: false
+            filteredOut: false,
+            lastMessagePointer
           };
         } finally {
           URL.createObjectURL = origCreateObjectURL;
@@ -1646,15 +1866,31 @@ async function handleMessage(message: { type: string; payload?: any }) {
         } catch (gasErr) {}
       }
 
+      // 3. Save / Update Checkpoint Pointer for this group
+      if (extraction.lastMessagePointer && extraction.chatName) {
+        const currentPointers = state.chat_sync_pointers || {};
+        currentPointers[extraction.chatName] = {
+          ...extraction.lastMessagePointer,
+          lastSyncedAt: new Date().toISOString()
+        };
+        await chrome.storage.local.set({ chat_sync_pointers: currentPointers });
+        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}".`);
+      }
+
       return {
         chatName: extraction.chatName,
         messageCount: extractedMessages.length,
         messages: extractedMessages,
         personalDriveSaved: !!personalDriveResult,
         personalDriveResult,
-        driveSaved: !!driveSaveResult
+        driveSaved: !!driveSaveResult,
+        lastMessagePointer: extraction.lastMessagePointer
       };
+    } finally {
+      isSyncInProgress = false;
+      syncInProgressSince = 0;
     }
+  }
 
     case 'EXTRACT_ACTIVE_WEB_TAB': {
       const state = await chrome.storage.local.get(null);

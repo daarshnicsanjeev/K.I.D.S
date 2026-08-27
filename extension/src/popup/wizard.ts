@@ -400,7 +400,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const trackedChatsEmpty = document.getElementById('trackedChatsEmpty') as HTMLDivElement;
   const trackedChatsList = document.getElementById('trackedChatsList') as HTMLUListElement;
 
-  function renderTrackedChats(chats: any[]) {
+  function renderTrackedChats(chats: any[], pointers: Record<string, any> = {}) {
     if (!trackedChatsList || !trackedChatsEmpty) return;
     trackedChatsList.innerHTML = '';
     if (!chats || chats.length === 0) {
@@ -424,8 +424,18 @@ document.addEventListener('DOMContentLoaded', async () => {
       idSpan.style.cssText = 'font-size: 0.7rem; color: #a7f3d0; opacity: 0.9; margin-top: 2px; font-family: monospace; word-break: break-all;';
       idSpan.innerHTML = `🆔 <strong>Unique ID:</strong> ${c.id || 'Active'}`;
 
+      const ptr = pointers[c.title];
+      const ptrSpan = document.createElement('div');
+      ptrSpan.style.cssText = 'font-size: 0.7rem; margin-top: 3px;';
+      if (ptr) {
+        ptrSpan.innerHTML = `📍 <strong style="color:#34d399;">Checkpoint Active:</strong> Latest message saved (${ptr.time || 'Latest'}). <span style="color:#a7f3d0;opacity:0.85;">(Auto-syncs in background)</span>`;
+      } else {
+        ptrSpan.innerHTML = `🚀 <strong style="color:#fcd34d;">First Scan Pending:</strong> Keep WhatsApp in foreground on first run.`;
+      }
+
       infoDiv.appendChild(titleSpan);
       infoDiv.appendChild(idSpan);
+      infoDiv.appendChild(ptrSpan);
 
       const removeBtn = document.createElement('button');
       removeBtn.className = 'btn btn-danger btn-sm';
@@ -699,7 +709,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   async function refreshBridgeStatus() {
     try {
       const configRes = await sendMessage({ type: 'GET_WHATSAPP_CONFIG' });
-      renderTrackedChats(configRes.tracked_whatsapp_chats || []);
+      renderTrackedChats(configRes.tracked_whatsapp_chats || [], configRes.chat_sync_pointers || {});
 
       const folderRes = await sendMessage({ type: 'GET_MCP_FOLDER_INFO' });
       const email = folderRes?.accountEmail || '';
