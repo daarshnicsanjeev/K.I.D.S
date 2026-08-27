@@ -1379,8 +1379,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
             let lastPhoneSyncStep = -999;
             let spinnerCycles = 0;
             const scanStartTime = Date.now();
-            const MAX_SCAN_DURATION_MS = isDeepScan ? 60000 : 20000;
-            const MAX_SCAN_STEPS = isDeepScan ? 120 : 25;
+            const MAX_SCAN_DURATION_MS = isDeepScan ? 120000 : 25000;
+            const MAX_SCAN_STEPS = isDeepScan ? 180 : 30;
 
             // Reset abort flags for new sync run
             document.body.removeAttribute('data-mcp-sync-abort');
@@ -1428,7 +1428,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
                     !txt.includes('delete messages')
                   );
 
-                  if (isPhoneSyncBanner && (sc - lastPhoneSyncStep >= 5) && phoneSyncClickCount < 2) {
+                  if (isPhoneSyncBanner && (sc - lastPhoneSyncStep >= 4) && phoneSyncClickCount < 12) {
                     try {
                       const targetEl = (el as HTMLElement);
                       
@@ -1481,7 +1481,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
                       phoneSyncClicked = true;
                       consecutiveNoNewMessageCycles = 0;
                       diagLogs.push({ level: 'INFO', category: 'CONN', message: `[PHONE_SYNC #${phoneSyncClickCount}] Triggered phone sync via Enter key & click on step ${sc}. Waiting for phone data...` });
-                      showInPageToast(`📱 Phone Sync Triggered (${phoneSyncClickCount}/2): Fetching older history from your phone. Please ensure phone is unlocked.`, 'info', 7000);
+                      showInPageToast(`📱 Phone Sync (#${phoneSyncClickCount}): Loading older history from your phone...`, 'info', 6000);
                       await new Promise(resolve => setTimeout(resolve, 2500));
                       break;
                     } catch (e) {}
