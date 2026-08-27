@@ -1321,7 +1321,57 @@ async function handleMessage(message: { type: string; payload?: any }) {
             } catch (e) {}
           };
 
-          // 1. Scrape bottom (newest) messages
+          // ─── LAYER 1: DIRECT STORE / IN-MEMORY EXTRACTION ────────────────────────
+          try {
+            if ((window as any).Store && (window as any).Store.Chat) {
+              const activeChatModel = (window as any).Store.Chat.models?.find((c: any) => 
+                (c.name && c.name.toLowerCase().includes(currentChatName.toLowerCase())) ||
+                (c.formattedTitle && c.formattedTitle.toLowerCase().includes(currentChatName.toLowerCase())) ||
+                (c.id && c.id._serialized && c.id._serialized.includes(currentChatId))
+              );
+
+              if (activeChatModel && activeChatModel.msgs && activeChatModel.msgs.models && activeChatModel.msgs.models.length > 0) {
+                activeChatModel.msgs.models.forEach((m: any, idx: number) => {
+                  const body = m.body || m.caption || m.text || '';
+                  if (!body && !m.isMedia) return;
+                  const sender = m.pushname || m.author || m.from || '+91 School Notice';
+                  let dateStr = '';
+                  let timeStr = '';
+                  if (m.t) {
+                    const d = new Date(m.t * 1000);
+                    dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+                    const hours = d.getHours();
+                    const mins = d.getMinutes().toString().padStart(2, '0');
+                    const ampm = hours >= 12 ? 'PM' : 'AM';
+                    timeStr = `${hours % 12 || 12}:${mins} ${ampm}`;
+                  }
+                  const normKey = body.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
+                  if (normKey && !extractedMessagesMap.has(normKey)) {
+                    extractedMessagesMap.set(normKey, {
+                      id: m.id?._serialized || `store_msg_${idx}`,
+                      sender,
+                      body,
+                      date: dateStr || undefined,
+                      time: timeStr || undefined,
+                      timestamp: (timeStr && dateStr) ? `${timeStr}, ${dateStr}` : (dateStr || timeStr || '')
+                    });
+                  }
+                });
+
+                if (extractedMessagesMap.size > 0) {
+                  diagLogs.push({
+                    level: 'SUCCESS',
+                    category: 'EXTRACT',
+                    message: `⚡ [STORE_EXTRACTION_SUCCESS] Direct in-memory Store extraction pre-loaded ${extractedMessagesMap.size} messages instantly!`
+                  });
+                }
+              }
+            }
+          } catch (storeErr: any) {
+            diagLogs.push({ level: 'INFO', category: 'EXTRACT', message: `[STORE_HOOK_INFO] Store hook info: ${storeErr.message}` });
+          }
+
+          // 1. Scrape bottom (newest) messages via DOM
           scrapeCurrentVisibleMessages();
           diagLogs.push({
             level: 'INFO',
