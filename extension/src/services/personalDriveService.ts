@@ -36,7 +36,8 @@ export class PersonalDriveService {
       const scopes = [
         'https://www.googleapis.com/auth/userinfo.email',
         'https://www.googleapis.com/auth/userinfo.profile',
-        'https://www.googleapis.com/auth/drive.file'
+        'https://www.googleapis.com/auth/drive.file',
+        'https://www.googleapis.com/auth/drive.readonly'
       ].join(' ');
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -105,7 +106,8 @@ export class PersonalDriveService {
     const scopes = [
       'https://www.googleapis.com/auth/userinfo.email',
       'https://www.googleapis.com/auth/userinfo.profile',
-      'https://www.googleapis.com/auth/drive.file'
+      'https://www.googleapis.com/auth/drive.file',
+      'https://www.googleapis.com/auth/drive.readonly'
     ].join(' ');
 
     const savedEmail = state.personal_drive_account_email;
