@@ -2259,6 +2259,19 @@ async function handleMessage(message: { type: string; payload?: any }) {
       return { logs, formatted: text };
     }
 
+    case 'SEARCH_WHATSAPP_EXPORTS': {
+      const files = await PersonalDriveService.searchWhatsAppExports();
+      const activeChild = await ChildManager.getActiveProfile();
+      return { files, activeChildName: activeChild?.name || 'Child_1' };
+    }
+
+    case 'INGEST_WHATSAPP_EXPORT': {
+      const { fileId, childName } = message.payload || {};
+      if (!fileId) throw new Error('File ID is required to ingest export.');
+      const result = await PersonalDriveService.ingestWhatsAppExport(fileId, childName);
+      return result;
+    }
+
     case 'DOWNLOAD_SCHOOL_ARCHIVE_JSON': {
       const state = await chrome.storage.local.get(['personal_drive_connected', 'personal_drive_auth_token']);
       const activeChild = await ChildManager.getActiveProfile();

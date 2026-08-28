@@ -1,5 +1,7 @@
 import { ChildManager } from './childManager';
 import { WhatsAppDiagnosticLogger } from './whatsappLogger';
+import { WhatsAppExportParser, ParsedWhatsAppExport } from './whatsAppExportParser';
+import { AiNormalizerService } from './aiNormalizer';
 
 export interface PersonalDriveFolderInfo {
   isCreated: boolean;
@@ -860,6 +862,127 @@ export class PersonalDriveService {
       }
     } catch (e) {
       console.warn('[PersonalDriveService] Could not backup child profiles to Drive:', e);
+    }
+  }
+
+  /**
+   * Searches user's Google Drive for any WhatsApp Export archives / files.
+   */
+  public static async searchWhatsAppExports(token?: string): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const q = encodeURIComponent(`name contains 'WhatsApp Chat' and trashed = false`);
+      const res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&orderBy=createdTime desc`,
+        {},
+        validToken
+      );
+
+      if (!res.ok) {
+        throw new Error(`Drive search failed: HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      return data.files || [];
+    } catch (e: any) {
+      console.warn('[PersonalDriveService] searchWhatsAppExports error:', e);
+      return [];
+    }
+  }
+
+  /**
+   * Ingests a discovered WhatsApp Export file from Google Drive, unzips/parses media & notices,
+   * passes through AI normalization, and updates the child's master archive on Drive.
+   */
+  public static async ingestWhatsAppExport(
+    fileId: string,
+    targetChildName?: string,
+    token?: string
+  ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const resolvedChild = await this.resolveChildName(targetChildName);
+
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📥 [EXPORT_INGEST_START] Fetching WhatsApp export file (ID: ${fileId}) from Google Drive for ${resolvedChild}...`);
+
+      // 1. Get file metadata
+      const metaRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size`, {}, validToken);
+      if (!metaRes.ok) {
+        throw new Error(`Failed to read file metadata for ${fileId}: HTTP ${metaRes.status}`);
+      }
+      const meta = await metaRes.json();
+      const fileName = meta.name || 'WhatsApp Chat Export';
+
+      // 2. Download binary stream
+      const dlRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
+      if (!dlRes.ok) {
+        throw new Error(`Failed to download export stream: HTTP ${dlRes.status}`);
+      }
+      const arrayBuffer = await dlRes.arrayBuffer();
+
+      // 3. Parse ZIP or Plain Text
+      const parsed: ParsedWhatsAppExport = await WhatsAppExportParser.parseExportBuffer(arrayBuffer, fileName);
+      if (!parsed.chatText || parsed.chatText.trim().length === 0) {
+        throw new Error('Export file contained no readable text messages.');
+      }
+
+      const chatName = parsed.chatName || fileName.replace(/^WhatsApp Chat (?:with|-)\s*/i, '').replace(/\.[^/.]+$/, '') || 'School WhatsApp';
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📦 [EXPORT_UNPACK_SUCCESS] Unpacked export archive for "${chatName}": ${parsed.chatText.length} characters of text, ${parsed.attachments.length} attachments found.`);
+
+      // 4. Upload any unpacked attachments directly to Child's Attachments folder
+      const driveUrlMap: { [fileName: string]: string } = {};
+      let uploadedAttachCount = 0;
+
+      for (const att of parsed.attachments) {
+        try {
+          const uploaded = await this.uploadAttachmentFile(validToken, att, resolvedChild);
+          if (uploaded && uploaded.webViewLink) {
+            driveUrlMap[att.name] = uploaded.webViewLink;
+            uploadedAttachCount++;
+          }
+        } catch (attErr) {
+          console.warn(`[PersonalDriveService] Failed to upload attachment ${att.name}:`, attErr);
+        }
+      }
+
+      // 5. Normalize chat turns through AI Normalizer
+      const notices = await AiNormalizerService.normalizeRawChatText(
+        parsed.chatText,
+        chatName,
+        resolvedChild,
+        undefined,
+        driveUrlMap
+      );
+
+      // 6. Save structured notices to Google Drive
+      const saveResult = await this.saveMessagesToPersonalDrive(validToken, notices, resolvedChild);
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [EXPORT_INGEST_COMPLETE] Successfully imported ${saveResult.saved} new notices (Total: ${saveResult.total}) and ${uploadedAttachCount} attachments from WhatsApp Export for ${resolvedChild}!`, {
+        childName: resolvedChild,
+        chatName,
+        saved: saveResult.saved,
+        total: saveResult.total,
+        attachmentsUploaded: uploadedAttachCount
+      });
+
+      return {
+        success: true,
+        noticesCount: saveResult.saved,
+        attachmentsCount: uploadedAttachCount,
+        childName: resolvedChild,
+        chatName
+      };
+    } catch (err: any) {
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_INGEST_FAIL] WhatsApp export ingest failed: ${err.message}`);
+      return {
+        success: false,
+        noticesCount: 0,
+        attachmentsCount: 0,
+        childName: targetChildName || 'Active Child',
+        chatName: 'Export',
+        error: err.message
+      };
     }
   }
 

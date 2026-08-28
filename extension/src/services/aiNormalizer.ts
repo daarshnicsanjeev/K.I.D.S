@@ -277,7 +277,6 @@ export class AiNormalizerService {
           }
         }
       }
-
       repairedTurns.push(turn);
     }
 
@@ -291,7 +290,8 @@ export class AiNormalizerService {
     rawText: string,
     chatName: string = 'Active School Chat',
     childName: string = 'Atharva',
-    onDownloadProgress?: (progressPercent: number) => void
+    onDownloadProgress?: (progressPercent: number) => void,
+    driveUrlMap?: { [fileName: string]: string }
   ): Promise<NormalizedNoticeMessage[]> {
     const rawTurns = this.extractRawTurns(rawText);
 
@@ -305,17 +305,14 @@ export class AiNormalizerService {
       authors: senderFrequency
     });
 
-    if (rawTurns.length === 0) return [];
-
+    // Step 1: Initialize on-device Gemini Nano session if available
     let session: any = null;
     let slmConsecutiveFailures = 0;
+
     try {
       session = await this.getSession(onDownloadProgress);
-      if (session) {
-        await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `[SLM_SESSION] Chrome LanguageModel (Gemini Nano) Prompt session active.`);
-      }
-    } catch (sErr: any) {
-      await WhatsAppDiagnosticLogger.log('WARN', 'EXTRACT', `[SLM_SESSION] LanguageModel Prompt session fallback: ${sErr?.message || sErr}`);
+    } catch (e: any) {
+      await WhatsAppDiagnosticLogger.log('WARN', 'EXTRACT', `Local Gemini Nano session initialization deferred: ${e.message}. Using fast deterministic parser.`);
     }
 
     const normalizedResults: NormalizedNoticeMessage[] = [];
@@ -326,6 +323,19 @@ export class AiNormalizerService {
       let finalNotice: NormalizedNoticeMessage | null = null;
       let usedSlm = false;
       const startTime = Date.now();
+
+      // Check if message references an attached file in driveUrlMap
+      let attachUrl: string | undefined;
+      let attachName: string | undefined;
+      if (driveUrlMap && Object.keys(driveUrlMap).length > 0) {
+        for (const [fName, driveUrl] of Object.entries(driveUrlMap)) {
+          if (turn.rawBody.toLowerCase().includes(fName.toLowerCase()) || fName.toLowerCase().includes(turn.rawBody.trim().toLowerCase())) {
+            attachUrl = driveUrl;
+            attachName = `${childName}_${fName}`;
+            break;
+          }
+        }
+      }
 
       // Try Chrome SLM for this turn if session is active and not circuit-broken
       if (session && slmConsecutiveFailures < 2) {
@@ -348,14 +358,32 @@ Return JSON with:
           const timeoutPromise = new Promise<string>((_, reject) =>
             setTimeout(() => reject(new Error('Turn SLM timeout')), 2500)
           );
-          const rawSlmResp = await Promise.race([session.prompt(turnPrompt), timeoutPromise]);
-          const parsed = this.parseAndSanitizeAiResponse(rawSlmResp, chatName, childName);
-          if (parsed && parsed.length > 0) {
-            finalNotice = parsed[0];
-            finalNotice.id = turn.id;
-            finalNotice.date = finalNotice.date || turn.date;
-            finalNotice.time = finalNotice.time || turn.time;
-            finalNotice.timestamp = `${finalNotice.time}, ${finalNotice.date}`;
+
+          const slmRawOutput = await Promise.race([
+            session.prompt(turnPrompt),
+            timeoutPromise
+          ]);
+
+          const parsedList = this.parseAndSanitizeAiResponse(slmRawOutput, chatName, childName);
+          if (parsedList && parsedList.length > 0) {
+            const parsed = parsedList[0];
+            finalNotice = {
+              id: turn.id,
+              chatName,
+              sender: parsed.sender || turn.sender,
+              timestamp: `${parsed.time || turn.time}, ${parsed.date || turn.date}`,
+              date: parsed.date || turn.date,
+              time: parsed.time || turn.time,
+              body: parsed.body,
+              category: (parsed.category === 'HOMEWORK_OR_TASK_ANNOUNCEMENT' || parsed.category === 'CIRCULAR_NOTICE')
+                ? parsed.category
+                : 'GENERAL_CHAT',
+              submissionDeadline: parsed.submissionDeadline || null,
+              detectedLinks: Array.isArray(parsed.detectedLinks) ? parsed.detectedLinks : turn.detectedLinks,
+              childName,
+              driveAttachmentUrl: attachUrl || (turn as any).driveAttachmentUrl,
+              driveFileName: attachName || (turn as any).driveFileName
+            };
             usedSlm = true;
             slmConsecutiveFailures = 0;
           }
@@ -364,18 +392,18 @@ Return JSON with:
         }
       }
 
-      // Fast-path / Fallback if SLM didn't produce a notice
+      // Deterministic Fallback if SLM skipped or timed out
       if (!finalNotice) {
-        const lower = turn.rawBody.toLowerCase();
         let cat: 'HOMEWORK_OR_TASK_ANNOUNCEMENT' | 'CIRCULAR_NOTICE' | 'GENERAL_CHAT' = 'GENERAL_CHAT';
-        if (lower.includes('homework') || lower.includes('submission') || lower.includes('worksheet') || lower.includes('exercise') || lower.includes('ms word') || lower.includes('paragraph in')) {
+        const lowerBody = turn.rawBody.toLowerCase();
+        if (lowerBody.includes('homework') || lowerBody.includes('assignment') || lowerBody.includes('submission date') || lowerBody.includes('submit it by')) {
           cat = 'HOMEWORK_OR_TASK_ANNOUNCEMENT';
-        } else if (lower.includes('circular') || lower.includes('dear parents') || lower.includes('holiday') || lower.includes('assembly') || lower.includes('greetings') || lower.includes('science notebook')) {
+        } else if (lowerBody.includes('circular') || lowerBody.includes('notice') || lowerBody.includes('dear parents') || lowerBody.includes('competition') || lowerBody.includes('assembly') || lowerBody.includes('holiday')) {
           cat = 'CIRCULAR_NOTICE';
         }
 
         let deadline: string | null = null;
-        const dlMatch = turn.rawBody.match(/(?:submission\s+date|submit\s+by|due\s+date|upload.*by)[:\s-]+(?:[A-Za-z]+,\s*)?([0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+(?:\s+\d{4})?|\d{1,2}\/\d{1,2}\/\d{4})/i);
+        const dlMatch = turn.rawBody.match(/(?:submission|due|submit by|deadline|bring it on)\s*(?:date\s*)?[-:\s]*((?:[A-Za-z]+,?\s*)?[0-9]{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+(?:,?\s*\d{4})?|[0-9]{1,2}[\/\.\-][0-9]{1,2}[\/\.\-]\d{2,4})/i);
         if (dlMatch && dlMatch[1]) {
           deadline = dlMatch[1].trim();
         }
@@ -391,7 +419,9 @@ Return JSON with:
           category: cat,
           submissionDeadline: deadline,
           detectedLinks: turn.detectedLinks,
-          childName
+          childName,
+          driveAttachmentUrl: attachUrl || (turn as any).driveAttachmentUrl,
+          driveFileName: attachName || (turn as any).driveFileName
         };
       }
 

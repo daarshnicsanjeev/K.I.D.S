@@ -836,6 +836,107 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  // WhatsApp Export Auto-Discovery & Ingest Handlers
+  const btnScanDriveExports = document.getElementById('btnScanDriveExports') as HTMLButtonElement;
+  const driveExportsContainer = document.getElementById('driveExportsContainer') as HTMLElement;
+  const driveExportsList = document.getElementById('driveExportsList') as HTMLElement;
+
+  btnScanDriveExports?.addEventListener('click', async () => {
+    clearAlerts();
+    btnScanDriveExports.disabled = true;
+    btnScanDriveExports.innerText = '🔍 Scanning Google Drive for Exports...';
+    if (driveExportsContainer) driveExportsContainer.classList.add('hidden');
+    if (driveExportsList) driveExportsList.innerHTML = '';
+
+    try {
+      const res = await sendMessage({ type: 'SEARCH_WHATSAPP_EXPORTS' });
+      const files = res.files || [];
+      const activeChild = res.activeChildName || 'Active Child';
+
+      if (files.length === 0) {
+        showSuccess('🔍 Scan Complete: No exported WhatsApp files found on Google Drive yet. Export a chat from your phone to Google Drive first, then scan again!');
+        return;
+      }
+
+      if (driveExportsContainer) driveExportsContainer.classList.remove('hidden');
+      if (driveExportsList) {
+        driveExportsList.innerHTML = '';
+        files.forEach((f: any) => {
+          const item = document.createElement('div');
+          item.style.backgroundColor = '#011c14';
+          item.style.border = '1px solid #059669';
+          item.style.borderRadius = '6px';
+          item.style.padding = '8px 10px';
+          item.style.display = 'flex';
+          item.style.justifyContent = 'space-between';
+          item.style.alignItems = 'center';
+          item.style.gap = '8px';
+
+          const infoDiv = document.createElement('div');
+          infoDiv.style.flex = '1';
+          infoDiv.style.overflow = 'hidden';
+
+          const sizeKb = f.size ? `${(parseInt(f.size, 10) / (1024 * 1024)).toFixed(1)} MB` : 'Archive';
+          const createdDate = f.createdTime ? new Date(f.createdTime).toLocaleDateString() : '';
+
+          infoDiv.innerHTML = `
+            <div style="font-size: 0.78rem; font-weight: 700; color: #a7f3d0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">
+              📄 ${f.name}
+            </div>
+            <div style="font-size: 0.7rem; color: #6ee7b7;">
+              👶 Child: <strong>${activeChild}</strong> • ${sizeKb} ${createdDate ? '• ' + createdDate : ''}
+            </div>
+          `;
+
+          const btnIngest = document.createElement('button');
+          btnIngest.className = 'btn btn-primary btn-sm';
+          btnIngest.style.backgroundColor = '#10b981';
+          btnIngest.style.borderColor = '#059669';
+          btnIngest.style.padding = '4px 10px';
+          btnIngest.style.fontSize = '0.72rem';
+          btnIngest.style.fontWeight = '700';
+          btnIngest.innerText = '⚡ Ingest History';
+
+          btnIngest.addEventListener('click', async () => {
+            btnIngest.disabled = true;
+            btnIngest.innerText = '⏳ Ingesting...';
+            clearAlerts();
+            try {
+              const ingestRes = await sendMessage({
+                type: 'INGEST_WHATSAPP_EXPORT',
+                payload: { fileId: f.id, childName: activeChild }
+              });
+
+              if (ingestRes.success) {
+                showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}" from Day 1!`);
+                await refreshBridgeStatus();
+                await loadWhatsAppLogs();
+              } else {
+                showError(`Ingest failed: ${ingestRes.error || 'Unknown error'}`);
+              }
+            } catch (ingErr: any) {
+              showError(`Ingest error: ${ingErr.message}`);
+            } finally {
+              btnIngest.disabled = false;
+              btnIngest.innerText = '⚡ Ingest History';
+            }
+          });
+
+          item.appendChild(infoDiv);
+          item.appendChild(btnIngest);
+          driveExportsList.appendChild(item);
+        });
+      }
+
+      showSuccess(`Found ${files.length} WhatsApp export file(s) on your Google Drive!`);
+    } catch (e: any) {
+      showError(`Drive Search Error: ${e.message}`);
+    } finally {
+      btnScanDriveExports.disabled = false;
+      btnScanDriveExports.innerText = '🔍 Scan Google Drive for WhatsApp Exports';
+    }
+  });
+
   // WhatsApp Diagnostics UI Handlers
   const txtWhatsAppLogs = document.getElementById('txtWhatsAppLogs') as HTMLTextAreaElement;
   const btnFetchWhatsAppLogs = document.getElementById('btnFetchWhatsAppLogs') as HTMLButtonElement;
