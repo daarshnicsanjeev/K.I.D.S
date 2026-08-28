@@ -120,6 +120,10 @@ export class ChildManager {
     };
     if (activeId) {
       payload[this.STORAGE_KEY_ACTIVE_ID] = activeId;
+      const activeProf = profiles.find(p => p.id === activeId);
+      if (activeProf && Array.isArray(activeProf.trackedChats) && activeProf.trackedChats.length > 0) {
+        payload['tracked_whatsapp_chats'] = activeProf.trackedChats;
+      }
     }
 
     if (typeof chrome !== 'undefined' && chrome.storage) {
