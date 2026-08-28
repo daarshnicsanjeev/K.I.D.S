@@ -1694,19 +1694,19 @@ async function handleMessage(message: { type: string; payload?: any }) {
                 // Auto-dismiss again after scraping
                 dismissWhatsAppModals();
 
+                let checkpointReached = false;
                 // For automated background catch-up runs, check if we reached the existingPointer
-                if (!isDeepScan && existingPointer) {
-                  let reachedCheckpoint = false;
+                if (existingPointer) {
                   for (const m of extractedMessagesMap.values()) {
                     if (
                       (existingPointer.id && m.id && m.id === existingPointer.id) ||
                       (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
                     ) {
-                      reachedCheckpoint = true;
+                      checkpointReached = true;
                       break;
                     }
                   }
-                  if (reachedCheckpoint) {
+                  if (checkpointReached && !isDeepScan) {
                     diagLogs.push({
                       level: 'SUCCESS',
                       category: 'CONN',
@@ -1755,6 +1755,41 @@ async function handleMessage(message: { type: string; payload?: any }) {
                   });
                 }
               }
+            }
+          }
+
+          const hasTrueTop = Array.from(document.querySelectorAll('div[data-testid="msg-system"], div._ak72, div._ak73, [data-testid="conversation-panel-body"] > div')).some(el => {
+            const text = (el.textContent || '').toLowerCase();
+            return text.includes('created group') || text.includes('created this group') || text.includes('end-to-end encrypted') || text.includes('you were added') || text.includes('group created');
+          });
+
+          // Check if previous checkpoint was missed due to extended offline period
+          let hasGap = false;
+          let gapDetails: any = null;
+          if (existingPointer && !hasTrueTop) {
+            let foundPoint = false;
+            for (const m of extractedMessagesMap.values()) {
+              if (
+                (existingPointer.id && m.id && m.id === existingPointer.id) ||
+                (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
+              ) {
+                foundPoint = true;
+                break;
+              }
+            }
+            if (!foundPoint) {
+              hasGap = true;
+              gapDetails = {
+                lastCheckpointDate: existingPointer.date || '',
+                lastCheckpointTime: existingPointer.time || '',
+                lastCheckpointSender: existingPointer.sender || ''
+              };
+              diagLogs.push({
+                level: 'WARN',
+                category: 'CONN',
+                message: `⚠️ [TIMELINE_GAP_DETECTED] WhatsApp Web could not scroll back far enough to meet the previous checkpoint from ${existingPointer.date || 'earlier'}. A WhatsApp export is recommended to fill this gap.`,
+                meta: gapDetails
+              });
             }
           }
 
@@ -1842,7 +1877,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
             messages: accumulatedMessages,
             diagLogs,
             filteredOut: false,
-            lastMessagePointer
+            lastMessagePointer,
+            hasGap,
+            gapDetails
           };
         } finally {
           URL.createObjectURL = origCreateObjectURL;
@@ -2023,13 +2060,23 @@ async function handleMessage(message: { type: string; payload?: any }) {
       }
 
       // 3. Save / Update Checkpoint Pointer for this group
-      if (extraction.lastMessagePointer && extraction.chatName) {
-        const currentPointers = state.chat_sync_pointers || {};
+      if (extraction.chatName) {
+        const stored = await chrome.storage.local.get(['chat_sync_pointers']);
+        const currentPointers = stored.chat_sync_pointers || {};
+        const latestMsg = (extractedMessages && extractedMessages.length > 0) ? extractedMessages[extractedMessages.length - 1] : extraction.lastMessagePointer;
         currentPointers[extraction.chatName] = {
-          ...extraction.lastMessagePointer,
-          lastSyncedAt: new Date().toISOString()
+          id: latestMsg?.id || null,
+          sender: latestMsg?.sender || '',
+          body: (latestMsg?.body || '').substring(0, 300),
+          time: latestMsg?.time || '',
+          date: latestMsg?.date || '',
+          lastSyncedAt: new Date().toISOString(),
+          totalNotices: personalDriveResult?.total || extractedMessages.length,
+          hasGap: extraction.hasGap || false,
+          gapDetails: extraction.gapDetails || null
         };
-        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}".`);
+        await chrome.storage.local.set({ chat_sync_pointers: currentPointers });
+        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}". Gap status: ${extraction.hasGap ? 'GAP_DETECTED' : 'CLEAN'}`);
       }
 
       const totalDurationSec = ((Date.now() - now) / 1000).toFixed(1);

@@ -494,6 +494,27 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       li.appendChild(headerRow);
       li.appendChild(lastMsgBox);
+
+      // Section 3: Gap Alert Banner (if offline gap was detected)
+      if (ptr && ptr.hasGap) {
+        const gapAlert = document.createElement('div');
+        gapAlert.style.cssText = 'background: rgba(245, 158, 11, 0.2); border: 1px solid #f59e0b; border-radius: 6px; padding: 6px 8px; font-size: 0.72rem; color: #fef3c7; line-height: 1.35; margin-top: 2px;';
+        
+        const gapDateStr = ptr.gapDetails?.lastCheckpointDate ? `${ptr.gapDetails.lastCheckpointDate}` : 'previous sync';
+        gapAlert.innerHTML = `
+          <div style="font-weight: 700; color: #fbbf24; display: flex; align-items: center; gap: 4px; margin-bottom: 2px;">
+            <span>⚠️</span> <span>Historical Notice Gap Detected</span>
+          </div>
+          <div>
+            WhatsApp Web could not load older messages between <strong>${gapDateStr}</strong> and recent messages (laptop was offline).
+          </div>
+          <div style="margin-top: 4px; color: #fde68a;">
+            👉 <strong>Action Required:</strong> Export chat from your phone to Google Drive and click <em>"Import Full Year from WhatsApp Export"</em> below to fill all missed notices.
+          </div>
+        `;
+        li.appendChild(gapAlert);
+      }
+
       li.appendChild(syncMetaRow);
       trackedChatsList.appendChild(li);
     });
