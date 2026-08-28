@@ -94,52 +94,124 @@ export class WhatsAppExportParser {
       };
     }
 
-    // ZIP Archive Parsing
+    // ZIP Archive Parsing via Central Directory (handles Android/iOS streaming ZIPs)
     const view = new DataView(buffer);
-    let offset = 0;
     let mainChatText = '';
     const attachments: Array<{ name: string; mimeType: string; base64Content: string }> = [];
 
-    while (offset + 30 <= buffer.byteLength) {
-      const signature = view.getUint32(offset, true);
-      if (signature !== 0x04034b50) {
-        break; // End of local file headers or reached central directory
+    // Step A: Find End of Central Directory (EOCD) signature 0x06054b50 from the end of the buffer
+    let eocdOffset = -1;
+    const maxSearch = Math.min(buffer.byteLength, 65536 + 22);
+    for (let i = buffer.byteLength - 22; i >= buffer.byteLength - maxSearch; i--) {
+      if (view.getUint32(i, true) === 0x06054b50) {
+        eocdOffset = i;
+        break;
       }
+    }
 
-      const compressionMethod = view.getUint16(offset + 8, true);
-      const compressedSize = view.getUint32(offset + 18, true);
-      const uncompressedSize = view.getUint32(offset + 22, true);
-      const fileNameLength = view.getUint16(offset + 26, true);
-      const extraFieldLength = view.getUint16(offset + 28, true);
+    if (eocdOffset !== -1) {
+      const cdEntriesTotal = view.getUint16(eocdOffset + 10, true);
+      const cdOffset = view.getUint32(eocdOffset + 16, true);
+      let cdPos = cdOffset;
 
-      const fileNameBytes = new Uint8Array(buffer, offset + 30, fileNameLength);
-      const entryName = new TextDecoder('utf-8').decode(fileNameBytes);
-      const fileDataStart = offset + 30 + fileNameLength + extraFieldLength;
+      for (let e = 0; e < cdEntriesTotal && cdPos + 46 <= buffer.byteLength; e++) {
+        const cdSig = view.getUint32(cdPos, true);
+        if (cdSig !== 0x02014b50) break;
 
-      if (fileDataStart + compressedSize <= buffer.byteLength && compressedSize > 0) {
-        const rawFileData = new Uint8Array(buffer, fileDataStart, compressedSize);
-        let decompressedBytes: Uint8Array = rawFileData;
+        const compressionMethod = view.getUint16(cdPos + 10, true);
+        const compressedSize = view.getUint32(cdPos + 20, true);
+        const uncompressedSize = view.getUint32(cdPos + 24, true);
+        const fileNameLength = view.getUint16(cdPos + 28, true);
+        const extraLength = view.getUint16(cdPos + 30, true);
+        const commentLength = view.getUint16(cdPos + 32, true);
+        const localHeaderOffset = view.getUint32(cdPos + 42, true);
 
-        if (compressionMethod === 8) {
-          // Deflate
-          decompressedBytes = await this.decompressDeflateRaw(rawFileData);
-        }
+        const fileNameBytes = new Uint8Array(buffer, cdPos + 46, fileNameLength);
+        const entryName = new TextDecoder('utf-8').decode(fileNameBytes);
 
-        if (entryName.endsWith('.txt') || entryName.toLowerCase() === '_chat.txt' || entryName.toLowerCase().startsWith('whatsapp chat')) {
-          const txtContent = new TextDecoder('utf-8').decode(decompressedBytes);
-          if (!mainChatText || txtContent.length > mainChatText.length) {
-            mainChatText = txtContent;
+        // Read from Local File Header at localHeaderOffset
+        if (localHeaderOffset + 30 <= buffer.byteLength) {
+          const localFileNameLen = view.getUint16(localHeaderOffset + 26, true);
+          const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
+          const fileDataStart = localHeaderOffset + 30 + localFileNameLen + localExtraLen;
+
+          if (fileDataStart + compressedSize <= buffer.byteLength && compressedSize > 0) {
+            const rawFileData = new Uint8Array(buffer, fileDataStart, compressedSize);
+            let decompressedBytes: Uint8Array = rawFileData;
+
+            if (compressionMethod === 8) {
+              decompressedBytes = await this.decompressDeflateRaw(rawFileData);
+            }
+
+            if (entryName.endsWith('.txt') || entryName.toLowerCase() === '_chat.txt' || entryName.toLowerCase().includes('chat')) {
+              const txtContent = new TextDecoder('utf-8').decode(decompressedBytes);
+              if (!mainChatText || txtContent.length > mainChatText.length) {
+                mainChatText = txtContent;
+              }
+            } else if (!entryName.endsWith('/') && decompressedBytes.length > 0) {
+              attachments.push({
+                name: entryName.split('/').pop() || entryName,
+                mimeType: this.getMimeType(entryName),
+                base64Content: this.uint8ArrayToBase64(decompressedBytes)
+              });
+            }
           }
-        } else if (!entryName.endsWith('/') && decompressedBytes.length > 0) {
-          attachments.push({
-            name: entryName.split('/').pop() || entryName,
-            mimeType: this.getMimeType(entryName),
-            base64Content: this.uint8ArrayToBase64(decompressedBytes)
-          });
+        }
+
+        cdPos += 46 + fileNameLength + extraLength + commentLength;
+      }
+    }
+
+    // Step B: Fallback Local File Header scan if Central Directory was not found
+    if (!mainChatText) {
+      let offset = 0;
+      while (offset + 30 <= buffer.byteLength) {
+        const signature = view.getUint32(offset, true);
+        if (signature !== 0x04034b50) break;
+
+        const compressionMethod = view.getUint16(offset + 8, true);
+        const compressedSize = view.getUint32(offset + 18, true);
+        const fileNameLength = view.getUint16(offset + 26, true);
+        const extraFieldLength = view.getUint16(offset + 28, true);
+
+        const fileNameBytes = new Uint8Array(buffer, offset + 30, fileNameLength);
+        const entryName = new TextDecoder('utf-8').decode(fileNameBytes);
+        const fileDataStart = offset + 30 + fileNameLength + extraFieldLength;
+
+        if (compressedSize > 0 && fileDataStart + compressedSize <= buffer.byteLength) {
+          const rawFileData = new Uint8Array(buffer, fileDataStart, compressedSize);
+          let decompressedBytes: Uint8Array = rawFileData;
+          if (compressionMethod === 8) {
+            decompressedBytes = await this.decompressDeflateRaw(rawFileData);
+          }
+
+          if (entryName.endsWith('.txt') || entryName.toLowerCase() === '_chat.txt' || entryName.toLowerCase().includes('chat')) {
+            const txtContent = new TextDecoder('utf-8').decode(decompressedBytes);
+            if (!mainChatText || txtContent.length > mainChatText.length) {
+              mainChatText = txtContent;
+            }
+          } else if (!entryName.endsWith('/') && decompressedBytes.length > 0) {
+            attachments.push({
+              name: entryName.split('/').pop() || entryName,
+              mimeType: this.getMimeType(entryName),
+              base64Content: this.uint8ArrayToBase64(decompressedBytes)
+            });
+          }
+          offset = fileDataStart + compressedSize;
+        } else {
+          // If streaming zero-size header, advance past local header
+          offset = fileDataStart;
         }
       }
+    }
 
-      offset = fileDataStart + compressedSize;
+    // Step C: If still no chat text found, attempt UTF-8 string search fallback
+    if (!mainChatText) {
+      const fullText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+      const match = fullText.match(/(\[\d{1,2}\/\d{1,2}\/\d{2,4},[\s\S]+)/);
+      if (match && match[1] && match[1].length > 100) {
+        mainChatText = match[1];
+      }
     }
 
     let detectedChatName = '';
