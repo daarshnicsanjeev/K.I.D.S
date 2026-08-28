@@ -411,37 +411,25 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     chats.forEach((c: any) => {
       const li = document.createElement('li');
-      li.style.cssText = 'display: flex; justify-content: space-between; align-items: center; background: #064e3b; padding: 6px 10px; border-radius: 6px; font-size: 0.8rem; border: 1px solid #059669; margin-bottom: 4px;';
+      li.style.cssText = 'display: flex; flex-direction: column; background: #064e3b; padding: 8px 10px; border-radius: 8px; font-size: 0.78rem; border: 1px solid #059669; margin-bottom: 6px; gap: 5px;';
 
-      const infoDiv = document.createElement('div');
-      infoDiv.style.cssText = 'flex: 1; margin-right: 8px; line-height: 1.3; overflow: hidden;';
+      const ptr = pointers[c.title] || pointers[c.id];
+
+      // Header Row: Group Name + Platform Badge + Remove Button
+      const headerRow = document.createElement('div');
+      headerRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center;';
+
+      const titleWrap = document.createElement('div');
+      titleWrap.style.cssText = 'font-weight: 700; color: #f0fdf4; display: flex; align-items: center; gap: 6px; word-break: break-word;';
       
-      const titleSpan = document.createElement('div');
-      titleSpan.style.cssText = 'font-weight: 700; color: #f0fdf4; word-break: break-word;';
-      titleSpan.innerHTML = `💬 <strong>Group Name:</strong> ${c.title}`;
-      
-      const idSpan = document.createElement('div');
-      idSpan.style.cssText = 'font-size: 0.7rem; color: #a7f3d0; opacity: 0.9; margin-top: 2px; font-family: monospace; word-break: break-all;';
-      idSpan.innerHTML = `🆔 <strong>Unique ID:</strong> ${c.id || 'Active'}`;
-
-      const ptr = pointers[c.title];
-      const ptrSpan = document.createElement('div');
-      ptrSpan.style.cssText = 'font-size: 0.7rem; margin-top: 3px;';
-      if (ptr) {
-        ptrSpan.innerHTML = `📍 <strong style="color:#34d399;">Checkpoint Active:</strong> Latest message saved (${ptr.time || 'Latest'}). <span style="color:#a7f3d0;opacity:0.85;">(Auto-syncs in background)</span>`;
-      } else {
-        ptrSpan.innerHTML = `🚀 <strong style="color:#fcd34d;">First Scan Pending:</strong> Keep WhatsApp in foreground on first run.`;
-      }
-
-      infoDiv.appendChild(titleSpan);
-      infoDiv.appendChild(idSpan);
-      infoDiv.appendChild(ptrSpan);
+      const platformBadge = c.platform || 'WhatsApp';
+      titleWrap.innerHTML = `💬 <span style="font-size: 0.85rem;">${c.title}</span> <span style="font-size: 0.65rem; background: #047857; color: #a7f3d0; padding: 1px 5px; border-radius: 6px; font-weight: 600;">${platformBadge}</span>`;
 
       const removeBtn = document.createElement('button');
       removeBtn.className = 'btn btn-danger btn-sm';
-      removeBtn.innerHTML = '🗑️ Stop Tracking';
-      removeBtn.title = 'Remove this chat from tracked list';
-      removeBtn.style.cssText = 'padding: 4px 8px; font-size: 0.7rem; white-space: nowrap;';
+      removeBtn.innerHTML = '🗑️ Remove';
+      removeBtn.title = 'Stop tracking this group';
+      removeBtn.style.cssText = 'padding: 2px 7px; font-size: 0.68rem; white-space: nowrap;';
       removeBtn.addEventListener('click', async () => {
         const res = await sendMessage({
           type: 'REMOVE_TRACKED_WHATSAPP_CHAT',
@@ -451,8 +439,62 @@ document.addEventListener('DOMContentLoaded', async () => {
         showSuccess(`Removed "${c.title}" from tracking.`);
       });
 
-      li.appendChild(infoDiv);
-      li.appendChild(removeBtn);
+      headerRow.appendChild(titleWrap);
+      headerRow.appendChild(removeBtn);
+
+      // Section 1: Last Message Read by Extension & Message Date/Time
+      const lastMsgBox = document.createElement('div');
+      lastMsgBox.style.cssText = 'background: #022c22; border-left: 3px solid #34d399; padding: 5px 8px; border-radius: 4px; font-size: 0.73rem; line-height: 1.35;';
+
+      let msgDateTimeStr = 'Pending First Read';
+      let msgSnippetStr = 'No messages read yet. Open WhatsApp Web to sync.';
+      let senderStr = '';
+
+      if (ptr && ptr.body) {
+        msgSnippetStr = ptr.body.length > 110 ? `${ptr.body.substring(0, 110)}...` : ptr.body;
+        senderStr = ptr.sender ? `[${ptr.sender}] ` : '';
+        const d = ptr.date || '';
+        const t = ptr.time || '';
+        msgDateTimeStr = (d && t) ? `${d}, ${t}` : (d || t || 'Latest Stored');
+      }
+
+      lastMsgBox.innerHTML = `
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+          <span style="color: #6ee7b7; font-weight: 700; font-size: 0.7rem;">📩 Last Message Read by Extension:</span>
+          <span style="color: #fcd34d; font-weight: 600; font-size: 0.68rem;">📅 ${msgDateTimeStr}</span>
+        </div>
+        <div style="color: #f1f5f9; font-style: italic; word-break: break-word;">
+          ${senderStr}"${msgSnippetStr}"
+        </div>
+      `;
+
+      // Section 2: Last Reading / Sync Date & Time by Extension
+      const syncMetaRow = document.createElement('div');
+      syncMetaRow.style.cssText = 'display: flex; justify-content: space-between; align-items: center; font-size: 0.68rem; color: #a7f3d0; opacity: 0.9; margin-top: 1px;';
+
+      let lastReadByExt = 'Not yet scanned';
+      if (ptr && ptr.lastSyncedAt) {
+        try {
+          lastReadByExt = new Date(ptr.lastSyncedAt).toLocaleString();
+        } catch (e) {
+          lastReadByExt = ptr.lastSyncedAt;
+        }
+      } else if (c.addedAt) {
+        try {
+          lastReadByExt = new Date(c.addedAt).toLocaleString();
+        } catch (e) {
+          lastReadByExt = c.addedAt;
+        }
+      }
+
+      syncMetaRow.innerHTML = `
+        <span>🕒 <strong>Last Read by Extension:</strong> ${lastReadByExt}</span>
+        <span style="color: #34d399; font-weight: 600;">🟢 Background Active</span>
+      `;
+
+      li.appendChild(headerRow);
+      li.appendChild(lastMsgBox);
+      li.appendChild(syncMetaRow);
       trackedChatsList.appendChild(li);
     });
   }

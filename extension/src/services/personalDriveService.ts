@@ -989,6 +989,38 @@ export class PersonalDriveService {
       const saveResult = await this.saveMessagesToPersonalDrive(validToken, notices, resolvedChild);
       const totalDuration = ((Date.now() - ingestStart) / 1000).toFixed(1);
 
+      // 7. Auto-register in tracked_whatsapp_chats & update checkpoint pointer with latest message
+      if (notices.length > 0 && chatName && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        try {
+          const stateData = await chrome.storage.local.get(['tracked_whatsapp_chats', 'chat_sync_pointers']);
+          let trackedList: any[] = stateData.tracked_whatsapp_chats || [];
+          if (!trackedList.some(t => (t.title && t.title.toLowerCase() === chatName.toLowerCase()) || (t.id && t.id.toLowerCase() === chatName.toLowerCase()))) {
+            trackedList.push({
+              id: 'wa_chat_' + chatName.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+              title: chatName,
+              platform: 'WhatsApp',
+              isGroup: true,
+              addedAt: new Date().toISOString()
+            });
+            await chrome.storage.local.set({ tracked_whatsapp_chats: trackedList });
+            if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: trackedList });
+          }
+
+          const latestNotice = notices[notices.length - 1] || notices[0];
+          const pointers = stateData.chat_sync_pointers || {};
+          pointers[chatName] = {
+            id: latestNotice.id || null,
+            sender: latestNotice.sender || 'School Teacher',
+            body: (latestNotice.body || '').substring(0, 300),
+            time: latestNotice.time || '',
+            date: latestNotice.date || '',
+            lastSyncedAt: new Date().toISOString(),
+            totalNotices: saveResult.total || notices.length
+          };
+          await chrome.storage.local.set({ chat_sync_pointers: pointers });
+        } catch (pe) {}
+      }
+
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🏁 [EXPORT_INGEST_COMPLETE] Successfully imported ${saveResult.saved} new notices (Total: ${saveResult.total}) & ${uploadedAttachCount} attachments in ${totalDuration}s for ${resolvedChild}!`, {
         childName: resolvedChild,
         chatName,
