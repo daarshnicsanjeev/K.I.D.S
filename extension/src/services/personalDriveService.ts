@@ -871,6 +871,8 @@ export class PersonalDriveService {
   public static async searchWhatsAppExports(token?: string): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
     try {
       const validToken = token || await this.getValidToken(false);
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [EXPORT_SCAN_START] Scanning Google Drive for WhatsApp chat export archives ("WhatsApp Chat")...');
+
       const q = encodeURIComponent(`name contains 'WhatsApp Chat' and trashed = false`);
       const res = await this.fetchWithAuth(
         `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&orderBy=createdTime desc`,
@@ -879,12 +881,20 @@ export class PersonalDriveService {
       );
 
       if (!res.ok) {
+        const errTxt = await res.text();
+        await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_SCAN_FAIL] Google Drive search failed: HTTP ${res.status} | ${errTxt}`);
         throw new Error(`Drive search failed: HTTP ${res.status}`);
       }
 
       const data = await res.json();
-      return data.files || [];
+      const files = data.files || [];
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [EXPORT_SCAN_FOUND] Found ${files.length} export file(s) on Google Drive.`, {
+        count: files.length,
+        files: files.map((f: any) => ({ name: f.name, id: f.id, size: f.size, createdTime: f.createdTime }))
+      });
+      return files;
     } catch (e: any) {
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_SCAN_ERROR] Error searching for WhatsApp exports: ${e.message}`);
       console.warn('[PersonalDriveService] searchWhatsAppExports error:', e);
       return [];
     }
@@ -899,26 +909,34 @@ export class PersonalDriveService {
     targetChildName?: string,
     token?: string
   ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
+    const ingestStart = Date.now();
     try {
       const validToken = token || await this.getValidToken(false);
       const resolvedChild = await this.resolveChildName(targetChildName);
 
-      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📥 [EXPORT_INGEST_START] Fetching WhatsApp export file (ID: ${fileId}) from Google Drive for ${resolvedChild}...`);
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📥 [EXPORT_INGEST_START] Initiating export ingest for file (ID: ${fileId}) targeting Child: "${resolvedChild}"...`);
 
       // 1. Get file metadata
-      const metaRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size`, {}, validToken);
+      const metaRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?fields=id,name,mimeType,size,createdTime`, {}, validToken);
       if (!metaRes.ok) {
         throw new Error(`Failed to read file metadata for ${fileId}: HTTP ${metaRes.status}`);
       }
       const meta = await metaRes.json();
       const fileName = meta.name || 'WhatsApp Chat Export';
+      const fileSize = meta.size ? `${(parseInt(meta.size, 10) / (1024 * 1024)).toFixed(2)} MB` : 'Unknown size';
+
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📥 [EXPORT_META] Downloading "${fileName}" (${fileSize}, MIME: ${meta.mimeType || 'unknown'})...`);
 
       // 2. Download binary stream
+      const dlStart = Date.now();
       const dlRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
       if (!dlRes.ok) {
         throw new Error(`Failed to download export stream: HTTP ${dlRes.status}`);
       }
       const arrayBuffer = await dlRes.arrayBuffer();
+      const dlDuration = ((Date.now() - dlStart) / 1000).toFixed(1);
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📥 [EXPORT_DOWNLOAD_SUCCESS] Downloaded ${arrayBuffer.byteLength} bytes in ${dlDuration}s.`);
 
       // 3. Parse ZIP or Plain Text
       const parsed: ParsedWhatsAppExport = await WhatsAppExportParser.parseExportBuffer(arrayBuffer, fileName);
@@ -928,25 +946,34 @@ export class PersonalDriveService {
 
       const chatName = parsed.chatName || fileName.replace(/^WhatsApp Chat (?:with|-)\s*/i, '').replace(/\.[^/.]+$/, '') || 'School WhatsApp';
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📦 [EXPORT_UNPACK_SUCCESS] Unpacked export archive for "${chatName}": ${parsed.chatText.length} characters of text, ${parsed.attachments.length} attachments found.`);
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📦 [EXPORT_UNPACK_SUCCESS] Unpacked export archive for "${chatName}": ${parsed.chatText.length} text chars, ${parsed.attachments.length} attachment files discovered.`, {
+        chatName,
+        textChars: parsed.chatText.length,
+        attachments: parsed.attachments.map(a => `${a.name} (${a.mimeType})`)
+      });
 
       // 4. Upload any unpacked attachments directly to Child's Attachments folder
       const driveUrlMap: { [fileName: string]: string } = {};
       let uploadedAttachCount = 0;
 
-      for (const att of parsed.attachments) {
+      for (let aIdx = 0; aIdx < parsed.attachments.length; aIdx++) {
+        const att = parsed.attachments[aIdx];
         try {
+          await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📎 [EXPORT_ATTACH_UPLOAD ${aIdx + 1}/${parsed.attachments.length}] Uploading "${att.name}" (${att.mimeType}) to Google Drive folder for ${resolvedChild}...`);
           const uploaded = await this.uploadAttachmentFile(validToken, att, resolvedChild);
           if (uploaded && uploaded.webViewLink) {
             driveUrlMap[att.name] = uploaded.webViewLink;
             uploadedAttachCount++;
+            await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📎 [EXPORT_ATTACH_OK] "${att.name}" backed up successfully.`);
           }
-        } catch (attErr) {
+        } catch (attErr: any) {
+          await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[EXPORT_ATTACH_WARN] Could not upload attachment "${att.name}": ${attErr.message}`);
           console.warn(`[PersonalDriveService] Failed to upload attachment ${att.name}:`, attErr);
         }
       }
 
       // 5. Normalize chat turns through AI Normalizer
+      await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `🤖 [EXPORT_AI_START] Processing entire historical timeline for "${chatName}" through AI Normalization Engine...`);
       const notices = await AiNormalizerService.normalizeRawChatText(
         parsed.chatText,
         chatName,
@@ -957,13 +984,15 @@ export class PersonalDriveService {
 
       // 6. Save structured notices to Google Drive
       const saveResult = await this.saveMessagesToPersonalDrive(validToken, notices, resolvedChild);
+      const totalDuration = ((Date.now() - ingestStart) / 1000).toFixed(1);
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [EXPORT_INGEST_COMPLETE] Successfully imported ${saveResult.saved} new notices (Total: ${saveResult.total}) and ${uploadedAttachCount} attachments from WhatsApp Export for ${resolvedChild}!`, {
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🏁 [EXPORT_INGEST_COMPLETE] Successfully imported ${saveResult.saved} new notices (Total: ${saveResult.total}) & ${uploadedAttachCount} attachments in ${totalDuration}s for ${resolvedChild}!`, {
         childName: resolvedChild,
         chatName,
         saved: saveResult.saved,
         total: saveResult.total,
-        attachmentsUploaded: uploadedAttachCount
+        attachmentsUploaded: uploadedAttachCount,
+        durationSeconds: totalDuration
       });
 
       return {
@@ -974,7 +1003,11 @@ export class PersonalDriveService {
         chatName
       };
     } catch (err: any) {
-      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_INGEST_FAIL] WhatsApp export ingest failed: ${err.message}`);
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `❌ [EXPORT_INGEST_FAIL] WhatsApp export ingest failed: ${err.message}`, {
+        fileId,
+        childName: targetChildName,
+        error: err.message
+      });
       return {
         success: false,
         noticesCount: 0,
