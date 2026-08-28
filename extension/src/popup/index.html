@@ -405,11 +405,26 @@
               </span>
             </div>
             <p style="font-size: 0.73rem; color: #a7f3d0; margin-bottom: 8px; line-height: 1.4;">
-              Exported a chat from your phone to Google Drive? Click below to auto-discover and import all historical circulars, notices & PDFs from Day 1 in 3 seconds!
+              Exported a chat from your phone to Google Drive? Auto-scan or paste the file link to import all circulars, notices & PDFs from Day 1 in seconds!
             </p>
-            <button id="btnScanDriveExports" class="btn btn-primary btn-sm" style="width: 100%; background: #059669; border-color: #047857; font-weight: 600; padding: 6px 10px;">
-              🔍 Scan Google Drive for WhatsApp Exports
-            </button>
+            <div style="display: flex; gap: 6px; margin-bottom: 8px;">
+              <button id="btnScanDriveExports" class="btn btn-primary btn-sm" style="flex: 1; background: #059669; border-color: #047857; font-weight: 600; padding: 6px 8px; font-size: 0.75rem;">
+                🔍 Auto-Scan Drive for Exports
+              </button>
+            </div>
+            
+            <div style="background: #011c14; border: 1px dashed #059669; border-radius: 4px; padding: 6px; margin-bottom: 6px;">
+              <label for="txtDirectDriveExportUrl" style="font-size: 0.7rem; color: #6ee7b7; display: block; margin-bottom: 4px; font-weight: 600;">
+                🔗 Or Paste Google Drive Link / File ID:
+              </label>
+              <div style="display: flex; gap: 4px;">
+                <input type="text" id="txtDirectDriveExportUrl" placeholder="https://drive.google.com/open?id=..." style="flex: 1; font-size: 0.72rem; padding: 4px 6px; background: #022c22; border: 1px solid #059669; color: #a7f3d0; border-radius: 4px;">
+                <button id="btnIngestDirectDriveUrl" class="btn btn-primary btn-sm" style="background: #10b981; border-color: #059669; font-weight: 700; font-size: 0.72rem; padding: 4px 8px; white-space: nowrap;">
+                  ⚡ Ingest Link
+                </button>
+              </div>
+            </div>
+
             <div id="driveExportsContainer" class="hidden mt-2" style="display: flex; flex-direction: column; gap: 6px;">
               <div id="driveExportsList" style="display: flex; flex-direction: column; gap: 6px;"></div>
             </div>

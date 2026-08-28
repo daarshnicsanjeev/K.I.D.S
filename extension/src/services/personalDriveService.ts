@@ -873,7 +873,7 @@ export class PersonalDriveService {
       const validToken = token || await this.getValidToken(false);
       await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [EXPORT_SCAN_START] Scanning Google Drive for WhatsApp chat export archives ("WhatsApp Chat")...');
 
-      const q = encodeURIComponent(`name contains 'WhatsApp Chat' and trashed = false`);
+      const q = encodeURIComponent(`(name contains 'WhatsApp' or name contains 'Chat') and trashed = false`);
       const res = await this.fetchWithAuth(
         `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&orderBy=createdTime desc`,
         {},

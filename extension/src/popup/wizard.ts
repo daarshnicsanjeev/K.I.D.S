@@ -933,7 +933,57 @@ document.addEventListener('DOMContentLoaded', async () => {
       showError(`Drive Search Error: ${e.message}`);
     } finally {
       btnScanDriveExports.disabled = false;
-      btnScanDriveExports.innerText = '🔍 Scan Google Drive for WhatsApp Exports';
+      btnScanDriveExports.innerText = '🔍 Auto-Scan Drive for Exports';
+      await loadWhatsAppLogs();
+    }
+  });
+
+  // Direct Drive Link / ID Ingest Handler
+  const txtDirectDriveExportUrl = document.getElementById('txtDirectDriveExportUrl') as HTMLInputElement;
+  const btnIngestDirectDriveUrl = document.getElementById('btnIngestDirectDriveUrl') as HTMLButtonElement;
+
+  btnIngestDirectDriveUrl?.addEventListener('click', async () => {
+    clearAlerts();
+    const rawInput = (txtDirectDriveExportUrl?.value || '').trim();
+    if (!rawInput) {
+      showError('Please paste a Google Drive file link or file ID.');
+      txtDirectDriveExportUrl?.focus();
+      return;
+    }
+
+    // Extract file ID from various Google Drive URL formats or raw ID
+    let fileId = rawInput;
+    const idMatch = rawInput.match(/[?&]id=([a-zA-Z0-9_-]+)/i) ||
+                    rawInput.match(/\/file\/d\/([a-zA-Z0-9_-]+)/i) ||
+                    rawInput.match(/\/d\/([a-zA-Z0-9_-]+)/i);
+    if (idMatch && idMatch[1]) {
+      fileId = idMatch[1];
+    }
+
+    btnIngestDirectDriveUrl.disabled = true;
+    btnIngestDirectDriveUrl.innerText = '⏳ Ingesting...';
+
+    try {
+      const activeChild = (await ChildManager.getActiveProfile())?.name || 'Atharva';
+      appendLog(`📥 Starting direct export ingest for Drive file ID: ${fileId}...`);
+
+      const ingestRes = await sendMessage({
+        type: 'INGEST_WHATSAPP_EXPORT',
+        payload: { fileId, childName: activeChild }
+      });
+
+      if (ingestRes.success) {
+        showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}" from Day 1!`);
+        await refreshBridgeStatus();
+      } else {
+        showError(`Ingest failed: ${ingestRes.error || 'Unknown error'}`);
+      }
+    } catch (e: any) {
+      showError(`Ingest Error: ${e.message}`);
+    } finally {
+      btnIngestDirectDriveUrl.disabled = false;
+      btnIngestDirectDriveUrl.innerText = '⚡ Ingest Link';
+      await loadWhatsAppLogs();
     }
   });
 
