@@ -868,17 +868,15 @@ export class PersonalDriveService {
   }
 
   /**
-   * Searches user's Google Drive for any WhatsApp Export archives / files.
+   * Retrieves the most recently uploaded files from Google Drive so the user can select their export.
    */
   public static async searchWhatsAppExports(token?: string, forceRefresh = false): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
     try {
       let validToken = token || await this.getValidToken(forceRefresh);
-      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [EXPORT_SCAN_START] Scanning Google Drive for WhatsApp chat export archives...');
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [RECENT_FILES_SCAN] Fetching recent files from Google Drive...');
 
-      // Stage 1: Search by name query
-      const q = encodeURIComponent(`(name contains 'WhatsApp' or name contains 'Chat' or name contains 'Cambridge' or name contains '3B') and trashed = false`);
-      let res = await this.fetchWithAuth(
-        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=50&orderBy=createdTime desc`,
+      const res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files?q=trashed%20%3D%20false&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=15&orderBy=createdTime desc`,
         {},
         validToken
       );
@@ -886,37 +884,20 @@ export class PersonalDriveService {
       let data = res.ok ? await res.json() : { files: [] };
       let files = data.files || [];
 
-      // Stage 2: Fallback — Fetch recent files and match in JavaScript (bypasses search index delays)
-      if (files.length === 0) {
-        const recentRes = await this.fetchWithAuth(
-          `https://www.googleapis.com/drive/v3/files?q=trashed%20%3D%20false&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=50&orderBy=createdTime desc`,
-          {},
-          validToken
-        );
-        if (recentRes.ok) {
-          const recentData = await recentRes.json();
-          const allRecent = recentData.files || [];
-          files = allRecent.filter((f: any) => {
-            const lower = (f.name || '').toLowerCase();
-            return lower.includes('whatsapp') || lower.includes('chat') || lower.includes('cambridge') || lower.includes('3b') || lower.endsWith('.zip') || lower.endsWith('.txt');
-          });
-        }
-      }
-
-      // Stage 3: If still 0 files and forceRefresh was false, force token scope refresh with drive.readonly
+      // If 0 files and forceRefresh was false, force token scope refresh with drive.readonly
       if (files.length === 0 && !forceRefresh) {
-        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔄 [EXPORT_SCAN_REFRESH] 0 files found with cached token. Refreshing OAuth credentials with drive.readonly scope...');
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔄 [RECENT_FILES_REFRESH] 0 files returned with cached token. Refreshing OAuth credentials with drive.readonly scope...');
         validToken = await this.getValidToken(true);
         return await this.searchWhatsAppExports(validToken, true);
       }
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [EXPORT_SCAN_FOUND] Found ${files.length} export candidate file(s) on Google Drive.`, {
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [RECENT_FILES_FOUND] Retrieved ${files.length} recent file(s) from Google Drive.`, {
         count: files.length,
         files: files.map((f: any) => ({ name: f.name, id: f.id, size: f.size, createdTime: f.createdTime }))
       });
       return files;
     } catch (e: any) {
-      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_SCAN_ERROR] Error searching for WhatsApp exports: ${e.message}`);
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[RECENT_FILES_ERROR] Error fetching recent files: ${e.message}`);
       console.warn('[PersonalDriveService] searchWhatsAppExports error:', e);
       return [];
     }
