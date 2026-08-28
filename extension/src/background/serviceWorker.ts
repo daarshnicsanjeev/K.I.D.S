@@ -793,6 +793,10 @@ async function handleMessage(message: { type: string; payload?: any }) {
         const stringFilters = targetFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
 
         const isManual = Boolean(message.payload?.isManualSync);
+        if (!isManual && trackedChats.length === 0 && stringFilters.length === 0) {
+          return { status: 'idle', message: 'No tracked chats configured. Background sync is idle.' };
+        }
+
         const targetTab = openTabs[0];
 
         await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🚀 [SYNC_START] Initiated sync on tab ${targetTab.id} (${targetTab.title || targetTab.url}). Target: "${targetFilterStr || 'All Tracked'}", Mode: ${isManual ? 'Manual Deep Scan' : 'Automated Background'}`);
@@ -885,8 +889,10 @@ async function handleMessage(message: { type: string; payload?: any }) {
             );
           } else if (stringFilt && stringFilt.length > 0) {
             matches = stringFilt.some(f => currentChatName.toLowerCase().includes(f.toLowerCase()));
+          } else if (isManualSync) {
+            matches = true; // Only scan active untracked chat if user explicitly clicked Manual Sync
           } else {
-            matches = true; // No filter specified, scan active chat
+            matches = false;
           }
 
           if (!matches) {
@@ -2378,8 +2384,10 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
             }
           }
 
-          const state = await chrome.storage.local.get(null);
-          if (waTabs.length > 0) {
+          const state = await chrome.storage.local.get(['tracked_whatsapp_chats', 'target_whatsapp_chats']);
+          const tracked = state.tracked_whatsapp_chats || [];
+          const filterStr = state.target_whatsapp_chats || '';
+          if (waTabs.length > 0 && (tracked.length > 0 || filterStr.length > 0)) {
             await handleMessage({ type: 'SYNC_WHATSAPP_CHATS' });
           }
         } catch (err) {}
