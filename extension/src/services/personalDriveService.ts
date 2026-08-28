@@ -1284,6 +1284,24 @@ export class PersonalDriveService {
             });
             await chrome.storage.local.set({ tracked_whatsapp_chats: trackedList });
             if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: trackedList });
+
+            // Also update active ChildProfile with this tracked group
+            try {
+              const activeProf = await ChildManager.getActiveProfile();
+              if (activeProf) {
+                const pChats = activeProf.trackedChats || [];
+                if (!pChats.some(t => t.title.toLowerCase() === chatName.toLowerCase() || t.id.toLowerCase() === chatName.toLowerCase())) {
+                  pChats.push({
+                    id: 'wa_chat_' + chatName.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+                    title: chatName,
+                    platform: 'WhatsApp',
+                    isGroup: true,
+                    addedAt: new Date().toISOString()
+                  });
+                  await ChildManager.updateProfile(activeProf.id, { trackedChats: pChats });
+                }
+              }
+            } catch (ce) {}
           }
 
           const latestNotice = notices[notices.length - 1] || notices[0];

@@ -482,9 +482,22 @@ async function handleMessage(message: { type: string; payload?: any }) {
     case 'GET_WHATSAPP_CONFIG': {
       const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled']) : {};
       const localData = await chrome.storage.local.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled', 'chat_sync_pointers']);
+
+      let trackedChats: any[] = [];
+      if (localData.tracked_whatsapp_chats && Array.isArray(localData.tracked_whatsapp_chats) && localData.tracked_whatsapp_chats.length > 0) {
+        trackedChats = localData.tracked_whatsapp_chats;
+      } else if (syncData.tracked_whatsapp_chats && Array.isArray(syncData.tracked_whatsapp_chats) && syncData.tracked_whatsapp_chats.length > 0) {
+        trackedChats = syncData.tracked_whatsapp_chats;
+      } else {
+        const activeChild = await ChildManager.getActiveProfile();
+        if (activeChild && Array.isArray(activeChild.trackedChats) && activeChild.trackedChats.length > 0) {
+          trackedChats = activeChild.trackedChats;
+        }
+      }
+
       return {
         target_whatsapp_chats: syncData.target_whatsapp_chats || localData.target_whatsapp_chats || '',
-        tracked_whatsapp_chats: syncData.tracked_whatsapp_chats || localData.tracked_whatsapp_chats || [],
+        tracked_whatsapp_chats: trackedChats,
         whatsapp_drive_caching_enabled: syncData.whatsapp_drive_caching_enabled ?? localData.whatsapp_drive_caching_enabled ?? true,
         chat_sync_pointers: localData.chat_sync_pointers || {}
       };
