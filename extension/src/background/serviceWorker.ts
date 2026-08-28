@@ -1324,8 +1324,109 @@ async function handleMessage(message: { type: string; payload?: any }) {
             } catch (e) {}
           };
 
-          // ─── LAYER 1: DIRECT STORE / IN-MEMORY EXTRACTION ────────────────────────
+          // ─── LAYER 1: DIRECT STORE & INDEXED_DB EXTRACTION ──────────────────────
           try {
+            const idbStart = Date.now();
+            const openDb = (name: string): Promise<IDBDatabase | null> => new Promise((resolve) => {
+              try {
+                const req = indexedDB.open(name);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => resolve(null);
+                req.onblocked = () => resolve(null);
+              } catch (e) { resolve(null); }
+            });
+
+            const readStore = (db: IDBDatabase, sName: string): Promise<any[]> => new Promise((resolve) => {
+              try {
+                if (!db.objectStoreNames.contains(sName)) { resolve([]); return; }
+                const tx = db.transaction(sName, 'readonly');
+                const store = tx.objectStore(sName);
+                const req = store.getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => resolve([]);
+              } catch (e) { resolve([]); }
+            });
+
+            let dbList: any[] = [];
+            if (typeof indexedDB.databases === 'function') {
+              try { dbList = await indexedDB.databases(); } catch (e) {}
+            }
+            if (!dbList || dbList.length === 0) {
+              dbList = [{ name: 'model-storage' }, { name: 'wawc' }, { name: 'wawc_db' }];
+            }
+
+            const candidateDbNames = dbList.map((d: any) => d.name).filter((n: string) => n && (n.includes('model') || n.includes('wawc') || n.includes('storage') || n.includes('telegram')));
+            if (candidateDbNames.length === 0) candidateDbNames.push('model-storage');
+
+            let idbLoaded = 0;
+            for (const dbName of candidateDbNames) {
+              const db = await openDb(dbName);
+              if (!db) continue;
+              try {
+                const rawMsgs = await readStore(db, 'message');
+                if (Array.isArray(rawMsgs) && rawMsgs.length > 0) {
+                  rawMsgs.forEach((m: any, idx: number) => {
+                    const body = m.body || m.caption || m.text || '';
+                    if (!body && !m.isMedia) return;
+                    const sender = m.author || m.sender || m.from || m.pushname || '+91 School Notice';
+                    let dateStr = '';
+                    let timeStr = '';
+                    if (m.t || m.timestamp) {
+                      const ts = typeof m.t === 'number' ? (m.t > 1e11 ? m.t : m.t * 1000) : (m.timestamp || Date.now());
+                      const d = new Date(ts);
+                      dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
+                      const hours = d.getHours();
+                      const mins = d.getMinutes().toString().padStart(2, '0');
+                      const ampm = hours >= 12 ? 'PM' : 'AM';
+                      timeStr = `${hours % 12 || 12}:${mins} ${ampm}`;
+                    }
+                    const normKey = body.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
+                    if (normKey && !extractedMessagesMap.has(normKey)) {
+                      extractedMessagesMap.set(normKey, {
+                        id: m.id?._serialized || m.id || `idb_${idx}`,
+                        sender,
+                        body,
+                        date: dateStr || undefined,
+                        time: timeStr || undefined,
+                        timestamp: (timeStr && dateStr) ? `${timeStr}, ${dateStr}` : (dateStr || timeStr || '')
+                      });
+                      idbLoaded++;
+                    }
+                  });
+                }
+
+                // Read cached media if available
+                const rawMedia = await readStore(db, 'media');
+                if (Array.isArray(rawMedia) && rawMedia.length > 0) {
+                  rawMedia.forEach((med: any) => {
+                    if (med && med.data && (med.mimetype || med.filename)) {
+                      const b64 = typeof med.data === 'string' ? med.data : '';
+                      if (b64 && b64.length > 50) {
+                        rawAttachmentsList.push({
+                          name: med.filename || 'school_document.pdf',
+                          mimeType: med.mimetype || 'application/pdf',
+                          base64Content: b64.includes(',') ? b64.split(',')[1] : b64
+                        });
+                      }
+                    }
+                  });
+                }
+              } finally {
+                try { db.close(); } catch (e) {}
+              }
+              if (idbLoaded > 0) break;
+            }
+
+            if (idbLoaded > 0) {
+              const idbDuration = Date.now() - idbStart;
+              diagLogs.push({
+                level: 'SUCCESS',
+                category: 'EXTRACT',
+                message: `⚡ [INDEXED_DB_SUCCESS] Direct IndexedDB extraction pre-loaded ${idbLoaded} messages from local disk in ${idbDuration}ms!`
+              });
+            }
+
+            // In-Memory Store Fallback/Complement
             if ((window as any).Store && (window as any).Store.Chat) {
               const activeChatModel = (window as any).Store.Chat.models?.find((c: any) => 
                 (c.name && c.name.toLowerCase().includes(currentChatName.toLowerCase())) ||
@@ -1360,18 +1461,10 @@ async function handleMessage(message: { type: string; payload?: any }) {
                     });
                   }
                 });
-
-                if (extractedMessagesMap.size > 0) {
-                  diagLogs.push({
-                    level: 'SUCCESS',
-                    category: 'EXTRACT',
-                    message: `⚡ [STORE_EXTRACTION_SUCCESS] Direct in-memory Store extraction pre-loaded ${extractedMessagesMap.size} messages instantly!`
-                  });
-                }
               }
             }
           } catch (storeErr: any) {
-            diagLogs.push({ level: 'INFO', category: 'EXTRACT', message: `[STORE_HOOK_INFO] Store hook info: ${storeErr.message}` });
+            diagLogs.push({ level: 'INFO', category: 'EXTRACT', message: `[STORE_IDB_HOOK_INFO] Direct storage hook info: ${storeErr.message}` });
           }
 
           // 1. Scrape bottom (newest) messages via DOM

@@ -79,4 +79,15 @@ describe('PlatformStoreConnector — In-Memory Store & Direct Storage API Unit S
       expect(formatted).toContain('[7:15 PM, 8/26/2026] Ruchi:\nCircular for Annual Sports Day attached.');
     });
   });
+
+  describe('4. Direct IndexedDB Script Generation', () => {
+    it('should generate valid direct IndexedDB query script targeting message and media stores', () => {
+      const script = PlatformStoreConnector.getDirectIndexedDbExtractionScript('3B Cambridge 2026 - 27');
+      expect(script).toContain('indexedDB.open');
+      expect(script).toContain('model-storage');
+      expect(script).toContain('message');
+      expect(script).toContain('media');
+      expect(script).toContain('3B Cambridge 2026 - 27');
+    });
+  });
 });
