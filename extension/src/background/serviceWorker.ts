@@ -1945,8 +1945,8 @@ async function handleMessage(message: { type: string; payload?: any }) {
               att.name = `school_document_${Date.now()}.pdf`;
             }
 
-            await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[ATTACHMENT_UPLOAD] Uploading "${att.name}" (${att.base64Content.length} bytes) to Personal Drive for ${childName}...`);
-            const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, att, childName);
+            await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[ATTACHMENT_UPLOAD] Uploading "${att.name}" (${att.base64Content.length} bytes) to Personal Drive for ${childName} (${extraction.chatName})...`);
+            const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, att, childName, extraction.chatName);
             if (uploadRes) {
               uploadCount++;
               await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [ATTACHMENT_UPLOAD_SUCCESS] Uploaded "${uploadRes.name}" to Drive: ${uploadRes.webViewLink}`, {

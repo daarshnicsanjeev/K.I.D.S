@@ -606,15 +606,75 @@ export class PersonalDriveService {
   private static ATTACHMENTS_FOLDER_NAME = 'Attachments';
 
   /**
-   * Gets or creates the Attachments subfolder inside the Child's folder.
+   * Gets or creates a subfolder for a specific school group inside the Child's folder.
+   * e.g. "School Portal MCP Intelligence" -> "Atharva" -> "3B Cambridge 2026 - 27"
    */
-  public static async getOrCreateAttachmentsFolder(token?: string, childName?: string): Promise<{ id: string; webViewLink?: string }> {
+  public static async getOrCreateGroupFolder(
+    token?: string,
+    childName?: string,
+    groupName = 'General'
+  ): Promise<{ id: string; webViewLink?: string }> {
     const validToken = token || await this.getValidToken(false);
     const resolvedChild = await this.resolveChildName(childName);
-    const parentFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+    const childFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+    const cleanGroupName = (groupName || 'General').replace(/[\\/:*?"<>|]/g, '_').trim();
+
+    const q = encodeURIComponent(`name = '${cleanGroupName}' and '${childFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, validToken);
+
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      if (searchData.files && searchData.files.length > 0) {
+        return { id: searchData.files[0].id, webViewLink: searchData.files[0].webViewLink };
+      }
+    }
+
+    const res = await this.fetchWithAuth(
+      'https://www.googleapis.com/drive/v3/files',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: cleanGroupName,
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [childFolder.id],
+          description: `School chat group archive for ${cleanGroupName} (${resolvedChild})`
+        })
+      },
+      validToken
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to create Group folder "${cleanGroupName}": HTTP ${res.status}`);
+    }
+
+    const created = await res.json();
+    return { id: created.id, webViewLink: created.webViewLink };
+  }
+
+  /**
+   * Gets or creates the Attachments subfolder inside a specific Group folder.
+   * e.g. "School Portal MCP Intelligence" -> "Atharva" -> "3B Cambridge 2026 - 27" -> "Attachments"
+   */
+  public static async getOrCreateAttachmentsFolder(
+    token?: string,
+    childName?: string,
+    groupName?: string
+  ): Promise<{ id: string; webViewLink?: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const resolvedChild = await this.resolveChildName(childName);
+    
+    let parentFolderId: string;
+    if (groupName) {
+      const groupFolder = await this.getOrCreateGroupFolder(validToken, resolvedChild, groupName);
+      parentFolderId = groupFolder.id;
+    } else {
+      const childFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+      parentFolderId = childFolder.id;
+    }
 
     // Search for existing Attachments folder
-    const q = encodeURIComponent(`name = '${this.ATTACHMENTS_FOLDER_NAME}' and '${parentFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const q = encodeURIComponent(`name = '${this.ATTACHMENTS_FOLDER_NAME}' and '${parentFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
     const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, validToken);
 
     if (searchRes.ok) {
@@ -633,8 +693,8 @@ export class PersonalDriveService {
         body: JSON.stringify({
           name: this.ATTACHMENTS_FOLDER_NAME,
           mimeType: 'application/vnd.google-apps.folder',
-          parents: [parentFolder.id],
-          description: `School Notices, Homework PDFs & Image Attachments for ${resolvedChild}`
+          parents: [parentFolderId],
+          description: `School Notices, Homework PDFs & Image Attachments for ${groupName || resolvedChild}`
         })
       },
       validToken
@@ -649,19 +709,20 @@ export class PersonalDriveService {
   }
 
   /**
-   * Directly uploads a PDF, image, or document attachment to the child's Attachments folder with name prefix.
+   * Directly uploads a PDF, image, or document attachment to the group's Attachments folder with name prefix.
    */
   public static async uploadAttachmentFile(
     token: string | undefined,
     fileData: { name: string; mimeType: string; base64Content: string },
-    childName?: string
+    childName?: string,
+    groupName?: string
   ): Promise<{ fileId: string; webViewLink: string; name: string } | null> {
     try {
       if (!fileData || !fileData.base64Content) return null;
 
       const validToken = token || await this.getValidToken(false);
       const resolvedChild = await this.resolveChildName(childName);
-      const folder = await this.getOrCreateAttachmentsFolder(validToken, resolvedChild);
+      const folder = await this.getOrCreateAttachmentsFolder(validToken, resolvedChild, groupName);
       // Convert base64 to binary ArrayBuffer
       const byteCharacters = atob(fileData.base64Content);
       const byteNumbers = new Array(byteCharacters.length);
@@ -962,8 +1023,8 @@ export class PersonalDriveService {
       for (let aIdx = 0; aIdx < parsed.attachments.length; aIdx++) {
         const att = parsed.attachments[aIdx];
         try {
-          await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📎 [EXPORT_ATTACH_UPLOAD ${aIdx + 1}/${parsed.attachments.length}] Uploading "${att.name}" (${att.mimeType}) to Google Drive folder for ${resolvedChild}...`);
-          const uploaded = await this.uploadAttachmentFile(validToken, att, resolvedChild);
+          await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `📎 [EXPORT_ATTACH_UPLOAD ${aIdx + 1}/${parsed.attachments.length}] Uploading "${att.name}" (${att.mimeType}) to Google Drive "${chatName}" folder for ${resolvedChild}...`);
+          const uploaded = await this.uploadAttachmentFile(validToken, att, resolvedChild, chatName);
           if (uploaded && uploaded.webViewLink) {
             driveUrlMap[att.name] = uploaded.webViewLink;
             uploadedAttachCount++;
