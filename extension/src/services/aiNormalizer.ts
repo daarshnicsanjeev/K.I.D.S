@@ -37,6 +37,69 @@ export class AiNormalizerService {
   private static session: any = null;
 
   /**
+   * Generates a rich, concise SLM semantic description for a school group.
+   * Useful for indexing groups in child_groups_manifest.json so LLMs can quickly query specific groups.
+   */
+  public static async generateGroupSemanticDescription(
+    groupName: string,
+    messages: any[],
+    childName: string
+  ): Promise<string> {
+    const subjects = new Set<string>();
+    const teachers = new Set<string>();
+    const noticeTypes = new Set<string>();
+
+    const knownSubjects = ['Math', 'Mathematics', 'English', 'Science', 'EVS', 'SST', 'Social Studies', 'Hindi', 'Marathi', 'French', 'Spanish', 'Art', 'Music', 'ICT', 'Computer', 'Physical Education', 'PE', 'Dance', 'Drama', 'Robotics'];
+
+    messages.slice(0, 150).forEach(m => {
+      const b = (m.body || '').toLowerCase();
+      const s = (m.sender || '');
+      if (s && !s.startsWith('+') && !s.toLowerCase().includes('notice') && !s.toLowerCase().includes('teacher')) {
+        teachers.add(s);
+      }
+      knownSubjects.forEach(subj => {
+        if (b.includes(subj.toLowerCase())) subjects.add(subj);
+      });
+      if (m.category === 'HOMEWORK_OR_TASK_ANNOUNCEMENT') noticeTypes.add('Homework Assignments');
+      if (m.category === 'CIRCULAR_NOTICE') noticeTypes.add('Official Circulars');
+      if (m.submissionDeadline) noticeTypes.add('Submission Deadlines');
+    });
+
+    const subjectList = Array.from(subjects);
+    const teacherList = Array.from(teachers);
+    const noticeList = Array.from(noticeTypes);
+
+    // Rule-based rich synthesis
+    let desc = `Official school group "${groupName}" for ${childName}.`;
+    if (subjectList.length > 0) {
+      desc += ` Covers academic subjects: ${subjectList.slice(0, 5).join(', ')}.`;
+    }
+    if (noticeList.length > 0) {
+      desc += ` Includes ${noticeList.join(', ')}.`;
+    }
+    if (teacherList.length > 0) {
+      desc += ` Key senders/teachers: ${teacherList.slice(0, 3).join(', ')}.`;
+    }
+
+    // Attempt SLM refinement if Chrome Prompt API is available
+    const promptApi = this.getLanguageModelApi();
+    if (promptApi) {
+      try {
+        const session = await promptApi.create({
+          systemPrompt: `You are an educational assistant. Summarize the role and content of this school chat group in 1-2 concise sentences for quick AI retrieval.`
+        });
+        const sampleText = messages.slice(0, 10).map(m => `[${m.sender}]: ${m.body.substring(0, 80)}`).join('\n');
+        const aiSummary = await session.prompt(`Group Name: ${groupName}\nChild: ${childName}\nSample notices:\n${sampleText}\nProvide a concise 1-2 sentence description.`);
+        if (aiSummary && aiSummary.trim().length > 15) {
+          return aiSummary.trim();
+        }
+      } catch (e) {}
+    }
+
+    return desc;
+  }
+
+  /**
    * Resolves the official Chrome Prompt API `LanguageModel` or `ai.languageModel` across all Chrome scopes.
    */
   public static getLanguageModelApi(): any {

@@ -529,7 +529,226 @@ export class PersonalDriveService {
       });
     }
 
+    // 4. Save per-group archive JSON files into their respective subfolders
+    const groupsMap = new Map<string, any[]>();
+    newMessages.forEach(m => {
+      const cName = m.chatName || 'General';
+      if (!groupsMap.has(cName)) groupsMap.set(cName, []);
+      groupsMap.get(cName)!.push(m);
+    });
+
+    for (const [gName, gMsgs] of groupsMap.entries()) {
+      await this.saveGroupSpecificArchive(validToken, resolvedChild, gName, gMsgs);
+    }
+
+    // 5. Update semantic groups index manifest (`groups_manifest.json`)
+    await this.updateGroupsManifest(validToken, resolvedChild, existingMessages);
+
     return { saved: addedCount, total: existingMessages.length };
+  }
+
+  /**
+   * Saves or updates a dedicated per-group archive file inside the group's subfolder.
+   * e.g. "School Portal MCP Intelligence" -> "Atharva" -> "3B Cambridge 2026 - 27" -> "3B_Cambridge_archive.json"
+   */
+  public static async saveGroupSpecificArchive(
+    token: string,
+    childName: string,
+    groupName: string,
+    groupMessages: any[]
+  ): Promise<string | null> {
+    try {
+      if (!groupMessages || groupMessages.length === 0) return null;
+      const groupFolder = await this.getOrCreateGroupFolder(token, childName, groupName);
+      const cleanName = groupName.replace(/[\\/:*?"<>|]/g, '_').trim();
+      const fileName = `${cleanName}_archive.json`;
+
+      const q = encodeURIComponent(`name = '${fileName}' and '${groupFolder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, token);
+
+      let fileId: string | null = null;
+      let existing: any[] = [];
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          fileId = data.files[0].id;
+          try {
+            const dlRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, token);
+            if (dlRes.ok) existing = await dlRes.json();
+          } catch (e) {}
+        }
+      }
+
+      const seen = new Map<string, any>();
+      existing.forEach((m: any) => seen.set(`${m.timestamp}_${m.body}`, m));
+      groupMessages.forEach((m: any) => {
+        const k = `${m.timestamp}_${m.body}`;
+        if (!seen.has(k)) {
+          seen.set(k, m);
+          existing.unshift(m);
+        } else {
+          const ex = seen.get(k);
+          if (m.driveAttachmentUrl && !ex.driveAttachmentUrl) {
+            ex.driveAttachmentUrl = m.driveAttachmentUrl;
+            ex.driveFileName = m.driveFileName;
+          }
+        }
+      });
+
+      const payload = JSON.stringify(existing, null, 2);
+
+      if (fileId) {
+        await this.fetchWithAuth(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+          },
+          token
+        );
+      } else {
+        const boundary = '-------314159265358979323846';
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelimiter = `\r\n--${boundary}--`;
+        const metadata = {
+          name: fileName,
+          mimeType: 'application/json',
+          parents: [groupFolder.id]
+        };
+        const multipartBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(metadata) +
+          delimiter +
+          'Content-Type: application/json\r\n\r\n' +
+          payload +
+          closeDelimiter;
+
+        await this.fetchWithAuth(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+            body: multipartBody
+          },
+          token
+        );
+      }
+      return fileName;
+    } catch (e) {
+      console.warn(`[PersonalDriveService] Could not save group archive for ${groupName}:`, e);
+      return null;
+    }
+  }
+
+  /**
+   * Saves or updates the semantic groups index manifest (`groups_manifest.json`) in the child's folder.
+   * Enables LLMs / MCP tools to quickly discover group roles and descriptions without scanning full archives.
+   */
+  public static async updateGroupsManifest(
+    token: string,
+    childName: string,
+    allMessages: any[]
+  ): Promise<void> {
+    try {
+      const childFolder = await this.getOrCreatePersonalFolder(token, childName);
+      const manifestFileName = 'groups_manifest.json';
+
+      // Group messages by chatName
+      const groupsMap = new Map<string, any[]>();
+      allMessages.forEach(m => {
+        const cName = m.chatName || 'General';
+        if (!groupsMap.has(cName)) groupsMap.set(cName, []);
+        groupsMap.get(cName)!.push(m);
+      });
+
+      const groupEntries = [];
+      for (const [gName, gMsgs] of groupsMap.entries()) {
+        const cleanName = gName.replace(/[\\/:*?"<>|]/g, '_').trim();
+        const desc = await AiNormalizerService.generateGroupSemanticDescription(gName, gMsgs, childName);
+        const latestM = gMsgs[0];
+        const latestTime = latestM ? (latestM.date && latestM.time ? `${latestM.date}, ${latestM.time}` : (latestM.timestamp || '')) : '';
+
+        // Extract unique senders and categories
+        const senders = Array.from(new Set(gMsgs.map(m => m.sender).filter(Boolean))).slice(0, 5);
+        const categories = Array.from(new Set(gMsgs.map(m => m.category).filter(Boolean)));
+
+        groupEntries.push({
+          groupName: gName,
+          folderName: cleanName,
+          archiveFileName: `${cleanName}_archive.json`,
+          attachmentsFolderName: 'Attachments',
+          totalNotices: gMsgs.length,
+          lastNoticeTimestamp: latestTime,
+          aiSemanticDescription: desc,
+          primarySenders: senders,
+          categories
+        });
+      }
+
+      const manifestPayload = {
+        childName,
+        updatedAt: new Date().toISOString(),
+        totalGroups: groupEntries.length,
+        totalNoticesAcrossAllGroups: allMessages.length,
+        groups: groupEntries
+      };
+
+      const payloadStr = JSON.stringify(manifestPayload, null, 2);
+
+      const q = encodeURIComponent(`name = '${manifestFileName}' and '${childFolder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
+
+      let fileId: string | null = null;
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) fileId = data.files[0].id;
+      }
+
+      if (fileId) {
+        await this.fetchWithAuth(
+          `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: payloadStr
+          },
+          token
+        );
+      } else {
+        const boundary = '-------314159265358979323846';
+        const delimiter = `\r\n--${boundary}\r\n`;
+        const closeDelimiter = `\r\n--${boundary}--`;
+        const metadata = {
+          name: manifestFileName,
+          mimeType: 'application/json',
+          parents: [childFolder.id]
+        };
+        const multipartBody =
+          delimiter +
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+          JSON.stringify(metadata) +
+          delimiter +
+          'Content-Type: application/json\r\n\r\n' +
+          payloadStr +
+          closeDelimiter;
+
+        await this.fetchWithAuth(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+            body: multipartBody
+          },
+          token
+        );
+      }
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📋 [MANIFEST_SAVED] Updated "${manifestFileName}" with SLM semantic descriptions for ${groupEntries.length} group(s).`);
+    } catch (e: any) {
+      console.warn('[PersonalDriveService] Could not update groups_manifest.json:', e);
+    }
   }
 
   private static TRACKED_CHATS_FILE_NAME = 'tracked_whatsapp_chats.json';
