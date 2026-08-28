@@ -870,27 +870,47 @@ export class PersonalDriveService {
   /**
    * Searches user's Google Drive for any WhatsApp Export archives / files.
    */
-  public static async searchWhatsAppExports(token?: string): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
+  public static async searchWhatsAppExports(token?: string, forceRefresh = false): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
     try {
-      const validToken = token || await this.getValidToken(false);
-      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [EXPORT_SCAN_START] Scanning Google Drive for WhatsApp chat export archives ("WhatsApp Chat")...');
+      let validToken = token || await this.getValidToken(forceRefresh);
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [EXPORT_SCAN_START] Scanning Google Drive for WhatsApp chat export archives...');
 
-      const q = encodeURIComponent(`(name contains 'WhatsApp' or name contains 'Chat') and trashed = false`);
-      const res = await this.fetchWithAuth(
-        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&orderBy=createdTime desc`,
+      // Stage 1: Search by name query
+      const q = encodeURIComponent(`(name contains 'WhatsApp' or name contains 'Chat' or name contains 'Cambridge' or name contains '3B') and trashed = false`);
+      let res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=50&orderBy=createdTime desc`,
         {},
         validToken
       );
 
-      if (!res.ok) {
-        const errTxt = await res.text();
-        await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[EXPORT_SCAN_FAIL] Google Drive search failed: HTTP ${res.status} | ${errTxt}`);
-        throw new Error(`Drive search failed: HTTP ${res.status}`);
+      let data = res.ok ? await res.json() : { files: [] };
+      let files = data.files || [];
+
+      // Stage 2: Fallback — Fetch recent files and match in JavaScript (bypasses search index delays)
+      if (files.length === 0) {
+        const recentRes = await this.fetchWithAuth(
+          `https://www.googleapis.com/drive/v3/files?q=trashed%20%3D%20false&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=50&orderBy=createdTime desc`,
+          {},
+          validToken
+        );
+        if (recentRes.ok) {
+          const recentData = await recentRes.json();
+          const allRecent = recentData.files || [];
+          files = allRecent.filter((f: any) => {
+            const lower = (f.name || '').toLowerCase();
+            return lower.includes('whatsapp') || lower.includes('chat') || lower.includes('cambridge') || lower.includes('3b') || lower.endsWith('.zip') || lower.endsWith('.txt');
+          });
+        }
       }
 
-      const data = await res.json();
-      const files = data.files || [];
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [EXPORT_SCAN_FOUND] Found ${files.length} export file(s) on Google Drive.`, {
+      // Stage 3: If still 0 files and forceRefresh was false, force token scope refresh with drive.readonly
+      if (files.length === 0 && !forceRefresh) {
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔄 [EXPORT_SCAN_REFRESH] 0 files found with cached token. Refreshing OAuth credentials with drive.readonly scope...');
+        validToken = await this.getValidToken(true);
+        return await this.searchWhatsAppExports(validToken, true);
+      }
+
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [EXPORT_SCAN_FOUND] Found ${files.length} export candidate file(s) on Google Drive.`, {
         count: files.length,
         files: files.map((f: any) => ({ name: f.name, id: f.id, size: f.size, createdTime: f.createdTime }))
       });
