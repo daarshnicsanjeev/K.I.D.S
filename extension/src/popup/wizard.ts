@@ -944,12 +944,18 @@ document.addEventListener('DOMContentLoaded', async () => {
           const sizeKb = f.size ? `${(parseInt(f.size, 10) / (1024 * 1024)).toFixed(1)} MB` : 'Archive';
           const createdDate = f.createdTime ? new Date(f.createdTime).toLocaleString() : '';
 
+          const defaultGroupName = f.name.replace(/^WhatsApp Chat (?:with|-)\s*/i, '').replace(/\.[^/.]+$/, '').trim() || 'School Group';
+
           infoDiv.innerHTML = `
             <div style="font-size: 0.78rem; font-weight: 700; color: #a7f3d0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap;">
               📄 ${f.name} ${isNewest ? '<span style="background: #10b981; color: #022c22; font-size: 0.65rem; padding: 1px 4px; border-radius: 3px; font-weight: 800; margin-left: 4px;">✨ LATEST UPLOAD</span>' : ''}
             </div>
             <div style="font-size: 0.7rem; color: #6ee7b7; margin-top: 2px;">
               🕒 ${createdDate || 'Recent'} • ${sizeKb}
+            </div>
+            <div style="margin-top: 5px; display: flex; align-items: center; gap: 4px;">
+              <span style="font-size: 0.68rem; color: #94a3b8; white-space: nowrap;">🏷️ Group:</span>
+              <input type="text" class="group-name-override" value="${defaultGroupName}" style="background: #0f172a; border: 1px solid #334155; color: #f8fafc; font-size: 0.72rem; padding: 2px 6px; border-radius: 4px; width: 100%;" placeholder="e.g. 3B Cambridge (Official) or 3B Cambridge (Parents)" />
             </div>
           `;
 
@@ -960,21 +966,25 @@ document.addEventListener('DOMContentLoaded', async () => {
           btnIngest.style.padding = '4px 10px';
           btnIngest.style.fontSize = '0.72rem';
           btnIngest.style.fontWeight = '700';
+          btnIngest.style.alignSelf = 'center';
           btnIngest.innerText = '⚡ Yes, Ingest This';
 
           btnIngest.addEventListener('click', async () => {
             btnIngest.disabled = true;
             btnIngest.innerText = '⏳ Ingesting...';
             clearAlerts();
-            appendLog(`📥 Ingesting "${f.name}" for ${activeChild}...`);
+            const txtGroupInput = item.querySelector('.group-name-override') as HTMLInputElement;
+            const chosenGroupName = txtGroupInput?.value?.trim() || defaultGroupName;
+
+            appendLog(`📥 Ingesting "${f.name}" as "${chosenGroupName}" for ${activeChild}...`);
             try {
               const ingestRes = await sendMessage({
                 type: 'INGEST_WHATSAPP_EXPORT',
-                payload: { fileId: f.id, childName: activeChild }
+                payload: { fileId: f.id, childName: activeChild, customGroupName: chosenGroupName }
               });
 
               if (ingestRes.success) {
-                showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}" from Day 1!`);
+                showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments into "${chosenGroupName}" from Day 1!`);
                 await refreshBridgeStatus();
               } else {
                 showError(`Ingest failed: ${ingestRes.error || 'Unknown error'}`);
