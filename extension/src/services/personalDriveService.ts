@@ -687,24 +687,47 @@ export class PersonalDriveService {
         });
       }
 
-      const manifestPayload = {
-        childName,
-        updatedAt: new Date().toISOString(),
-        totalGroups: groupEntries.length,
-        totalNoticesAcrossAllGroups: allMessages.length,
-        groups: groupEntries
-      };
-
-      const payloadStr = JSON.stringify(manifestPayload, null, 2);
-
       const q = encodeURIComponent(`name = '${manifestFileName}' and '${childFolder.id}' in parents and trashed = false`);
       const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
 
       let fileId: string | null = null;
+      let existingManifestGroups: any[] = [];
       if (searchRes.ok) {
         const data = await searchRes.json();
-        if (data.files && data.files.length > 0) fileId = data.files[0].id;
+        if (data.files && data.files.length > 0) {
+          fileId = data.files[0].id;
+          try {
+            const dlRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, token);
+            if (dlRes.ok) {
+              const existingJson = await dlRes.json();
+              if (existingJson && Array.isArray(existingJson.groups)) {
+                existingManifestGroups = existingJson.groups;
+              }
+            }
+          } catch (e) {}
+        }
       }
+
+      // Merge new groupEntries with existingManifestGroups by groupName
+      const mergedGroupsMap = new Map<string, any>();
+      existingManifestGroups.forEach(g => {
+        if (g && g.groupName) mergedGroupsMap.set(g.groupName.toLowerCase(), g);
+      });
+      groupEntries.forEach(g => {
+        if (g && g.groupName) mergedGroupsMap.set(g.groupName.toLowerCase(), g);
+      });
+      const finalGroups = Array.from(mergedGroupsMap.values());
+      const totalNotices = finalGroups.reduce((acc, g) => acc + (g.totalNotices || 0), 0);
+
+      const manifestPayload = {
+        childName,
+        updatedAt: new Date().toISOString(),
+        totalGroups: finalGroups.length,
+        totalNoticesAcrossAllGroups: totalNotices || allMessages.length,
+        groups: finalGroups
+      };
+
+      const payloadStr = JSON.stringify(manifestPayload, null, 2);
 
       if (fileId) {
         await this.fetchWithAuth(
@@ -1183,11 +1206,26 @@ export class PersonalDriveService {
     }
   }
 
+  private static ingestQueue: Promise<any> = Promise.resolve();
+
   /**
    * Ingests a discovered WhatsApp Export file from Google Drive, unzips/parses media & notices,
    * passes through AI normalization, and updates the child's master archive on Drive.
+   * Runs sequentially through an internal mutex queue to prevent parallel race conditions.
    */
   public static async ingestWhatsAppExport(
+    fileId: string,
+    targetChildName?: string,
+    token?: string,
+    customGroupName?: string
+  ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
+    const runTask = () => this.doIngestWhatsAppExport(fileId, targetChildName, token, customGroupName);
+    const queuedPromise = this.ingestQueue.then(runTask, runTask);
+    this.ingestQueue = queuedPromise.catch(() => {});
+    return queuedPromise;
+  }
+
+  private static async doIngestWhatsAppExport(
     fileId: string,
     targetChildName?: string,
     token?: string,
