@@ -54,8 +54,9 @@ export class WhatsAppExportParser {
   public static async decompressDeflateRaw(compressed: Uint8Array): Promise<Uint8Array> {
     try {
       if (typeof DecompressionStream !== 'undefined') {
+        const cleanBytes = compressed.slice();
         const ds = new DecompressionStream('deflate-raw');
-        const stream = new Response(new Blob([compressed.buffer as ArrayBuffer])).body;
+        const stream = new Response(cleanBytes).body;
         if (stream) {
           const decompressedStream = stream.pipeThrough(ds);
           const decompressedBlob = await new Response(decompressedStream).blob();
@@ -64,7 +65,21 @@ export class WhatsAppExportParser {
         }
       }
     } catch (e) {
-      console.warn('[WhatsAppExportParser] DecompressionStream failed, trying standard fallback:', e);
+      try {
+        if (typeof DecompressionStream !== 'undefined') {
+          const cleanBytes = compressed.slice();
+          const ds = new DecompressionStream('deflate');
+          const stream = new Response(cleanBytes).body;
+          if (stream) {
+            const decompressedStream = stream.pipeThrough(ds);
+            const decompressedBlob = await new Response(decompressedStream).blob();
+            const arrayBuf = await decompressedBlob.arrayBuffer();
+            return new Uint8Array(arrayBuf);
+          }
+        }
+      } catch (e2) {
+        console.warn('[WhatsAppExportParser] DecompressionStream failed:', e2);
+      }
     }
     return compressed;
   }
@@ -208,9 +223,24 @@ export class WhatsAppExportParser {
     // Step C: If still no chat text found, attempt UTF-8 string search fallback
     if (!mainChatText) {
       const fullText = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
-      const match = fullText.match(/(\[\d{1,2}\/\d{1,2}\/\d{2,4},[\s\S]+)/);
+      const match = fullText.match(/(\[\d{1,2}\/\d{1,2}\/\d{2,4},\s*\d{1,2}:\d{2}[\s\S]+)/);
       if (match && match[1] && match[1].length > 100) {
         mainChatText = match[1];
+      }
+    }
+
+    // Ensure extracted text is clean readable UTF-8 text and not uncompressed binary
+    if (mainChatText) {
+      let nonPrintable = 0;
+      const sampleLen = Math.min(mainChatText.length, 300);
+      for (let i = 0; i < sampleLen; i++) {
+        const code = mainChatText.charCodeAt(i);
+        if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
+          nonPrintable++;
+        }
+      }
+      if (nonPrintable > 15) {
+        mainChatText = '';
       }
     }
 
