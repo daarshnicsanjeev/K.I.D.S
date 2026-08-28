@@ -113,6 +113,14 @@ export class AiNormalizerService {
 
         const fullBody = cleanedLines.join('\n').trim();
 
+        // Check for in-body teacher introduction (e.g. "I am Ms. Bhumika Parmar, the in-charge teacher")
+        if (detectedSender.startsWith('+91') || detectedSender === 'School Teacher') {
+          const introMatch = fullBody.match(/\b(?:I am|This is)\s+(?:Ms\.|Mr\.|Mrs\.|Dr\.)?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2})/i);
+          if (introMatch && introMatch[1]) {
+            detectedSender = introMatch[1].trim();
+          }
+        }
+
         if (fullBody.length > 1 && !fullBody.toLowerCase().includes('this message was deleted')) {
           const urls: string[] = [];
           const urlMatches = fullBody.match(/https?:\/\/[^\s]+/g);
@@ -200,32 +208,59 @@ export class AiNormalizerService {
         return;
       }
 
-      const waHeaderMatch = line.match(/^\[([^\]]+)\]\s*([^:]+):\s*(.*)$/);
-      if (waHeaderMatch) {
+      // Format 1: iOS / Web bracketed format: [6/6/26, 7:44 PM] Sender: Message
+      const waBracketMatch = line.match(/^\[([^\]]+)\]\s*([^:]+):\s*(.*)$/);
+      if (waBracketMatch) {
         flushTurn();
-        const headerInside = waHeaderMatch[1].trim();
+        const headerInside = waBracketMatch[1].trim();
         const parts = headerInside.split(',').map(p => p.trim());
         if (parts.length >= 2) {
           if (parts[0].includes(':')) {
-            currentTime = parts[0];
+            currentTime = parts[0].replace(/\u202f|\u00a0/g, ' ');
             currentDate = this.resolveDateHeader(parts[1], anchorDate);
           } else {
             currentDate = this.resolveDateHeader(parts[0], anchorDate);
-            currentTime = parts[1];
+            currentTime = parts[1].replace(/\u202f|\u00a0/g, ' ');
           }
         } else if (parts.length === 1) {
           if (parts[0].includes(':')) {
-            currentTime = parts[0];
+            currentTime = parts[0].replace(/\u202f|\u00a0/g, ' ');
           } else {
             currentDate = this.resolveDateHeader(parts[0], anchorDate);
           }
         }
-        let cleanAuthor = waHeaderMatch[2].trim().replace(/^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\s*/, '').trim();
+        let cleanAuthor = waBracketMatch[2].trim().replace(/^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\s*/, '').trim();
         currentSender = cleanAuthor || 'School Teacher';
         
-        const restOfLine = waHeaderMatch[3] ? waHeaderMatch[3].trim() : '';
+        const restOfLine = waBracketMatch[3] ? waBracketMatch[3].trim() : '';
         if (restOfLine) {
           currentBodyLines.push(restOfLine);
+        }
+        return;
+      }
+
+      // Format 2: Android WhatsApp export format: 6/6/26, 7:44 PM - +91 93216 80087: Message
+      // Or system events without colon: 6/3/26, 2:25 PM - Messages and calls are end-to-end encrypted...
+      const waDashMatch = line.match(/^(\d{1,2}[\/\.\-]\d{1,2}[\/\.\-]\d{2,4}),?\s+(\d{1,2}:\d{2}(?::\d{2})?(?:[\s\u202f\u00a0]*(?:AM|PM|am|pm))?)\s*-\s*([^:]+?)(?::\s*(.*))?$/i);
+      if (waDashMatch) {
+        flushTurn();
+        const rawDate = waDashMatch[1].trim();
+        const rawTime = waDashMatch[2].trim().replace(/\u202f|\u00a0/g, ' ');
+        const rawSender = waDashMatch[3].trim();
+        const rawMessage = waDashMatch[4] !== undefined ? waDashMatch[4].trim() : null;
+
+        // Skip WhatsApp system events that have no colon / message body
+        if (rawMessage === null || rawSender.includes('created group') || rawSender.includes('added you') || rawSender.includes('end-to-end encrypted') || rawSender.includes('changed the group') || rawSender.includes('changed the subject') || rawSender.includes('left') || rawSender.includes('removed')) {
+          return;
+        }
+
+        currentDate = this.resolveDateHeader(rawDate, anchorDate);
+        currentTime = rawTime;
+        let cleanAuthor = rawSender.replace(/^\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\s*/, '').replace(/^~\s*/, '').trim();
+        currentSender = cleanAuthor || 'School Teacher';
+
+        if (rawMessage) {
+          currentBodyLines.push(rawMessage);
         }
         return;
       }

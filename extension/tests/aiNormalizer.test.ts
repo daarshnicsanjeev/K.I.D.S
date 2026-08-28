@@ -96,4 +96,35 @@ We sincerely look forward to meeting you over a cup of coffee.`;
     expect(turns).toHaveLength(1);
     expect(turns[0].rawBody).toContain('Dear Parents, please find attached the revised schedule.');
   });
+
+  it('should parse Android WhatsApp export unbracketed date/time lines and filter system events', () => {
+    const rawExport = `6/3/26, 2:25 PM - Messages and calls are end-to-end encrypted. Only people in this chat can read, listen to, or share them.
+6/3/26, 7:44 AM - ~ Bhoomi created group "3B Cambridge 2026 - 27"
+6/3/26, 2:25 PM - ~ Bhoomi added you
+6/3/26, 2:46 PM - ~ Bhoomi added Nikita Patil
+6/6/26, 7:44 PM - +91 93216 80087: Dear Parents,
+Greetings!
+I am Ms. Bhumika Parmar, the in-charge teacher of Grade 3 Division B.
+School Reopening Details:
+Date: Monday, 8th June 2026
+School Timings: 1:15 p.m. to 6:00 p.m.
+6/8/26, 8:15 AM - +91 93216 80087: Dear Parents, please note that today is day 1 timetable.
+6/10/26, 6:30 PM - Kamaljit Kaur: Subject: Math - Homework. Complete Exercise 4. Submission date: 15 June 2026.`;
+
+    const turns = AiNormalizerService.extractRawTurns(rawExport);
+    expect(turns).toHaveLength(3);
+
+    expect(turns[0].date).toBe('6/6/2026');
+    expect(turns[0].time).toBe('7:44 PM');
+    expect(turns[0].sender).toBe('Bhumika Parmar');
+    expect(turns[0].rawBody).toContain('School Reopening Details');
+
+    expect(turns[1].date).toBe('6/8/2026');
+    expect(turns[1].time).toBe('8:15 AM');
+    expect(turns[1].rawBody).toContain('day 1 timetable');
+
+    expect(turns[2].date).toBe('6/10/2026');
+    expect(turns[2].sender).toBe('Kamaljit Kaur');
+    expect(turns[2].rawBody).toContain('Math - Homework');
+  });
 });
