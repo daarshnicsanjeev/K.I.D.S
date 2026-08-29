@@ -484,13 +484,13 @@ async function handleMessage(message: { type: string; payload?: any }) {
       const localData = await chrome.storage.local.get(['target_whatsapp_chats', 'tracked_whatsapp_chats', 'whatsapp_drive_caching_enabled', 'chat_sync_pointers']);
 
       let trackedChats: any[] = [];
-      if (localData.tracked_whatsapp_chats && Array.isArray(localData.tracked_whatsapp_chats) && localData.tracked_whatsapp_chats.length > 0) {
+      if (Array.isArray(localData.tracked_whatsapp_chats)) {
         trackedChats = localData.tracked_whatsapp_chats;
-      } else if (syncData.tracked_whatsapp_chats && Array.isArray(syncData.tracked_whatsapp_chats) && syncData.tracked_whatsapp_chats.length > 0) {
+      } else if (Array.isArray(syncData.tracked_whatsapp_chats)) {
         trackedChats = syncData.tracked_whatsapp_chats;
       } else {
         const activeChild = await ChildManager.getActiveProfile();
-        if (activeChild && Array.isArray(activeChild.trackedChats) && activeChild.trackedChats.length > 0) {
+        if (activeChild && Array.isArray(activeChild.trackedChats)) {
           trackedChats = activeChild.trackedChats;
         }
       }
@@ -647,6 +647,14 @@ async function handleMessage(message: { type: string; payload?: any }) {
       if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: list });
       await chrome.storage.local.set({ tracked_whatsapp_chats: list });
 
+      // Update active child's profile with captured chat
+      try {
+        const activeChild = await ChildManager.getActiveProfile();
+        if (activeChild) {
+          await ChildManager.updateProfile(activeChild.id, { trackedChats: list });
+        }
+      } catch (e) {}
+
       // Automatically backup tracked chats metadata to Personal Google Drive folder
       const token = (await chrome.storage.local.get(['personal_drive_auth_token'])).personal_drive_auth_token;
       if (token) {
@@ -658,12 +666,27 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
     case 'REMOVE_TRACKED_WHATSAPP_CHAT': {
       const chatIdToRemove = message.payload.id;
-      const current = await chrome.storage.local.get(['tracked_whatsapp_chats']);
+      const current = await chrome.storage.local.get(['tracked_whatsapp_chats', 'chat_sync_pointers']);
       let list: any[] = current.tracked_whatsapp_chats || [];
-      list = list.filter(c => c.id !== chatIdToRemove);
+      const removedItem = list.find(c => c.id === chatIdToRemove || c.title === chatIdToRemove);
+      list = list.filter(c => c.id !== chatIdToRemove && c.title !== chatIdToRemove);
 
       if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: list });
       await chrome.storage.local.set({ tracked_whatsapp_chats: list });
+
+      // Remove from sync pointers
+      const pointers = current.chat_sync_pointers || {};
+      if (chatIdToRemove in pointers) delete pointers[chatIdToRemove];
+      if (removedItem && removedItem.title && removedItem.title in pointers) delete pointers[removedItem.title];
+      await chrome.storage.local.set({ chat_sync_pointers: pointers });
+
+      // Remove from active child's profile
+      try {
+        const activeChild = await ChildManager.getActiveProfile();
+        if (activeChild) {
+          await ChildManager.updateProfile(activeChild.id, { trackedChats: list });
+        }
+      } catch (e) {}
 
       // Signal stop to any active sync loop on tabs
       const chatQueryUrls = ['*://web.whatsapp.com/*', '*://web.telegram.org/*'];
