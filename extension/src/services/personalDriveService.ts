@@ -327,17 +327,34 @@ export class PersonalDriveService {
     const validToken = token || await this.getValidToken(false);
     const rootFolder = await this.getOrCreateRootFolder(validToken);
     const resolvedChild = await this.resolveChildName(childName);
+    const storageKey = `personal_drive_child_folder_id_${resolvedChild}`;
 
-    // Search for existing child subfolder
+    // 1. Check cached folder ID
+    try {
+      const cached = await chrome.storage.local.get([storageKey]);
+      if (cached[storageKey]) {
+        const verifyRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${cached[storageKey]}?fields=id,name,trashed,webViewLink`, {}, validToken);
+        if (verifyRes.ok) {
+          const vData = await verifyRes.json();
+          if (!vData.trashed) {
+            return { id: vData.id, webViewLink: vData.webViewLink, rootId: rootFolder.id };
+          }
+        }
+      }
+    } catch (e) {}
+
+    // 2. Search for existing child subfolder
     const childQ = encodeURIComponent(`name = '${resolvedChild}' and '${rootFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
     const childSearchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${childQ}&fields=files(id,name,webViewLink)`, {}, validToken);
 
     if (childSearchRes.ok) {
       const childData = await childSearchRes.json();
       if (childData.files && childData.files.length > 0) {
-        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_FOUND] Found existing subfolder "${resolvedChild}" (ID: ${childData.files[0].id})`);
+        const childId = childData.files[0].id;
+        await chrome.storage.local.set({ [storageKey]: childId });
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_FOUND] Found existing subfolder "${resolvedChild}" (ID: ${childId})`);
         return {
-          id: childData.files[0].id,
+          id: childId,
           webViewLink: childData.files[0].webViewLink,
           rootId: rootFolder.id
         };
@@ -346,7 +363,7 @@ export class PersonalDriveService {
 
     await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_CREATE] Creating subfolder "${resolvedChild}" inside root folder (ID: ${rootFolder.id})...`);
 
-    // Create child subfolder
+    // 3. Create child subfolder
     const res = await this.fetchWithAuth(
       'https://www.googleapis.com/drive/v3/files',
       {
@@ -369,6 +386,7 @@ export class PersonalDriveService {
     }
 
     const created = await res.json();
+    await chrome.storage.local.set({ [storageKey]: created.id });
     await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [DRIVE_CHILD_FOLDER_SUCCESS] Successfully created child folder "${resolvedChild}" (ID: ${created.id})!`);
     return { id: created.id, webViewLink: created.webViewLink, rootId: rootFolder.id };
   }

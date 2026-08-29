@@ -441,8 +441,8 @@ export class AiNormalizerService {
         }
       }
 
-      // Try Chrome SLM for this turn if session is active and not circuit-broken
-      if (session && slmConsecutiveFailures < 2) {
+      // Try Chrome SLM for this turn if session is active, not circuit-broken, and batch is small (<= 30 turns)
+      if (session && slmConsecutiveFailures < 2 && rawTurns.length <= 30) {
         const turnPrompt = `Extract and normalize this school notice from ${turn.sender} (context header: ${turn.time}, ${turn.date}) into JSON:
 MESSAGE:
 ${turn.rawBody}
