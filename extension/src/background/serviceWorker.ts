@@ -2332,9 +2332,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
     }
 
     case 'INGEST_WHATSAPP_EXPORT': {
-      const { fileId, childName, customGroupName } = message.payload || {};
+      const { fileId, childName } = message.payload || {};
       if (!fileId) throw new Error('File ID is required to ingest export.');
-      const result = await PersonalDriveService.ingestWhatsAppExport(fileId, childName, undefined, customGroupName);
+      const result = await PersonalDriveService.ingestWhatsAppExport(fileId, childName);
       return result;
     }
 

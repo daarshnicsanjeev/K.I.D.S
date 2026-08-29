@@ -1216,10 +1216,9 @@ export class PersonalDriveService {
   public static async ingestWhatsAppExport(
     fileId: string,
     targetChildName?: string,
-    token?: string,
-    customGroupName?: string
+    token?: string
   ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
-    const runTask = () => this.doIngestWhatsAppExport(fileId, targetChildName, token, customGroupName);
+    const runTask = () => this.doIngestWhatsAppExport(fileId, targetChildName, token);
     const queuedPromise = this.ingestQueue.then(runTask, runTask);
     this.ingestQueue = queuedPromise.catch(() => {});
     return queuedPromise;
@@ -1228,8 +1227,7 @@ export class PersonalDriveService {
   private static async doIngestWhatsAppExport(
     fileId: string,
     targetChildName?: string,
-    token?: string,
-    customGroupName?: string
+    token?: string
   ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
     const ingestStart = Date.now();
     try {
@@ -1266,9 +1264,7 @@ export class PersonalDriveService {
         throw new Error('Export file contained no readable text messages.');
       }
 
-      const chatName = (customGroupName && customGroupName.trim().length > 0)
-        ? customGroupName.trim()
-        : (parsed.chatName || fileName.replace(/^WhatsApp Chat (?:with|-)\s*/i, '').replace(/\.[^/.]+$/, '') || 'School WhatsApp');
+      const chatName = parsed.chatName || fileName.replace(/^WhatsApp Chat (?:with|-)\s*/i, '').replace(/\.[^/.]+$/, '') || 'School WhatsApp';
 
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📦 [EXPORT_UNPACK_SUCCESS] Unpacked export archive for "${chatName}": ${parsed.chatText.length} text chars, ${parsed.attachments.length} attachment files discovered.`, {
         chatName,
