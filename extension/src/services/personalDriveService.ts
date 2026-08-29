@@ -1225,18 +1225,38 @@ export class PersonalDriveService {
   }
 
   private static ingestQueue: Promise<any> = Promise.resolve();
+  private static activeIngestCount: number = 0;
+  private static queuedJobsCount: number = 0;
 
   /**
    * Ingests a discovered WhatsApp Export file from Google Drive, unzips/parses media & notices,
    * passes through AI normalization, and updates the child's master archive on Drive.
-   * Runs sequentially through an internal mutex queue to prevent parallel race conditions.
+   * Runs sequentially through an internal FIFO queue to ensure strictly 1 group is processed at a time.
    */
   public static async ingestWhatsAppExport(
     fileId: string,
     targetChildName?: string,
     token?: string
   ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
-    const runTask = () => this.doIngestWhatsAppExport(fileId, targetChildName, token);
+    this.queuedJobsCount++;
+    const position = this.queuedJobsCount;
+
+    if (this.activeIngestCount > 0) {
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `⏳ [INGEST_QUEUED] Export file (ID: ${fileId}) placed in queue at position #${position}. Processing strictly 1 group at a time.`);
+    }
+
+    const runTask = async () => {
+      this.activeIngestCount++;
+      this.queuedJobsCount = Math.max(0, this.queuedJobsCount - 1);
+      try {
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `🚀 [INGEST_DEQUEUED] Starting sequential processing for export file (ID: ${fileId})...`);
+        const result = await this.doIngestWhatsAppExport(fileId, targetChildName, token);
+        return result;
+      } finally {
+        this.activeIngestCount = Math.max(0, this.activeIngestCount - 1);
+      }
+    };
+
     const queuedPromise = this.ingestQueue.then(runTask, runTask);
     this.ingestQueue = queuedPromise.catch(() => {});
     return queuedPromise;

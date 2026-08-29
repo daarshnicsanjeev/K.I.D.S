@@ -925,6 +925,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (driveExportsContainer) driveExportsContainer.classList.remove('hidden');
       if (driveExportsList) {
         driveExportsList.innerHTML = '';
+        let inFlightIngestions = 0;
+
         files.forEach((f: any, idx: number) => {
           const isNewest = idx === 0;
           const item = document.createElement('div');
@@ -963,10 +965,25 @@ document.addEventListener('DOMContentLoaded', async () => {
           btnIngest.innerText = '⚡ Yes, Ingest This';
 
           btnIngest.addEventListener('click', async () => {
+            inFlightIngestions++;
+            const isQueued = inFlightIngestions > 1;
+
             btnIngest.disabled = true;
-            btnIngest.innerText = '⏳ Ingesting...';
+            if (isQueued) {
+              btnIngest.innerText = `⏳ Queued (#${inFlightIngestions - 1})...`;
+              btnIngest.style.backgroundColor = '#d97706';
+              btnIngest.style.borderColor = '#b45309';
+            } else {
+              btnIngest.innerText = '⏳ Ingesting...';
+              btnIngest.style.backgroundColor = '#2563eb';
+              btnIngest.style.borderColor = '#1d4ed8';
+            }
+
             clearAlerts();
-            appendLog(`📥 Ingesting "${f.name}" for ${activeChild}...`);
+            appendLog(isQueued
+              ? `⏳ Queued "${f.name}" at position #${inFlightIngestions - 1} for ${activeChild}. Will process 1-by-1 sequentially...`
+              : `📥 Ingesting "${f.name}" for ${activeChild}...`);
+
             try {
               const ingestRes = await sendMessage({
                 type: 'INGEST_WHATSAPP_EXPORT',
@@ -974,16 +991,24 @@ document.addEventListener('DOMContentLoaded', async () => {
               });
 
               if (ingestRes.success) {
-                showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}" from Day 1!`);
+                btnIngest.innerText = '✅ Ingested';
+                btnIngest.style.backgroundColor = '#059669';
+                btnIngest.style.borderColor = '#047857';
+                showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}"!`);
                 await refreshBridgeStatus();
               } else {
+                btnIngest.innerText = '❌ Failed';
+                btnIngest.style.backgroundColor = '#dc2626';
+                btnIngest.disabled = false;
                 showError(`Ingest failed: ${ingestRes.error || 'Unknown error'}`);
               }
             } catch (ingErr: any) {
+              btnIngest.innerText = '❌ Error';
+              btnIngest.style.backgroundColor = '#dc2626';
+              btnIngest.disabled = false;
               showError(`Ingest error: ${ingErr.message}`);
             } finally {
-              btnIngest.disabled = false;
-              btnIngest.innerText = '⚡ Yes, Ingest This';
+              inFlightIngestions = Math.max(0, inFlightIngestions - 1);
               await loadWhatsAppLogs();
             }
           });
