@@ -7,6 +7,7 @@ import { PersonalDriveService } from '../services/personalDriveService';
 import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
 import { ChildManager, ChildProfile } from '../services/childManager';
 import { AiNormalizerService } from '../services/aiNormalizer';
+import { SyncLifecycleManager } from '../services/syncLifecycleManager';
 
 export interface StorageState {
   wizard_current_step: number;
@@ -688,7 +689,10 @@ async function handleMessage(message: { type: string; payload?: any }) {
         }
       } catch (e) {}
 
-      // Signal stop to any active sync loop on tabs
+      // Signal stop to any active sync loop on tabs and SyncLifecycleManager
+      const targetGroupNameToAbort = removedItem?.title || chatIdToRemove;
+      await SyncLifecycleManager.requestAbort(targetGroupNameToAbort);
+
       const chatQueryUrls = ['*://web.whatsapp.com/*', '*://web.telegram.org/*'];
       for (const urlPattern of chatQueryUrls) {
         const found = await chrome.tabs.query({ url: urlPattern });
@@ -715,6 +719,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
     }
 
     case 'ABORT_ACTIVE_SYNC': {
+      await SyncLifecycleManager.requestAbort();
       const chatQueryUrls = ['*://web.whatsapp.com/*', '*://web.telegram.org/*'];
       for (const urlPattern of chatQueryUrls) {
         const found = await chrome.tabs.query({ url: urlPattern });
@@ -797,9 +802,18 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
     case 'SYNC_WHATSAPP_CHATS': {
       const now = Date.now();
-      if (isSyncInProgress && (now - syncInProgressSince < 45000)) {
-        await WhatsAppDiagnosticLogger.log('WARN', 'CONN', '⏳ [SYNC_IN_PROGRESS] A sync execution is already actively running. Skipping duplicate trigger.');
-        return { status: 'already_running', message: 'Sync already in progress' };
+      const isManual = Boolean(message.payload?.isManualSync);
+      const targetFilterStr = message.payload?.target_whatsapp_chats || '';
+
+      const canRun = await SyncLifecycleManager.canRunBackgroundSync(isManual, targetFilterStr);
+      if (!canRun.allowed) {
+        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `⏹️ [SYNC_SKIPPED] ${canRun.reason}`);
+        return { status: 'skipped', message: canRun.reason };
+      }
+
+      const acquired = await SyncLifecycleManager.acquireSyncLock(targetFilterStr || undefined);
+      if (!acquired) {
+        return { status: 'already_running', message: 'Sync lock could not be acquired.' };
       }
       isSyncInProgress = true;
       syncInProgressSince = now;
@@ -825,1319 +839,1118 @@ async function handleMessage(message: { type: string; payload?: any }) {
         }
 
         const trackedChats = state.tracked_whatsapp_chats || [];
-        const targetFilterStr = message.payload?.target_whatsapp_chats || state.target_whatsapp_chats || '';
-        const stringFilters = targetFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
+        const activeFilterStr = targetFilterStr || state.target_whatsapp_chats || '';
+        const stringFilters = activeFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
 
-        const isManual = Boolean(message.payload?.isManualSync);
         if (!isManual && trackedChats.length === 0 && stringFilters.length === 0) {
           return { status: 'idle', message: 'No tracked chats configured. Background sync is idle.' };
         }
 
         const targetTab = openTabs[0];
 
-        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🚀 [SYNC_START] Initiated sync on tab ${targetTab.id} (${targetTab.title || targetTab.url}). Target: "${targetFilterStr || 'All Tracked'}", Mode: ${isManual ? 'Manual Deep Scan' : 'Automated Background'}`);
+        // Determine targets to sync: either single specific filter or all tracked chats
+        let targetChatsToSync: Array<{ title: string; id?: string }> = [];
+        if (activeFilterStr && activeFilterStr.toLowerCase() !== 'all tracked') {
+          targetChatsToSync = stringFilters.map((s: string) => ({ title: s }));
+        } else if (trackedChats.length > 0) {
+          targetChatsToSync = trackedChats;
+        } else {
+          targetChatsToSync = [{ title: '' }];
+        }
 
-        const results = await chrome.scripting.executeScript({
-          target: { tabId: targetTab.id! },
-          world: 'MAIN',
-          args: [trackedChats, stringFilters, isManual, state.chat_sync_pointers || {}],
-          func: async (tracked: any[], stringFilt: string[], isManualSync: boolean, chatSyncPointers: Record<string, any>) => {
-          // Anti-throttling shim: ensure WhatsApp Web React virtual scroller continues rendering even when tab is in background
-          try {
-            Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-            Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-            window.dispatchEvent(new Event('visibilitychange'));
-          } catch (e) {}
+        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🚀 [SYNC_START] Initiated sync on tab ${targetTab.id} (${targetTab.title || targetTab.url}). Targets: [${targetChatsToSync.map(t => t.title || 'Active Chat').join(', ')}], Mode: ${isManual ? 'Manual Deep Scan' : 'Automated Background'}`);
 
-          const blacklist = ['profile details', 'contact info', 'group info', 'search...', 'chats', 'communities', 'channels', 'starred messages', 'settings'];
+        // Clear any previous abort attributes from targetTab
+        if (targetTab.id) {
+          chrome.scripting.executeScript({
+            target: { tabId: targetTab.id },
+            func: () => {
+              document.body.removeAttribute('data-mcp-sync-abort');
+              (window as any).__school_mcp_abort_sync = false;
+            }
+          }).catch(() => {});
+        }
 
-          // Auto-select tracked chat from sidebar if WhatsApp is currently on landing page or chat was closed
-          if (!document.querySelector('#main, [data-testid="conversation-panel-body"], .chat-info')) {
-            const targetName = (tracked && tracked.length > 0 && tracked[0]?.title) || (stringFilt && stringFilt[0]) || '';
-            if (targetName) {
-              const sidebarItems = document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"]');
-              for (let i = 0; i < sidebarItems.length; i++) {
-                const item = sidebarItems[i] as HTMLElement;
-                if ((item.textContent || '').toLowerCase().includes(targetName.toLowerCase())) {
-                  item.click();
-                  await new Promise(resolve => setTimeout(resolve, 1500));
+        let totalNewNoticesAcrossAllTargets = 0;
+        let totalAttachmentsUploaded = 0;
+        const processedChatNames: string[] = [];
+        const lastResults: any[] = [];
+
+        const allProfiles = await ChildManager.getProfiles(false);
+        const activeProfile = await ChildManager.getActiveProfile();
+
+        for (const targetItem of targetChatsToSync) {
+          const specificTargetName = (targetItem.title || '').trim();
+          const specificTargetId = (targetItem.id || '').trim();
+
+          if (await SyncLifecycleManager.isAborted(specificTargetName)) {
+            await WhatsAppDiagnosticLogger.log('WARN', 'CONN', `⏹️ [SYNC_ABORTED_MIDWAY] Sync stopped for "${specificTargetName || 'Group'}" due to cancellation signal.`);
+            break;
+          }
+          if (specificTargetName) {
+            await SyncLifecycleManager.setActiveGroup(specificTargetName);
+          }
+
+          const results = await chrome.scripting.executeScript({
+            target: { tabId: targetTab.id! },
+            world: 'MAIN',
+            args: [trackedChats, specificTargetName ? [specificTargetName] : stringFilters, isManual, state.chat_sync_pointers || {}, specificTargetName, specificTargetId],
+            func: async (tracked: any[], stringFilt: string[], isManualSync: boolean, chatSyncPointers: Record<string, any>, targetNameReq: string, targetIdReq: string) => {
+            // Anti-throttling shim: ensure WhatsApp Web React virtual scroller continues rendering even when tab is in background
+            try {
+              Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+              Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+              window.dispatchEvent(new Event('visibilitychange'));
+            } catch (e) {}
+
+            const blacklist = [
+              'profile details', 'contact info', 'group info', 'search...', 'chats',
+              'communities', 'channels', 'starred messages', 'settings', 'active school chat',
+              'select a chat', 'download whatsapp for windows', 'send and receive messages', 'menu'
+            ];
+
+            // 1. If a specific target group is requested, check if it's currently open; if not, switch to it
+            if (targetNameReq || targetIdReq) {
+              const currentHeader = document.querySelector('#main header, header');
+              const headerText = (currentHeader?.textContent || '').trim();
+              const isAlreadyOpen = targetNameReq ? headerText.toLowerCase().includes(targetNameReq.toLowerCase()) : false;
+
+              if (!isAlreadyOpen) {
+                let switched = false;
+
+                // Method A: Direct internal Store/Cmd invocation by immutable ID or Name
+                try {
+                  const store = (window as any).Store;
+                  if (store && store.Chat) {
+                    let targetChatModel: any = null;
+                    if (targetIdReq && typeof store.Chat.get === 'function') {
+                      targetChatModel = store.Chat.get(targetIdReq);
+                    }
+                    if (!targetChatModel) {
+                      const allChats = typeof store.Chat.getModelsArray === 'function' ? store.Chat.getModelsArray() : (store.Chat.models || []);
+                      targetChatModel = allChats.find((c: any) => {
+                        const cId = c.id?._serialized || c.id || '';
+                        if (targetIdReq && cId && cId.toLowerCase() === targetIdReq.toLowerCase()) return true;
+                        const name = (c.name || c.formattedTitle || c.title || '').trim();
+                        return targetNameReq && name.toLowerCase().includes(targetNameReq.toLowerCase());
+                      });
+                    }
+                    if (targetChatModel) {
+                      if (store.Cmd && typeof store.Cmd.openChatAt === 'function') {
+                        store.Cmd.openChatAt(targetChatModel);
+                        switched = true;
+                      } else if (typeof store.Chat.openChat === 'function') {
+                        store.Chat.openChat(targetChatModel);
+                        switched = true;
+                      }
+                      if (switched) await new Promise(resolve => setTimeout(resolve, 1500));
+                    }
+                  }
+                } catch (storeSwitchErr) {}
+
+                // Method B: High-Precision Sidebar Span & Item Match
+                if (!switched) {
+                  const sidebarPane = document.querySelector('#pane-side, div[data-testid="chat-list"]') as HTMLElement | null;
+                  const findAndClickSidebarItem = (): boolean => {
+                    // Try exact title spans first
+                    const titleSpans = document.querySelectorAll('#pane-side span[title], #pane-side div[title], #pane-side span._ak8q, #pane-side span[dir="auto"]');
+                    for (let sIdx = 0; sIdx < titleSpans.length; sIdx++) {
+                      const span = titleSpans[sIdx] as HTMLElement;
+                      const spanTitle = (span.getAttribute('title') || span.textContent || '').trim();
+                      if (spanTitle && targetNameReq && (spanTitle.toLowerCase().includes(targetNameReq.toLowerCase()) || targetNameReq.toLowerCase().includes(spanTitle.toLowerCase()))) {
+                        const card = span.closest('div[role="listitem"], div[data-testid="cell-frame-container"], div[data-testid="conversation-item"], div[data-testid="chat-list-item"]') as HTMLElement | null;
+                        const clickTarget = card || span;
+                        try {
+                          clickTarget.scrollIntoView({ block: 'center', behavior: 'instant' as any });
+                          const evtInit = { bubbles: true, cancelable: true, view: window };
+                          clickTarget.dispatchEvent(new PointerEvent('pointerdown', evtInit));
+                          clickTarget.dispatchEvent(new MouseEvent('mousedown', evtInit));
+                          clickTarget.dispatchEvent(new PointerEvent('pointerup', evtInit));
+                          clickTarget.dispatchEvent(new MouseEvent('mouseup', evtInit));
+                          clickTarget.dispatchEvent(new MouseEvent('click', evtInit));
+                          try { clickTarget.click(); } catch (e) {}
+                          return true;
+                        } catch (e) {}
+                      }
+                    }
+
+                    // Fallback to card text content
+                    const sidebarItems = document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"], div[data-testid="conversation-item"], div[data-testid="chat-list-item"]');
+                    for (let i = 0; i < sidebarItems.length; i++) {
+                      const item = sidebarItems[i] as HTMLElement;
+                      const itemText = (item.textContent || '').trim();
+                      if (itemText.toLowerCase().includes(targetNameReq.toLowerCase())) {
+                        try {
+                          item.scrollIntoView({ block: 'center', behavior: 'instant' as any });
+                          const evtInit = { bubbles: true, cancelable: true, view: window };
+                          item.dispatchEvent(new PointerEvent('pointerdown', evtInit));
+                          item.dispatchEvent(new MouseEvent('mousedown', evtInit));
+                          item.dispatchEvent(new PointerEvent('pointerup', evtInit));
+                          item.dispatchEvent(new MouseEvent('mouseup', evtInit));
+                          item.dispatchEvent(new MouseEvent('click', evtInit));
+                          try { item.click(); } catch (e) {}
+                          return true;
+                        } catch (e) {}
+                      }
+                    }
+                    return false;
+                  };
+
+                  switched = findAndClickSidebarItem();
+
+                  if (!switched && sidebarPane) {
+                    // Progressively scroll sidebar to find off-screen chat
+                    const initialTop = sidebarPane.scrollTop;
+                    for (let scrollStep = 0; scrollStep < 8 && !switched; scrollStep++) {
+                      sidebarPane.scrollTop += 600;
+                      sidebarPane.dispatchEvent(new Event('scroll', { bubbles: true }));
+                      await new Promise(r => setTimeout(r, 250));
+                      switched = findAndClickSidebarItem();
+                    }
+                    if (!switched) {
+                      sidebarPane.scrollTop = initialTop;
+                    }
+                  }
+
+                  if (switched) {
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                  }
+                }
+
+                // Method C: WhatsApp Search Bar Fallback
+                if (!switched) {
+                  try {
+                    const searchInput = document.querySelector('div[contenteditable="true"][data-tab="3"], [data-testid="chat-list-search"], #side div[contenteditable="true"], div[role="textbox"][data-tab="3"]') as HTMLElement | null;
+                    if (searchInput) {
+                      searchInput.focus();
+                      document.execCommand('selectAll', false);
+                      document.execCommand('delete', false);
+                      document.execCommand('insertText', false, targetNameReq);
+                      searchInput.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: targetNameReq }));
+                      await new Promise(r => setTimeout(r, 900));
+
+                      const searchResults = document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"], div[data-testid="conversation-item"]');
+                      for (let i = 0; i < searchResults.length; i++) {
+                        const item = searchResults[i] as HTMLElement;
+                        if ((item.textContent || '').toLowerCase().includes(targetNameReq.toLowerCase())) {
+                          const evtInit = { bubbles: true, cancelable: true, view: window };
+                          item.dispatchEvent(new PointerEvent('pointerdown', evtInit));
+                          item.dispatchEvent(new MouseEvent('mousedown', evtInit));
+                          item.dispatchEvent(new MouseEvent('click', evtInit));
+                          switched = true;
+                          break;
+                        }
+                      }
+
+                      // Clear search bar
+                      const clearBtn = document.querySelector('button[aria-label="Cancel search"], span[data-icon="x-alt"], span[data-icon="x"], button[aria-label="Clear search"], button[aria-label="Close"]') as HTMLElement | null;
+                      if (clearBtn) {
+                        try { clearBtn.click(); } catch (e) {}
+                      } else {
+                        searchInput.focus();
+                        document.execCommand('selectAll', false);
+                        document.execCommand('delete', false);
+                      }
+                      if (switched) await new Promise(resolve => setTimeout(resolve, 1500));
+                    }
+                  } catch (searchErr) {}
+                }
+              }
+            } else if (!document.querySelector('#main, [data-testid="conversation-panel-body"], .chat-info')) {
+              // Landing page fallback
+              const firstTarget = (tracked && tracked.length > 0 && tracked[0]?.title) || (stringFilt && stringFilt[0]) || '';
+              if (firstTarget) {
+                const sidebarItems = document.querySelectorAll('div[role="listitem"], div[data-testid="cell-frame-container"]');
+                for (let i = 0; i < sidebarItems.length; i++) {
+                  const item = sidebarItems[i] as HTMLElement;
+                  if ((item.textContent || '').toLowerCase().includes(firstTarget.toLowerCase())) {
+                    item.click();
+                    await new Promise(resolve => setTimeout(resolve, 1500));
+                    break;
+                  }
+                }
+              }
+            }
+
+            // 2. High-precision Chat Name Resolution
+            let currentChatName = '';
+
+            // Priority A: Direct match against tracked list or targetNameReq in #main header text
+            const headerContainer = document.querySelector('#main header, header');
+            if (headerContainer) {
+              const hText = (headerContainer.textContent || '').trim();
+              if (targetNameReq && hText.toLowerCase().includes(targetNameReq.toLowerCase())) {
+                currentChatName = targetNameReq;
+              } else if (tracked && tracked.length > 0) {
+                const matchedTracked = tracked.find(t => t.title && hText.toLowerCase().includes(t.title.toLowerCase().trim()));
+                if (matchedTracked) currentChatName = matchedTracked.title;
+              } else if (stringFilt && stringFilt.length > 0) {
+                const matchedFilt = stringFilt.find(f => hText.toLowerCase().includes(f.toLowerCase().trim()));
+                if (matchedFilt) currentChatName = matchedFilt;
+              }
+            }
+
+            // Priority B: Dedicated Header Title DOM Selectors
+            if (!currentChatName) {
+              const headerTitleSelectors = [
+                '#main header [data-testid="conversation-info-header-chat-title"]',
+                '#main header div[role="button"] span[title]',
+                '#main header div._amie span[title]',
+                '#main header span._ak8q[title]',
+                '#main header div[role="button"] span._ak8q',
+                '#main header div[role="button"] span[dir="auto"]',
+                '#main header h2 span',
+                '#main header div[tabindex="-1"] span[title]',
+                '#main header span[title]'
+              ];
+              for (const sel of headerTitleSelectors) {
+                const el = document.querySelector(sel);
+                if (el) {
+                  const t = (el.getAttribute('title') || el.textContent || '').trim();
+                  if (t && !blacklist.includes(t.toLowerCase()) && t.length > 1 && t.length < 100) {
+                    currentChatName = t;
+                    break;
+                  }
+                }
+              }
+            }
+
+            // Priority C: Telegram / Discord / Teams Header
+            if (!currentChatName) {
+              const tgTitleEl = document.querySelector('.chat-info .peer-title, .top .person .name, .chat-title, .HeaderTitle, .sidebar-header .user-title, .chat-info h3, .ChatInfo .title, [data-testid="channel-name"]');
+              if (tgTitleEl) {
+                const t = (tgTitleEl.getAttribute('title') || tgTitleEl.textContent || '').trim();
+                if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
+              }
+            }
+
+            // Priority D: Active Sidebar Element
+            if (!currentChatName) {
+              const activeSidebarEl = document.querySelector('div[role="listitem"][aria-selected="true"], div[data-testid="cell-frame-container"][aria-selected="true"], div[data-testid="conversation-item"][aria-selected="true"]');
+              if (activeSidebarEl) {
+                if (tracked && tracked.length > 0) {
+                  const matched = tracked.find(t => t.title && (activeSidebarEl.textContent || '').toLowerCase().includes(t.title.toLowerCase().trim()));
+                  if (matched) currentChatName = matched.title;
+                }
+                if (!currentChatName) {
+                  const titleSpan = activeSidebarEl.querySelector('span[title], div[title], span._ak8q, span[dir="auto"]');
+                  if (titleSpan) {
+                    const t = (titleSpan.getAttribute('title') || titleSpan.textContent || '').trim();
+                    if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
+                  }
+                }
+              }
+            }
+
+            if (!currentChatName && targetNameReq) {
+              currentChatName = targetNameReq;
+            }
+
+            if (!currentChatName) {
+              return { chatName: '', messages: [], filteredOut: true };
+            }
+
+            // Check if matches either targetNameReq, tracked list (by ID/title), or string filter
+            let matches = false;
+            if (targetNameReq) {
+              matches = currentChatName.toLowerCase().includes(targetNameReq.toLowerCase()) || targetNameReq.toLowerCase().includes(currentChatName.toLowerCase());
+            } else if (tracked && tracked.length > 0) {
+              matches = tracked.some(t =>
+                t.title && currentChatName.toLowerCase().includes(t.title.toLowerCase().trim())
+              );
+            } else if (stringFilt && stringFilt.length > 0) {
+              matches = stringFilt.some(f => currentChatName.toLowerCase().includes(f.toLowerCase()));
+            } else if (isManualSync) {
+              matches = true;
+            }
+
+            if (!matches) {
+              return { chatName: currentChatName, messages: [], filteredOut: true };
+            }
+
+            // Intercept URL.createObjectURL, URL.revokeObjectURL, anchor clicks & element creation to capture blobs in memory
+            const createdBlobs = new Map<string, Blob>();
+            const blobBase64Map = new Map<string, { base64: string; mime: string; name: string }>();
+            let lastInterceptedBlob: any = null;
+
+            const origCreateObjectURL = URL.createObjectURL;
+            const origRevokeObjectURL = URL.revokeObjectURL;
+            const origAnchorClick = HTMLAnchorElement.prototype.click;
+            const origOpen = window.open;
+            const origCreateElement = document.createElement.bind(document);
+
+            const showInPageToast = (msg: string, type: 'info' | 'warn' | 'success' = 'info', durationMs = 6000) => {
+              try {
+                const existing = document.getElementById('school-mcp-toast');
+                if (existing) existing.remove();
+                const toast = document.createElement('div');
+                toast.id = 'school-mcp-toast';
+                toast.style.position = 'fixed';
+                toast.style.top = '16px';
+                toast.style.left = '50%';
+                toast.style.transform = 'translateX(-50%)';
+                toast.style.zIndex = '9999999';
+                toast.style.padding = '12px 20px';
+                toast.style.borderRadius = '10px';
+                toast.style.fontSize = '13.5px';
+                toast.style.fontWeight = '600';
+                toast.style.fontFamily = 'system-ui, -apple-system, sans-serif';
+                toast.style.boxShadow = '0 8px 24px rgba(0,0,0,0.4)';
+                toast.style.display = 'flex';
+                toast.style.alignItems = 'center';
+                toast.style.gap = '10px';
+                toast.style.maxWidth = '90vw';
+                toast.style.transition = 'all 0.3s ease';
+
+                if (type === 'warn') {
+                  toast.style.backgroundColor = '#b45309';
+                  toast.style.color = '#fef3c7';
+                  toast.style.border = '1px solid #f59e0b';
+                } else if (type === 'success') {
+                  toast.style.backgroundColor = '#065f46';
+                  toast.style.color = '#d1fae5';
+                  toast.style.border = '1px solid #10b981';
+                } else {
+                  toast.style.backgroundColor = '#1e293b';
+                  toast.style.color = '#f1f5f9';
+                  toast.style.border = '1px solid #3b82f6';
+                }
+
+                toast.innerHTML = `<span>${msg}</span><button style="background:transparent;border:none;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;" onclick="this.parentElement.remove()">✕</button>`;
+                document.body.appendChild(toast);
+
+                if (durationMs > 0) {
+                  setTimeout(() => {
+                    try { toast.remove(); } catch (e) {}
+                  }, durationMs);
+                }
+              } catch (e) {}
+            };
+
+            try {
+              URL.revokeObjectURL = function(url: string) {};
+
+              URL.createObjectURL = function(obj: any) {
+                const url = origCreateObjectURL.call(this, obj);
+                if (obj instanceof Blob) {
+                  createdBlobs.set(url, obj);
+                  const fr = new FileReader();
+                  fr.onloadend = () => {
+                    const res = fr.result as string;
+                    if (res && res.includes(',')) {
+                      const b64 = res.split(',')[1];
+                      blobBase64Map.set(url, { base64: b64, mime: obj.type || 'application/pdf', name: '' });
+                    }
+                  };
+                  fr.readAsDataURL(obj);
+                }
+                return url;
+              };
+
+              HTMLAnchorElement.prototype.click = function() {
+                try {
+                  const href = this.href;
+                  const dlName = this.download || this.getAttribute('download') || '';
+                  if (href && href.startsWith('blob:')) {
+                    lastInterceptedBlob = { name: dlName, url: href, blob: createdBlobs.get(href) };
+                    const entry = blobBase64Map.get(href);
+                    if (entry) entry.name = dlName;
+                  }
+                } catch (e) {}
+                return;
+              };
+
+              window.open = function(url?: any, ...args: any[]) {
+                if (typeof url === 'string' && url.startsWith('blob:')) {
+                  lastInterceptedBlob = { name: '', url, blob: createdBlobs.get(url) };
+                }
+                return null;
+              };
+
+              document.createElement = function(tagName: string, options?: any) {
+                const el = origCreateElement(tagName, options);
+                if (typeof tagName === 'string' && tagName.toLowerCase() === 'a') {
+                  const origSetAttr = el.setAttribute.bind(el);
+                  el.setAttribute = function(name: string, val: string) {
+                    if (name === 'href' && val && val.startsWith('blob:')) {
+                      lastInterceptedBlob = { name: el.getAttribute('download') || '', url: val, blob: createdBlobs.get(val) };
+                    }
+                    return origSetAttr(name, val);
+                  };
+                }
+                return el;
+              };
+
+              const diagLogs: Array<{ level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS'; category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT'; message: string; meta?: any }> = [];
+              let scrollContainer: HTMLElement | null = null;
+              const candidateScrollEls = document.querySelectorAll(
+                '#main div[data-testid="conversation-panel-body"], #main .copyable-area > div[tabindex="0"], #main div[role="region"], #main .copyable-area > div, .bubbles, .MessageList, .chat-list, .messages-container'
+              );
+              for (let cIdx = 0; cIdx < candidateScrollEls.length; cIdx++) {
+                const el = candidateScrollEls[cIdx] as HTMLElement;
+                if (el && el.scrollHeight > el.clientHeight + 40) {
+                  scrollContainer = el;
                   break;
                 }
               }
-            }
-          }
-
-          let currentChatName = '';
-          // 1. WhatsApp Header
-          const mainTitleEl = document.querySelector('#main header div[role="button"] span[title], #main header span[data-testid="conversation-info-header-chat-title"], #main header span[title], #main header span[dir="auto"]');
-          if (mainTitleEl) {
-            const t = (mainTitleEl.getAttribute('title') || mainTitleEl.textContent || '').trim();
-            if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
-          }
-
-          // 2. Telegram Web Header
-          if (!currentChatName) {
-            const tgTitleEl = document.querySelector('.chat-info .peer-title, .top .person .name, .chat-title, .HeaderTitle, .sidebar-header .user-title, .chat-info h3, .ChatInfo .title');
-            if (tgTitleEl) {
-              const t = (tgTitleEl.getAttribute('title') || tgTitleEl.textContent || '').trim();
-              if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
-            }
-          }
-
-          // 3. Discord / Slack / Teams Header
-          if (!currentChatName) {
-            const commTitleEl = document.querySelector('[data-testid="channel-name"], [class*="channelName"], [data-qa="channel_name"], [data-tid="chat-title"]');
-            if (commTitleEl) {
-              const t = (commTitleEl.getAttribute('title') || commTitleEl.textContent || '').trim();
-              if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
-            }
-          }
-
-          // 4. Sidebar Fallback
-          if (!currentChatName) {
-            const activeSidebarEl = document.querySelector('div[role="listitem"][aria-selected="true"] span[title], div[data-testid="cell-frame-container"][aria-selected="true"] span[title], div[role="listitem"][aria-selected="true"] span[dir="auto"], li.chatlist-chat.active .peer-title');
-            if (activeSidebarEl) {
-              const t = (activeSidebarEl.getAttribute('title') || activeSidebarEl.textContent || '').trim();
-              if (t && !blacklist.includes(t.toLowerCase())) currentChatName = t;
-            }
-          }
-
-          if (!currentChatName) {
-            currentChatName = 'Active School Chat';
-          }
-
-          let currentChatId = '';
-          const activeItem = document.querySelector('div[role="listitem"][aria-selected="true"], div[data-testid="cell-frame-container"][aria-selected="true"]');
-          if (activeItem) {
-            const img = activeItem.querySelector('img') as HTMLImageElement | null;
-            if (img && img.src) {
-              const match = img.src.match(/u=([^&]+)/);
-              if (match && match[1]) currentChatId = decodeURIComponent(match[1]);
-            }
-          }
-
-          // Check if matches either tracked list (by ID/title) or string filter
-          let matches = false;
-          if (tracked && tracked.length > 0) {
-            matches = tracked.some(t =>
-              (t.id && currentChatId && t.id.toLowerCase() === currentChatId.toLowerCase()) ||
-              (t.title && currentChatName.toLowerCase().includes(t.title.toLowerCase().trim()))
-            );
-          } else if (stringFilt && stringFilt.length > 0) {
-            matches = stringFilt.some(f => currentChatName.toLowerCase().includes(f.toLowerCase()));
-          } else if (isManualSync) {
-            matches = true; // Only scan active untracked chat if user explicitly clicked Manual Sync
-          } else {
-            matches = false;
-          }
-
-          if (!matches) {
-            return { chatName: currentChatName, messages: [], filteredOut: true };
-          }
-
-          // Intercept URL.createObjectURL, URL.revokeObjectURL, anchor clicks & element creation to capture blobs in memory
-          const createdBlobs = new Map<string, Blob>();
-          const blobBase64Map = new Map<string, { base64: string; mime: string; name: string }>();
-          let lastInterceptedBlob: any = null;
-
-          const origCreateObjectURL = URL.createObjectURL;
-          const origRevokeObjectURL = URL.revokeObjectURL;
-          const origAnchorClick = HTMLAnchorElement.prototype.click;
-          const origOpen = window.open;
-          const origCreateElement = document.createElement.bind(document);
-
-          const showInPageToast = (msg: string, type: 'info' | 'warn' | 'success' = 'info', durationMs = 6000) => {
-            try {
-              const existing = document.getElementById('school-mcp-toast');
-              if (existing) existing.remove();
-              const toast = document.createElement('div');
-              toast.id = 'school-mcp-toast';
-              toast.style.position = 'fixed';
-              toast.style.top = '16px';
-              toast.style.left = '50%';
-              toast.style.transform = 'translateX(-50%)';
-              toast.style.zIndex = '9999999';
-              toast.style.padding = '12px 20px';
-              toast.style.borderRadius = '10px';
-              toast.style.fontSize = '13.5px';
-              toast.style.fontWeight = '600';
-              toast.style.fontFamily = 'system-ui, -apple-system, sans-serif';
-              toast.style.boxShadow = '0 8px 24px rgba(0,0,0,0.4)';
-              toast.style.display = 'flex';
-              toast.style.alignItems = 'center';
-              toast.style.gap = '10px';
-              toast.style.maxWidth = '90vw';
-              toast.style.transition = 'all 0.3s ease';
-
-              if (type === 'warn') {
-                toast.style.backgroundColor = '#b45309';
-                toast.style.color = '#fef3c7';
-                toast.style.border = '1px solid #f59e0b';
-              } else if (type === 'success') {
-                toast.style.backgroundColor = '#065f46';
-                toast.style.color = '#d1fae5';
-                toast.style.border = '1px solid #10b981';
-              } else {
-                toast.style.backgroundColor = '#1e293b';
-                toast.style.color = '#f1f5f9';
-                toast.style.border = '1px solid #3b82f6';
+              if (!scrollContainer) {
+                scrollContainer = (document.querySelector('#main div[data-testid="conversation-panel-body"]') || document.querySelector('#main .copyable-area > div')) as HTMLElement | null;
               }
 
-              toast.innerHTML = `<span>${msg}</span><button style="background:transparent;border:none;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;" onclick="this.parentElement.remove()">✕</button>`;
-              document.body.appendChild(toast);
-
-              if (durationMs > 0) {
-                setTimeout(() => {
-                  try { toast.remove(); } catch (e) {}
-                }, durationMs);
-              }
-            } catch (e) {}
-          };
-
-          try {
-            // Prevent premature revocation of blob URLs by WhatsApp
-            URL.revokeObjectURL = function(url: string) {
-              // Keep alive in memory during sync
-            };
-
-            URL.createObjectURL = function(obj: any) {
-              const url = origCreateObjectURL.call(this, obj);
-              if (obj instanceof Blob) {
-                createdBlobs.set(url, obj);
-                const fr = new FileReader();
-                fr.onloadend = () => {
-                  const res = fr.result as string;
-                  if (res && res.includes(',')) {
-                    const b64 = res.split(',')[1];
-                    blobBase64Map.set(url, { base64: b64, mime: obj.type || 'application/pdf', name: '' });
-                  }
-                };
-                fr.readAsDataURL(obj);
-              }
-              return url;
-            };
-
-            HTMLAnchorElement.prototype.click = function() {
-              try {
-                const href = this.href;
-                const dlName = this.download || this.getAttribute('download') || '';
-                if (href && href.startsWith('blob:')) {
-                  lastInterceptedBlob = { name: dlName, url: href, blob: createdBlobs.get(href) };
-                  const entry = blobBase64Map.get(href);
-                  if (entry) entry.name = dlName;
-                }
-              } catch (e) {}
-              // Suppress duplicate browser download popups to keep local Downloads folder clean
-              return;
-            };
-
-            window.open = function(url?: any, ...args: any[]) {
-              if (typeof url === 'string' && url.startsWith('blob:')) {
-                lastInterceptedBlob = { name: '', url, blob: createdBlobs.get(url) };
-              }
-              return null;
-            };
-
-            document.createElement = function(tagName: string, options?: any) {
-              const el = origCreateElement(tagName, options);
-              if (typeof tagName === 'string' && tagName.toLowerCase() === 'a') {
-                const origSetAttr = el.setAttribute.bind(el);
-                el.setAttribute = function(name: string, val: string) {
-                  if (name === 'href' && val && val.startsWith('blob:')) {
-                    lastInterceptedBlob = { name: el.getAttribute('download') || '', url: val, blob: createdBlobs.get(val) };
-                  }
-                  return origSetAttr(name, val);
-                };
-              }
-              return el;
-            };
-
-            const diagLogs: Array<{ level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS'; category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT'; message: string; meta?: any }> = [];
-          // Dynamically locate the true active scrollable element in WhatsApp Web
-          let scrollContainer: HTMLElement | null = null;
-          const candidateScrollEls = document.querySelectorAll(
-            '#main div[data-testid="conversation-panel-body"], #main .copyable-area > div[tabindex="0"], #main div[role="region"], #main .copyable-area > div, .bubbles, .MessageList, .chat-list, .messages-container'
-          );
-          for (let cIdx = 0; cIdx < candidateScrollEls.length; cIdx++) {
-            const el = candidateScrollEls[cIdx] as HTMLElement;
-            if (el && el.scrollHeight > el.clientHeight + 40) {
-              scrollContainer = el;
-              break;
-            }
-          }
-          if (!scrollContainer) {
-            scrollContainer = (document.querySelector('#main div[data-testid="conversation-panel-body"]') || document.querySelector('#main .copyable-area > div')) as HTMLElement | null;
-          }
-
-          diagLogs.push({
-            level: 'INFO',
-            category: 'CONN',
-            message: `Target chat connected: "${currentChatName}". Scroll container: ${scrollContainer ? scrollContainer.tagName : 'NONE'} (scrollHeight: ${scrollContainer?.scrollHeight || 0}, clientHeight: ${scrollContainer?.clientHeight || 0}, isManualSync: ${isManualSync})`,
-            meta: { currentChatName, scrollHeight: scrollContainer?.scrollHeight, clientHeight: scrollContainer?.clientHeight, isManualSync }
-          });
-
-          const allExtractedMessages: any[] = [];
-
-          // Progressive Scroll-and-Accumulate Message-Row Extractor
-          const extractedMessagesMap = new Map<string, any>();
-          const rawAttachmentsList: Array<{ name: string; mimeType: string; base64Content: string }> = [];
-
-          const monthNames: Record<string, number> = {
-            january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
-            may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
-            september: 9, sep: 9, sept: 9, october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12
-          };
-
-          const parseDateHeaderString = (rawText: string): string | null => {
-            if (!rawText) return null;
-            const text = rawText.trim().replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
-            const lower = text.toLowerCase();
-            const now = new Date();
-
-            if (lower === 'today') {
-              return `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
-            }
-            if (lower === 'yesterday') {
-              const y = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-              return `${y.getMonth() + 1}/${y.getDate()}/${y.getFullYear()}`;
-            }
-
-            // Format: "18 August 2026" or "18 Aug 2026" or "18 August, 2026"
-            const dayMonthYear = lower.match(/^(\d{1,2})\s+([a-z]+),?\s*(\d{4})?$/);
-            if (dayMonthYear && monthNames[dayMonthYear[2]]) {
-              const d = parseInt(dayMonthYear[1], 10);
-              const m = monthNames[dayMonthYear[2]];
-              const y = dayMonthYear[3] ? parseInt(dayMonthYear[3], 10) : now.getFullYear();
-              return `${m}/${d}/${y}`;
-            }
-
-            // Format: "August 18, 2026" or "Aug 18 2026"
-            const monthDayYear = lower.match(/^([a-z]+)\s+(\d{1,2}),?\s*(\d{4})?$/);
-            if (monthDayYear && monthNames[monthDayYear[1]]) {
-              const m = monthNames[monthDayYear[1]];
-              const d = parseInt(monthDayYear[2], 10);
-              const y = monthDayYear[3] ? parseInt(monthDayYear[3], 10) : now.getFullYear();
-              return `${m}/${d}/${y}`;
-            }
-
-            const mMatch = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
-            if (mMatch) return text;
-            return null;
-          };
-
-          const scrapeCurrentVisibleMessages = () => {
-            const allChatElements = document.querySelectorAll(
-              'div[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date, ' +
-              'div[data-testid="msg-container"], div.message-in, div.message-out, ' +
-              'div.message, div.bubble, div.Message, .message-content, .bubble-content, ' +
-              'li[id^="chat-messages-"], div[data-qa="message_container"], [class*="message-bubble"]'
-            );
-
-            let clusterDate = '';
-
-            allChatElements.forEach((el) => {
-              try {
-                const htmlEl = el as HTMLElement;
-                const isDateHeader = htmlEl.matches && (
-                  htmlEl.matches('[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date')
-                  || (htmlEl.textContent && /^(TODAY|YESTERDAY|\d{1,2}\s+[A-Za-z]+\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})$/i.test(htmlEl.textContent.trim()))
-                );
-
-                if (isDateHeader) {
-                  const parsed = parseDateHeaderString(htmlEl.textContent || '');
-                  if (parsed) clusterDate = parsed;
-                  return;
-                }
-
-                const isMsgRow = htmlEl.matches && htmlEl.matches(
-                  'div[data-testid="msg-container"], div.message-in, div.message-out, div.message, div.bubble, div.Message, [class*="message-bubble"], li[id^="chat-messages-"]'
-                );
-                if (!isMsgRow) return;
-
-                const row = htmlEl;
-                const prePlainEl = (row.hasAttribute && row.hasAttribute('data-pre-plain-text'))
-                  ? row
-                  : row.querySelector('div[data-pre-plain-text], [data-pre-plain-text]');
-                const prePlain = prePlainEl ? prePlainEl.getAttribute('data-pre-plain-text') : null;
-
-                let sender = 'Teacher/Parent';
-                let timeStr = '';
-                let dateStr = clusterDate;
-
-                if (prePlain) {
-                  const sMatch = prePlain.match(/\]\s*([^:]+):/);
-                  if (sMatch && sMatch[1]) sender = sMatch[1].trim();
-                  const bracketMatch = prePlain.match(/\[([^\]]+)\]/);
-                  if (bracketMatch && bracketMatch[1]) {
-                    const rawInside = bracketMatch[1].trim();
-                    const parts = rawInside.split(',').map(p => p.trim());
-                    if (parts.length >= 2) {
-                      let rawDate = '';
-                      if (parts[0].includes(':')) { timeStr = parts[0]; rawDate = parts[1]; }
-                      else { rawDate = parts[0]; timeStr = parts[1]; }
-                      
-                      const dMatch = rawDate.match(/(\d{1,4})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
-                      if (dMatch) {
-                        const p1 = parseInt(dMatch[1], 10);
-                        const p2 = parseInt(dMatch[2], 10);
-                        const p3 = parseInt(dMatch[3], 10);
-                        if (p1 > 1000) dateStr = `${p2}/${p3}/${p1}`;
-                        else if (p1 > 12 && p2 <= 12) dateStr = `${p2}/${p1}/${p3 < 100 ? 2000 + p3 : p3}`;
-                        else dateStr = `${p1}/${p2}/${p3 < 100 ? 2000 + p3 : p3}`;
-                      } else {
-                        dateStr = rawDate;
-                      }
-                    }
-                  }
-                  if (dateStr) clusterDate = dateStr;
-                }
-
-                if (!timeStr) {
-                  // Fallback: extract time directly from bottom meta container
-                  const timeEl = row.querySelector('div[data-testid="msg-meta"] span, span._ak8i, div._amkd span, span[data-testid="msg-time"], .time, span.x1rg5ohu');
-                  if (timeEl && timeEl.textContent) {
-                    const tMatch = timeEl.textContent.match(/\b(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\b/);
-                    if (tMatch) timeStr = tMatch[1].trim();
-                  }
-                }
-
-                if (sender === 'Teacher/Parent') {
-                  const authorEl = row.querySelector('span._ak8q, span[data-testid="author"], .message-title, .sender-name');
-                  if (authorEl && authorEl.textContent) {
-                    const candidate = authorEl.textContent.replace(':', '').trim();
-                    if (candidate.length > 0 && candidate.length <= 40 && !candidate.includes('\n')) {
-                      sender = candidate;
-                    }
-                  }
-                }
-
-                const textEl = row.querySelector('span.selectable-text, span._ao3e, div.copyable-text span');
-                let text = textEl ? (textEl.textContent || '').trim() : '';
-                if (text === sender) text = '';
-
-                // Attachment / Document title detection
-                let docTitle = '';
-                const docCandidates = row.querySelectorAll(
-                  'span[data-testid="document-name"], div[data-testid="document-thumb"] + div span, div[data-testid="document-thumb"] ~ div span, .document-name, a.document-container span, span[title*="."], div[title*="."]'
-                );
-                for (let dIdx = 0; dIdx < docCandidates.length; dIdx++) {
-                  const cand = (docCandidates[dIdx].getAttribute('title') || docCandidates[dIdx].textContent || '').trim();
-                  if (cand && !cand.toLowerCase().includes('-icon') && cand.length > 2 && cand.length < 150) {
-                    docTitle = cand;
-                    break;
-                  }
-                }
-
-                // Media captions
-                const captionEl = row.querySelector('span[data-testid="media-caption"], div.image-caption');
-                const mediaCaption = captionEl ? (captionEl.textContent || '').trim() : '';
-
-                let fullBody = text;
-                if (docTitle && !fullBody.includes(docTitle)) {
-                  fullBody = `[Document Attachment: ${docTitle}]\n${fullBody}`.trim();
-                }
-                if (mediaCaption && !fullBody.includes(mediaCaption)) {
-                  fullBody = `${fullBody} [Media Caption: ${mediaCaption}]`.trim();
-                }
-
-                // Image / Photo detection & Base64 canvas export to ensure photos/HW images are NEVER skipped
-                const imgEl = row.querySelector('img[src^="blob:"], img[src^="data:image"], div[data-testid="image-thumb"] img, div[data-testid="media-canvas"] img, div.image-box img') as HTMLImageElement | null;
-                if (imgEl && imgEl.src) {
-                  if (!fullBody && !docTitle) {
-                    fullBody = '[Photo/Image Attachment]';
-                  }
-                  try {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = imgEl.naturalWidth || imgEl.width || 400;
-                    canvas.height = imgEl.naturalHeight || imgEl.height || 400;
-                    const ctx = canvas.getContext('2d');
-                    if (ctx && canvas.width > 0 && canvas.height > 0) {
-                      ctx.drawImage(imgEl, 0, 0);
-                      const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
-                      const b64 = dataUrl.split(',')[1];
-                      if (b64 && b64.length > 200) {
-                        const photoName = `school_photo_${(clusterDate || dateStr || 'notice').replace(/[\/.\s]/g, '-')}_${Date.now()}.jpeg`;
-                        if (!blobBase64Map.has(imgEl.src)) {
-                          blobBase64Map.set(imgEl.src, {
-                            name: photoName,
-                            mime: 'image/jpeg',
-                            base64: b64
-                          });
-                        }
-                      }
-                    }
-                  } catch (imgErr) {}
-                }
-
-                if (!fullBody && !docTitle && !imgEl) return;
-
-                // Skip download attempts on unloaded phone placeholders to avoid "Document unavailable" popups
-                const isUnloadedPlaceholder = fullBody.toLowerCase().includes("this message couldn't load") || fullBody.toLowerCase().includes("open the message on your phone to view it");
-
-                if (!isUnloadedPlaceholder) {
-                  // Click specific download icons on visible attachments (strictly once per element, never click whole document thumb to avoid opening viewer)
-                  const downloadBtns = row.querySelectorAll(
-                    'span[data-icon="download"], div[data-icon="download"], ' +
-                    'button[data-testid="document-download-btn"], button[data-testid="media-download-btn"], ' +
-                    'div[role="button"][title*="Download"], button[title*="Download"], button[aria-label*="Download"], div[role="button"][aria-label*="Download"]'
-                  );
-                  downloadBtns.forEach(btn => {
-                    const hEl = btn as HTMLElement;
-                    if (hEl.getAttribute('data-mcp-clicked') === 'true') {
-                      return; // Already triggered download once! Do not repeat click!
-                    }
-                    hEl.setAttribute('data-mcp-clicked', 'true');
-                    try {
-                      hEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
-                      hEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
-                      hEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-                    } catch (e) {
-                      try { hEl.click(); } catch (err) {}
-                    }
-                  });
-                }
-
-                // Auto-dismiss any "Document unavailable" modal popups or media viewer overlays from WhatsApp
-                dismissWhatsAppModals();
-
-                // Filter out dummy standalone attachment pills / media clock chips (e.g. "[Document Attachment: 7:12 PM]", "star")
-                const isDummyAttachmentChip = /^\[(?:Document Attachment|Photo\/Image Attachment|Document|Photo|Image):\s*(?:\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|star)\]$/i.test(fullBody.trim()) || /^(?:star|forms\.gle)$/i.test(fullBody.trim());
-                if (isDummyAttachmentChip) return;
-
-                // Normalized body fingerprint for robust deduplication across scroll cycles
-                const normBodyKey = fullBody.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
-                if (extractedMessagesMap.has(normBodyKey)) {
-                  const existing = extractedMessagesMap.get(normBodyKey);
-                  // Merge with better author metadata if available
-                  if (existing.sender.startsWith('+91') && !sender.startsWith('+91')) {
-                    existing.sender = sender;
-                  }
-                  // Preserve canonical earlier time and date if already present
-                  if (!existing.time && timeStr) {
-                    existing.time = timeStr;
-                    existing.timestamp = `${timeStr}, ${existing.date || dateStr}`;
-                  }
-                  if (!existing.date && dateStr) {
-                    existing.date = dateStr;
-                    existing.timestamp = `${existing.time || timeStr}, ${dateStr}`;
-                  }
-                } else {
-                  extractedMessagesMap.set(normBodyKey, {
-                    id: `wa_${Date.now()}_${extractedMessagesMap.size}`,
-                    sender,
-                    timestamp: timeStr ? `${timeStr}, ${dateStr}` : (dateStr || ''),
-                    date: dateStr || undefined,
-                    time: timeStr || undefined,
-                    body: fullBody,
-                    documentTitle: docTitle || undefined
-                  });
-                }
-              } catch (err) {}
-            });
-          };
-
-          const dismissWhatsAppModals = () => {
-            try {
-              // 1. Check if an actual full-screen media viewer or popup container is present
-              const viewerContainer = document.querySelector('div[data-testid="media-viewer-modal"], div[data-testid="media-viewer"], div[data-animate-modal-popup="true"]');
-              if (viewerContainer) {
-                const closeBtn = viewerContainer.querySelector('span[data-icon="x-viewer"], span[data-icon="x"], span[data-icon="back"], button[aria-label="Close"], div[aria-label="Close"], button, div[role="button"]') as HTMLElement | null;
-                if (closeBtn) {
-                  try { closeBtn.click(); } catch (e) {}
-                }
-                const escKeyInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true, view: window };
-                viewerContainer.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
-                viewerContainer.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
-              }
-
-              // 2. Check if an alert/dialog popup is present (e.g. "Document unavailable")
-              const dialogEl = document.querySelector('div[role="dialog"], div[role="alertdialog"], [data-testid="popup-contents"], div._ak8k');
-              if (dialogEl) {
-                const clickables = dialogEl.querySelectorAll('button, div[role="button"], span');
-                for (let i = 0; i < clickables.length; i++) {
-                  const el = clickables[i] as HTMLElement;
-                  const t = (el.textContent || '').trim().toUpperCase();
-                  if (t === 'OK' || t === 'DISMISS' || t === 'CLOSE' || t === 'CANCEL') {
-                    el.click();
-                    break;
-                  }
-                }
-              }
-            } catch (e) {}
-          };
-
-          // ─── LAYER 1: DIRECT STORE & INDEXED_DB EXTRACTION ──────────────────────
-          try {
-            const idbStart = Date.now();
-            const openDb = (name: string): Promise<IDBDatabase | null> => new Promise((resolve) => {
-              try {
-                const req = indexedDB.open(name);
-                req.onsuccess = () => resolve(req.result);
-                req.onerror = () => resolve(null);
-                req.onblocked = () => resolve(null);
-              } catch (e) { resolve(null); }
-            });
-
-            const readStore = (db: IDBDatabase, sName: string): Promise<any[]> => new Promise((resolve) => {
-              try {
-                if (!db.objectStoreNames.contains(sName)) { resolve([]); return; }
-                const tx = db.transaction(sName, 'readonly');
-                const store = tx.objectStore(sName);
-                const req = store.getAll();
-                req.onsuccess = () => resolve(req.result || []);
-                req.onerror = () => resolve([]);
-              } catch (e) { resolve([]); }
-            });
-
-            let dbList: any[] = [];
-            if (typeof indexedDB.databases === 'function') {
-              try { dbList = await indexedDB.databases(); } catch (e) {}
-            }
-            if (!dbList || dbList.length === 0) {
-              dbList = [{ name: 'model-storage' }, { name: 'wawc' }, { name: 'wawc_db' }];
-            }
-
-            const candidateDbNames = dbList.map((d: any) => d.name).filter((n: string) => n && (n.includes('model') || n.includes('wawc') || n.includes('storage') || n.includes('telegram')));
-            if (candidateDbNames.length === 0) candidateDbNames.push('model-storage');
-
-            let idbLoaded = 0;
-            for (const dbName of candidateDbNames) {
-              const db = await openDb(dbName);
-              if (!db) continue;
-              try {
-                const rawMsgs = await readStore(db, 'message');
-                if (Array.isArray(rawMsgs) && rawMsgs.length > 0) {
-                  rawMsgs.forEach((m: any, idx: number) => {
-                    const body = m.body || m.caption || m.text || '';
-                    if (!body && !m.isMedia) return;
-                    const sender = m.author || m.sender || m.from || m.pushname || '+91 School Notice';
-                    let dateStr = '';
-                    let timeStr = '';
-                    if (m.t || m.timestamp) {
-                      const ts = typeof m.t === 'number' ? (m.t > 1e11 ? m.t : m.t * 1000) : (m.timestamp || Date.now());
-                      const d = new Date(ts);
-                      dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
-                      const hours = d.getHours();
-                      const mins = d.getMinutes().toString().padStart(2, '0');
-                      const ampm = hours >= 12 ? 'PM' : 'AM';
-                      timeStr = `${hours % 12 || 12}:${mins} ${ampm}`;
-                    }
-                    const normKey = body.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
-                    if (normKey && !extractedMessagesMap.has(normKey)) {
-                      extractedMessagesMap.set(normKey, {
-                        id: m.id?._serialized || m.id || `idb_${idx}`,
-                        sender,
-                        body,
-                        date: dateStr || undefined,
-                        time: timeStr || undefined,
-                        timestamp: (timeStr && dateStr) ? `${timeStr}, ${dateStr}` : (dateStr || timeStr || '')
-                      });
-                      idbLoaded++;
-                    }
-                  });
-                }
-
-                // Read cached media if available
-                const rawMedia = await readStore(db, 'media');
-                if (Array.isArray(rawMedia) && rawMedia.length > 0) {
-                  rawMedia.forEach((med: any) => {
-                    if (med && med.data && (med.mimetype || med.filename)) {
-                      const b64 = typeof med.data === 'string' ? med.data : '';
-                      if (b64 && b64.length > 50) {
-                        rawAttachmentsList.push({
-                          name: med.filename || 'school_document.pdf',
-                          mimeType: med.mimetype || 'application/pdf',
-                          base64Content: b64.includes(',') ? b64.split(',')[1] : b64
-                        });
-                      }
-                    }
-                  });
-                }
-              } finally {
-                try { db.close(); } catch (e) {}
-              }
-              if (idbLoaded > 0) break;
-            }
-
-            if (idbLoaded > 0) {
-              const idbDuration = Date.now() - idbStart;
-              diagLogs.push({
-                level: 'SUCCESS',
-                category: 'EXTRACT',
-                message: `⚡ [INDEXED_DB_SUCCESS] Direct IndexedDB extraction pre-loaded ${idbLoaded} messages from local disk in ${idbDuration}ms!`
-              });
-            }
-
-            // In-Memory Store Fallback/Complement
-            if ((window as any).Store && (window as any).Store.Chat) {
-              const activeChatModel = (window as any).Store.Chat.models?.find((c: any) => 
-                (c.name && c.name.toLowerCase().includes(currentChatName.toLowerCase())) ||
-                (c.formattedTitle && c.formattedTitle.toLowerCase().includes(currentChatName.toLowerCase())) ||
-                (c.id && c.id._serialized && c.id._serialized.includes(currentChatId))
-              );
-
-              if (activeChatModel && activeChatModel.msgs && activeChatModel.msgs.models && activeChatModel.msgs.models.length > 0) {
-                activeChatModel.msgs.models.forEach((m: any, idx: number) => {
-                  const body = m.body || m.caption || m.text || '';
-                  if (!body && !m.isMedia) return;
-                  const sender = m.pushname || m.author || m.from || '+91 School Notice';
-                  let dateStr = '';
-                  let timeStr = '';
-                  if (m.t) {
-                    const d = new Date(m.t * 1000);
-                    dateStr = `${d.getMonth() + 1}/${d.getDate()}/${d.getFullYear()}`;
-                    const hours = d.getHours();
-                    const mins = d.getMinutes().toString().padStart(2, '0');
-                    const ampm = hours >= 12 ? 'PM' : 'AM';
-                    timeStr = `${hours % 12 || 12}:${mins} ${ampm}`;
-                  }
-                  const normKey = body.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
-                  if (normKey && !extractedMessagesMap.has(normKey)) {
-                    extractedMessagesMap.set(normKey, {
-                      id: m.id?._serialized || `store_msg_${idx}`,
-                      sender,
-                      body,
-                      date: dateStr || undefined,
-                      time: timeStr || undefined,
-                      timestamp: (timeStr && dateStr) ? `${timeStr}, ${dateStr}` : (dateStr || timeStr || '')
-                    });
-                  }
-                });
-              }
-            }
-          } catch (storeErr: any) {
-            diagLogs.push({ level: 'INFO', category: 'EXTRACT', message: `[STORE_IDB_HOOK_INFO] Direct storage hook info: ${storeErr.message}` });
-          }
-
-          // 1. Scrape bottom (newest) messages via DOM
-          scrapeCurrentVisibleMessages();
-          diagLogs.push({
-            level: 'INFO',
-            category: 'EXTRACT',
-            message: `[SCROLL_BOTTOM_VIEW] Captured initial ${extractedMessagesMap.size} newest messages at chat bottom.`
-          });
-
-          const existingPointer = chatSyncPointers && currentChatName ? chatSyncPointers[currentChatName] : null;
-          const isFirstRun = !existingPointer;
-          const isManualTrigger = Boolean(isManualSync);
-          const isDeepScan = isManualTrigger || isFirstRun;
-
-          // Check if existing pointer is visible in the initial bottom view (only for automated background runs)
-          let isPointerInInitialView = false;
-          if (!isDeepScan && existingPointer) {
-            for (const m of extractedMessagesMap.values()) {
-              if (
-                (existingPointer.id && m.id && m.id === existingPointer.id) ||
-                (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
-              ) {
-                isPointerInInitialView = true;
-                break;
-              }
-            }
-          }
-
-          if (isPointerInInitialView) {
-            diagLogs.push({
-              level: 'INFO',
-              category: 'CONN',
-              message: `⚡ [FAST_POINTER_MATCH] Pointer checkpoint found in current view for "${currentChatName}". No deep scroll needed.`
-            });
-            showInPageToast(`⚡ Checkpoint found! Synced latest messages on screen for "${currentChatName}". Background sync is active.`, 'success', 4000);
-          } else {
-            if (isDeepScan) {
               diagLogs.push({
                 level: 'INFO',
                 category: 'CONN',
-                message: `🚀 [FULL_TIMELINE_SCAN] Full historical scan in progress for "${currentChatName}". Please keep WhatsApp tab in foreground.`
+                message: `Target chat connected: "${currentChatName}". Scroll container: ${scrollContainer ? scrollContainer.tagName : 'NONE'} (scrollHeight: ${scrollContainer?.scrollHeight || 0}, isManualSync: ${isManualSync})`,
+                meta: { currentChatName, scrollHeight: scrollContainer?.scrollHeight, isManualSync }
               });
-              showInPageToast(`🚀 Full Scan: Scanning full chat history for "${currentChatName}". Please keep this WhatsApp tab open until finished.`, 'info', 10000);
-            } else {
-              diagLogs.push({
-                level: 'WARN',
-                category: 'CONN',
-                message: `⚠️ [CATCH_UP_TRIGGERED] Previous checkpoint not on screen. Catching up... Please keep WhatsApp tab in foreground.`
-              });
-              showInPageToast(`⚠️ WhatsApp Catch-Up: Please keep this WhatsApp tab in the foreground for a moment while catching up on messages.`, 'warn', 10000);
-            }
 
-            // 2. Dynamic Scrolling: scrolls until absolute start of chat or checkpoint is reached
-            let consecutiveNoNewMessageCycles = 0;
-            let sc = 0;
-            let phoneSyncClickCount = 0;
-            let lastPhoneSyncStep = -999;
-            let spinnerCycles = 0;
-            const scanStartTime = Date.now();
-            const MAX_SCAN_DURATION_MS = isDeepScan ? 120000 : 25000;
-            const MAX_SCAN_STEPS = isDeepScan ? 180 : 30;
+              const extractedMessagesMap = new Map<string, any>();
+              const rawAttachmentsList: Array<{ name: string; mimeType: string; base64Content: string }> = [];
 
-            // Reset abort flags for new sync run
-            document.body.removeAttribute('data-mcp-sync-abort');
-            (window as any).__school_mcp_abort_sync = false;
+              const monthNames: Record<string, number> = {
+                january: 1, jan: 1, february: 2, feb: 2, march: 3, mar: 3, april: 4, apr: 4,
+                may: 5, june: 6, jun: 6, july: 7, jul: 7, august: 8, aug: 8,
+                september: 9, sep: 9, sept: 9, october: 10, oct: 10, november: 11, nov: 11, december: 12, dec: 12
+              };
 
-            if (scrollContainer) {
-              while (true) {
-                // Check if user requested immediate sync stop
-                if (document.body.getAttribute('data-mcp-sync-abort') === 'true' || (window as any).__school_mcp_abort_sync) {
-                  diagLogs.push({ level: 'WARN', category: 'CONN', message: `[SYNC_STOPPED] Sync was stopped immediately by user request at step ${sc}.` });
-                  break;
+              const parseDateHeaderString = (rawText: string): string | null => {
+                if (!rawText) return null;
+                const text = rawText.trim().replace(/[\u200E\u200F\u202A-\u202E]/g, '').trim();
+                const lower = text.toLowerCase();
+                const now = new Date();
+
+                if (lower === 'today') {
+                  return `${now.getMonth() + 1}/${now.getDate()}/${now.getFullYear()}`;
+                }
+                if (lower === 'yesterday') {
+                  const y = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+                  return `${y.getMonth() + 1}/${y.getDate()}/${y.getFullYear()}`;
                 }
 
-                // Hard safety bound: prevent runaway executions or Chrome port timeouts
-                if (sc >= MAX_SCAN_STEPS || (Date.now() - scanStartTime > MAX_SCAN_DURATION_MS)) {
-                  diagLogs.push({
-                    level: 'INFO',
-                    category: 'CONN',
-                    message: `[SCAN_WINDOW_COMPLETED step ${sc}] Reached optimal timeline scan window (${extractedMessagesMap.size} messages collected). Proceeding to save and archive.`
-                  });
-                  break;
+                const dayMonthYear = lower.match(/^(\d{1,2})\s+([a-z]+),?\s*(\d{4})?$/);
+                if (dayMonthYear && monthNames[dayMonthYear[2]]) {
+                  const d = parseInt(dayMonthYear[1], 10);
+                  const m = monthNames[dayMonthYear[2]];
+                  const y = dayMonthYear[3] ? parseInt(dayMonthYear[3], 10) : now.getFullYear();
+                  return `${m}/${d}/${y}`;
                 }
 
-                sc++;
-                const countBefore = extractedMessagesMap.size;
-
-                // Auto-dismiss any obstructive popups or media viewer overlays before scrolling
-                dismissWhatsAppModals();
-
-                // Click the exact "Click here to get older messages from your phone" pill banner with Enter key simulation
-                let phoneSyncClicked = false;
-                const allChatElements = document.querySelectorAll('#main div, #main span, #main button, [data-testid="conversation-panel-body"] div, [data-testid="conversation-panel-body"] span, [role="button"]');
-                for (let i = 0; i < allChatElements.length; i++) {
-                  const el = allChatElements[i];
-                  const txt = (el.textContent || '').trim().toLowerCase();
-                  const isPhoneSyncBanner = (
-                    (txt.includes('older messages') || txt.includes('old messages') || txt.includes('load older') || txt.includes('load old') || txt.includes('get older')) &&
-                    txt.length < 120 &&
-                    !txt.includes('starred messages') &&
-                    !txt.includes('disappearing messages') &&
-                    !txt.includes('delete messages')
-                  );
-
-                  if (isPhoneSyncBanner && (sc - lastPhoneSyncStep >= 4) && phoneSyncClickCount < 12) {
-                    try {
-                      const targetEl = (el as HTMLElement);
-                      
-                      // 1. Focus and dispatch genuine Enter key sequence (WhatsApp accessibility model)
-                      try {
-                        targetEl.focus();
-                        const keyEvtInit = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, charCode: 13, bubbles: true, cancelable: true, view: window };
-                        targetEl.dispatchEvent(new KeyboardEvent('keydown', keyEvtInit));
-                        targetEl.dispatchEvent(new KeyboardEvent('keypress', keyEvtInit));
-                        targetEl.dispatchEvent(new KeyboardEvent('keyup', keyEvtInit));
-                        if (targetEl.parentElement) {
-                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keydown', keyEvtInit));
-                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keypress', keyEvtInit));
-                          targetEl.parentElement.dispatchEvent(new KeyboardEvent('keyup', keyEvtInit));
-                        }
-                      } catch (kErr) {}
-
-                      // 2. Direct React Fiber / Props onClick invocation
-                      try {
-                        let curr: any = targetEl;
-                        for (let depth = 0; depth < 3 && curr; depth++) {
-                          const reactPropKey = Object.keys(curr).find(k => k.startsWith('__reactProps$') || k.startsWith('__reactEvents$') || k.startsWith('__reactFiber$'));
-                          if (reactPropKey && curr[reactPropKey]) {
-                            const p = curr[reactPropKey];
-                            if (typeof p.onClick === 'function') p.onClick({ bubbles: true, cancelable: true, defaultPrevented: false });
-                            if (typeof p.onPointerDown === 'function') p.onPointerDown({ bubbles: true, cancelable: true });
-                            if (typeof p.onPointerUp === 'function') p.onPointerUp({ bubbles: true, cancelable: true });
-                          }
-                          curr = curr.parentElement;
-                        }
-                      } catch (rErr) {}
-
-                      // 3. Coordinate-based synthetic pointer & mouse sequence
-                      try {
-                        const rect = targetEl.getBoundingClientRect();
-                        const clientX = rect.left + rect.width / 2;
-                        const clientY = rect.top + rect.height / 2;
-                        const evtInit = { bubbles: true, cancelable: true, view: window, clientX, clientY, screenX: clientX, screenY: clientY };
-                        targetEl.dispatchEvent(new PointerEvent('pointerdown', evtInit));
-                        targetEl.dispatchEvent(new MouseEvent('mousedown', evtInit));
-                        targetEl.dispatchEvent(new PointerEvent('pointerup', evtInit));
-                        targetEl.dispatchEvent(new MouseEvent('mouseup', evtInit));
-                        targetEl.dispatchEvent(new MouseEvent('click', evtInit));
-                        targetEl.click();
-                        if (targetEl.parentElement) targetEl.parentElement.click();
-                      } catch (peErr) {}
-
-                      phoneSyncClickCount++;
-                      lastPhoneSyncStep = sc;
-                      phoneSyncClicked = true;
-                      consecutiveNoNewMessageCycles = 0;
-                      diagLogs.push({ level: 'INFO', category: 'CONN', message: `[PHONE_SYNC #${phoneSyncClickCount}] Triggered phone sync via Enter key & click on step ${sc}. Waiting for phone data...` });
-                      showInPageToast(`📱 Phone Sync (#${phoneSyncClickCount}): Loading older history from your phone...`, 'info', 6000);
-                      await new Promise(resolve => setTimeout(resolve, 2500));
-                      break;
-                    } catch (e) {}
-                  }
+                const monthDayYear = lower.match(/^([a-z]+)\s+(\d{1,2}),?\s*(\d{4})?$/);
+                if (monthDayYear && monthNames[monthDayYear[1]]) {
+                  const m = monthNames[monthDayYear[1]];
+                  const d = parseInt(monthDayYear[2], 10);
+                  const y = monthDayYear[3] ? parseInt(monthDayYear[3], 10) : now.getFullYear();
+                  return `${m}/${d}/${y}`;
                 }
 
-                // Scroll upwards in steps and dispatch synthetic WheelEvent + ScrollEvent on all candidate containers
-                const prevTop = scrollContainer.scrollTop;
-                scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - scrollContainer.clientHeight * 2);
-                
-                // Also scroll top message into view to force virtual scroller update
-                const earliestMsg = document.querySelector('#main div[data-testid="msg-container"], #main div.message-in, #main div.message-out, #main div.copyable-text, #main div[data-id], #main div[role="row"]');
-                if (earliestMsg) {
-                  try {
-                    (earliestMsg as HTMLElement).scrollIntoView({ block: 'start', behavior: 'instant' as any });
-                  } catch (e) {}
-                }
+                const mMatch = text.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})$/);
+                if (mMatch) return text;
+                return null;
+              };
 
-                const wheelEvt = new WheelEvent('wheel', { deltaY: -1200, deltaMode: 0, bubbles: true, cancelable: true, view: window });
-                scrollContainer.dispatchEvent(wheelEvt);
-                if (scrollContainer.parentElement) scrollContainer.parentElement.dispatchEvent(wheelEvt);
-                const mainPanel = document.querySelector('#main') || document.querySelector('[data-testid="conversation-panel-body"]');
-                if (mainPanel) mainPanel.dispatchEvent(wheelEvt);
-
-                scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
-
-                // Check if WhatsApp is showing loading spinner (fetching older messages from IndexedDB/WebSocket)
-                const hasSpinnerInDom = Boolean(
-                  document.querySelector('#main div[role="progressbar"], #main svg[data-icon="spinner"], #main circle, #main div._alzi, #main div[data-testid="spinner"], #main span[data-icon="spinner"]')
+              const scrapeCurrentVisibleMessages = () => {
+                const allChatElements = document.querySelectorAll(
+                  'div[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date, ' +
+                  'div[data-testid="msg-container"], div.message-in, div.message-out, ' +
+                  'div.message, div.bubble, div.Message, .message-content, .bubble-content, ' +
+                  'li[id^="chat-messages-"], div[data-qa="message_container"], [class*="message-bubble"]'
                 );
 
-                let isSpinnerLoading = false;
-                if (hasSpinnerInDom) {
-                  spinnerCycles++;
-                  if (spinnerCycles <= 3) {
-                    isSpinnerLoading = true;
-                    consecutiveNoNewMessageCycles = 0;
-                    diagLogs.push({ level: 'INFO', category: 'CONN', message: `[SPINNER_ACTIVE step ${sc}] WhatsApp is loading older messages (${spinnerCycles}/3)...` });
-                    scrollContainer.scrollTop = 180;
-                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    scrollContainer.scrollTop = 0;
-                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+                let clusterDate = '';
+
+                allChatElements.forEach((el) => {
+                  try {
+                    const htmlEl = el as HTMLElement;
+                    const isDateHeader = htmlEl.matches && (
+                      htmlEl.matches('[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date')
+                      || (htmlEl.textContent && /^(TODAY|YESTERDAY|\d{1,2}\s+[A-Za-z]+\s+\d{4}|[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4})$/i.test(htmlEl.textContent.trim()))
+                    );
+
+                    if (isDateHeader) {
+                      const parsed = parseDateHeaderString(htmlEl.textContent || '');
+                      if (parsed) clusterDate = parsed;
+                      return;
+                    }
+
+                    const isMsgRow = htmlEl.matches && htmlEl.matches(
+                      'div[data-testid="msg-container"], div.message-in, div.message-out, div.message, div.bubble, div.Message, [class*="message-bubble"], li[id^="chat-messages-"]'
+                    );
+                    if (!isMsgRow) return;
+
+                    const row = htmlEl;
+                    const prePlainEl = (row.hasAttribute && row.hasAttribute('data-pre-plain-text'))
+                      ? row
+                      : row.querySelector('div[data-pre-plain-text], [data-pre-plain-text]');
+                    const prePlain = prePlainEl ? prePlainEl.getAttribute('data-pre-plain-text') : null;
+
+                    let sender = 'Teacher/Parent';
+                    let timeStr = '';
+                    let dateStr = clusterDate;
+
+                    if (prePlain) {
+                      const sMatch = prePlain.match(/\]\s*([^:]+):/);
+                      if (sMatch && sMatch[1]) sender = sMatch[1].trim();
+                      const bracketMatch = prePlain.match(/\[([^\]]+)\]/);
+                      if (bracketMatch && bracketMatch[1]) {
+                        const rawInside = bracketMatch[1].trim();
+                        const parts = rawInside.split(',').map(p => p.trim());
+                        if (parts.length >= 2) {
+                          let rawDate = '';
+                          if (parts[0].includes(':')) { timeStr = parts[0]; rawDate = parts[1]; }
+                          else { rawDate = parts[0]; timeStr = parts[1]; }
+                          
+                          const dMatch = rawDate.match(/(\d{1,4})[\/\.\-](\d{1,2})[\/\.\-](\d{2,4})/);
+                          if (dMatch) {
+                            const p1 = parseInt(dMatch[1], 10);
+                            const p2 = parseInt(dMatch[2], 10);
+                            const p3 = parseInt(dMatch[3], 10);
+                            if (p1 > 1000) dateStr = `${p2}/${p3}/${p1}`;
+                            else if (p1 > 12 && p2 <= 12) dateStr = `${p2}/${p1}/${p3 < 100 ? 2000 + p3 : p3}`;
+                            else dateStr = `${p1}/${p2}/${p3 < 100 ? 2000 + p3 : p3}`;
+                          } else {
+                            dateStr = rawDate;
+                          }
+                        }
+                      }
+                      if (dateStr) clusterDate = dateStr;
+                    }
+
+                    if (!timeStr) {
+                      const timeEl = row.querySelector('div[data-testid="msg-meta"] span, span._ak8i, div._amkd span, span[data-testid="msg-time"], .time, span.x1rg5ohu');
+                      if (timeEl && timeEl.textContent) {
+                        const tMatch = timeEl.textContent.match(/\b(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\b/);
+                        if (tMatch) timeStr = tMatch[1].trim();
+                      }
+                    }
+
+                    if (sender === 'Teacher/Parent') {
+                      const authorEl = row.querySelector('span._ak8q, span[data-testid="author"], .message-title, .sender-name');
+                      if (authorEl && authorEl.textContent) {
+                        const candidate = authorEl.textContent.replace(':', '').trim();
+                        if (candidate.length > 0 && candidate.length <= 40 && !candidate.includes('\n')) {
+                          sender = candidate;
+                        }
+                      }
+                    }
+
+                    const textEl = row.querySelector('span.selectable-text, span._ao3e, div.copyable-text span');
+                    let text = textEl ? (textEl.textContent || '').trim() : '';
+                    if (text === sender) text = '';
+
+                    let docTitle = '';
+                    const docCandidates = row.querySelectorAll(
+                      'span[data-testid="document-name"], div[data-testid="document-thumb"] + div span, div[data-testid="document-thumb"] ~ div span, .document-name, a.document-container span, span[title*="."], div[title*="."]'
+                    );
+                    for (let dIdx = 0; dIdx < docCandidates.length; dIdx++) {
+                      const cand = (docCandidates[dIdx].getAttribute('title') || docCandidates[dIdx].textContent || '').trim();
+                      if (cand && !cand.toLowerCase().includes('-icon') && cand.length > 2 && cand.length < 150) {
+                        docTitle = cand;
+                        break;
+                      }
+                    }
+
+                    const captionEl = row.querySelector('span[data-testid="media-caption"], div.image-caption');
+                    const mediaCaption = captionEl ? (captionEl.textContent || '').trim() : '';
+
+                    let fullBody = text;
+                    if (docTitle && !fullBody.includes(docTitle)) {
+                      fullBody = `[Document Attachment: ${docTitle}]\n${fullBody}`.trim();
+                    }
+                    if (mediaCaption && !fullBody.includes(mediaCaption)) {
+                      fullBody = `${fullBody} [Media Caption: ${mediaCaption}]`.trim();
+                    }
+
+                    const imgEl = row.querySelector('img[src^="blob:"], img[src^="data:image"], div[data-testid="image-thumb"] img, div[data-testid="media-canvas"] img, div.image-box img') as HTMLImageElement | null;
+                    if (imgEl && imgEl.src) {
+                      if (!fullBody && !docTitle) {
+                        fullBody = '[Photo/Image Attachment]';
+                      }
+                      try {
+                        const canvas = document.createElement('canvas');
+                        canvas.width = imgEl.naturalWidth || imgEl.width || 400;
+                        canvas.height = imgEl.naturalHeight || imgEl.height || 400;
+                        const ctx = canvas.getContext('2d');
+                        if (ctx && canvas.width > 0 && canvas.height > 0) {
+                          ctx.drawImage(imgEl, 0, 0);
+                          const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+                          const b64 = dataUrl.split(',')[1];
+                          if (b64 && b64.length > 200) {
+                            const photoName = `school_photo_${(clusterDate || dateStr || 'notice').replace(/[\/.\s]/g, '-')}_${Date.now()}.jpeg`;
+                            if (!blobBase64Map.has(imgEl.src)) {
+                              blobBase64Map.set(imgEl.src, {
+                                name: photoName,
+                                mime: 'image/jpeg',
+                                base64: b64
+                              });
+                            }
+                          }
+                        }
+                      } catch (imgErr) {}
+                    }
+
+                    if (!fullBody && !docTitle && !imgEl) return;
+
+                    const isUnloadedPlaceholder = fullBody.toLowerCase().includes("this message couldn't load") || fullBody.toLowerCase().includes("open the message on your phone to view it");
+
+                    if (!isUnloadedPlaceholder) {
+                      const downloadBtns = row.querySelectorAll(
+                        'span[data-icon="download"], div[data-icon="download"], ' +
+                        'button[data-testid="document-download-btn"], button[data-testid="media-download-btn"], ' +
+                        'div[role="button"][title*="Download"], button[title*="Download"], button[aria-label*="Download"], div[role="button"][aria-label*="Download"]'
+                      );
+                      downloadBtns.forEach(btn => {
+                        const hEl = btn as HTMLElement;
+                        if (hEl.getAttribute('data-mcp-clicked') === 'true') return;
+                        hEl.setAttribute('data-mcp-clicked', 'true');
+                        try {
+                          hEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, view: window }));
+                          hEl.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, view: window }));
+                          hEl.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                        } catch (e) {
+                          try { hEl.click(); } catch (err) {}
+                        }
+                      });
+                    }
+
+                    dismissWhatsAppModals();
+
+                    const isDummyAttachmentChip = /^\[(?:Document Attachment|Photo\/Image Attachment|Document|Photo|Image):\s*(?:\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?|star)\]$/i.test(fullBody.trim()) || /^(?:star|forms\.gle)$/i.test(fullBody.trim());
+                    if (isDummyAttachmentChip) return;
+
+                    const normBodyKey = fullBody.replace(/\s+/g, ' ').trim().toLowerCase().substring(0, 100);
+                    if (extractedMessagesMap.has(normBodyKey)) {
+                      const existing = extractedMessagesMap.get(normBodyKey);
+                      if (existing.sender.startsWith('+91') && !sender.startsWith('+91')) {
+                        existing.sender = sender;
+                      }
+                      if (!existing.time && timeStr) {
+                        existing.time = timeStr;
+                        existing.timestamp = `${timeStr}, ${existing.date || dateStr}`;
+                      }
+                      if (!existing.date && dateStr) {
+                        existing.date = dateStr;
+                        existing.timestamp = `${existing.time || timeStr}, ${dateStr}`;
+                      }
+                    } else {
+                      extractedMessagesMap.set(normBodyKey, {
+                        id: `wa_${Date.now()}_${extractedMessagesMap.size}`,
+                        sender,
+                        timestamp: timeStr ? `${timeStr}, ${dateStr}` : (dateStr || ''),
+                        date: dateStr || undefined,
+                        time: timeStr || undefined,
+                        body: fullBody,
+                        documentTitle: docTitle || undefined
+                      });
+                    }
+                  } catch (err) {}
+                });
+              };
+
+              const dismissWhatsAppModals = () => {
+                try {
+                  const viewerContainer = document.querySelector('div[data-testid="media-viewer-modal"], div[data-testid="media-viewer"], div[data-animate-modal-popup="true"]');
+                  if (viewerContainer) {
+                    const closeBtn = viewerContainer.querySelector('span[data-icon="x-viewer"], span[data-icon="x"], span[data-icon="back"], button[aria-label="Close"], div[aria-label="Close"], button, div[role="button"]') as HTMLElement | null;
+                    if (closeBtn) {
+                      try { closeBtn.click(); } catch (e) {}
+                    }
+                    const escKeyInit = { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true, cancelable: true, view: window };
+                    viewerContainer.dispatchEvent(new KeyboardEvent('keydown', escKeyInit));
+                    viewerContainer.dispatchEvent(new KeyboardEvent('keyup', escKeyInit));
                   }
-                } else {
-                  spinnerCycles = 0;
-                }
 
-                // If top reached, bounce scroll position and send Home key to trigger top-edge intersection observers
-                if (scrollContainer.scrollTop === 0) {
-                  try { (scrollContainer as HTMLElement).focus(); } catch (e) {}
-                  scrollContainer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', code: 'Home', keyCode: 36, which: 36, bubbles: true }));
-                  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', keyCode: 33, which: 33, bubbles: true }));
-                  if (prevTop === 0) {
-                    scrollContainer.scrollTop = 350;
-                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                    await new Promise(resolve => setTimeout(resolve, 150));
-                    scrollContainer.scrollTop = 0;
-                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-                    scrollContainer.dispatchEvent(wheelEvt);
-                  }
-                }
-
-                await new Promise(resolve => setTimeout(resolve, (phoneSyncClicked || isSpinnerLoading) ? 1400 : 600));
-                scrapeCurrentVisibleMessages();
-
-                // Auto-dismiss again after scraping
-                dismissWhatsAppModals();
-
-                let checkpointReached = false;
-                // For automated background catch-up runs, check if we reached the existingPointer
-                if (existingPointer) {
-                  for (const m of extractedMessagesMap.values()) {
-                    if (
-                      (existingPointer.id && m.id && m.id === existingPointer.id) ||
-                      (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
-                    ) {
-                      checkpointReached = true;
-                      break;
+                  const dialogEl = document.querySelector('div[role="dialog"], div[role="alertdialog"], [data-testid="popup-contents"], div._ak8k');
+                  if (dialogEl) {
+                    const clickables = dialogEl.querySelectorAll('button, div[role="button"], span');
+                    for (let i = 0; i < clickables.length; i++) {
+                      const el = clickables[i] as HTMLElement;
+                      const t = (el.textContent || '').trim().toUpperCase();
+                      if (t === 'OK' || t === 'DISMISS' || t === 'CLOSE' || t === 'CANCEL') {
+                        el.click();
+                        break;
+                      }
                     }
                   }
-                  if (checkpointReached && !isDeepScan) {
-                    diagLogs.push({
-                      level: 'SUCCESS',
-                      category: 'CONN',
-                      message: `🎯 [CHECKPOINT_REACHED] Reached previous sync pointer at step ${sc}. Catch-up complete!`
-                    });
+                } catch (e) {}
+              };
+
+              // 1. Scrape bottom (newest) messages via DOM
+              scrapeCurrentVisibleMessages();
+              diagLogs.push({
+                level: 'INFO',
+                category: 'EXTRACT',
+                message: `[SCROLL_BOTTOM_VIEW] Captured initial ${extractedMessagesMap.size} messages for "${currentChatName}".`
+              });
+
+              const existingPointer = chatSyncPointers && currentChatName ? chatSyncPointers[currentChatName] : null;
+              const isFirstRun = !existingPointer;
+              const isManualTrigger = Boolean(isManualSync);
+              const isDeepScan = isManualTrigger || isFirstRun;
+
+              let isPointerInInitialView = false;
+              if (!isDeepScan && existingPointer) {
+                for (const m of extractedMessagesMap.values()) {
+                  if (
+                    (existingPointer.id && m.id && m.id === existingPointer.id) ||
+                    (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
+                  ) {
+                    isPointerInInitialView = true;
                     break;
                   }
                 }
+              }
 
-                // Check if absolute group creation / end-to-end encryption system banner is reached
-                const hasTrueTopSystemBanner = Array.from(document.querySelectorAll('div[data-testid="msg-system"], div._ak72, div._ak73, [data-testid="conversation-panel-body"] > div')).some(el => {
-                  const text = (el.textContent || '').toLowerCase();
-                  return text.includes('created group') || text.includes('created this group') || text.includes('end-to-end encrypted') || text.includes('you were added') || text.includes('group created');
+              if (isPointerInInitialView) {
+                diagLogs.push({
+                  level: 'INFO',
+                  category: 'CONN',
+                  message: `⚡ [FAST_POINTER_MATCH] Checkpoint pointer found in current view for "${currentChatName}". No deep scroll needed.`
                 });
+              } else {
+                let consecutiveNoNewMessageCycles = 0;
+                let sc = 0;
+                let phoneSyncClickCount = 0;
+                let lastPhoneSyncStep = -999;
+                let spinnerCycles = 0;
+                const scanStartTime = Date.now();
+                const MAX_SCAN_DURATION_MS = isDeepScan ? 120000 : 25000;
+                const MAX_SCAN_STEPS = isDeepScan ? 180 : 30;
 
-                const countAfter = extractedMessagesMap.size;
-                // If system creation banner is present, 15 settle cycles confirm top; if not yet reached, allow up to 35 settle cycles to fetch older months (June, May, etc.)
-                const requiredSettleCycles = hasTrueTopSystemBanner ? 15 : 35;
+                document.body.removeAttribute('data-mcp-sync-abort');
+                (window as any).__school_mcp_abort_sync = false;
 
-                if (countAfter === countBefore && scrollContainer.scrollTop === 0 && !isSpinnerLoading) {
-                  consecutiveNoNewMessageCycles++;
-                  if (consecutiveNoNewMessageCycles === 15 && !hasTrueTopSystemBanner) {
-                    diagLogs.push({
-                      level: 'INFO',
-                      category: 'CONN',
-                      message: `[PULLING_OLDER_MONTHS step ${sc}] Reached top of current cache. Finalizing full history capture...`
-                    });
+                if (scrollContainer) {
+                  while (true) {
+                    if (document.body.getAttribute('data-mcp-sync-abort') === 'true' || (window as any).__school_mcp_abort_sync) {
+                      break;
+                    }
+                    if (sc >= MAX_SCAN_STEPS || (Date.now() - scanStartTime > MAX_SCAN_DURATION_MS)) {
+                      break;
+                    }
+
+                    sc++;
+                    const countBefore = extractedMessagesMap.size;
+                    dismissWhatsAppModals();
+
+                    const prevTop = scrollContainer.scrollTop;
+                    scrollContainer.scrollTop = Math.max(0, scrollContainer.scrollTop - scrollContainer.clientHeight * 2);
+                    
+                    const earliestMsg = document.querySelector('#main div[data-testid="msg-container"], #main div.message-in, #main div.message-out, #main div.copyable-text, #main div[data-id], #main div[role="row"]');
+                    if (earliestMsg) {
+                      try { (earliestMsg as HTMLElement).scrollIntoView({ block: 'start', behavior: 'instant' as any }); } catch (e) {}
+                    }
+
+                    const wheelEvt = new WheelEvent('wheel', { deltaY: -1200, deltaMode: 0, bubbles: true, cancelable: true, view: window });
+                    scrollContainer.dispatchEvent(wheelEvt);
+                    scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
+
+                    await new Promise(resolve => setTimeout(resolve, 600));
+                    scrapeCurrentVisibleMessages();
+                    dismissWhatsAppModals();
+
+                    let checkpointReached = false;
+                    if (existingPointer) {
+                      for (const m of extractedMessagesMap.values()) {
+                        if (
+                          (existingPointer.id && m.id && m.id === existingPointer.id) ||
+                          (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
+                        ) {
+                          checkpointReached = true;
+                          break;
+                        }
+                      }
+                      if (checkpointReached && !isDeepScan) {
+                        break;
+                      }
+                    }
+
+                    const countAfter = extractedMessagesMap.size;
+                    if (countAfter === countBefore && scrollContainer.scrollTop === 0) {
+                      consecutiveNoNewMessageCycles++;
+                      if (consecutiveNoNewMessageCycles >= (isDeepScan ? 25 : 8)) {
+                        break;
+                      }
+                    } else {
+                      consecutiveNoNewMessageCycles = 0;
+                    }
                   }
-                  if (consecutiveNoNewMessageCycles >= requiredSettleCycles) {
-                    diagLogs.push({
-                      level: 'SUCCESS',
-                      category: 'CONN',
-                      message: `[TRUE_TOP_REACHED] Conclusively reached the absolute start of conversation at step ${sc} (Group creation banner verified: ${hasTrueTopSystemBanner}). Total accumulated: ${extractedMessagesMap.size} messages.`
-                    });
-                    break; // Absolute physical start of conversation reached
-                  }
-                } else {
-                  consecutiveNoNewMessageCycles = 0;
-                }
-
-                if (sc % 5 === 0 || sc === 1) {
-                  diagLogs.push({
-                    level: 'INFO',
-                    category: 'CONN',
-                    message: `[TIMELINE_SCROLL step ${sc}] Collected: ${extractedMessagesMap.size} msgs | Top: ${scrollContainer.scrollTop}px | Settle: ${consecutiveNoNewMessageCycles}/${requiredSettleCycles} | PhoneSyncs: ${phoneSyncClickCount}`
-                  });
                 }
               }
-            }
-          }
 
-          const hasTrueTop = Array.from(document.querySelectorAll('div[data-testid="msg-system"], div._ak72, div._ak73, [data-testid="conversation-panel-body"] > div')).some(el => {
-            const text = (el.textContent || '').toLowerCase();
-            return text.includes('created group') || text.includes('created this group') || text.includes('end-to-end encrypted') || text.includes('you were added') || text.includes('group created');
-          });
-
-          // Check if previous checkpoint was missed due to extended offline period
-          let hasGap = false;
-          let gapDetails: any = null;
-          if (existingPointer && !hasTrueTop) {
-            let foundPoint = false;
-            for (const m of extractedMessagesMap.values()) {
-              if (
-                (existingPointer.id && m.id && m.id === existingPointer.id) ||
-                (existingPointer.body && m.body && m.body.trim() === existingPointer.body.trim() && m.sender === existingPointer.sender)
-              ) {
-                foundPoint = true;
-                break;
-              }
-            }
-            if (!foundPoint) {
-              hasGap = true;
-              gapDetails = {
-                lastCheckpointDate: existingPointer.date || '',
-                lastCheckpointTime: existingPointer.time || '',
-                lastCheckpointSender: existingPointer.sender || ''
-              };
-              diagLogs.push({
-                level: 'WARN',
-                category: 'CONN',
-                message: `⚠️ [TIMELINE_GAP_DETECTED] WhatsApp Web could not scroll back far enough to meet the previous checkpoint from ${existingPointer.date || 'earlier'}. A WhatsApp export is recommended to fill this gap.`,
-                meta: gapDetails
-              });
-            }
-          }
-
-          // 3. Reposition viewport back down to the bottom on latest message
-          if (scrollContainer) {
-            try {
-              const scrollDownBtn = document.querySelector('button[aria-label="Scroll to bottom"], span[data-icon="ic-chevron-down-wide"]') as HTMLElement | null;
-              if (scrollDownBtn) {
+              // Reposition viewport back down to bottom
+              if (scrollContainer) {
                 try {
-                  const btnTarget = (scrollDownBtn.closest('button') || scrollDownBtn) as HTMLElement;
-                  btnTarget.click();
+                  const scrollDownBtn = document.querySelector('button[aria-label="Scroll to bottom"], span[data-icon="ic-chevron-down-wide"]') as HTMLElement | null;
+                  if (scrollDownBtn) {
+                    try { ((scrollDownBtn.closest('button') || scrollDownBtn) as HTMLElement).click(); } catch (e) {}
+                  }
+                  scrollContainer.scrollTop = scrollContainer.scrollHeight;
+                  scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
                 } catch (e) {}
               }
-              scrollContainer.scrollTop = scrollContainer.scrollHeight;
-              scrollContainer.dispatchEvent(new Event('scroll', { bubbles: true }));
-              await new Promise(resolve => setTimeout(resolve, 300));
-              const allMsgs = document.querySelectorAll('#main div[data-testid="msg-container"], #main div.message-in, #main div.message-out');
-              if (allMsgs.length > 0) {
-                const lastMsgEl = allMsgs[allMsgs.length - 1] as HTMLElement;
-                lastMsgEl.scrollIntoView({ block: 'end', behavior: 'instant' as any });
-              }
-              await new Promise(resolve => setTimeout(resolve, 400));
-            } catch (e) {}
-          }
 
-          const finalScrollHeight = scrollContainer ? scrollContainer.scrollHeight : 0;
-          await new Promise(resolve => setTimeout(resolve, 800));
-
-          // 3. Collect intercepted binary attachments from both local blobBase64Map and window.__school_mcp_captured_blobs
-          blobBase64Map.forEach((val) => {
-            if (val.base64 && val.base64.length > 50 && !rawAttachmentsList.some(a => a.base64Content === val.base64)) {
-              rawAttachmentsList.push({
-                name: val.name || 'school_document.pdf',
-                mimeType: val.mime || 'application/pdf',
-                base64Content: val.base64
+              blobBase64Map.forEach((val) => {
+                if (val.base64 && val.base64.length > 50 && !rawAttachmentsList.some(a => a.base64Content === val.base64)) {
+                  rawAttachmentsList.push({
+                    name: val.name || 'school_document.pdf',
+                    mimeType: val.mime || 'application/pdf',
+                    base64Content: val.base64
+                  });
+                }
               });
+
+              const accumulatedMessages = Array.from(extractedMessagesMap.values());
+              const combinedChatText = accumulatedMessages.map(m => {
+                const timePart = m.time ? m.time : '';
+                const datePart = m.date ? m.date : '';
+                const header = (timePart && datePart) ? `[${timePart}, ${datePart}]` : (timePart ? `[${timePart}]` : (datePart ? `[${datePart}]` : ''));
+                return `${header ? header + ' ' : ''}${m.sender}:\n${m.body}`;
+              }).join('\n\n');
+
+              const latestMsg = accumulatedMessages.length > 0 ? accumulatedMessages[accumulatedMessages.length - 1] : null;
+              const lastMessagePointer = latestMsg ? {
+                id: latestMsg.id || null,
+                sender: latestMsg.sender || '',
+                body: (latestMsg.body || '').substring(0, 300),
+                time: latestMsg.time || '',
+                date: latestMsg.date || ''
+              } : null;
+
+              return {
+                success: true,
+                chatName: currentChatName,
+                rawChatText: combinedChatText,
+                rawAttachments: rawAttachmentsList,
+                messages: accumulatedMessages,
+                diagLogs,
+                filteredOut: false,
+                lastMessagePointer
+              };
+            } finally {
+              URL.createObjectURL = origCreateObjectURL;
+              URL.revokeObjectURL = origRevokeObjectURL;
+              HTMLAnchorElement.prototype.click = origAnchorClick;
+              window.open = origOpen;
+              document.createElement = origCreateElement;
+            }
             }
           });
 
-          if ((window as any).__school_mcp_captured_blobs && (window as any).__school_mcp_captured_blobs instanceof Map) {
-            (window as any).__school_mcp_captured_blobs.forEach((val: any) => {
-              if (val && val.base64 && val.base64.length > 50 && !rawAttachmentsList.some(a => a.base64Content === val.base64)) {
-                rawAttachmentsList.push({
-                  name: val.name || 'school_document.pdf',
-                  mimeType: val.mime || 'application/pdf',
-                  base64Content: val.base64
-                });
+          const extraction: any = results && results[0]?.result;
+          if (!extraction) continue;
+
+          if (extraction.diagLogs && Array.isArray(extraction.diagLogs)) {
+            for (const dl of extraction.diagLogs) {
+              await WhatsAppDiagnosticLogger.log(dl.level, dl.category, dl.message, dl.meta);
+            }
+          }
+
+          if (extraction.filteredOut || !extraction.success || !extraction.chatName || extraction.chatName === 'Active School Chat') {
+            continue;
+          }
+
+          let matchedProfile: ChildProfile | null | undefined = allProfiles.find(p => p.trackedChats && p.trackedChats.some((tc: any) => tc.title === extraction.chatName || tc.id === extraction.chatName || tc.title === specificTargetName));
+          if (!matchedProfile) matchedProfile = activeProfile;
+          const childName = matchedProfile ? matchedProfile.name : 'Atharva';
+
+          // Group Rename Handling: If group was renamed, rename Drive folder, update tracked chats, and migrate pointers
+          if (specificTargetName && extraction.chatName && extraction.chatName.toLowerCase() !== specificTargetName.toLowerCase()) {
+            await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🔄 [GROUP_RENAME_DETECTED] Group "${specificTargetName}" was renamed to "${extraction.chatName}". Auto-updating tracked configuration, pointers, and Drive folders.`);
+            try {
+              if (state.personal_drive_connected && state.personal_drive_auth_token) {
+                await PersonalDriveService.renameGroupFolderOnDrive(state.personal_drive_auth_token, childName, specificTargetName, extraction.chatName);
               }
-            });
+
+              const curr = await chrome.storage.local.get(['tracked_whatsapp_chats', 'chat_sync_pointers']);
+              let list: any[] = curr.tracked_whatsapp_chats || [];
+              list = list.map(c => {
+                if (c.title.toLowerCase() === specificTargetName.toLowerCase() || (targetItem.id && c.id === targetItem.id)) {
+                  return { ...c, title: extraction.chatName };
+                }
+                return c;
+              });
+              await chrome.storage.local.set({ tracked_whatsapp_chats: list });
+              if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: list });
+
+              const ptrs = curr.chat_sync_pointers || {};
+              if (ptrs[specificTargetName] && !ptrs[extraction.chatName]) {
+                ptrs[extraction.chatName] = ptrs[specificTargetName];
+                delete ptrs[specificTargetName];
+                await chrome.storage.local.set({ chat_sync_pointers: ptrs });
+              }
+            } catch (renameErr) {}
           }
 
-          const accumulatedMessages = Array.from(extractedMessagesMap.values());
+          processedChatNames.push(extraction.chatName);
 
-          diagLogs.push({
-            level: 'INFO',
-            category: 'EXTRACT',
-            message: `[FULL_HISTORY_DISCOVERY] Accumulated ${accumulatedMessages.length} total messages & ${rawAttachmentsList.length} attachments across full conversation history.`,
-            meta: { totalMessages: accumulatedMessages.length, attachmentsCaptured: rawAttachmentsList.length }
-          });
-
-          // Build unified rawChatText from accumulated messages without hardcoded fallback timestamps
-          const combinedChatText = accumulatedMessages.map(m => {
-            const timePart = m.time ? m.time : '';
-            const datePart = m.date ? m.date : '';
-            const header = (timePart && datePart) ? `[${timePart}, ${datePart}]` : (timePart ? `[${timePart}]` : (datePart ? `[${datePart}]` : ''));
-            return `${header ? header + ' ' : ''}${m.sender}:\n${m.body}`;
-          }).join('\n\n');
-
-          const latestMsg = accumulatedMessages.length > 0 ? accumulatedMessages[accumulatedMessages.length - 1] : null;
-          const lastMessagePointer = latestMsg ? {
-            id: latestMsg.id || null,
-            sender: latestMsg.sender || '',
-            body: (latestMsg.body || '').substring(0, 300),
-            time: latestMsg.time || '',
-            date: latestMsg.date || ''
-          } : null;
-
-          showInPageToast(`🎉 Sync complete for "${currentChatName}"! Checkpoint pointer saved at latest message.`, 'success', 4500);
-
-          return {
-            success: true,
-            chatName: currentChatName,
-            rawChatText: combinedChatText,
-            rawAttachments: rawAttachmentsList,
-            messages: accumulatedMessages,
-            diagLogs,
-            filteredOut: false,
-            lastMessagePointer,
-            hasGap,
-            gapDetails
-          };
-        } finally {
-          URL.createObjectURL = origCreateObjectURL;
-          URL.revokeObjectURL = origRevokeObjectURL;
-          HTMLAnchorElement.prototype.click = origAnchorClick;
-          window.open = origOpen;
-          document.createElement = origCreateElement;
-        }
-        }
-      });
-
-      const extraction: any = results && results[0]?.result;
-      if (!extraction) {
-        throw new Error('Could not execute extraction script on active chat tab. Please ensure WhatsApp Web or Telegram Web is open and active.');
-      }
-
-      // Flush detailed extraction diagnostic logs FIRST
-      if (extraction.diagLogs && Array.isArray(extraction.diagLogs)) {
-        for (const dl of extraction.diagLogs) {
-          await WhatsAppDiagnosticLogger.log(dl.level, dl.category, dl.message, dl.meta);
-        }
-      }
-
-      if (extraction.error || extraction.success === false) {
-        throw new Error(extraction.error || 'AI Extraction failed on active tab.');
-      }
-
-      const allProfiles = await ChildManager.getProfiles(false);
-      let matchedProfile: ChildProfile | null | undefined = allProfiles.find(p => p.trackedChats && p.trackedChats.some((tc: any) => tc.title === extraction.chatName || tc.id === extraction.chatName));
-      if (!matchedProfile) {
-        matchedProfile = await ChildManager.getActiveProfile();
-      }
-      const childName = matchedProfile ? matchedProfile.name : 'Atharva';
-
-      // =========================================================================
-      // EXTENSION-CONTEXT AI INFERENCE (Runs safely in extension service worker)
-      // =========================================================================
-      let extractedMessages: any[] = [];
-      if (extraction.rawChatText && extraction.rawChatText.length > 0) {
-        await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `🤖 Normalizing ${extraction.rawChatText.length} chars of chat text via Extension LanguageModel...`, {
-          textLength: extraction.rawChatText.length,
-          chatName: extraction.chatName
-        });
-
-        try {
-          extractedMessages = await AiNormalizerService.normalizeRawChatText(
-            extraction.rawChatText,
-            extraction.chatName || 'School Chat',
-            childName
-          );
-          await chrome.storage.local.set({ latest_extracted_messages: extractedMessages });
-
-          await WhatsAppDiagnosticLogger.log('SUCCESS', 'EXTRACT', `🎉 [AI EXTRACTION SUCCESS] Successfully parsed ${extractedMessages.length} structured notices for ${childName}!`, {
-            totalMessages: extractedMessages.length
-          });
-        } catch (normErr: any) {
-          await WhatsAppDiagnosticLogger.log('ERROR', 'EXTRACT', `Extension AI Normalizer Error: ${normErr?.message || String(normErr)}`, {
-            error: String(normErr)
-          });
-          throw normErr;
-        }
-      }
-
-      // Collect all exact document titles referenced in message bodies
-      const docTitlesFromMessages: string[] = [];
-      for (const m of extractedMessages) {
-        if (m.documentTitle && !docTitlesFromMessages.includes(m.documentTitle)) {
-          docTitlesFromMessages.push(m.documentTitle.replace(/^View\s*["']?|["']$/gi, '').trim());
-        }
-        if (m.body) {
-          const docMatch = m.body.match(/\[Document Attachment:\s*(?:View|Download)?\s*["']?([^"'\n\]]+)["']?\]/i);
-          if (docMatch && docMatch[1]) {
-            const cleanT = docMatch[1].replace(/^View\s*["']?|["']$/gi, '').trim();
-            if (cleanT && !docTitlesFromMessages.includes(cleanT)) {
-              docTitlesFromMessages.push(cleanT);
+          let extractedMessages: any[] = [];
+          if (extraction.rawChatText && extraction.rawChatText.length > 0) {
+            try {
+              extractedMessages = await AiNormalizerService.normalizeRawChatText(
+                extraction.rawChatText,
+                extraction.chatName,
+                childName
+              );
+            } catch (normErr: any) {
+              await WhatsAppDiagnosticLogger.log('ERROR', 'EXTRACT', `Extension AI Normalizer Error for ${extraction.chatName}: ${normErr?.message || String(normErr)}`);
             }
           }
-        }
-      }
 
-      // Process attachments and upload directly to Personal Google Drive
-      let uploadCount = 0;
-      let docTitleIdx = 0;
-      const combinedAttachments = [...(extraction.rawAttachments || [])];
-      for (const m of extractedMessages) {
-        if (m.rawAttachment && m.rawAttachment.base64Content) {
-          combinedAttachments.push(m.rawAttachment);
-          delete m.rawAttachment;
-        }
-      }
+          // Document titles for mapping attachments
+          const docTitlesFromMessages: string[] = [];
+          for (const m of extractedMessages) {
+            if (m.documentTitle && !docTitlesFromMessages.includes(m.documentTitle)) {
+              docTitlesFromMessages.push(m.documentTitle.replace(/^View\s*["']?|["']$/gi, '').trim());
+            }
+            if (m.body) {
+              const docMatch = m.body.match(/\[Document Attachment:\s*(?:View|Download)?\s*["']?([^"'\n\]]+)["']?\]/i);
+              if (docMatch && docMatch[1]) {
+                const cleanT = docMatch[1].replace(/^View\s*["']?|["']$/gi, '').trim();
+                if (cleanT && !docTitlesFromMessages.includes(cleanT)) docTitlesFromMessages.push(cleanT);
+              }
+            }
+          }
 
-      for (const att of combinedAttachments) {
-        if (att && att.base64Content) {
+          let uploadCount = 0;
+          let docTitleIdx = 0;
+          const combinedAttachments = [...(extraction.rawAttachments || [])];
+          for (const m of extractedMessages) {
+            if (m.rawAttachment && m.rawAttachment.base64Content) {
+              combinedAttachments.push(m.rawAttachment);
+              delete m.rawAttachment;
+            }
+          }
+
+          for (const att of combinedAttachments) {
+            if (att && att.base64Content) {
+              try {
+                if ((!att.name || att.name.toLowerCase().includes('school_document')) && docTitleIdx < docTitlesFromMessages.length) {
+                  att.name = docTitlesFromMessages[docTitleIdx++];
+                }
+                if (!att.name || att.name === 'school_document.pdf') {
+                  att.name = `school_document_${Date.now()}.pdf`;
+                }
+
+                const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, att, childName, extraction.chatName);
+                if (uploadRes) {
+                  uploadCount++;
+                  totalAttachmentsUploaded++;
+                  const coreFileName = uploadRes.name.replace(/^[A-Za-z0-9]+_/, '').replace(/\s*\(v\d+\)/, '').trim().toLowerCase();
+                  const matchedMsg = extractedMessages.find(m => m.body && m.body.toLowerCase().includes(coreFileName));
+                  if (matchedMsg) {
+                    matchedMsg.driveAttachmentUrl = uploadRes.webViewLink;
+                    matchedMsg.driveFileName = uploadRes.name;
+                  }
+                }
+              } catch (uploadErr: any) {}
+            }
+          }
+
+          let personalDriveResult: any = null;
+          if (state.personal_drive_connected && state.personal_drive_auth_token && extractedMessages.length > 0) {
+            try {
+              if (await SyncLifecycleManager.isAborted(extraction.chatName)) break;
+              personalDriveResult = await PersonalDriveService.saveSingleGroupTransaction(state.personal_drive_auth_token, childName, extraction.chatName, extractedMessages);
+              totalNewNoticesAcrossAllTargets += (personalDriveResult?.saved || 0);
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Archived ${personalDriveResult.saved} new notices for ${extraction.chatName} (Group Total: ${personalDriveResult.groupTotal}, Master Total: ${personalDriveResult.total}) on Google Drive.`);
+            } catch (pdErr: any) {
+              await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `Failed to save ${extraction.chatName} to Personal Drive: ${pdErr.message}`);
+            }
+          }
+
+          // 2. Also mirror to Apps Script MCP Server endpoint so Gemini Spark has instant live access
+          const gasUrl = state.mcp_gas_url || activeProfile?.gasDeploymentUrl;
+          if (gasUrl && extractedMessages.length > 0) {
+            try {
+              const urlWithKey = gasUrl.includes('accessKey=') ? gasUrl : (gasUrl + (gasUrl.includes('?') ? '&' : '?') + 'accessKey=' + (state.access_key || ''));
+              await fetch(urlWithKey, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'archive_whatsapp_messages',
+                  params: { messages: extractedMessages, childName },
+                  id: 'wa-archive-sync'
+                })
+              });
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `⚡ Mirrored ${extractedMessages.length} notices to Apps Script MCP Server for Gemini Spark.`);
+            } catch (gasErr: any) {
+              console.warn('Failed to mirror to GAS MCP Server:', gasErr);
+            }
+          }
+
+          // Save / Update Checkpoint Pointer strictly for the real group name
+          if (extraction.chatName && extraction.chatName !== 'Active School Chat') {
+            const stored = await chrome.storage.local.get(['chat_sync_pointers']);
+            const currentPointers = stored.chat_sync_pointers || {};
+            // Clean up any stale dummy keys
+            delete currentPointers['Active School Chat'];
+            delete currentPointers['General'];
+
+            const latestMsg = (extractedMessages && extractedMessages.length > 0) ? extractedMessages[extractedMessages.length - 1] : extraction.lastMessagePointer;
+            currentPointers[extraction.chatName] = {
+              id: latestMsg?.id || null,
+              sender: latestMsg?.sender || '',
+              body: (latestMsg?.body || '').substring(0, 300),
+              time: latestMsg?.time || '',
+              date: latestMsg?.date || '',
+              lastSyncedAt: new Date().toISOString(),
+              totalNotices: personalDriveResult?.total || extractedMessages.length,
+              hasGap: extraction.hasGap || false,
+              gapDetails: extraction.gapDetails || null
+            };
+            await chrome.storage.local.set({ chat_sync_pointers: currentPointers });
+            await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}". Total notices: ${currentPointers[extraction.chatName].totalNotices}`);
+          }
+
+          lastResults.push({
+            chatName: extraction.chatName,
+            messageCount: extractedMessages.length,
+            personalDriveResult
+          });
+        }
+
+        // Auto-sync full archive to Apps Script MCP Server so all historical & latest notices are 100% available in Spark
+        const gasSyncUrl = state.mcp_gas_url || activeProfile?.gasDeploymentUrl;
+        const activeChildName = activeProfile?.name || 'Atharva';
+        if (gasSyncUrl && state.personal_drive_connected) {
           try {
-            // If attachment has generic name, map to the next known document title from the chat
-            if ((!att.name || att.name.toLowerCase().includes('school_document')) && docTitleIdx < docTitlesFromMessages.length) {
-              att.name = docTitlesFromMessages[docTitleIdx++];
-            }
-            if (!att.name || att.name === 'school_document.pdf') {
-              att.name = `school_document_${Date.now()}.pdf`;
-            }
-
-            await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[ATTACHMENT_UPLOAD] Uploading "${att.name}" (${att.base64Content.length} bytes) to Personal Drive for ${childName} (${extraction.chatName})...`);
-            const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, att, childName, extraction.chatName);
-            if (uploadRes) {
-              uploadCount++;
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [ATTACHMENT_UPLOAD_SUCCESS] Uploaded "${uploadRes.name}" to Drive: ${uploadRes.webViewLink}`, {
-                childName,
-                fileName: uploadRes.name,
-                driveUrl: uploadRes.webViewLink
+            const allArchiveMessages = await PersonalDriveService.loadAllMessagesFromPersonalDrive(state.personal_drive_auth_token, activeChildName);
+            if (allArchiveMessages && allArchiveMessages.length > 0) {
+              const urlWithKey = gasSyncUrl.includes('accessKey=') ? gasSyncUrl : (gasSyncUrl + (gasSyncUrl.includes('?') ? '&' : '?') + 'accessKey=' + (state.access_key || ''));
+              await fetch(urlWithKey, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  jsonrpc: '2.0',
+                  method: 'archive_whatsapp_messages',
+                  params: { messages: allArchiveMessages, childName: activeChildName },
+                  id: 'wa-full-archive-sync'
+                })
               });
-
-              // Link uploaded Drive URL strictly to the exact matching notice
-              const coreFileName = uploadRes.name.replace(/^[A-Za-z0-9]+_/, '').replace(/\s*\(v\d+\)/, '').trim().toLowerCase();
-              const matchedMsg = extractedMessages.find(m => {
-                if (!m.body) return false;
-                const lowerBody = m.body.toLowerCase();
-                return lowerBody.includes(coreFileName) && !m.driveAttachmentUrl;
-              }) || extractedMessages.find(m => m.body && m.body.toLowerCase().includes(coreFileName));
-
-              if (matchedMsg) {
-                matchedMsg.driveAttachmentUrl = uploadRes.webViewLink;
-                matchedMsg.driveFileName = uploadRes.name;
-                await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[ATTACHMENT_LINK] Linked "${uploadRes.name}" to Notice: [${matchedMsg.date}, ${matchedMsg.time}] ${matchedMsg.sender}`);
-              }
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `⚡ Populated full master archive (${allArchiveMessages.length} notices) into Apps Script MCP Server.`);
             }
-          } catch (uploadErr: any) {
-            await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `Failed to upload attachment "${att.name}": ${uploadErr.message}`, {
-              fileName: att.name,
-              error: uploadErr.message
-            });
+          } catch (gasErr: any) {
+            console.warn('Failed to mirror full archive to GAS:', gasErr);
           }
         }
-      }
 
-      await WhatsAppDiagnosticLogger.log('INFO', 'EXTRACT', `Extracted ${extractedMessages.length} messages (${uploadCount} attachments uploaded) from "${extraction.chatName}" for ${childName}`, {
-        childName,
-        chatName: extraction.chatName,
-        messageCount: extractedMessages.length,
-        attachmentsUploaded: uploadCount
-      });
+        const totalDurationSec = ((Date.now() - now) / 1000).toFixed(1);
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'CONN', `🏁 [SYNC_COMPLETE] Finished sync cycle in ${totalDurationSec}s across [${processedChatNames.join(', ') || '0 chats'}]. New notices saved: ${totalNewNoticesAcrossAllTargets}, Attachments uploaded: ${totalAttachmentsUploaded}.`);
 
-      // 1. Save to Parent's Personal Google Drive (Isolated from school account)
-      let personalDriveResult: any = null;
-      if (state.personal_drive_connected && state.personal_drive_auth_token && extractedMessages.length > 0) {
-        try {
-          personalDriveResult = await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, extractedMessages, childName);
-          await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Archived ${personalDriveResult.saved} new messages into Personal Google Drive for ${childName}`, {
-            childName,
-            account: state.personal_drive_account_email,
-            saved: personalDriveResult.saved,
-            totalArchived: personalDriveResult.total
-          });
-        } catch (pdErr: any) {
-          await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `Failed to save to Personal Drive: ${pdErr.message}`, { error: pdErr.message });
-        }
-      }
-
-      // 2. Also mirror to Apps Script MCP Server endpoint if provisioned
-      let driveSaveResult: any = null;
-      if (state.mcp_gas_url && extractedMessages.length > 0) {
-        try {
-          const gasRes = await fetch(state.mcp_gas_url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              jsonrpc: '2.0',
-              method: 'archive_whatsapp_messages',
-              params: { messages: extractedMessages },
-              id: 'wa-archive-sync'
-            })
-          });
-          if (gasRes.ok) {
-            const gasData = await gasRes.json();
-            driveSaveResult = gasData.result;
-          }
-        } catch (gasErr) {}
-      }
-
-      // 3. Save / Update Checkpoint Pointer for this group
-      if (extraction.chatName) {
-        const stored = await chrome.storage.local.get(['chat_sync_pointers']);
-        const currentPointers = stored.chat_sync_pointers || {};
-        const latestMsg = (extractedMessages && extractedMessages.length > 0) ? extractedMessages[extractedMessages.length - 1] : extraction.lastMessagePointer;
-        currentPointers[extraction.chatName] = {
-          id: latestMsg?.id || null,
-          sender: latestMsg?.sender || '',
-          body: (latestMsg?.body || '').substring(0, 300),
-          time: latestMsg?.time || '',
-          date: latestMsg?.date || '',
-          lastSyncedAt: new Date().toISOString(),
-          totalNotices: personalDriveResult?.total || extractedMessages.length,
-          hasGap: extraction.hasGap || false,
-          gapDetails: extraction.gapDetails || null
+        return {
+          success: true,
+          processedChats: processedChatNames,
+          totalNewNotices: totalNewNoticesAcrossAllTargets,
+          totalAttachmentsUploaded,
+          results: lastResults
         };
-        await chrome.storage.local.set({ chat_sync_pointers: currentPointers });
-        await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `📍 [POINTER_SAVED] Pointer checkpoint saved for "${extraction.chatName}". Gap status: ${extraction.hasGap ? 'GAP_DETECTED' : 'CLEAN'}`);
+      } finally {
+        isSyncInProgress = false;
+        syncInProgressSince = 0;
+        await SyncLifecycleManager.releaseSyncLock();
       }
-
-      const totalDurationSec = ((Date.now() - now) / 1000).toFixed(1);
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'CONN', `🏁 [SYNC_COMPLETE] Finished sync for "${extraction.chatName}" in ${totalDurationSec}s. Notices: ${extractedMessages.length}, Attachments Uploaded: ${uploadCount}, Child Profile: "${childName}".`);
-
-      return {
-        chatName: extraction.chatName,
-        messageCount: extractedMessages.length,
-        messages: extractedMessages,
-        personalDriveSaved: !!personalDriveResult,
-        personalDriveResult,
-        driveSaved: !!driveSaveResult,
-        lastMessagePointer: extraction.lastMessagePointer
-      };
-    } finally {
-      isSyncInProgress = false;
-      syncInProgressSince = 0;
     }
-  }
 
     case 'EXTRACT_ACTIVE_WEB_TAB': {
       const state = await chrome.storage.local.get(null);
@@ -2420,6 +2233,12 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
     chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === 'BACKGROUND_PASSIVE_SCANNER') {
         try {
+          // Pre-flight check: exit immediately if ingestion is active, another sync is running, or 0 groups tracked
+          const canRun = await SyncLifecycleManager.canRunBackgroundSync(false);
+          if (!canRun.allowed) {
+            return;
+          }
+
           const waTabs = await chrome.tabs.query({ url: '*://web.whatsapp.com/*' });
           for (const tab of waTabs) {
             if (tab.id && !tab.pinned) {

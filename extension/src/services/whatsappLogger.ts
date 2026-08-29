@@ -34,6 +34,9 @@ export class WhatsAppDiagnosticLogger {
     };
 
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        return;
+      }
       const data = await chrome.storage.local.get([this.STORAGE_KEY]);
       const logs: WhatsAppLogEntry[] = data[this.STORAGE_KEY] || [];
       logs.unshift(entry);

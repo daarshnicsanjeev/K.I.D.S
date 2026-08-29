@@ -2,6 +2,7 @@ import { ChildManager } from './childManager';
 import { WhatsAppDiagnosticLogger } from './whatsappLogger';
 import { WhatsAppExportParser, ParsedWhatsAppExport } from './whatsAppExportParser';
 import { AiNormalizerService } from './aiNormalizer';
+import { SyncLifecycleManager } from './syncLifecycleManager';
 
 export interface PersonalDriveFolderInfo {
   isCreated: boolean;
@@ -392,6 +393,37 @@ export class PersonalDriveService {
   }
 
   /**
+   * Loads all messages from [ChildName]_whatsapp_school_archive.json in Google Drive.
+   */
+  public static async loadAllMessagesFromPersonalDrive(
+    token?: string,
+    childName?: string
+  ): Promise<any[]> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const resolvedChild = await this.resolveChildName(childName);
+      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+      const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
+
+      const q = encodeURIComponent(`name = '${archiveFileName}' and '${folder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
+
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        if (searchData.files && searchData.files.length > 0) {
+          const fileId = searchData.files[0].id;
+          const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
+          if (downloadRes.ok) {
+            const data = await downloadRes.json();
+            return Array.isArray(data) ? data : [];
+          }
+        }
+      }
+    } catch (e) {}
+    return [];
+  }
+
+  /**
    * Saves messages to [ChildName]_whatsapp_school_archive.json in the child's folder.
    */
   public static async saveMessagesToPersonalDrive(
@@ -470,6 +502,12 @@ export class PersonalDriveService {
 
     if (existingMessages.length > 50000) {
       existingMessages = existingMessages.slice(0, 50000);
+    }
+
+    // Optimization: If 0 new messages were added and file already exists, skip network upload
+    if (addedCount === 0 && fileId) {
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `⚡ [DRIVE_NO_CHANGE] Master archive "${archiveFileName}" is already up to date with ${existingMessages.length} notices.`);
+      return { saved: 0, total: existingMessages.length };
     }
 
     const payload = JSON.stringify(existingMessages, null, 2);
@@ -566,6 +604,38 @@ export class PersonalDriveService {
   }
 
   /**
+   * Commits a single group's messages atomically in a single transaction:
+   * 1. Updates and sorts the dedicated per-group archive file ([GroupName]_archive.json).
+   * 2. Merges and sorts into the child's master archive ([Child]_whatsapp_school_archive.json).
+   * 3. Updates and rewrites groups_manifest.json with newest notice timestamps & metadata.
+   */
+  public static async saveSingleGroupTransaction(
+    token: string,
+    childName: string,
+    groupName: string,
+    newMessages: any[] = []
+  ): Promise<{ saved: number; total: number; groupTotal: number }> {
+    if (!newMessages || newMessages.length === 0) {
+      return { saved: 0, total: 0, groupTotal: 0 };
+    }
+
+    const validToken = token || await this.getValidToken(false);
+    const resolvedChild = await this.resolveChildName(childName);
+
+    // 1. Commit dedicated per-group archive
+    await this.saveGroupSpecificArchive(validToken, resolvedChild, groupName, newMessages);
+
+    // 2. Commit master archive and update groups_manifest.json in single unified pass
+    const masterRes = await this.saveMessagesToPersonalDrive(validToken, newMessages, resolvedChild);
+
+    return {
+      saved: masterRes.saved,
+      total: masterRes.total,
+      groupTotal: newMessages.length
+    };
+  }
+
+  /**
    * Saves or updates a dedicated per-group archive file inside the group's subfolder.
    * e.g. "School Portal MCP Intelligence" -> "Atharva" -> "3B Cambridge 2026 - 27" -> "3B_Cambridge_archive.json"
    */
@@ -597,21 +667,43 @@ export class PersonalDriveService {
         }
       }
 
+      const parseTsToMs = (item: any): number => {
+        if (!item) return 0;
+        if (typeof item.exactTimestampMs === 'number' && item.exactTimestampMs > 0) return item.exactTimestampMs;
+        const dStr = item.date || (item.timestamp && item.timestamp.includes(',') ? item.timestamp.split(',')[1].trim() : item.timestamp);
+        const tStr = item.time || (item.timestamp && item.timestamp.includes(',') ? item.timestamp.split(',')[0].trim() : '');
+        if (dStr) {
+          const parsed = Date.parse(`${dStr} ${tStr}`.trim());
+          if (!isNaN(parsed)) return parsed;
+        }
+        return 0;
+      };
+
       const seen = new Map<string, any>();
       existing.forEach((m: any) => seen.set(`${m.timestamp}_${m.body}`, m));
+
+      let addedToGroup = 0;
       groupMessages.forEach((m: any) => {
         const k = `${m.timestamp}_${m.body}`;
         if (!seen.has(k)) {
           seen.set(k, m);
           existing.unshift(m);
+          addedToGroup++;
         } else {
           const ex = seen.get(k);
           if (m.driveAttachmentUrl && !ex.driveAttachmentUrl) {
             ex.driveAttachmentUrl = m.driveAttachmentUrl;
             ex.driveFileName = m.driveFileName;
+            addedToGroup++;
           }
         }
       });
+
+      if (addedToGroup === 0 && fileId) {
+        return fileName;
+      }
+
+      existing.sort((a, b) => parseTsToMs(b) - parseTsToMs(a));
 
       const payload = JSON.stringify(existing, null, 2);
 
@@ -672,6 +764,17 @@ export class PersonalDriveService {
     try {
       const childFolder = await this.getOrCreatePersonalFolder(token, childName);
       const manifestFileName = 'groups_manifest.json';
+      const parseTsToMs = (item: any): number => {
+        if (!item) return 0;
+        if (typeof item.exactTimestampMs === 'number' && item.exactTimestampMs > 0) return item.exactTimestampMs;
+        const dStr = item.date || (item.timestamp && item.timestamp.includes(',') ? item.timestamp.split(',')[1].trim() : item.timestamp);
+        const tStr = item.time || (item.timestamp && item.timestamp.includes(',') ? item.timestamp.split(',')[0].trim() : '');
+        if (dStr) {
+          const parsed = Date.parse(`${dStr} ${tStr}`.trim());
+          if (!isNaN(parsed)) return parsed;
+        }
+        return 0;
+      };
 
       // Group messages by chatName
       const groupsMap = new Map<string, any[]>();
@@ -680,30 +783,6 @@ export class PersonalDriveService {
         if (!groupsMap.has(cName)) groupsMap.set(cName, []);
         groupsMap.get(cName)!.push(m);
       });
-
-      const groupEntries = [];
-      for (const [gName, gMsgs] of groupsMap.entries()) {
-        const cleanName = gName.replace(/[\\/:*?"<>|]/g, '_').trim();
-        const desc = await AiNormalizerService.generateGroupSemanticDescription(gName, gMsgs, childName);
-        const latestM = gMsgs[0];
-        const latestTime = latestM ? (latestM.date && latestM.time ? `${latestM.date}, ${latestM.time}` : (latestM.timestamp || '')) : '';
-
-        // Extract unique senders and categories
-        const senders = Array.from(new Set(gMsgs.map(m => m.sender).filter(Boolean))).slice(0, 5);
-        const categories = Array.from(new Set(gMsgs.map(m => m.category).filter(Boolean)));
-
-        groupEntries.push({
-          groupName: gName,
-          folderName: cleanName,
-          archiveFileName: `${cleanName}_archive.json`,
-          attachmentsFolderName: 'Attachments',
-          totalNotices: gMsgs.length,
-          lastNoticeTimestamp: latestTime,
-          aiSemanticDescription: desc,
-          primarySenders: senders,
-          categories
-        });
-      }
 
       const q = encodeURIComponent(`name = '${manifestFileName}' and '${childFolder.id}' in parents and trashed = false`);
       const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, token);
@@ -724,6 +803,43 @@ export class PersonalDriveService {
             }
           } catch (e) {}
         }
+      }
+
+      const existingMap = new Map<string, any>();
+      existingManifestGroups.forEach(g => {
+        if (g && g.groupName) existingMap.set(g.groupName.toLowerCase(), g);
+      });
+
+      const groupEntries = [];
+      for (const [gName, gMsgs] of groupsMap.entries()) {
+        // Enforce descending (newest first) chronological order
+        gMsgs.sort((a, b) => parseTsToMs(b) - parseTsToMs(a));
+
+        const cleanName = gName.replace(/[\\/:*?"<>|]/g, '_').trim();
+        const existingG = existingMap.get(gName.toLowerCase());
+        let desc = existingG?.aiSemanticDescription;
+        if (!desc || existingG?.totalNotices !== gMsgs.length) {
+          desc = await AiNormalizerService.generateGroupSemanticDescription(gName, gMsgs, childName);
+        }
+
+        const latestM = gMsgs[0];
+        const latestTime = latestM ? (latestM.date && latestM.time ? `${latestM.date}, ${latestM.time}` : (latestM.timestamp || '')) : '';
+
+        // Extract unique senders and categories
+        const senders = Array.from(new Set(gMsgs.map(m => m.sender).filter(Boolean))).slice(0, 5);
+        const categories = Array.from(new Set(gMsgs.map(m => m.category).filter(Boolean)));
+
+        groupEntries.push({
+          groupName: gName,
+          folderName: cleanName,
+          archiveFileName: `${cleanName}_archive.json`,
+          attachmentsFolderName: 'Attachments',
+          totalNotices: gMsgs.length,
+          lastNoticeTimestamp: latestTime,
+          aiSemanticDescription: desc,
+          primarySenders: senders,
+          categories
+        });
       }
 
       // Merge new groupEntries with existingManifestGroups by groupName
@@ -985,6 +1101,78 @@ export class PersonalDriveService {
 
     const created = await res.json();
     return { id: created.id, webViewLink: created.webViewLink };
+  }
+
+  /**
+   * Renames a group subfolder and its internal archive file on Google Drive when a WhatsApp group is renamed.
+   * Google Drive folder IDs & all attachment links are permanently preserved.
+   */
+  public static async renameGroupFolderOnDrive(
+    token?: string,
+    childName?: string,
+    oldGroupName?: string,
+    newGroupName?: string
+  ): Promise<boolean> {
+    if (!oldGroupName || !newGroupName || oldGroupName.toLowerCase() === newGroupName.toLowerCase()) return false;
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const resolvedChild = await this.resolveChildName(childName);
+      const childFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+
+      const cleanOldName = oldGroupName.replace(/[\\/:*?"<>|]/g, '_').trim();
+      const cleanNewName = newGroupName.replace(/[\\/:*?"<>|]/g, '_').trim();
+
+      // Find old group folder
+      const q = encodeURIComponent(`name = '${cleanOldName}' and '${childFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
+
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          const folderId = data.files[0].id;
+          // Rename the folder on Google Drive
+          await this.fetchWithAuth(
+            `https://www.googleapis.com/drive/v3/files/${folderId}`,
+            {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                name: cleanNewName,
+                description: `School chat group archive for ${cleanNewName} (${resolvedChild})`
+              })
+            },
+            validToken
+          );
+
+          // Also rename the internal archive JSON file if present
+          const oldFileName = `${cleanOldName}_archive.json`;
+          const newFileName = `${cleanNewName}_archive.json`;
+          const fQ = encodeURIComponent(`name = '${oldFileName}' and '${folderId}' in parents and trashed = false`);
+          const fileSearchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${fQ}&fields=files(id)`, {}, validToken);
+          if (fileSearchRes.ok) {
+            const fData = await fileSearchRes.json();
+            if (fData.files && fData.files.length > 0) {
+              await this.fetchWithAuth(
+                `https://www.googleapis.com/drive/v3/files/${fData.files[0].id}`,
+                {
+                  method: 'PATCH',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: newFileName })
+                },
+                validToken
+              );
+            }
+          }
+
+          await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📂 [DRIVE_FOLDER_RENAMED] Successfully renamed Drive folder from "${cleanOldName}" to "${cleanNewName}" (Folder ID: ${folderId})`);
+          return true;
+        }
+      }
+      return false;
+    } catch (e: any) {
+      console.warn('[PersonalDriveService] Could not rename group folder on Drive:', e);
+      return false;
+    }
   }
 
   /**
@@ -1315,6 +1503,7 @@ export class PersonalDriveService {
   ): Promise<{ success: boolean; noticesCount: number; attachmentsCount: number; childName: string; chatName: string; error?: string }> {
     this.queuedJobsCount++;
     const position = this.queuedJobsCount;
+    await SyncLifecycleManager.acquireIngestionLock();
 
     if (this.activeIngestCount > 0) {
       await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `⏳ [INGEST_QUEUED] Export file (ID: ${fileId}) placed in queue at position #${position}. Processing strictly 1 group at a time.`);
@@ -1329,6 +1518,7 @@ export class PersonalDriveService {
         return result;
       } finally {
         this.activeIngestCount = Math.max(0, this.activeIngestCount - 1);
+        await SyncLifecycleManager.releaseIngestionLock();
       }
     };
 

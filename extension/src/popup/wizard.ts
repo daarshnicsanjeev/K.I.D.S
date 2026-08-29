@@ -413,7 +413,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const li = document.createElement('li');
       li.style.cssText = 'display: flex; flex-direction: column; background: #064e3b; padding: 8px 10px; border-radius: 8px; font-size: 0.78rem; border: 1px solid #059669; margin-bottom: 6px; gap: 5px;';
 
-      const ptr = pointers[c.title] || pointers[c.id];
+      const ptr = pointers[c.title] || pointers[c.id] || Object.entries(pointers).find(([k]) => k.trim().toLowerCase() === (c.title || '').trim().toLowerCase())?.[1];
 
       // Header Row: Group Name + Platform Badge + Remove Button
       const headerRow = document.createElement('div');
@@ -431,12 +431,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       removeBtn.title = 'Stop tracking this group';
       removeBtn.style.cssText = 'padding: 2px 7px; font-size: 0.68rem; white-space: nowrap;';
       removeBtn.addEventListener('click', async () => {
+        removeBtn.disabled = true;
+        removeBtn.innerText = '⏳ Halting...';
         const res = await sendMessage({
           type: 'REMOVE_TRACKED_WHATSAPP_CHAT',
           payload: { id: c.id }
         });
         renderTrackedChats(res.trackedChats);
-        showSuccess(`Removed "${c.title}" from tracking.`);
+        showSuccess(`Removed "${c.title}" from tracking and halted background sync.`);
+        await loadWhatsAppLogs();
       });
 
       headerRow.appendChild(titleWrap);
@@ -835,6 +838,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   refreshBridgeStatus();
 
+  // Live Storage Listener: Automatically update tracked chats & last read timestamps when background worker syncs
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName === 'local' || areaName === 'sync') {
+        if (changes.chat_sync_pointers || changes.tracked_whatsapp_chats || changes.active_child_id || changes.child_profiles) {
+          refreshBridgeStatus();
+        }
+      }
+    });
+  }
+
+  // Periodic UI refresh interval while popup is open
+  setInterval(() => {
+    refreshBridgeStatus();
+  }, 10000);
+
   // Unified 1-Click Track & Sync Active Chat & Instant Stop Control
   const btnStopActiveSync = document.getElementById('btnStopActiveSync') as HTMLButtonElement;
 
@@ -1040,6 +1059,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     } finally {
       btnScanDriveExports.disabled = false;
       btnScanDriveExports.innerText = '🔍 Show Recent Uploads from Google Drive';
+      await loadWhatsAppLogs();
+    }
+  });
+
+  const btnRebuildManifest = document.getElementById('btnRebuildManifest') as HTMLButtonElement;
+  btnRebuildManifest?.addEventListener('click', async () => {
+    btnRebuildManifest.disabled = true;
+    btnRebuildManifest.innerText = '⏳ Re-indexing all groups on Google Drive...';
+    clearAlerts();
+    try {
+      const res = await sendMessage({ type: 'REBUILD_GROUPS_MANIFEST' });
+      if (res && res.success) {
+        showSuccess(`🎉 Successfully re-indexed ${res.totalGroups} groups in groups_manifest.json on Google Drive!`);
+        appendLog(`📋 Manifest updated with ${res.totalGroups} group(s): ${res.groups.map((g: any) => `${g.groupName} (${g.totalNotices})`).join(', ')}`);
+        await refreshBridgeStatus();
+      } else {
+        showError('Could not rebuild manifest.');
+      }
+    } catch (err: any) {
+      showError(`Rebuild Manifest Error: ${err.message}`);
+    } finally {
+      btnRebuildManifest.disabled = false;
+      btnRebuildManifest.innerText = '📋 Re-index & Update groups_manifest.json on Drive';
       await loadWhatsAppLogs();
     }
   });

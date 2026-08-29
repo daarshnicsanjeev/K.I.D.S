@@ -1,8 +1,8 @@
 import { ChildManager, ChildProfile } from './childManager';
 import { AuthService } from './authService';
 
-export const CURRENT_GAS_SERVER_VERSION = '2.9.0';
-export const CURRENT_GAS_CHANGELOG = 'Full date-time timestamp preservation, automated homework categorization, and multi-child cross-profile auto-routing';
+export const CURRENT_GAS_SERVER_VERSION = '3.4.0';
+export const CURRENT_GAS_CHANGELOG = 'Universal Chronological Sorting & Dynamic Child Archive Resolution: Forces newest-first notice ordering and auto-mirrors the full master archive to Google Apps Script';
 
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
@@ -1044,6 +1044,12 @@ function handleToolsCall(name, args) {
       McpLogger.log('WARN', 'whatsapp:school_notices_failed', { error: we.toString() });
     }
 
+    try {
+      result.live_web_tab_content = LiveTabStorage.getTabContent();
+    } catch (lte) {
+      result.live_web_tab_content = null;
+    }
+
     var registered = StorageRepository.getRegisteredTools();
     for (var i = 0; i < registered.length; i++) {
       var t = registered[i];
@@ -1239,18 +1245,69 @@ var WhatsAppStorage = {
 
   getArchiveFileId: function () {
     var props = PropertiesService.getUserProperties();
-    var fileId = props.getProperty('WHATSAPP_ARCHIVE_FILE_ID');
-    if (fileId) return fileId;
+    var targetChild = (typeof CONFIG !== 'undefined' && CONFIG.childName) ? CONFIG.childName : 'Child';
+    var childArchiveName = targetChild + '_whatsapp_school_archive.json';
 
-    var folder = DriveFolderManager.getExistingMcpFolder();
-    if (!folder) return null;
-
-    var files = folder.getFilesByName(this.ARCHIVE_FILE_NAME);
-    if (files.hasNext()) {
-      var id = files.next().getId();
-      props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', id);
-      return id;
+    // 1. Always prioritize finding child-specific archive file first
+    var childFiles = DriveApp.getFilesByName(childArchiveName);
+    while (childFiles.hasNext()) {
+      var cf = childFiles.next();
+      if (!cf.isTrashed()) {
+        props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', cf.getId());
+        return cf.getId();
+      }
     }
+
+    // 2. Check cached file ID if still valid
+    var fileId = props.getProperty('WHATSAPP_ARCHIVE_FILE_ID');
+    if (fileId) {
+      try {
+        var existing = DriveApp.getFileById(fileId);
+        if (existing && !existing.isTrashed()) return fileId;
+      } catch (e) {}
+    }
+
+    // 3. Try finding inside MCP folder
+    var folder = DriveFolderManager.getExistingMcpFolder();
+    if (folder) {
+      var files = folder.getFilesByName(childArchiveName);
+      if (files.hasNext()) {
+        var id = files.next().getId();
+        props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', id);
+        return id;
+      }
+      var defaultFiles = folder.getFilesByName(this.ARCHIVE_FILE_NAME);
+      if (defaultFiles.hasNext()) {
+        var defId = defaultFiles.next().getId();
+        props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', defId);
+        return defId;
+      }
+    }
+
+    // 4. Fallback: Search globally on Drive
+    var globalFiles = DriveApp.getFilesByName(this.ARCHIVE_FILE_NAME);
+    while (globalFiles.hasNext()) {
+      var gf = globalFiles.next();
+      if (!gf.isTrashed()) {
+        props.setProperty('WHATSAPP_ARCHIVE_FILE_ID', gf.getId());
+        return gf.getId();
+      }
+    }
+
+    return null;
+  },
+
+  getGroupsManifest: function () {
+    try {
+      var files = DriveApp.getFilesByName('groups_manifest.json');
+      while (files.hasNext()) {
+        var f = files.next();
+        if (!f.isTrashed()) {
+          var content = f.getBlob().getDataAsString();
+          return content ? JSON.parse(content) : null;
+        }
+      }
+    } catch (e) {}
     return null;
   },
 
@@ -1317,19 +1374,30 @@ var WhatsAppStorage = {
       var key = (m.chatName || '') + '_' + (m.timestamp || '') + '_' + (m.body || '');
       if (!seen[key]) {
         seen[key] = true;
-        existing.unshift(m);
+        existing.push(m);
         addedCount++;
       }
     });
 
-    if (existing.length > 500) existing = existing.slice(0, 500);
+    // Enforce newest-first chronological ordering
+    var self = this;
+    existing.sort(function (a, b) {
+      var pa = self.parseMessageDate(a);
+      var pb = self.parseMessageDate(b);
+      var ta = pa ? pa.exactTimestampMs : 0;
+      var tb = pb ? pb.exactTimestampMs : 0;
+      return tb - ta;
+    });
+
+    if (existing.length > 50000) existing = existing.slice(0, 50000);
 
     var jsonStr = JSON.stringify(existing, null, 2);
     if (fileId) {
       DriveApp.getFileById(fileId).setContent(jsonStr);
     } else {
       var folder = DriveFolderManager.getOrCreateMcpFolder();
-      var newFile = folder.createFile(this.ARCHIVE_FILE_NAME, jsonStr, 'application/json');
+      var targetChild = (typeof CONFIG !== 'undefined' && CONFIG.childName) ? CONFIG.childName : 'Child';
+      var newFile = folder.createFile(targetChild + '_whatsapp_school_archive.json', jsonStr, 'application/json');
       PropertiesService.getUserProperties().setProperty('WHATSAPP_ARCHIVE_FILE_ID', newFile.getId());
     }
 
@@ -1342,19 +1410,206 @@ var WhatsAppStorage = {
     if (!fileId) return [];
     try {
       var content = DriveApp.getFileById(fileId).getBlob().getDataAsString();
-      return content ? JSON.parse(content) : [];
+      var list = content ? JSON.parse(content) : [];
+      var self = this;
+      list.sort(function (a, b) {
+        var pa = self.parseMessageDate(a);
+        var pb = self.parseMessageDate(b);
+        var ta = pa ? pa.exactTimestampMs : 0;
+        var tb = pb ? pb.exactTimestampMs : 0;
+        return tb - ta;
+      });
+      return list;
     } catch (e) {
       return [];
     }
+  },
+
+  parseMessageDate: function (m) {
+    try {
+      var dateStr = m.date || '';
+      var tsStr = m.timestamp || '';
+      var timeStr = m.time || '';
+      var combined = dateStr + ' ' + tsStr + ' ' + timeStr;
+
+      var y = 2026, mNum = 1, d = 1, hour = 12, min = 0;
+
+      var slashMatch = combined.match(/\\b(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})\\b/);
+      if (slashMatch) {
+        mNum = parseInt(slashMatch[1], 10);
+        d = parseInt(slashMatch[2], 10);
+        y = parseInt(slashMatch[3], 10);
+      } else {
+        var isoMatch = combined.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})\\b/);
+        if (isoMatch) {
+          y = parseInt(isoMatch[1], 10);
+          mNum = parseInt(isoMatch[2], 10);
+          d = parseInt(isoMatch[3], 10);
+        } else {
+          var dashMatch = combined.match(/\\b(\\d{1,2})-(\\d{1,2})-(\\d{4})\\b/);
+          if (dashMatch) {
+            d = parseInt(dashMatch[1], 10);
+            mNum = parseInt(dashMatch[2], 10);
+            y = parseInt(dashMatch[3], 10);
+          }
+        }
+      }
+
+      var timeMatch = combined.match(/\\b(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*(am|pm)?\\b/i);
+      if (timeMatch) {
+        hour = parseInt(timeMatch[1], 10);
+        min = parseInt(timeMatch[2], 10);
+        var ampm = (timeMatch[4] || '').toLowerCase();
+        if (ampm === 'pm' && hour < 12) hour += 12;
+        if (ampm === 'am' && hour === 12) hour = 0;
+      }
+
+      var exactMs = new Date(y, mNum - 1, d, hour, min).getTime();
+      return {
+        year: y,
+        month: mNum,
+        day: d,
+        hour: hour,
+        minute: min,
+        exactTimestampMs: exactMs,
+        dayTimestampMs: new Date(y, mNum - 1, d).getTime()
+      };
+    } catch (e) {}
+    return null;
+  },
+
+  matchesTemporalCondition: function (mParsed, queryLower, now) {
+    if (!mParsed) return null;
+
+    var nowYear = now.getFullYear();
+    var nowMonth = now.getMonth() + 1;
+    var nowDay = now.getDate();
+    var nowMs = now.getTime();
+    var nowDayMs = new Date(nowYear, nowMonth - 1, nowDay).getTime();
+    var oneDayMs = 86400000;
+    var oneHourMs = 3600000;
+    var oneMinMs = 60000;
+
+    var hoursMatch = queryLower.match(/\\b(?:in the\\s+|past\\s+|last\\s+)(\\d{1,2})\\s*hours?\\b/);
+    if (hoursMatch) {
+      var hCount = parseInt(hoursMatch[1], 10);
+      var diffH = nowMs - mParsed.exactTimestampMs;
+      return diffH >= -oneMinMs && diffH <= (hCount * oneHourMs);
+    }
+    if (/\\b(?:last|past)\\s+hour\\b/.test(queryLower)) {
+      var diffH1 = nowMs - mParsed.exactTimestampMs;
+      return diffH1 >= -oneMinMs && diffH1 <= oneHourMs;
+    }
+
+    var minsMatch = queryLower.match(/\\b(?:in the\\s+|past\\s+|last\\s+)(\\d{1,3})\\s*min(?:ute)?s?\\b/);
+    if (minsMatch) {
+      var mCount = parseInt(minsMatch[1], 10);
+      var diffM = nowMs - mParsed.exactTimestampMs;
+      return diffM >= -30000 && diffM <= (mCount * oneMinMs);
+    }
+
+    var isToday = mParsed.year === nowYear && mParsed.month === nowMonth && mParsed.day === nowDay;
+    var ystDate = new Date(nowDayMs - oneDayMs);
+    var isYesterday = mParsed.year === ystDate.getFullYear() && mParsed.month === (ystDate.getMonth() + 1) && mParsed.day === ystDate.getDate();
+
+    if (/\\bthis morning\\b/.test(queryLower)) {
+      return isToday && mParsed.hour >= 5 && mParsed.hour < 12;
+    }
+    if (/\\byesterday morning\\b/.test(queryLower)) {
+      return isYesterday && mParsed.hour >= 5 && mParsed.hour < 12;
+    }
+    if (/\\bthis afternoon\\b/.test(queryLower)) {
+      return isToday && mParsed.hour >= 12 && mParsed.hour < 17;
+    }
+    if (/\\bthis evening\\b/.test(queryLower)) {
+      return isToday && mParsed.hour >= 17 && mParsed.hour < 22;
+    }
+    if (/\\byesterday evening\\b/.test(queryLower)) {
+      return isYesterday && mParsed.hour >= 17 && mParsed.hour < 22;
+    }
+    if (/\\btonight\\b|\\bat night\\b/.test(queryLower)) {
+      return (isToday || isYesterday) && (mParsed.hour >= 20 || mParsed.hour < 5);
+    }
+
+    if (/\\btoday\\b/.test(queryLower)) {
+      return isToday;
+    }
+    if (/\\byesterday\\b/.test(queryLower)) {
+      return isYesterday;
+    }
+    if (/day before yesterday/.test(queryLower)) {
+      var dby = new Date(nowDayMs - (2 * oneDayMs));
+      return mParsed.year === dby.getFullYear() && mParsed.month === (dby.getMonth() + 1) && mParsed.day === dby.getDate();
+    }
+    if (/this week|current week|past week|past 7 days|last 7 days|recent/.test(queryLower)) {
+      var diffDays = (nowDayMs - mParsed.dayTimestampMs) / oneDayMs;
+      return diffDays >= -1 && diffDays <= 7;
+    }
+    if (/last week|previous week/.test(queryLower)) {
+      var diffDays2 = (nowDayMs - mParsed.dayTimestampMs) / oneDayMs;
+      return diffDays2 > 7 && diffDays2 <= 14;
+    }
+    if (/this month|current month/.test(queryLower)) {
+      return mParsed.year === nowYear && mParsed.month === nowMonth;
+    }
+    if (/last month|previous month/.test(queryLower)) {
+      var lastM = nowMonth === 1 ? 12 : nowMonth - 1;
+      var lastMY = nowMonth === 1 ? nowYear - 1 : nowYear;
+      return mParsed.year === lastMY && mParsed.month === lastM;
+    }
+    if (/this year|current year/.test(queryLower)) {
+      return mParsed.year === nowYear;
+    }
+
+    var monthMap = {
+      'january': 1, 'jan': 1, 'february': 2, 'feb': 2, 'march': 3, 'mar': 3, 'april': 4, 'apr': 4,
+      'may': 5, 'june': 6, 'jun': 6, 'july': 7, 'jul': 7, 'august': 8, 'aug': 8,
+      'september': 9, 'sep': 9, 'sept': 9, 'october': 10, 'oct': 10, 'november': 11, 'nov': 11, 'december': 12, 'dec': 12
+    };
+
+    var dMonthMatch = queryLower.match(/\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+([a-z]+)\\b/);
+    if (dMonthMatch && monthMap[dMonthMatch[2]]) {
+      var day = parseInt(dMonthMatch[1], 10);
+      var month = monthMap[dMonthMatch[2]];
+      return mParsed.month === month && mParsed.day === day;
+    }
+    var monthDMatch = queryLower.match(/\\b([a-z]+)\\s+(\\d{1,2})(?:st|nd|rd|th)?\\b/);
+    if (monthDMatch && monthMap[monthDMatch[1]]) {
+      var day2 = parseInt(monthDMatch[2], 10);
+      var month2 = monthMap[monthDMatch[1]];
+      return mParsed.month === month2 && mParsed.day === day2;
+    }
+
+    for (var mName in monthMap) {
+      var mRegex = new RegExp('\\\\b' + mName + '\\\\b', 'i');
+      if (mRegex.test(queryLower)) {
+        return mParsed.month === monthMap[mName];
+      }
+    }
+
+    return null;
+  },
+
+  cleanTopicQuery: function (queryLower) {
+    return queryLower
+      .replace(/\\b(?:in the\\s+|past\\s+|last\\s+)\\d{1,3}\\s*(?:hours?|min(?:ute)?s?)\\b/gi, '')
+      .replace(/\\b(today|tonight|yesterday|tomorrow|day before yesterday|this week|last week|past week|current week|this month|last month|current month|this year|current year|recent|latest)\\b/gi, '')
+      .replace(/\\b(this morning|yesterday morning|this afternoon|this evening|yesterday evening|at night|morning|afternoon|evening|night)\\b/gi, '')
+      .replace(/\\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\\b/gi, '')
+      .replace(/\\b\\d{1,2}(?:st|nd|rd|th)?\\b/gi, '')
+      .replace(/\\b(updates?|notices?|messages?|posted|shared|from|in|on|at|the|for|by|what|is|are|any)\\b/gi, '')
+      .replace(/[^a-z0-9\\s]/gi, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
   },
 
   getRecentMessages: function (chatFilter, maxCount) {
     maxCount = maxCount || 40;
     var list = this.getAllMessages();
 
-    if (chatFilter && chatFilter.trim()) {
+    if (chatFilter && chatFilter.trim() && chatFilter.toLowerCase().trim() !== 'official') {
       var query = chatFilter.toLowerCase().trim();
-      var terms = query.split(/[\s,]+/);
+      var terms = query.split(/[\\s,]+/);
       list = list.filter(function (m) {
         var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
         return terms.some(function(t) { return t.length > 1 && text.indexOf(t) !== -1; }) || text.indexOf(query) !== -1;
@@ -1372,7 +1627,7 @@ var WhatsAppStorage = {
         timestamp: ts,
         date: m.date || (parts.length > 1 ? parts[1].trim() : undefined),
         time: m.time || (parts.length > 1 ? parts[0].trim() : ts),
-        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : 'CLASS_ANNOUNCEMENT',
+        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : (m.category || 'CLASS_ANNOUNCEMENT'),
         body: body,
         driveAttachmentUrl: m.driveAttachmentUrl || undefined,
         driveFileName: m.driveFileName || undefined
@@ -1381,23 +1636,38 @@ var WhatsAppStorage = {
   },
 
   queryHistory: function (query, maxCount) {
-    maxCount = maxCount || 50;
+    maxCount = maxCount || 60;
     var list = this.getAllMessages();
     if (!query || !query.trim()) return list.slice(0, maxCount);
 
     var q = query.toLowerCase().trim();
-    var terms = q.split(/[\s,]+/);
-    var results = list.filter(function (m) {
-      var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
-      return terms.every(function(t) { return text.indexOf(t) !== -1; }) || text.indexOf(q) !== -1;
-    });
+    var now = new Date();
+    var topicQuery = this.cleanTopicQuery(q);
+    var topicTerms = topicQuery ? topicQuery.split(/\\s+/).filter(function (t) { return t.length > 2; }) : [];
 
-    if (results.length === 0 && terms.length > 1) {
-      results = list.filter(function (m) {
-        var text = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '')).toLowerCase();
-        return terms.some(function(t) { return t.length > 2 && text.indexOf(t) !== -1; });
-      });
-    }
+    var self = this;
+    var results = list.filter(function (m) {
+      var mParsed = self.parseMessageDate(m);
+      var temporalResult = self.matchesTemporalCondition(mParsed, q, now);
+
+      if (temporalResult === false) return false;
+      if (temporalResult === true) {
+        if (topicTerms.length > 0) {
+          var fullText = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.documentTitle || '') + ' ' + (m.category || '')).toLowerCase();
+          return topicTerms.some(function (term) { return fullText.indexOf(term) !== -1; });
+        }
+        return true;
+      }
+
+      var fullTextAll = ((m.chatName || '') + ' ' + (m.body || '') + ' ' + (m.sender || '') + ' ' + (m.timestamp || '') + ' ' + (m.date || '')).toLowerCase();
+      if (fullTextAll.indexOf(q) !== -1) return true;
+
+      var terms = q.split(/[\\s,]+/).filter(function (t) { return t.length > 2; });
+      if (terms.length > 0) {
+        return terms.every(function (t) { return fullTextAll.indexOf(t) !== -1; });
+      }
+      return true;
+    });
 
     return results.slice(0, maxCount).map(function (m) {
       var body = m.body || '';
@@ -1410,7 +1680,7 @@ var WhatsAppStorage = {
         timestamp: ts,
         date: m.date || (parts.length > 1 ? parts[1].trim() : undefined),
         time: m.time || (parts.length > 1 ? parts[0].trim() : ts),
-        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : 'CLASS_ANNOUNCEMENT',
+        category: isHomework ? 'HOMEWORK_OR_TASK_ANNOUNCEMENT' : (m.category || 'CLASS_ANNOUNCEMENT'),
         body: body,
         driveAttachmentUrl: m.driveAttachmentUrl || undefined,
         driveFileName: m.driveFileName || undefined

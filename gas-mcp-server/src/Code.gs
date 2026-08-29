@@ -81,6 +81,42 @@ function handleToolsList() {
       name: 'get_calendar_events',
       description: 'Fetch upcoming school calendar events and deadlines.',
       inputSchema: { type: 'object', properties: {} }
+    },
+    {
+      name: 'search_school_whatsapp_messages',
+      description: 'Search and query school WhatsApp chat history, homework notices, teacher announcements, attire reminders, and PDFs archived on Google Drive.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Keyword, topic, or question to search for (e.g. "homework", "attire", "bistro", "Radha Krishna", "science notes", "assembly")' },
+          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' },
+          group_name: { type: 'string', description: 'Filter by specific WhatsApp group name (e.g. "Grade 3B IG parent group 26-27" or "3B Cambridge 2026 - 27")' },
+          category: { type: 'string', description: 'Filter by notice category: HOMEWORK, CIRCULAR_NOTICE, EVENT_ACTIVITY, EXAM_SCHEDULE, or GENERAL_CHAT' },
+          limit: { type: 'number', description: 'Maximum number of notices to return (default 40)' }
+        }
+      }
+    },
+    {
+      name: 'get_school_groups_manifest',
+      description: 'Retrieve the semantic AI index of all tracked school WhatsApp groups, group descriptions, total notices count, and primary senders.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' }
+        }
+      }
+    },
+    {
+      name: 'get_latest_school_notices',
+      description: 'Fetch the most recent school notices and homework updates from the WhatsApp archive.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' },
+          limit: { type: 'number', description: 'Number of recent notices to return (default 25)' },
+          group_name: { type: 'string', description: 'Optional group name filter' }
+        }
+      }
     }
   ];
 
@@ -103,6 +139,12 @@ function handleToolsCall(name, args) {
     return WorkspaceFetcher.getSchoolGmailMessages();
   } else if (name === 'get_calendar_events') {
     return WorkspaceFetcher.getCalendarEvents();
+  } else if (name === 'search_school_whatsapp_messages' || name === 'query_whatsapp_history' || name === 'get_whatsapp_school_updates') {
+    return WorkspaceFetcher.searchWhatsAppMessages(args);
+  } else if (name === 'get_school_groups_manifest') {
+    return WorkspaceFetcher.getGroupsManifest(args);
+  } else if (name === 'get_latest_school_notices') {
+    return WorkspaceFetcher.getLatestSchoolNotices(args);
   }
 
   // Check registered portal tools

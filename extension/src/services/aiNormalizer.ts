@@ -461,7 +461,7 @@ Return JSON with:
 
         try {
           const timeoutPromise = new Promise<string>((_, reject) =>
-            setTimeout(() => reject(new Error('Turn SLM timeout')), 2500)
+            setTimeout(() => reject(new Error('Turn SLM timeout')), 1000)
           );
 
           const slmRawOutput = await Promise.race([
@@ -493,7 +493,8 @@ Return JSON with:
             slmConsecutiveFailures = 0;
           }
         } catch (turnErr) {
-          slmConsecutiveFailures++;
+          // Trip circuit breaker immediately so remaining turns use the 0ms deterministic parser
+          slmConsecutiveFailures = 99;
         }
       }
 
