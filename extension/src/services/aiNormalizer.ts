@@ -52,7 +52,8 @@ export class AiNormalizerService {
     const knownSubjects = ['Math', 'Mathematics', 'English', 'Science', 'EVS', 'SST', 'Social Studies', 'Hindi', 'Marathi', 'French', 'Spanish', 'Art', 'Music', 'ICT', 'Computer', 'Physical Education', 'PE', 'Dance', 'Drama', 'Robotics'];
 
     messages.slice(0, 150).forEach(m => {
-      const b = (m.body || '').toLowerCase();
+      if (!m) return;
+      const b = (m.body || m.rawBody || m.text || '').toLowerCase();
       const s = (m.sender || '');
       if (s && !s.startsWith('+') && !s.toLowerCase().includes('notice') && !s.toLowerCase().includes('teacher')) {
         teachers.add(s);
@@ -69,7 +70,7 @@ export class AiNormalizerService {
     const teacherList = Array.from(teachers);
     const noticeList = Array.from(noticeTypes);
 
-    const uniqueSenders = new Set(messages.map(m => m.sender).filter(Boolean));
+    const uniqueSenders = new Set(messages.map(m => m ? m.sender : null).filter(Boolean));
     const isParentDiscussion = uniqueSenders.size > 12;
 
     // Rule-based rich synthesis
@@ -94,7 +95,7 @@ export class AiNormalizerService {
         const session = await promptApi.create({
           systemPrompt: `You are an educational assistant. Summarize the role and content of this school chat group in 1-2 concise sentences for quick AI retrieval. Note if it is an official teacher circular channel or a parent discussion group.`
         });
-        const sampleText = messages.slice(0, 10).map(m => `[${m.sender}]: ${m.body.substring(0, 80)}`).join('\n');
+        const sampleText = messages.slice(0, 10).map(m => `[${m.sender || 'Unknown'}]: ${(m.body || m.rawBody || m.text || '').substring(0, 80)}`).join('\n');
         const aiSummary = await session.prompt(`Group Name: ${groupName}\nChild: ${childName}\nSample notices:\n${sampleText}\nProvide a concise 1-2 sentence description.`);
         if (aiSummary && aiSummary.trim().length > 15) {
           return aiSummary.trim();

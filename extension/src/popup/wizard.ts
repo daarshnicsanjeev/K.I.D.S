@@ -995,6 +995,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 btnIngest.style.backgroundColor = '#059669';
                 btnIngest.style.borderColor = '#047857';
                 showSuccess(`🎉 Ingested ${ingestRes.noticesCount} notices & ${ingestRes.attachmentsCount} attachments for "${activeChild}"!`);
+
+                // Rebuild manifest and refresh tracked groups list
+                try {
+                  const rebuildRes = await sendMessage({ type: 'REBUILD_GROUPS_MANIFEST' });
+                  if (rebuildRes && rebuildRes.groups) {
+                    appendLog(`📋 Manifest indexed with ${rebuildRes.totalGroups} group(s): ${rebuildRes.groups.map((g: any) => g.groupName).join(', ')}`);
+                  }
+                } catch (e) {}
+
+                // Reload config so tracked chats list shows all groups
+                const cfg = await sendMessage({ type: 'GET_WHATSAPP_CONFIG' });
+                if (cfg && cfg.tracked_whatsapp_chats) {
+                  renderTrackedChats(cfg.tracked_whatsapp_chats);
+                }
+
                 await refreshBridgeStatus();
               } else {
                 btnIngest.innerText = '❌ Failed';

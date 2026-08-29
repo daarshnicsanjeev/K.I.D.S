@@ -786,10 +786,85 @@ export class PersonalDriveService {
         );
       }
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📋 [MANIFEST_SAVED] Updated "${manifestFileName}" with SLM semantic descriptions for ${groupEntries.length} group(s).`);
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `📋 [MANIFEST_SAVED] Updated "${manifestFileName}" with SLM semantic descriptions for ${finalGroups.length} group(s).`, {
+        groups: finalGroups.map(g => ({ name: g.groupName, count: g.totalNotices }))
+      });
     } catch (e: any) {
+      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[MANIFEST_ERROR] Failed to update groups_manifest.json: ${e.message}`);
       console.warn('[PersonalDriveService] Could not update groups_manifest.json:', e);
     }
+  }
+
+  /**
+   * Re-indexes all groups from the child's master archive and updates groups_manifest.json on Drive.
+   */
+  public static async rebuildGroupsManifest(token?: string, childName?: string): Promise<{ success: boolean; totalGroups: number; groups: any[] }> {
+    const validToken = token || await this.getValidToken(false);
+    const resolvedChild = await this.resolveChildName(childName);
+    const childFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+    const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
+
+    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `🔄 [REBUILD_MANIFEST_START] Rebuilding groups manifest for "${resolvedChild}"...`);
+
+    // 1. Download master archive
+    const q = encodeURIComponent(`name = '${archiveFileName}' and '${childFolder.id}' in parents and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, validToken);
+    let allMessages: any[] = [];
+    if (searchRes.ok) {
+      const data = await searchRes.json();
+      if (data.files && data.files.length > 0) {
+        const dlRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${data.files[0].id}?alt=media`, {}, validToken);
+        if (dlRes.ok) allMessages = await dlRes.json();
+      }
+    }
+
+    // 2. Also ensure each group's dedicated archive file and subfolder exist
+    const groupsMap = new Map<string, any[]>();
+    allMessages.forEach(m => {
+      const cName = m.chatName || 'General';
+      if (!groupsMap.has(cName)) groupsMap.set(cName, []);
+      groupsMap.get(cName)!.push(m);
+    });
+
+    for (const [gName, gMsgs] of groupsMap.entries()) {
+      await this.saveGroupSpecificArchive(validToken, resolvedChild, gName, gMsgs);
+    }
+
+    // 3. Update manifest
+    await this.updateGroupsManifest(validToken, resolvedChild, allMessages);
+
+    // 4. Also register discovered groups in ChildProfile & tracked_whatsapp_chats
+    const discoveredGroups = Array.from(groupsMap.keys());
+    if (discoveredGroups.length > 0 && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        const stateData = await chrome.storage.local.get(['tracked_whatsapp_chats']);
+        let trackedList: any[] = stateData.tracked_whatsapp_chats || [];
+        discoveredGroups.forEach(gName => {
+          if (!trackedList.some(t => t.title?.toLowerCase() === gName.toLowerCase() || t.id?.toLowerCase() === gName.toLowerCase())) {
+            trackedList.push({
+              id: 'wa_chat_' + gName.toLowerCase().replace(/[^a-z0-9]/g, '_'),
+              title: gName,
+              platform: 'WhatsApp',
+              isGroup: true,
+              addedAt: new Date().toISOString()
+            });
+          }
+        });
+        await chrome.storage.local.set({ tracked_whatsapp_chats: trackedList });
+        if (chrome.storage.sync) await chrome.storage.sync.set({ tracked_whatsapp_chats: trackedList });
+
+        const activeProf = await ChildManager.getActiveProfile();
+        if (activeProf) {
+          await ChildManager.updateProfile(activeProf.id, { trackedChats: trackedList });
+        }
+      } catch (e) {}
+    }
+
+    return {
+      success: true,
+      totalGroups: groupsMap.size,
+      groups: Array.from(groupsMap.keys()).map(name => ({ groupName: name, totalNotices: groupsMap.get(name)!.length }))
+    };
   }
 
   private static TRACKED_CHATS_FILE_NAME = 'tracked_whatsapp_chats.json';
