@@ -84,8 +84,9 @@ export class GasProvisionerService {
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (!forceNew) {
-      this.log('🔍 Searching Google Drive for extension config file (K.I.D.S._mcp_config.json)...');
-      const configFromDrive = await this.loadDriveConfigFile(token);
+      const configFileName = this.getConfigFileName(childName, academicYear);
+      this.log(`🔍 Searching Google Drive for extension config file (${configFileName})...`);
+      const configFromDrive = await this.loadDriveConfigFile(token, childName, academicYear);
       if (configFromDrive && configFromDrive.scriptId) {
         const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
         if (isAlive) {
@@ -196,7 +197,7 @@ export class GasProvisionerService {
     // Step 4: Persist metadata in Google Drive (Survives extension uninstalls & multi-machine)
     this.log('💾 Saving project metadata to Drive appProperties & config file...');
     await this.saveDriveMetadata(scriptId, deploymentId, accessKey, webAppUrl, token);
-    await this.saveDriveConfigFile(scriptId, deploymentId, accessKey, webAppUrl, token);
+    await this.saveDriveConfigFile(scriptId, deploymentId, accessKey, webAppUrl, token, childName, academicYear);
 
     // Step 5: Save in both chrome.storage.sync and chrome.storage.local
     if (typeof chrome !== 'undefined' && chrome.storage) {
@@ -397,20 +398,33 @@ export class GasProvisionerService {
     return null;
   }
 
+  public static getConfigFileName(childName?: string, academicYear?: string): string {
+    const cleanChild = (childName || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    const cleanYear = (academicYear || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    if (cleanChild && cleanYear) {
+      return `K.I.D.S._${cleanChild}_${cleanYear}_config.json`;
+    } else if (cleanChild) {
+      return `K.I.D.S._${cleanChild}_config.json`;
+    }
+    return this.CONFIG_FILE_NAME;
+  }
+
   /**
-   * Reads persistent K.I.D.S._mcp_config.json from Google Drive.
+   * Reads persistent K.I.D.S._[Child]_[Year]_config.json from Google Drive.
    */
-  private static async loadDriveConfigFile(token: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey: string } | null> {
+  private static async loadDriveConfigFile(token: string, childName?: string, academicYear?: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey: string } | null> {
+    const targetFileName = this.getConfigFileName(childName, academicYear);
     try {
-      this.log('🔍 Searching Drive for K.I.D.S. extension config file (K.I.D.S._mcp_config.json)...');
-      const query = encodeURIComponent(`(name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
+      this.log(`🔍 Searching Drive for K.I.D.S. extension config file (${targetFileName})...`);
+      const query = encodeURIComponent(`(name = '${targetFileName}' or name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
       const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&pageSize=10`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
       if (!res.ok) return null;
       const data = await res.json();
       if (data.files && data.files.length > 0) {
-        const fileId = data.files[0].id;
-        this.log(`📄 Found config file in Drive (ID: ${fileId}). Reading configuration...`);
+        const matchedFile = data.files.find((f: any) => f.name === targetFileName) || data.files[0];
+        const fileId = matchedFile.id;
+        this.log(`📄 Found config file in Drive (${matchedFile.name}, ID: ${fileId}). Reading configuration...`);
         const contentRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
           headers: { 'Authorization': `Bearer ${token}` }
         });
@@ -427,21 +441,37 @@ export class GasProvisionerService {
   }
 
   /**
-   * Saves persistent K.I.D.S._mcp_config.json to Google Drive.
+   * Saves persistent K.I.D.S._[Child]_[Year]_config.json to Google Drive without duplicate creation.
    */
-  private static async saveDriveConfigFile(scriptId: string, deploymentId: string, accessKey: string, webAppUrl: string, token: string): Promise<void> {
+  private static async saveDriveConfigFile(scriptId: string, deploymentId: string, accessKey: string, webAppUrl: string, token: string, childName?: string, academicYear?: string): Promise<void> {
+    const targetFileName = this.getConfigFileName(childName, academicYear);
     try {
-      this.log('💾 Saving configuration to Drive (K.I.D.S._mcp_config.json)...');
-      const configData = JSON.stringify({ scriptId, deploymentId, accessKey, webAppUrl, updatedAt: new Date().toISOString() });
+      this.log(`💾 Saving configuration to Drive (${targetFileName})...`);
+      const configData = JSON.stringify({ scriptId, deploymentId, accessKey, webAppUrl, childName, academicYear, updatedAt: new Date().toISOString() });
       
-      const query = encodeURIComponent(`name = '${this.CONFIG_FILE_NAME}' and trashed = false`);
-      const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id)`, {
+      const query = encodeURIComponent(`(name = '${targetFileName}' or name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
+      const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const searchData = await searchRes.json();
 
       if (searchData.files && searchData.files.length > 0) {
-        const fileId = searchData.files[0].id;
+        const matchedFile = searchData.files.find((f: any) => f.name === targetFileName) || searchData.files[0];
+        const fileId = matchedFile.id;
+
+        // Upgrade legacy file name to targetFileName if needed
+        if (matchedFile.name !== targetFileName) {
+          await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name: targetFileName })
+          }).catch(() => {});
+        }
+
+        // Update content in place (no duplicate file creation)
         await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
           method: 'PATCH',
           headers: {
@@ -450,10 +480,10 @@ export class GasProvisionerService {
           },
           body: configData
         });
-        this.log(`✅ Updated existing K.I.D.S._mcp_config.json in Drive.`);
+        this.log(`✅ Updated existing ${targetFileName} in Drive (ID: ${fileId}).`);
       } else {
         const metadata = {
-          name: this.CONFIG_FILE_NAME,
+          name: targetFileName,
           mimeType: 'application/json'
         };
         const form = new FormData();
@@ -465,7 +495,7 @@ export class GasProvisionerService {
           headers: { 'Authorization': `Bearer ${token}` },
           body: form
         });
-        this.log('✅ Created K.I.D.S._mcp_config.json in Drive root.');
+        this.log(`✅ Created ${targetFileName} in Drive root.`);
       }
     } catch (e) {
       this.log(`⚠️ Could not save Drive config file: ${e}`);
