@@ -1,27 +1,27 @@
-# Universal School Portal & Workspace MCP Sync Engine
+# Kids Intelligent Dashboard System (K.I.D.S.)
 
-A privacy-first, zero-downtime platform that aggregates student academic data across native Google Workspace tools (Classroom, Gmail, Calendar) and external school portals (EduSprint, Canvas, Moodle) into a personal Model Context Protocol (MCP) server for **Gemini Spark**.
+A privacy-first AI command center and sync engine connecting school portals, Google Workspace tools (Classroom, Gmail, Calendar), and school chat groups (WhatsApp, Telegram) into personal Model Context Protocol (MCP) servers for **Google Gemini Spark**, **Gemini Advanced**, and AI assistants.
 
-## Project Modules
+## 🚀 Key Modules
 
-1. **`extension/` (Chrome Extension MV3)**
+1. **`extension/` (K.I.D.S. Chrome Extension MV3)**
    - Built with TypeScript & Vite.
-   - Passive sniffing via `activeTab` mode (injected fetch/XHR interceptor).
-   - 4-Step Guided Setup Wizard (`wizard_current_step` state machine).
-   - 3-Stage Pre-Flight Test Protocol (Local probe, Extension fetch, GAS proxy verification).
-   - `SanitizerService` PII scrubbing and `ErrorHasher` SHA-256 fingerprinting.
+   - **4-Step Onboarding Wizard**: Guided multi-kid setup with academic year folder partitioning (`K.I.D.S. Data/[FirstName]/[AcademicYear]/`).
+   - **Personalized Options**: Dynamic radio cards for schools using or not using Google Classroom.
+   - **Universal Platform Tracking**: 1-click active tab capture for school ERPs, educational games, and video learning platforms.
+   - **Dual-Path Chat Sync**: Automated daily scans + historical mobile export import with media attachments.
+   - **Single Multi-Kid Background Service**: Unified persistent diagnostic log stream.
+   - **Dynamic AI Skill Engine**: Generates personalized `K.I.D.S._SKILL.md` with multi-kid MCP routing and next-period default deadline inference.
 
-2. **`gas-mcp-server/` (Google Apps Script MCP Backend)**
-   - Implements JSON-RPC 2.0 router over HTTP POST (`tools/list`, `tools/call`, `register_mcp_tool`, `test_preflight_proxy`).
-   - Native read-only Google Workspace integration (Classroom, Calendar, Gmail).
-   - Dynamic `UrlFetchApp` portal executor saving tools to `UserProperties`.
+2. **`gas-mcp-server/` (K.I.D.S. Google Apps Script MCP Backend)**
+   - Implements Model Context Protocol JSON-RPC 2.0 router over HTTP POST.
+   - Native Google Workspace integration (Classroom, Calendar, Gmail).
+   - Master composite tool: `get_all_school_updates` for 1-click execution across all connected channels.
 
-3. **`gas-error-webhook/` (Developer Error Registry Web App)**
-   - Zero-cost, lightweight Apps Script web app logging to a Google Sheet.
-   - Screen-reader accessible (NVDA/JAWS compatible).
-   - Fingerprint deduplication and occurrence counting.
+3. **`gas-error-webhook/` (Diagnostic Registry Web App)**
+   - Lightweight error telemetry logging with fingerprint deduplication.
 
-## Local Setup & Development
+## 🛠️ Local Setup & Development
 
 ### Extension
 ```bash
@@ -30,12 +30,4 @@ npm install
 npm run build
 npm test
 ```
-Load the `extension/dist` folder into Chrome via `chrome://extensions` (Developer Mode -> Load Unpacked).
-
-### Apps Script Deployment (`clasp`)
-```bash
-cd gas-mcp-server
-clasp login
-clasp push
-clasp deploy --description "Production MCP Engine"
-```
+Load the `extension/` or `extension/dist` folder into Chrome via `chrome://extensions` (Developer Mode -> **Load unpacked** or click the **🔄 Reload icon**).

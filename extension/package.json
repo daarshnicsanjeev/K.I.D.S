@@ -1,7 +1,7 @@
 {
-  "name": "school-mcp-sync-extension",
+  "name": "kids-intelligent-dashboard-system",
   "version": "1.0.0",
-  "description": "Chrome Extension for Universal School Portal & Workspace MCP Sync Engine",
+  "description": "Kids Intelligent Dashboard System (K.I.D.S.) - Chrome Extension & MCP Sync Engine",
   "type": "module",
   "scripts": {
     "dev": "vite",
