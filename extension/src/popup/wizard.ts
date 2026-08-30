@@ -147,10 +147,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshDiagnosticLogs();
   setInterval(refreshDiagnosticLogs, 3000);
 
-  // Stepper Visuals
+  // Stepper Visuals & Click Handlers
   function updateStepper(step: number) {
     currentWizardStep = step;
-    if (stepBadge) stepBadge.textContent = `Step ${step} of 4`;
+    if (stepBadge) {
+      stepBadge.textContent = `Step ${step} of 4`;
+      stepBadge.style.background = 'var(--accent-color)';
+    }
 
     for (let i = 1; i <= 4; i++) {
       const dot = document.getElementById(`dot${i}`);
@@ -167,12 +170,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // View Navigation Controllers
+  // Allow clicking stepper dots to navigate during Configure Mode
+  for (let i = 1; i <= 4; i++) {
+    const dot = document.getElementById(`dot${i}`);
+    dot?.addEventListener('click', () => {
+      showWizardStep(i);
+    });
+  }
+
+  // View Navigation Controllers: Configure Mode (Steps 1-4) vs Family Dashboard
   function showWizardStep(step: number) {
+    // 1. Completely hide Family Dashboard in Configure Mode
     cardFamilyDashboard?.classList.add('hidden');
+    
+    // 2. Show Stepper & Step Badge
     wizardStepper?.classList.remove('hidden');
     if (stepBadge) stepBadge.classList.remove('hidden');
 
+    // 3. Toggle step cards
     cardStep1?.classList.add('hidden');
     cardStep2?.classList.add('hidden');
     cardStep3?.classList.add('hidden');
@@ -197,11 +212,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   async function showFamilyDashboard() {
+    // Hide all Wizard step cards & Stepper
     cardStep1?.classList.add('hidden');
     cardStep2?.classList.add('hidden');
     cardStep3?.classList.add('hidden');
     cardStep4?.classList.add('hidden');
     wizardStepper?.classList.add('hidden');
+
     if (stepBadge) {
       stepBadge.textContent = 'Dashboard';
       stepBadge.style.background = 'var(--brand-navy)';
