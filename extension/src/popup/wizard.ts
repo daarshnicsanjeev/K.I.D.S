@@ -7,6 +7,8 @@ import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
 
 document.addEventListener('DOMContentLoaded', async () => {
   // Navigation & Container Elements
+  const restoringProgressOverlay = document.getElementById('restoringProgressOverlay') as HTMLElement;
+  const lblRestoringSubtext = document.getElementById('lblRestoringSubtext') as HTMLElement;
   const stepBadge = document.getElementById('stepBadge') as HTMLElement;
   const wizardStepper = document.getElementById('wizardStepper') as HTMLElement;
   const cardFamilyDashboard = document.getElementById('familyDashboardCard') as HTMLElement;
@@ -371,7 +373,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     populateStep1ForEditing(targetProfile);
   }
 
+  function dismissRestoringOverlay() {
+    if (!restoringProgressOverlay) return;
+    restoringProgressOverlay.classList.add('fade-out');
+    setTimeout(() => {
+      restoringProgressOverlay.classList.add('hidden');
+    }, 200);
+  }
+
   if (savedStep >= 1 && savedStep <= 4) {
+    if (lblRestoringSubtext && targetProfile) {
+      lblRestoringSubtext.textContent = `Resuming ${targetProfile.name}'s setup (Step ${savedStep})`;
+    }
     // If user was in the middle of step 2, 3, or 4 for THIS specific child, resume directly!
     showWizardStep(savedStep);
   } else if (isFullyConfigured && activeProfile) {
@@ -380,6 +393,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   } else {
     showWizardStep(1);
   }
+
+  // Dismiss restoration overlay smoothly
+  dismissRestoringOverlay();
 
   // Check existing Personal Account login
   try {
