@@ -8,7 +8,7 @@ export interface WhatsAppLogEntry {
   timestamp: string;
   rawTimestamp?: number;
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
-  category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT';
+  category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD';
   message: string;
   metadata?: Record<string, any>;
 }
@@ -19,7 +19,7 @@ export class WhatsAppDiagnosticLogger {
 
   public static async log(
     level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS',
-    category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT',
+    category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD',
     message: string,
     metadata?: Record<string, any>
   ): Promise<void> {
@@ -63,6 +63,12 @@ export class WhatsAppDiagnosticLogger {
     } catch (e) {
       return [];
     }
+  }
+
+  public static async getRecentLogs(maxCount = 35): Promise<string> {
+    const logs = await this.getLogs();
+    const slice = logs.slice(0, maxCount).reverse();
+    return this.formatLogsAsText(slice);
   }
 
   public static async clearLogs(): Promise<void> {

@@ -18,8 +18,8 @@ describe('Popup DOM Integrity Test', () => {
       referencedIds.add(match[1]);
     }
 
-    // Dynamic IDs generated in loops (e.g., dot1..dot5, line1..line4)
-    const dynamicIds = ['dot1', 'dot2', 'dot3', 'dot4', 'dot5', 'line1', 'line2', 'line3', 'line4'];
+    // Dynamic IDs generated in loops (e.g., dot1..dot4, line1..line3)
+    const dynamicIds = ['dot1', 'dot2', 'dot3', 'dot4', 'line1', 'line2', 'line3'];
     dynamicIds.forEach(id => referencedIds.add(id));
 
     // Extract all id="..." attributes from index.html

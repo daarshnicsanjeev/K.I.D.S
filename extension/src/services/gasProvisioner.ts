@@ -804,8 +804,8 @@ function doGet(e) {
   }
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
-    server: 'School Portal MCP Server - ' + (CONFIG.childName || 'Child'),
-    childName: CONFIG.childName || 'Child',
+    server: 'Kids Intelligent Dashboard System (K.I.D.S.) - ' + (CONFIG.childName || 'Student'),
+    childName: CONFIG.childName || 'Student',
     accessKey: e.parameter ? e.parameter.accessKey : null
   })).setMimeType(ContentService.MimeType.JSON);
 }
@@ -835,8 +835,8 @@ function doPost(e) {
           tools: {}
         },
         serverInfo: {
-          name: "School Portal MCP Server - " + (CONFIG.childName || 'Child'),
-          version: "2.3.0"
+          name: "Kids Intelligent Dashboard System (K.I.D.S.) - " + (CONFIG.childName || 'Student'),
+          version: "3.0.0"
         }
       };
       McpLogger.log('INFO', 'initialize', { client: params.clientInfo || 'Gemini Spark' });

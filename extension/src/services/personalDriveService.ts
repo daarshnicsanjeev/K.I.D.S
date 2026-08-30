@@ -15,8 +15,9 @@ export interface PersonalDriveFolderInfo {
 }
 
 export class PersonalDriveService {
-  private static FOLDER_NAME = 'School Portal MCP Intelligence';
-  private static ARCHIVE_FILE_NAME = 'whatsapp_school_archive.json';
+  private static FOLDER_NAME = 'K.I.D.S. Data';
+  private static ARCHIVE_FILE_NAME = 'archive.json';
+  private static MANIFEST_FILE_NAME = 'K.I.D.S._groups_manifest.json';
 
   /**
    * Prompts user to authenticate/select their Personal Google Account.
@@ -322,88 +323,84 @@ export class PersonalDriveService {
   }
 
   /**
-   * Gets or creates the dedicated child subfolder inside School Portal MCP Intelligence.
+   * Gets or creates a subfolder inside a given parent folder.
    */
-  public static async getOrCreatePersonalFolder(token?: string, childName?: string): Promise<{ id: string; webViewLink?: string; rootId: string }> {
-    const validToken = token || await this.getValidToken(false);
-    const rootFolder = await this.getOrCreateRootFolder(validToken);
-    const resolvedChild = await this.resolveChildName(childName);
-    const storageKey = `personal_drive_child_folder_id_${resolvedChild}`;
+  public static async getOrCreateSubfolder(token: string, folderName: string, parentId: string, description?: string): Promise<{ id: string; webViewLink?: string }> {
+    const q = encodeURIComponent(`name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, token);
 
-    // 1. Check cached folder ID
-    try {
-      const cached = await chrome.storage.local.get([storageKey]);
-      if (cached[storageKey]) {
-        const verifyRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${cached[storageKey]}?fields=id,name,trashed,webViewLink`, {}, validToken);
-        if (verifyRes.ok) {
-          const vData = await verifyRes.json();
-          if (!vData.trashed) {
-            return { id: vData.id, webViewLink: vData.webViewLink, rootId: rootFolder.id };
-          }
-        }
-      }
-    } catch (e) {}
-
-    // 2. Search for existing child subfolder
-    const childQ = encodeURIComponent(`name = '${resolvedChild}' and '${rootFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-    const childSearchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${childQ}&fields=files(id,name,webViewLink)`, {}, validToken);
-
-    if (childSearchRes.ok) {
-      const childData = await childSearchRes.json();
-      if (childData.files && childData.files.length > 0) {
-        const childId = childData.files[0].id;
-        await chrome.storage.local.set({ [storageKey]: childId });
-        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_FOUND] Found existing subfolder "${resolvedChild}" (ID: ${childId})`);
-        return {
-          id: childId,
-          webViewLink: childData.files[0].webViewLink,
-          rootId: rootFolder.id
-        };
+    if (searchRes.ok) {
+      const data = await searchRes.json();
+      if (data.files && data.files.length > 0) {
+        return { id: data.files[0].id, webViewLink: data.files[0].webViewLink };
       }
     }
 
-    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_CHILD_FOLDER_CREATE] Creating subfolder "${resolvedChild}" inside root folder (ID: ${rootFolder.id})...`);
-
-    // 3. Create child subfolder
     const res = await this.fetchWithAuth(
       'https://www.googleapis.com/drive/v3/files',
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: resolvedChild,
+          name: folderName,
           mimeType: 'application/vnd.google-apps.folder',
-          parents: [rootFolder.id],
-          description: `School Intelligence Archive for ${resolvedChild}`
+          parents: [parentId],
+          description: description || `Folder for ${folderName}`
         })
       },
-      validToken
+      token
     );
 
     if (!res.ok) {
-      const err = await res.text();
-      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_CHILD_FOLDER_ERROR] Failed to create subfolder "${resolvedChild}": HTTP ${res.status} | ${err}`);
-      throw new Error(`Failed to create child folder "${resolvedChild}": HTTP ${res.status}`);
+      throw new Error(`Failed to create subfolder "${folderName}": HTTP ${res.status}`);
     }
 
     const created = await res.json();
-    await chrome.storage.local.set({ [storageKey]: created.id });
-    await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 [DRIVE_CHILD_FOLDER_SUCCESS] Successfully created child folder "${resolvedChild}" (ID: ${created.id})!`);
-    return { id: created.id, webViewLink: created.webViewLink, rootId: rootFolder.id };
+    return { id: created.id, webViewLink: created.webViewLink };
   }
 
   /**
-   * Loads all messages from [ChildName]_whatsapp_school_archive.json in Google Drive.
+   * Gets or creates the dedicated academic year subfolder inside K.I.D.S. Data -> [FirstName] -> [AcademicYear].
+   */
+  public static async getOrCreatePersonalFolder(token?: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; kidFolderId: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const rootFolder = await this.getOrCreateRootFolder(validToken);
+    const resolvedChild = await this.resolveChildName(childName);
+
+    // 1. Get or create Kid folder (e.g. Atharva)
+    const kidFolder = await this.getOrCreateSubfolder(validToken, resolvedChild, rootFolder.id, `K.I.D.S. Profile for ${resolvedChild}`);
+
+    // 2. Resolve Academic Year
+    let year = academicYear;
+    if (!year) {
+      const activeProf = await ChildManager.getActiveProfile();
+      year = (activeProf && activeProf.academicYear) ? activeProf.academicYear : ChildManager.getCalculatedAcademicYears().current;
+    }
+
+    // 3. Get or create Academic Year folder (e.g. 2026-2027)
+    const yearFolder = await this.getOrCreateSubfolder(validToken, year, kidFolder.id, `K.I.D.S. Academic Year ${year} for ${resolvedChild}`);
+
+    return {
+      id: yearFolder.id,
+      webViewLink: yearFolder.webViewLink,
+      rootId: rootFolder.id,
+      kidFolderId: kidFolder.id
+    };
+  }
+
+  /**
+   * Loads all messages from K.I.D.S._[ChildName]_archive.json in Google Drive.
    */
   public static async loadAllMessagesFromPersonalDrive(
     token?: string,
-    childName?: string
+    childName?: string,
+    academicYear?: string
   ): Promise<any[]> {
     try {
       const validToken = token || await this.getValidToken(false);
       const resolvedChild = await this.resolveChildName(childName);
-      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
-      const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
+      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild, academicYear);
+      const archiveFileName = `K.I.D.S._${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
       const q = encodeURIComponent(`name = '${archiveFileName}' and '${folder.id}' in parents and trashed = false`);
       const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
@@ -424,19 +421,20 @@ export class PersonalDriveService {
   }
 
   /**
-   * Saves messages to [ChildName]_whatsapp_school_archive.json in the child's folder.
+   * Saves messages to K.I.D.S._[ChildName]_archive.json in the child's folder.
    */
   public static async saveMessagesToPersonalDrive(
     token?: string,
     newMessages: any[] = [],
-    childName?: string
+    childName?: string,
+    academicYear?: string
   ): Promise<{ saved: number; total: number }> {
     if (!newMessages || newMessages.length === 0) return { saved: 0, total: 0 };
 
     const validToken = token || await this.getValidToken(false);
     const resolvedChild = await this.resolveChildName(childName);
-    const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
-    const archiveFileName = `${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
+    const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild, academicYear);
+    const archiveFileName = `K.I.D.S._${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
     await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_START] Preparing archive upload for ${resolvedChild} in folder "${folder.id}"`, {
       folderId: folder.id,
@@ -649,7 +647,7 @@ export class PersonalDriveService {
       if (!groupMessages || groupMessages.length === 0) return null;
       const groupFolder = await this.getOrCreateGroupFolder(token, childName, groupName);
       const cleanName = groupName.replace(/[\\/:*?"<>|]/g, '_').trim();
-      const fileName = `${cleanName}_archive.json`;
+      const fileName = `K.I.D.S._${cleanName}_archive.json`;
 
       const q = encodeURIComponent(`name = '${fileName}' and '${groupFolder.id}' in parents and trashed = false`);
       const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, token);
@@ -763,7 +761,7 @@ export class PersonalDriveService {
   ): Promise<void> {
     try {
       const childFolder = await this.getOrCreatePersonalFolder(token, childName);
-      const manifestFileName = 'groups_manifest.json';
+      const manifestFileName = this.MANIFEST_FILE_NAME;
       const parseTsToMs = (item: any): number => {
         if (!item) return 0;
         if (typeof item.exactTimestampMs === 'number' && item.exactTimestampMs > 0) return item.exactTimestampMs;

@@ -842,21 +842,34 @@ async function handleMessage(message: { type: string; payload?: any }) {
         const activeFilterStr = targetFilterStr || state.target_whatsapp_chats || '';
         const stringFilters = activeFilterStr.split(',').map((s: string) => s.trim()).filter((s: string) => s.length > 0);
 
-        if (!isManual && trackedChats.length === 0 && stringFilters.length === 0) {
-          return { status: 'idle', message: 'No tracked chats configured. Background sync is idle.' };
+        const allProfiles = await ChildManager.getProfiles(false);
+        const activeProfile = await ChildManager.getActiveProfile();
+
+        // Determine targets to sync across all kids
+        let targetChatsToSync: Array<{ title: string; id?: string; childName?: string }> = [];
+        if (activeFilterStr && activeFilterStr.toLowerCase() !== 'all tracked') {
+          targetChatsToSync = stringFilters.map((s: string) => ({ title: s }));
+        } else {
+          // Aggregate tracked chats from all child profiles
+          for (const p of allProfiles) {
+            if (p.trackedChats && Array.isArray(p.trackedChats)) {
+              for (const tc of p.trackedChats) {
+                if (tc && tc.title && !targetChatsToSync.some(t => t.title.toLowerCase() === tc.title.toLowerCase())) {
+                  targetChatsToSync.push({ title: tc.title, id: tc.id, childName: p.name });
+                }
+              }
+            }
+          }
+          if (targetChatsToSync.length === 0 && trackedChats.length > 0) {
+            targetChatsToSync = trackedChats;
+          }
+        }
+
+        if (!isManual && targetChatsToSync.length === 0) {
+          return { status: 'idle', message: 'No tracked chats configured across profiles. Background sync is idle.' };
         }
 
         const targetTab = openTabs[0];
-
-        // Determine targets to sync: either single specific filter or all tracked chats
-        let targetChatsToSync: Array<{ title: string; id?: string }> = [];
-        if (activeFilterStr && activeFilterStr.toLowerCase() !== 'all tracked') {
-          targetChatsToSync = stringFilters.map((s: string) => ({ title: s }));
-        } else if (trackedChats.length > 0) {
-          targetChatsToSync = trackedChats;
-        } else {
-          targetChatsToSync = [{ title: '' }];
-        }
 
         await WhatsAppDiagnosticLogger.log('INFO', 'CONN', `🚀 [SYNC_START] Initiated sync on tab ${targetTab.id} (${targetTab.title || targetTab.url}). Targets: [${targetChatsToSync.map(t => t.title || 'Active Chat').join(', ')}], Mode: ${isManual ? 'Manual Deep Scan' : 'Automated Background'}`);
 
@@ -875,9 +888,6 @@ async function handleMessage(message: { type: string; payload?: any }) {
         let totalAttachmentsUploaded = 0;
         const processedChatNames: string[] = [];
         const lastResults: any[] = [];
-
-        const allProfiles = await ChildManager.getProfiles(false);
-        const activeProfile = await ChildManager.getActiveProfile();
 
         for (const targetItem of targetChatsToSync) {
           const specificTargetName = (targetItem.title || '').trim();
@@ -1852,14 +1862,14 @@ async function handleMessage(message: { type: string; payload?: any }) {
               if (await SyncLifecycleManager.isAborted(extraction.chatName)) break;
               personalDriveResult = await PersonalDriveService.saveSingleGroupTransaction(state.personal_drive_auth_token, childName, extraction.chatName, extractedMessages);
               totalNewNoticesAcrossAllTargets += (personalDriveResult?.saved || 0);
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Archived ${personalDriveResult.saved} new notices for ${extraction.chatName} (Group Total: ${personalDriveResult.groupTotal}, Master Total: ${personalDriveResult.total}) on Google Drive.`);
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[${childName} | ${extraction.chatName}] Archived ${personalDriveResult.saved} new notices (Group Total: ${personalDriveResult.groupTotal}, Master Total: ${personalDriveResult.total}) on Google Drive.`);
             } catch (pdErr: any) {
-              await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `Failed to save ${extraction.chatName} to Personal Drive: ${pdErr.message}`);
+              await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[${childName} | ${extraction.chatName}] Failed to save to Personal Drive: ${pdErr.message}`);
             }
           }
 
           // 2. Also mirror to Apps Script MCP Server endpoint so Gemini Spark has instant live access
-          const gasUrl = state.mcp_gas_url || activeProfile?.gasDeploymentUrl;
+          const gasUrl = matchedProfile?.gasDeploymentUrl || state.mcp_gas_url || activeProfile?.gasDeploymentUrl;
           if (gasUrl && extractedMessages.length > 0) {
             try {
               const urlWithKey = gasUrl.includes('accessKey=') ? gasUrl : (gasUrl + (gasUrl.includes('?') ? '&' : '?') + 'accessKey=' + (state.access_key || ''));
@@ -1873,7 +1883,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
                   id: 'wa-archive-sync'
                 })
               });
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `⚡ Mirrored ${extractedMessages.length} notices to Apps Script MCP Server for Gemini Spark.`);
+              await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `⚡ [${childName}] Mirrored ${extractedMessages.length} notices to Apps Script MCP Server for Gemini Spark.`);
             } catch (gasErr: any) {
               console.warn('Failed to mirror to GAS MCP Server:', gasErr);
             }

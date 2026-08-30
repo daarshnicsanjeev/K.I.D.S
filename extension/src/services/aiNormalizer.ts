@@ -107,6 +107,27 @@ export class AiNormalizerService {
   }
 
   /**
+   * Checks if Chrome Prompt API / Gemini Nano SLM is available.
+   */
+  public static async checkAiReadiness(): Promise<boolean> {
+    const api = this.getLanguageModelApi();
+    if (!api) return false;
+    try {
+      if (typeof api.capabilities === 'function') {
+        const caps = await api.capabilities();
+        return caps.available === 'readily' || caps.available === 'after-download';
+      }
+      if (typeof api.availability === 'function') {
+        const avail = await api.availability();
+        return avail === 'readily' || avail === 'after-download';
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Resolves the official Chrome Prompt API `LanguageModel` or `ai.languageModel` across all Chrome scopes.
    */
   public static getLanguageModelApi(): any {
