@@ -440,14 +440,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Dismiss restoration overlay smoothly
   dismissRestoringOverlay();
 
-  // Check existing Personal Account login
+  // Check existing Personal Account login (Automatic Parent Account Detection)
   try {
     const state = await chrome.storage.local.get(['personal_drive_account_email', 'personal_drive_auth_token']);
-    if (state.personal_drive_account_email && state.personal_drive_auth_token) {
-      cachedPersonalToken = state.personal_drive_auth_token;
+    if (state.personal_drive_account_email) {
+      cachedPersonalToken = state.personal_drive_auth_token || null;
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = state.personal_drive_account_email;
-      step1ChildSetupBox?.classList.remove('hidden');
-      if (btnStep1ConnectPersonal) btnStep1ConnectPersonal.classList.add('hidden');
+      setA11yVisibility(step1ChildSetupBox, true);
+      setA11yVisibility(btnStep1ConnectPersonal, false);
+      setA11yVisibility(step1ConnectedActions, true);
+    } else {
+      setA11yVisibility(btnStep1ConnectPersonal, true);
+      setA11yVisibility(step1ChildSetupBox, false);
+      setA11yVisibility(step1ConnectedActions, false);
     }
   } catch {}
 
@@ -461,8 +466,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       const auth = await PersonalDriveService.authenticatePersonalAccount();
       cachedPersonalToken = auth.token;
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = auth.email;
-      step1ChildSetupBox?.classList.remove('hidden');
-      btnStep1ConnectPersonal.classList.add('hidden');
+      setA11yVisibility(step1ChildSetupBox, true);
+      setA11yVisibility(btnStep1ConnectPersonal, false);
+      setA11yVisibility(step1ConnectedActions, true);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
     } catch (e: any) {
       alert(`Google Sign-In failed: ${e.message || String(e)}`);
@@ -472,7 +478,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   btnStep1SwitchAccount?.addEventListener('click', async () => {
-    btnStep1ConnectPersonal?.classList.remove('hidden');
+    setA11yVisibility(btnStep1ConnectPersonal, true);
     btnStep1ConnectPersonal.disabled = false;
     btnStep1ConnectPersonal.textContent = '🔐 Switch Google Account';
   });
