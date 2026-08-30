@@ -112,6 +112,12 @@ h1, h2, h3, h4, .brand-font {
 .step-dot.completed {
   background-color: var(--success-color);
   color: #fff;
+  cursor: pointer;
+}
+
+.step-dot.disabled-dot {
+  opacity: 0.55;
+  cursor: not-allowed !important;
 }
 
 .step-line {

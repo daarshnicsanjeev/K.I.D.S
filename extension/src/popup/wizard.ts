@@ -185,7 +185,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Stepper Visuals & Click Handlers
+  // Stepper Visuals & Click Handlers (Backwards Navigation Only)
   function updateStepper(step: number) {
     currentWizardStep = step;
     if (stepBadge) {
@@ -197,13 +197,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       const dot = document.getElementById(`dot${i}`);
       const line = document.getElementById(`line${i}`);
       if (dot) {
-        dot.classList.remove('active', 'completed');
+        dot.classList.remove('active', 'completed', 'disabled-dot');
         if (i === step) {
           dot.classList.add('active');
           dot.setAttribute('aria-current', 'step');
-        } else {
+          dot.setAttribute('tabindex', '0');
+          dot.style.cursor = 'default';
+        } else if (i < step) {
+          dot.classList.add('completed');
           dot.removeAttribute('aria-current');
-          if (i < step) dot.classList.add('completed');
+          dot.setAttribute('tabindex', '0');
+          dot.style.cursor = 'pointer';
+        } else {
+          // Future/Next step: cannot jump ahead directly
+          dot.classList.add('disabled-dot');
+          dot.removeAttribute('aria-current');
+          dot.setAttribute('tabindex', '-1');
+          dot.style.cursor = 'not-allowed';
         }
       }
       if (line) {
@@ -213,16 +223,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Allow clicking stepper dots to navigate during Configure Mode
+  // Only allow navigating backwards to previous steps (no jumping ahead)
   for (let i = 1; i <= 4; i++) {
     const dot = document.getElementById(`dot${i}`);
     dot?.addEventListener('click', () => {
-      showWizardStep(i);
+      if (i < currentWizardStep) {
+        showWizardStep(i);
+      }
     });
     dot?.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        showWizardStep(i);
+        if (i < currentWizardStep) {
+          showWizardStep(i);
+        }
       }
     });
   }
