@@ -78,7 +78,8 @@ export class GasProvisionerService {
 
     const activeChild = await ChildManager.getActiveProfile();
     const childName = activeChild?.name || 'Child';
-    this.log(`👶 Target Child Profile: ${childName} (ID: ${activeChild?.id || 'default'})`);
+    const academicYear = activeChild?.academicYear || '';
+    this.log(`👶 Target Child Profile: ${childName} (${academicYear}) (ID: ${activeChild?.id || 'default'})`);
 
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
@@ -140,18 +141,18 @@ export class GasProvisionerService {
 
       // 1. UPDATE existing script code files directly (Code.gs, WorkspaceFetcher.gs, etc.)
       this.log(`📤 Pushing backend code files (PUT /v1/projects/${scriptId}/content)...`);
-      await this.updateProjectContent(scriptId, accessKey, token, childName);
+      await this.updateProjectContent(scriptId, accessKey, token, childName, academicYear);
       this.log('✅ Code content updated successfully.');
 
       // 2. CREATE a new immutable version
       this.log(`🏷️ Creating version (POST /v1/projects/${scriptId}/versions)...`);
-      const version = await this.createVersion(scriptId, token);
+      const version = await this.createVersion(scriptId, token, childName, academicYear);
       const versionNumber = version.versionNumber || 1;
       this.log(`✅ Version ${versionNumber} created.`);
 
       // 3. Update the existing deployment in place (URL remains 100% permanent & identical)
       this.log(`🔄 Updating existing deployment in place (PUT /deployments/${deploymentId})...`);
-      await this.updateDeployment(scriptId, deploymentId, versionNumber, token);
+      await this.updateDeployment(scriptId, deploymentId, versionNumber, token, childName, academicYear);
       if (!webAppUrl) {
         webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${accessKey}`;
       }
@@ -163,11 +164,11 @@ export class GasProvisionerService {
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
       this.log('📤 Uploading server code files and manifest (appsscript.json)...');
-      await this.updateProjectContent(scriptId, accessKey, token, childName);
+      await this.updateProjectContent(scriptId, accessKey, token, childName, academicYear);
       this.log('🏷️ Creating version 1 (POST /v1/projects/.../versions)...');
-      const version = await this.createVersion(scriptId, token);
+      const version = await this.createVersion(scriptId, token, childName, academicYear);
       this.log('🚀 Deploying Web App with manifest appsscript (POST /v1/projects/.../deployments)...');
-      const deployment = await this.createDeployment(scriptId, version.versionNumber || 1, token);
+      const deployment = await this.createDeployment(scriptId, version.versionNumber || 1, token, childName, academicYear);
       deploymentId = deployment.deploymentId;
       const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
       webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec`;
@@ -621,7 +622,8 @@ export class GasProvisionerService {
     try {
       const active = await ChildManager.getActiveProfile();
       if (active && active.name) {
-        projectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${active.name}`;
+        const yearSuffix = active.academicYear ? ` (${active.academicYear})` : '';
+        projectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${active.name}${yearSuffix}`;
       }
     } catch (e) {}
 
@@ -647,7 +649,7 @@ export class GasProvisionerService {
   /**
    * Pushes Code.gs, WorkspaceFetcher.gs, PortalApiFetcher.gs, StorageRepository.gs & appsscript.json.
    */
-  private static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child'): Promise<any> {
+  private static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child', academicYear: string = ''): Promise<any> {
     const files = [
       {
         name: 'appsscript',
@@ -700,7 +702,8 @@ export class GasProvisionerService {
         source: `
 var CONFIG = {
   accessKey: "${accessKey}",
-  childName: "${childName.replace(/"/g, '\\"')}"
+  childName: "${childName.replace(/"/g, '\\"')}",
+  academicYear: "${academicYear.replace(/"/g, '\\"')}"
 };
 
 var McpLogger = {
@@ -835,7 +838,7 @@ function doPost(e) {
           tools: {}
         },
         serverInfo: {
-          name: "Kids Intelligent Dashboard System (K.I.D.S.) - " + (CONFIG.childName || 'Student'),
+          name: "Kids Intelligent Dashboard System (K.I.D.S.) - " + (CONFIG.childName || 'Student') + (CONFIG.academicYear ? " (" + CONFIG.academicYear + ")" : ""),
           version: "3.0.0"
         }
       };
@@ -2256,7 +2259,9 @@ var DriveContentExtractor = {
   /**
    * Creates an explicit version for the Apps Script project before deployment.
    */
-  private static async createVersion(scriptId: string, token: string): Promise<any> {
+  private static async createVersion(scriptId: string, token: string, childName: string = '', academicYear: string = ''): Promise<any> {
+    const yearSuffix = academicYear ? ` (${academicYear})` : '';
+    const nameSuffix = childName ? ` - ${childName}${yearSuffix}` : '';
     const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/versions`, {
       method: 'POST',
       headers: {
@@ -2264,7 +2269,7 @@ var DriveContentExtractor = {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        description: 'Kids Intelligent Dashboard System (K.I.D.S.) Version 1'
+        description: `Kids Intelligent Dashboard System (K.I.D.S.) Version 1${nameSuffix}`
       })
     });
 
@@ -2279,7 +2284,9 @@ var DriveContentExtractor = {
   /**
    * Creates Web App deployment for the created script version.
    */
-  private static async createDeployment(scriptId: string, versionNumber: number, token: string): Promise<any> {
+  private static async createDeployment(scriptId: string, versionNumber: number, token: string, childName: string = '', academicYear: string = ''): Promise<any> {
+    const yearSuffix = academicYear ? ` (${academicYear})` : '';
+    const nameSuffix = childName ? ` - ${childName}${yearSuffix}` : '';
     const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/deployments`, {
       method: 'POST',
       headers: {
@@ -2289,7 +2296,7 @@ var DriveContentExtractor = {
       body: JSON.stringify({
         versionNumber: versionNumber,
         manifestFileName: 'appsscript',
-        description: 'Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment'
+        description: `Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment${nameSuffix}`
       })
     });
 
@@ -2304,7 +2311,9 @@ var DriveContentExtractor = {
   /**
    * Updates an existing deployment in place to point to the newly published script version.
    */
-  private static async updateDeployment(scriptId: string, deploymentId: string, versionNumber: number, token: string): Promise<any> {
+  private static async updateDeployment(scriptId: string, deploymentId: string, versionNumber: number, token: string, childName: string = '', academicYear: string = ''): Promise<any> {
+    const yearSuffix = academicYear ? ` (${academicYear})` : '';
+    const nameSuffix = childName ? ` - ${childName}${yearSuffix}` : '';
     const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/deployments/${deploymentId}`, {
       method: 'PUT',
       headers: {
@@ -2315,7 +2324,7 @@ var DriveContentExtractor = {
         deploymentConfig: {
           versionNumber: versionNumber,
           manifestFileName: 'appsscript',
-          description: 'Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment v' + versionNumber
+          description: `Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment v${versionNumber}${nameSuffix}`
         }
       })
     });
