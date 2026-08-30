@@ -105,9 +105,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!selStep1AcademicYear) return;
     const years = ChildManager.getCalculatedAcademicYears();
     selStep1AcademicYear.innerHTML = `
-      <option value="${years.past}">Past Academic Year (${years.past})</option>
-      <option value="${years.current}" selected>Current Academic Year (${years.current})</option>
-      <option value="${years.future}">Future Academic Year (${years.future})</option>
+      <option value="${years.past}">${years.past}</option>
+      <option value="${years.current}" selected>${years.current}</option>
+      <option value="${years.future}">${years.future}</option>
     `;
   }
 
