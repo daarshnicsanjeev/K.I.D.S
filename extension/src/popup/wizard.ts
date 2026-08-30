@@ -322,13 +322,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   // INITIAL STARTUP ROUTING
   // ==========================================
-  const existingProfiles = await ChildManager.getProfiles(false);
   const activeProfile = await ChildManager.getActiveProfile();
+  const isFullyConfigured = activeProfile && Boolean(
+    activeProfile.gasDeploymentUrl ||
+    (activeProfile.trackedChats && activeProfile.trackedChats.length > 0) ||
+    (activeProfile.registeredTools && activeProfile.registeredTools.length > 0)
+  );
 
-  if (existingProfiles.length > 0 && activeProfile && activeProfile.name && !activeProfile.name.toLowerCase().startsWith('child 1')) {
+  if (isFullyConfigured && activeProfile) {
     currentConfiguringProfile = activeProfile;
     await showFamilyDashboard();
   } else {
+    if (activeProfile && activeProfile.name && !activeProfile.name.toLowerCase().startsWith('child 1')) {
+      currentConfiguringProfile = activeProfile;
+      populateStep1ForEditing(activeProfile);
+    }
     showWizardStep(1);
   }
 
