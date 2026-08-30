@@ -440,6 +440,22 @@ input[type="text"]:focus, input[type="url"]:focus, select:focus, textarea:focus 
   border-color: var(--brand-navy);
 }
 
+/* Universal Visibility & Screen Reader Concealment */
+[hidden],
+.hidden,
+.modal-overlay.hidden,
+.modal-overlay[hidden],
+.restoring-overlay.hidden,
+.restoring-overlay[hidden],
+.card.hidden,
+.card[hidden],
+.status-box.hidden,
+.status-box[hidden] {
+  display: none !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
 /* Modals */
 .modal-overlay {
   position: fixed;
