@@ -246,11 +246,10 @@
           </button>
         </div>
 
-        <!-- Server Link Input & Verification -->
+        <!-- Server Link Input (Readonly by default & Auto-Verified) -->
         <div class="url-input-container mb-2">
-          <label for="gasUrlInput" style="font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);">Server Web App URL</label>
-          <input type="url" id="gasUrlInput" placeholder="https://script.google.com/macros/s/.../exec">
-          <button id="btnVerifyStep1" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">Verify Server Link</button>
+          <label for="gasUrlInput" style="font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);">Generated MCP Server URL (Auto-Verified):</label>
+          <input type="url" id="gasUrlInput" readonly placeholder="Auto-generated upon MCP Server creation..." style="background: var(--card-surface); cursor: default;">
         </div>
 
         <div style="display: flex; gap: 6px;">

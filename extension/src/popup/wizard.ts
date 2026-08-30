@@ -58,7 +58,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
   const btnCreatePersonalMcpServer = document.getElementById('btnCreatePersonalMcpServer') as HTMLButtonElement;
   const gasUrlInput = document.getElementById('gasUrlInput') as HTMLInputElement;
-  const btnVerifyStep1 = document.getElementById('btnVerifyStep1') as HTMLButtonElement;
   const btnNavStep2ToStep1 = document.getElementById('btnNavStep2ToStep1') as HTMLButtonElement;
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
 
@@ -635,28 +634,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnCreateMcpServer?.addEventListener('click', () => deployMcpServer(false));
   btnCreatePersonalMcpServer?.addEventListener('click', () => deployMcpServer(true));
-
-  btnVerifyStep1?.addEventListener('click', async () => {
-    const url = gasUrlInput?.value.trim();
-    if (!url) {
-      alert('Please enter your Server Web App URL.');
-      return;
-    }
-    btnVerifyStep1.disabled = true;
-    btnVerifyStep1.textContent = '⏳ Verifying...';
-    try {
-      const tools = await GasProvisionerService.verifyMcpServerUrl(url);
-      if (currentConfiguringProfile) {
-        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { gasDeploymentUrl: url });
-      }
-      alert(`✅ Verified! Found ${tools.length} active MCP tools.`);
-    } catch (e: any) {
-      alert(`Verification error: ${e.message || String(e)}`);
-    } finally {
-      btnVerifyStep1.disabled = false;
-      btnVerifyStep1.textContent = 'Verify Server Link';
-    }
-  });
 
   btnNavStep2ToStep1?.addEventListener('click', () => showWizardStep(1));
   btnNavStep2ToStep3?.addEventListener('click', () => showWizardStep(3));
