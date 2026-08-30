@@ -540,9 +540,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   // ==========================================
-  // STEP 2 HANDLERS
+  // STEP 2 HANDLERS (DYNAMIC APPS SCRIPT API BUTTON VISIBILITY)
   // ==========================================
-  function updateStep2RadioLabels() {
+  async function getGasApiEnabledStatus(accountEmail: string): Promise<boolean> {
+    if (!accountEmail) return false;
+    const key = `gas_api_enabled_${accountEmail.toLowerCase().trim()}`;
+    const data = await chrome.storage.local.get([key]);
+    return Boolean(data[key]);
+  }
+
+  async function setGasApiEnabledStatus(accountEmail: string, enabled: boolean) {
+    if (!accountEmail) return;
+    const key = `gas_api_enabled_${accountEmail.toLowerCase().trim()}`;
+    if (enabled) {
+      await chrome.storage.local.set({ [key]: true });
+    } else {
+      await chrome.storage.local.remove([key]);
+    }
+  }
+
+  async function updateStep2RadioLabels() {
     const kidName = currentConfiguringProfile?.name || 'Atharva';
     if (lblRadioTitleYes) lblRadioTitleYes.textContent = `${kidName}'s school is using Google Classroom`;
     if (lblRadioTitleNo) lblRadioTitleNo.textContent = `${kidName}'s school is NOT using Google Classroom`;
@@ -554,14 +571,27 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (hasClassroom) {
         radioCardClassroomYes?.classList.add('selected');
         radioCardClassroomNo?.classList.remove('selected');
-        step2ClassroomSection?.classList.remove('hidden');
-        step2PersonalMcpSection?.classList.add('hidden');
+        setA11yVisibility(step2ClassroomSection, true);
+        setA11yVisibility(step2PersonalMcpSection, false);
       } else {
         radioCardClassroomNo?.classList.add('selected');
         radioCardClassroomYes?.classList.remove('selected');
-        step2ClassroomSection?.classList.add('hidden');
-        step2PersonalMcpSection?.classList.remove('hidden');
+        setA11yVisibility(step2ClassroomSection, false);
+        setA11yVisibility(step2PersonalMcpSection, true);
       }
+    }
+
+    // Check if Google Apps Script API has already been confirmed enabled for this account
+    const state = await chrome.storage.local.get(['personal_drive_account_email']);
+    const parentAccount = state.personal_drive_account_email || '';
+    const isApiEnabled = await getGasApiEnabledStatus(parentAccount);
+
+    if (isApiEnabled) {
+      setA11yVisibility(btnOpenApiSettings, false);
+      if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 2. Create / Update MCP Server';
+    } else {
+      setA11yVisibility(btnOpenApiSettings, true);
+      if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 3. Create / Update MCP Server';
     }
 
     if (gasUrlInput && currentConfiguringProfile?.gasDeploymentUrl) {
@@ -572,8 +602,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   radioClassroomYes?.addEventListener('change', async () => {
     radioCardClassroomYes?.classList.add('selected');
     radioCardClassroomNo?.classList.remove('selected');
-    step2ClassroomSection?.classList.remove('hidden');
-    step2PersonalMcpSection?.classList.add('hidden');
+    setA11yVisibility(step2ClassroomSection, true);
+    setA11yVisibility(step2PersonalMcpSection, false);
     if (currentConfiguringProfile) {
       currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { hasClassroom: true });
     }
@@ -582,8 +612,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   radioClassroomNo?.addEventListener('change', async () => {
     radioCardClassroomNo?.classList.add('selected');
     radioCardClassroomYes?.classList.remove('selected');
-    step2ClassroomSection?.classList.add('hidden');
-    step2PersonalMcpSection?.classList.remove('hidden');
+    setA11yVisibility(step2ClassroomSection, false);
+    setA11yVisibility(step2PersonalMcpSection, true);
     if (currentConfiguringProfile) {
       currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { hasClassroom: false });
     }
@@ -621,14 +651,29 @@ document.addEventListener('DOMContentLoaded', async () => {
             gasScriptId: deployRes.scriptId
           });
         }
+
+        // On successful creation, save API enabled status for this account and hide button 2
+        const state = await chrome.storage.local.get(['personal_drive_account_email']);
+        const parentAccount = state.personal_drive_account_email || '';
+        await setGasApiEnabledStatus(parentAccount, true);
+        setA11yVisibility(btnOpenApiSettings, false);
+        if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 2. Create / Update MCP Server';
+
         await WhatsAppDiagnosticLogger.log('SUCCESS', 'GAS', `Deployed MCP Server for ${kidName}: ${deployRes.webAppUrl}`);
         alert(`🎉 MCP Server successfully created for ${kidName}!`);
       }
     } catch (e: any) {
+      // On failure, re-enable and show button 2 so the user can easily toggle API settings
+      const state = await chrome.storage.local.get(['personal_drive_account_email']);
+      const parentAccount = state.personal_drive_account_email || '';
+      await setGasApiEnabledStatus(parentAccount, false);
+      setA11yVisibility(btnOpenApiSettings, true);
+      if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 3. Create / Update MCP Server';
+
       alert(`MCP Server creation failed: ${e.message || String(e)}`);
     } finally {
       targetBtn.disabled = false;
-      targetBtn.textContent = isPersonalAccount ? '⚡ 1-Click Create MCP Server in Personal Account' : '⚡ 3. Create / Update MCP Server';
+      targetBtn.textContent = isPersonalAccount ? '⚡ 1-Click Create MCP Server in Personal Account' : (btnOpenApiSettings?.classList.contains('hidden') ? '⚡ 2. Create / Update MCP Server' : '⚡ 3. Create / Update MCP Server');
     }
   }
 
