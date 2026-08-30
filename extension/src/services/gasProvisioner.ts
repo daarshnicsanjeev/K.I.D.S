@@ -84,29 +84,11 @@ export class GasProvisionerService {
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (!forceNew) {
-      const configFileName = this.getConfigFileName(childName, academicYear);
-      this.log(`🔍 Searching Google Drive for extension config file (${configFileName})...`);
-      const configFromDrive = await this.loadDriveConfigFile(token, childName, academicYear);
-      if (configFromDrive && configFromDrive.scriptId) {
-        const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
-        if (isAlive) {
-          existing = configFromDrive;
-          this.log(`📦 Found existing active project from Drive config: ${configFromDrive.scriptId}`);
-        } else {
-          this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is not accessible. Discarding stale config...`);
-        }
+      existing = await this.findExistingProject(token, childName, academicYear);
+      if (existing) {
+        this.log(`📦 Matched existing Apps Script project in account: ${existing.scriptId} (deploymentId: ${existing.deploymentId || 'none'})`);
       } else {
-        this.log('ℹ️ No K.I.D.S._mcp_config.json found in Google Drive. Clearing stale local cache for fresh project creation...');
-        if (typeof chrome !== 'undefined' && chrome.storage) {
-          if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
-          if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
-        }
-        if (activeChild && activeChild.id) {
-          await ChildManager.updateProfile(activeChild.id, {
-            gasScriptId: undefined,
-            gasDeploymentUrl: undefined
-          });
-        }
+        this.log('ℹ️ No existing Apps Script project matched for this profile. Creating fresh project...');
       }
     } else {
       this.log('🔄 Force Fresh Project: Discarding cached credentials...');
@@ -138,7 +120,7 @@ export class GasProvisionerService {
       scriptId = existing.scriptId;
       deploymentId = existing.deploymentId || '';
       webAppUrl = existing.webAppUrl || '';
-      this.log(`🎯 Existing project matched for ${childName}: scriptId=${scriptId}, deploymentId=${deploymentId}`);
+      this.log(`🎯 Existing project matched for ${childName}: scriptId=${scriptId}, deploymentId=${deploymentId || 'new'}`);
 
       // 1. UPDATE existing script code files directly (Code.gs, WorkspaceFetcher.gs, etc.)
       this.log(`📤 Pushing backend code files (PUT /v1/projects/${scriptId}/content)...`);
@@ -151,13 +133,22 @@ export class GasProvisionerService {
       const versionNumber = version.versionNumber || 1;
       this.log(`✅ Version ${versionNumber} created.`);
 
-      // 3. Update the existing deployment in place (URL remains 100% permanent & identical)
-      this.log(`🔄 Updating existing deployment in place (PUT /deployments/${deploymentId})...`);
-      await this.updateDeployment(scriptId, deploymentId, versionNumber, token, childName, academicYear);
-      if (!webAppUrl) {
-        webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${accessKey}`;
+      // 3. Update existing deployment OR create deployment if not present
+      if (deploymentId) {
+        this.log(`🔄 Updating existing deployment in place (PUT /deployments/${deploymentId})...`);
+        await this.updateDeployment(scriptId, deploymentId, versionNumber, token, childName, academicYear);
+        if (!webAppUrl) {
+          webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${accessKey}`;
+        }
+        this.log(`✅ Deployment updated in-place. Permanent URL: ${webAppUrl}`);
+      } else {
+        this.log(`🚀 Creating initial Web App deployment for existing project...`);
+        const deployment = await this.createDeployment(scriptId, versionNumber, token, childName, academicYear);
+        deploymentId = deployment.deploymentId;
+        const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
+        webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec`;
+        this.log(`✅ Web App deployed successfully: ${webAppUrl}`);
       }
-      this.log(`✅ Deployment updated in-place. Permanent URL: ${webAppUrl}`);
     } else {
       // Create new Apps Script project for active child in student account
       this.log(`📁 Creating new project for ${childName} in student Google account (POST /v1/projects)...`);
@@ -274,10 +265,27 @@ export class GasProvisionerService {
   }
 
   /**
-   * Search-First ("Find or Create") Pattern: Checks Storage -> Drive Config File -> Drive Search.
+   * Search-First ("Find or Create") Pattern: Checks Profile -> Storage -> Drive Config File -> Drive Search.
    */
-  public static async findExistingProject(token: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null> {
-    // 1. Check chrome.storage.sync and local storage first
+  public static async findExistingProject(token: string, childName?: string, academicYear?: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null> {
+    // 1. Check active child profile in storage first
+    try {
+      const activeChild = await ChildManager.getActiveProfile();
+      if (activeChild && activeChild.gasScriptId) {
+        const isAlive = await this.verifyScriptAlive(activeChild.gasScriptId, token);
+        if (isAlive) {
+          this.log(`📦 Found existing active project from profile: ${activeChild.gasScriptId}`);
+          return {
+            scriptId: activeChild.gasScriptId,
+            deploymentId: '',
+            webAppUrl: activeChild.gasDeploymentUrl || '',
+            accessKey: ''
+          };
+        }
+      }
+    } catch (e) {}
+
+    // 2. Check chrome.storage.sync and local storage
     if (typeof chrome !== 'undefined' && chrome.storage) {
       try {
         const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id', 'access_key']) : {};
@@ -293,10 +301,6 @@ export class GasProvisionerService {
           if (isAlive) {
             this.log(`📦 Found existing active project in Chrome storage: ${scriptId}`);
             return { scriptId, deploymentId, webAppUrl, accessKey };
-          } else {
-            this.log(`⚠️ Cached project ${scriptId} was deleted or moved to trash. Purging stale credentials...`);
-            if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
-            if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
           }
         }
       } catch (e) {
@@ -304,57 +308,39 @@ export class GasProvisionerService {
       }
     }
 
-    // 2. Search Google Drive for persistent school_mcp_config.json (100% accessible via drive.file across reinstalls)
-    const configFromDrive = await this.loadDriveConfigFile(token);
+    // 3. Search Google Drive for persistent child/year config file (K.I.D.S._[Child]_[Year]_config.json)
+    const configFromDrive = await this.loadDriveConfigFile(token, childName, academicYear);
     if (configFromDrive && configFromDrive.scriptId) {
       const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
       if (isAlive) {
         return configFromDrive;
-      } else {
-        this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is in the Bin/Trash or deleted. Discarding old config and creating a fresh project...`);
-        if (typeof chrome !== 'undefined' && chrome.storage) {
-          if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']).catch(() => {});
-          if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']).catch(() => {});
-        }
       }
     }
 
-    // 3. Fallback: Fetch latest files from Google Drive
+    // 4. Search Google Drive directly for Apps Script projects matching child or K.I.D.S.
     try {
-      this.log('🔍 Listing latest files from Google Drive...');
-      const url = `https://www.googleapis.com/drive/v3/files?pageSize=50&fields=files(id,name,mimeType,trashed,appProperties,modifiedTime)&orderBy=modifiedTime desc`;
+      this.log('🔍 Listing Apps Script projects from Google Drive...');
+      const cleanChild = (childName || '').toLowerCase().trim();
+      const q = encodeURIComponent(`mimeType = 'application/vnd.google-apps.script' and trashed = false`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&pageSize=50&fields=files(id,name,mimeType,trashed,appProperties,modifiedTime)&orderBy=modifiedTime desc`;
       
       const driveRes = await fetch(url, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
-      const driveData = await driveRes.json();
+      if (driveRes.ok) {
+        const driveData = await driveRes.json();
+        if (driveData.files && driveData.files.length > 0) {
+          // Prioritize projects matching child name or K.I.D.S.
+          const matchingFiles = driveData.files.filter((f: any) => {
+            if (!f || !f.name || f.trashed) return false;
+            const name = f.name.toLowerCase();
+            return (cleanChild && name.includes(cleanChild)) || name.includes('kids intelligent dashboard') || name.includes('k.i.d.s.') || name.includes('school portal mcp');
+          });
 
-      const totalFiles = (driveData.files && Array.isArray(driveData.files)) ? driveData.files.length : 0;
-      this.log(`🔍 Google Drive returned ${totalFiles} latest files from your account.`);
+          const candidates = matchingFiles.length > 0 ? matchingFiles : driveData.files;
+          this.log(`🎯 ${candidates.length} candidate Apps Script project(s) found. Checking for active deployment...`);
 
-      if (!driveRes.ok || driveData.error) {
-        const errorMsg = driveData.error ? driveData.error.message : `HTTP ${driveRes.status}`;
-        this.log(`❌ Google Drive search error: ${errorMsg}`);
-        if (driveRes.status === 401 || driveRes.status === 403) {
-          if (typeof chrome !== 'undefined' && chrome.identity && token) {
-            chrome.identity.removeCachedAuthToken({ token }, () => {});
-          }
-        }
-      } else if (driveData.files && driveData.files.length > 0) {
-        // Filter out trashed files, match project name, Apps Script MIME type, or appProperties
-        const matchingFiles = driveData.files.filter((f: any) => {
-          if (!f || !f.name || f.trashed) return false;
-          const name = f.name.toLowerCase();
-          return name.includes('school') || name.includes('mcp') || name.includes('personal') || f.mimeType === 'application/vnd.google-apps.script' || (f.appProperties && f.appProperties.school_mcp_managed === 'true');
-        });
-
-        const targetFiles = matchingFiles;
-        if (targetFiles.length > 0) {
-          const projectNames = targetFiles.map((f: any) => f.name).join(', ');
-          this.log(`🎯 ${targetFiles.length} matching project(s) identified: [${projectNames}]. Checking deployments...`);
-
-          // Loop through candidate projects to find the active Web App deployment
-          for (const file of targetFiles) {
+          for (const file of candidates) {
             try {
               const isAlive = await this.verifyScriptAlive(file.id, token);
               if (!isAlive) continue;
@@ -366,7 +352,6 @@ export class GasProvisionerService {
               if (deployRes.ok) {
                 const deployData = await deployRes.json();
                 const deployments = deployData.deployments || [];
-                this.log(`📋 Found ${deployments.length} deployment(s) in project ${file.id}.`);
                 const validDeploy = deployments.find((d: any) => 
                   (d.entryPoints && d.entryPoints.some((e: any) => e.entryPointType === 'WEB_APP')) ||
                   (d.deploymentId && d.deploymentId !== '@HEAD' && d.deploymentId !== 'HEAD')
@@ -376,7 +361,7 @@ export class GasProvisionerService {
                   const ep = validDeploy.entryPoints ? validDeploy.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
                   const webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${validDeploy.deploymentId}/exec`;
                   const accessKey = file.appProperties?.access_key || '';
-                  this.log(`🎉 Found active deployment: ${validDeploy.deploymentId}. URL: ${webAppUrl}`);
+                  this.log(`🎉 Reusing existing project with deployment: ${file.name} (ID: ${file.id}). URL: ${webAppUrl}`);
                   return {
                     scriptId: file.id,
                     deploymentId: validDeploy.deploymentId,
@@ -385,6 +370,15 @@ export class GasProvisionerService {
                   };
                 }
               }
+
+              // Even without an existing Web App deployment, reuse the project file itself to avoid duplicates!
+              this.log(`🎉 Reusing existing project file without deployment: "${file.name}" (ID: ${file.id})`);
+              return {
+                scriptId: file.id,
+                deploymentId: '',
+                webAppUrl: '',
+                accessKey: file.appProperties?.access_key || ''
+              };
             } catch (depErr) {
               this.log(`⚠️ Error checking deployments for ${file.id}: ${depErr}`);
             }
@@ -392,7 +386,7 @@ export class GasProvisionerService {
         }
       }
     } catch (e) {
-      this.log(`⚠️ Drive check exception: ${e}`);
+      this.log(`⚠️ Drive project search exception: ${e}`);
     }
 
     return null;
