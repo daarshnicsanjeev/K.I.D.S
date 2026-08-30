@@ -701,33 +701,33 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnCaptureVerifyPortal?.addEventListener('click', async () => {
     btnCaptureVerifyPortal.disabled = true;
-    btnCaptureVerifyPortal.textContent = '⏳ Capturing Active Tab...';
-    connectionStatusBox?.classList.remove('hidden');
-    if (connectionStatusText) connectionStatusText.textContent = 'Inspecting active browser tab...';
+    btnCaptureVerifyPortal.textContent = '⏳ Authorizing Tab...';
+    setA11yVisibility(connectionStatusBox, true);
+    if (connectionStatusText) connectionStatusText.textContent = 'Connecting to active browser tab...';
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!activeTab || !activeTab.id || !activeTab.url) {
-        throw new Error('No active browser tab found. Please navigate to your school/kids portal in Chrome.');
+        throw new Error('No active browser tab found. Please open your school or kids portal in Chrome and log in.');
       }
 
       if (activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
-        throw new Error('Cannot capture system pages. Please open your school website or kids platform.');
+        throw new Error('Cannot connect to Chrome system pages. Please open your school website or kids platform.');
       }
 
-      featureSection?.classList.remove('hidden');
+      setA11yVisibility(featureSection, true);
       if (connectionStatusText) connectionStatusText.textContent = `Connected to: ${new URL(activeTab.url).hostname}`;
     } catch (e: any) {
       if (connectionStatusText) connectionStatusText.textContent = `Error: ${e.message}`;
     } finally {
       btnCaptureVerifyPortal.disabled = false;
-      btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Active Tab';
+      btnCaptureVerifyPortal.textContent = '🚀 1. Authorize & Capture Active Tab';
     }
   });
 
   btnRegisterFeature?.addEventListener('click', async () => {
     btnRegisterFeature.disabled = true;
-    btnRegisterFeature.textContent = '⏳ Registering Page...';
+    btnRegisterFeature.textContent = '⏳ Tracking Page...';
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!activeTab || !activeTab.url) throw new Error('No active tab.');
@@ -749,12 +749,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
       renderStep3RegisteredTools();
-      alert(`🎉 Registered "${featureName}" as an AI tool!`);
+      alert(`🎉 Successfully tracking "${featureName}" for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
-      alert(`Registration failed: ${e.message}`);
+      alert(`Tracking failed: ${e.message}`);
     } finally {
       btnRegisterFeature.disabled = false;
-      btnRegisterFeature.textContent = '📸 2. Register Active Page';
+      btnRegisterFeature.textContent = '📸 2. Track & Register Page';
     }
   });
 

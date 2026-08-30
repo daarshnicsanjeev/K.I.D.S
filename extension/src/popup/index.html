@@ -266,11 +266,23 @@
         </div>
         <p class="subtitle">Connect your school ERP (e.g. EduSprint, Canvas), or track kids' educational games & video platforms.</p>
 
-        <!-- Phase 1: Capture & Verify -->
+        <!-- 4-Step User Action Workflow Guide -->
+        <div style="background: var(--card-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-bottom: 8px;">
+          <div style="font-size: 0.78rem; font-weight: 700; color: var(--brand-navy); margin-bottom: 6px;">
+            📋 How to Connect & Track:
+          </div>
+          <ol style="margin-left: 16px; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.45; display: flex; flex-direction: column; gap: 4px;">
+            <li><strong>1. Log in:</strong> Open your school ERP or kids platform in a browser tab and sign in.</li>
+            <li><strong>2. Authorize:</strong> Click <em>"1. Authorize & Capture Active Tab"</em> below to connect.</li>
+            <li><strong>3. Navigate:</strong> In that tab, navigate to the specific page you want to track (e.g. Homework, Attendance, Game stats).</li>
+            <li><strong>4. Track:</strong> Return here and click <em>"2. Track & Register Page"</em> to save it.</li>
+          </ol>
+        </div>
+
+        <!-- Phase 1: Capture & Authorize Tab -->
         <div id="connectionSection">
-          <p class="subtitle" style="margin-bottom: 6px;">1. Open your school ERP or kids platform in a browser tab.<br>2. Click below to verify connection.</p>
           <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2">
-            🚀 1. Capture & Verify Active Tab
+            🚀 1. Authorize & Capture Active Tab
           </button>
           <div id="connectionStatusBox" class="status-box hidden" aria-hidden="true" hidden>
             <span class="status-icon" id="connectionStatusIcon">⏳</span>
@@ -278,14 +290,14 @@
           </div>
         </div>
 
-        <!-- Phase 2: Feature Registration -->
-        <div id="featureSection" class="hidden mt-2" aria-hidden="true" hidden>
+        <!-- Phase 2: Track & Register Feature -->
+        <div id="featureSection" class="hidden mt-1" aria-hidden="true" hidden>
           <div class="status-box mb-2" style="border-left: 3px solid var(--success-color);">
             <span>✅</span>
-            <span><strong>Tab Connected!</strong> Open any specific page (e.g. Homework, Attendance, Game stats) and click below to capture it.</span>
+            <span><strong>Tab Connected!</strong> Navigate to your target page (e.g. Homework, Attendance, Grades) in that tab, then click below:</span>
           </div>
           <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2">
-            📸 2. Register Active Page
+            📸 2. Track & Register Page
           </button>
           <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden>
             <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--brand-navy);">✨ Active Tracked Features:</h4>
