@@ -581,15 +581,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
     }
 
-    // Check if Google Apps Script API has already been confirmed enabled for this account
-    const state = await chrome.storage.local.get(['personal_drive_account_email']);
-    const parentAccount = state.personal_drive_account_email || '';
-    const isApiEnabled = await getGasApiEnabledStatus(parentAccount);
+    // When adding a kid, assume we do not know which account will be selected until MCP Server is created
+    const hasDeployedMcp = Boolean(currentConfiguringProfile?.gasDeploymentUrl);
 
-    if (isApiEnabled) {
+    if (hasDeployedMcp) {
+      // MCP Server already active for this kid -> hide API settings button
       setA11yVisibility(btnOpenApiSettings, false);
       if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 2. Create / Update MCP Server';
     } else {
+      // New kid or unverified MCP Server -> show API settings button so parent can enable API if needed
       setA11yVisibility(btnOpenApiSettings, true);
       if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 3. Create / Update MCP Server';
     }
