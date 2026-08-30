@@ -643,7 +643,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       if (!token) throw new Error('Google authorization required.');
 
-      const deployRes = await GasProvisionerService.provision(true);
+      const deployRes = await GasProvisionerService.provision(false);
       if (deployRes && deployRes.webAppUrl) {
         if (gasUrlInput) gasUrlInput.value = deployRes.webAppUrl;
         if (currentConfiguringProfile) {
