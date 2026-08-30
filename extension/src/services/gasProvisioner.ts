@@ -712,10 +712,12 @@ function doGet(e) {
       cleared: McpLogger.clearLogs()
     })).setMimeType(ContentService.MimeType.JSON);
   }
+  var serverName = 'Kids Intelligent Dashboard System (K.I.D.S.) - ' + (CONFIG.childName || 'Student') + (CONFIG.academicYear ? ' (' + CONFIG.academicYear + ')' : '');
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
-    server: 'Kids Intelligent Dashboard System (K.I.D.S.) - ' + (CONFIG.childName || 'Student'),
+    server: serverName,
     childName: CONFIG.childName || 'Student',
+    academicYear: CONFIG.academicYear || '',
     accessKey: e.parameter ? e.parameter.accessKey : null
   })).setMimeType(ContentService.MimeType.JSON);
 }
