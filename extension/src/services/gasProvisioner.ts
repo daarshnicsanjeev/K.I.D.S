@@ -185,7 +185,11 @@ export class GasProvisionerService {
       });
     }
 
-    // Step 4: Save credentials in Chrome Extension Storage (Profile & Local)
+    // Step 4: Persist configuration in Google Drive (Authoritative cloud source of truth)
+    this.log('💾 Saving configuration to Drive...');
+    await this.saveDriveConfigFile(scriptId, deploymentId, accessKey, webAppUrl, token, childName, academicYear);
+
+    // Step 5: Save credentials in Chrome Extension Storage (Profile & Local)
     if (typeof chrome !== 'undefined' && chrome.storage) {
       const payload = {
         mcp_gas_url: webAppUrl,
@@ -259,59 +263,143 @@ export class GasProvisionerService {
     }
   }
 
+  public static getConfigFileName(childName?: string, academicYear?: string): string {
+    const cleanChild = (childName || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    const cleanYear = (academicYear || '').trim().replace(/[^a-zA-Z0-9_-]/g, '');
+    if (cleanChild && cleanYear) {
+      return `K.I.D.S._${cleanChild}_${cleanYear}_config.json`;
+    } else if (cleanChild) {
+      return `K.I.D.S._${cleanChild}_config.json`;
+    }
+    return this.CONFIG_FILE_NAME;
+  }
+
   /**
-   * Pure Apps Script Profile Discovery: Checks Active Child Profile and Chrome Local Storage.
+   * Reads persistent K.I.D.S._[Child]_[Year]_config.json from Google Drive.
+   */
+  private static async loadDriveConfigFile(token: string, childName?: string, academicYear?: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey: string } | null> {
+    const targetFileName = this.getConfigFileName(childName, academicYear);
+    try {
+      this.log(`🔍 Searching Drive for extension config file (${targetFileName})...`);
+      const query = encodeURIComponent(`(name = '${targetFileName}' or name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
+      const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&pageSize=10`;
+      const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data.files && data.files.length > 0) {
+        const matchedFile = data.files.find((f: any) => f.name === targetFileName) || data.files[0];
+        const fileId = matchedFile.id;
+        this.log(`📄 Found config file in Drive (${matchedFile.name}, ID: ${fileId}). Reading configuration...`);
+        const contentRes = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (contentRes.ok) {
+          const config = await contentRes.json();
+          this.log(`✅ Loaded existing configuration from Drive: scriptId=${config.scriptId}, deploymentId=${config.deploymentId}`);
+          return config;
+        }
+      }
+    } catch (e) {
+      this.log(`⚠️ Could not read Drive config file: ${e}`);
+    }
+    return null;
+  }
+
+  /**
+   * Saves persistent K.I.D.S._[Child]_[Year]_config.json to Google Drive without duplicate creation.
+   */
+  private static async saveDriveConfigFile(scriptId: string, deploymentId: string, accessKey: string, webAppUrl: string, token: string, childName?: string, academicYear?: string): Promise<void> {
+    const targetFileName = this.getConfigFileName(childName, academicYear);
+    try {
+      this.log(`💾 Saving configuration to Drive (${targetFileName})...`);
+      const configData = JSON.stringify({ scriptId, deploymentId, accessKey, webAppUrl, childName, academicYear, updatedAt: new Date().toISOString() });
+      
+      const query = encodeURIComponent(`(name = '${targetFileName}' or name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
+      const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      const searchData = await searchRes.json();
+
+      if (searchData.files && searchData.files.length > 0) {
+        const matchedFile = searchData.files.find((f: any) => f.name === targetFileName) || searchData.files[0];
+        const fileId = matchedFile.id;
+
+        // Upgrade legacy file name to targetFileName if needed
+        if (matchedFile.name !== targetFileName) {
+          await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+            method: 'PATCH',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ name: targetFileName })
+          }).catch(() => {});
+        }
+
+        // Update content in place (no duplicate file creation)
+        await fetch(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+          method: 'PATCH',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: configData
+        });
+        this.log(`✅ Updated existing ${targetFileName} in Drive (ID: ${fileId}).`);
+      } else {
+        const metadata = {
+          name: targetFileName,
+          mimeType: 'application/json'
+        };
+        const form = new FormData();
+        form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+        form.append('file', new Blob([configData], { type: 'application/json' }));
+
+        await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}` },
+          body: form
+        });
+        this.log(`✅ Created ${targetFileName} in Drive root.`);
+      }
+    } catch (e) {
+      this.log(`⚠️ Could not save Drive config file: ${e}`);
+    }
+  }
+
+  /**
+   * Authoritative Discovery: Google Drive Config File is the Single Source of Truth.
+   * If config file exists in Drive -> Update existing GAS project.
+   * If config file is absent in Drive -> Purge stale local cache and return null to create a fresh GAS project!
    */
   public static async findExistingProject(token: string, childName?: string, academicYear?: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null> {
-    // 1. Check active child profile in extension storage
-    try {
-      const activeChild = await ChildManager.getActiveProfile();
-      if (activeChild && activeChild.gasScriptId) {
-        const isAlive = await this.verifyScriptAlive(activeChild.gasScriptId, token);
-        if (isAlive) {
-          this.log(`📦 Found active Apps Script project from profile: ${activeChild.gasScriptId}`);
-          return {
-            scriptId: activeChild.gasScriptId,
-            deploymentId: '',
-            webAppUrl: activeChild.gasDeploymentUrl || '',
-            accessKey: ''
-          };
-        } else {
-          this.log(`⚠️ Profile project ${activeChild.gasScriptId} is not accessible. Purging stale ID...`);
-          await ChildManager.updateProfile(activeChild.id, {
-            gasScriptId: undefined,
-            gasDeploymentUrl: undefined
-          });
-        }
-      }
-    } catch (e) {}
-
-    // 2. Check chrome.storage.sync and local storage
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-      try {
-        const syncData = chrome.storage.sync ? await chrome.storage.sync.get(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id', 'access_key']) : {};
-        const localData = chrome.storage.local ? await chrome.storage.local.get(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id', 'access_key']) : {};
-        
-        const scriptId = syncData.mcp_gas_script_id || localData.mcp_gas_script_id;
-        const deploymentId = syncData.mcp_gas_deployment_id || localData.mcp_gas_deployment_id || '';
-        const webAppUrl = syncData.mcp_gas_url || localData.mcp_gas_url || '';
-        const accessKey = syncData.access_key || localData.access_key || '';
-
-        if (scriptId) {
-          const isAlive = await this.verifyScriptAlive(scriptId, token);
-          if (isAlive) {
-            this.log(`📦 Found existing active project in Chrome storage: ${scriptId}`);
-            return { scriptId, deploymentId, webAppUrl, accessKey };
-          } else {
-            this.log(`⚠️ Cached project ${scriptId} is not accessible. Purging stale storage...`);
-            if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
-            if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
-          }
-        }
-      } catch (e) {
-        console.warn('Storage check error:', e);
+    // 1. Check Google Drive for persistent config file
+    const configFromDrive = await this.loadDriveConfigFile(token, childName, academicYear);
+    if (configFromDrive && configFromDrive.scriptId) {
+      const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
+      if (isAlive) {
+        this.log(`📦 Found existing active project from Drive config (${configFromDrive.scriptId}). Reusing...`);
+        return configFromDrive;
+      } else {
+        this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is not accessible. Discarding stale config...`);
       }
     }
+
+    // 2. If config file is NOT present in Google Drive (e.g. parent deleted it):
+    this.log('ℹ️ No active config file found in Google Drive. Purging local cache to create fresh Google Apps Script project...');
+    if (typeof chrome !== 'undefined' && chrome.storage) {
+      if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id', 'access_key']).catch(() => {});
+      if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id', 'access_key']).catch(() => {});
+    }
+    try {
+      const activeChild = await ChildManager.getActiveProfile();
+      if (activeChild && activeChild.id) {
+        await ChildManager.updateProfile(activeChild.id, {
+          gasScriptId: undefined,
+          gasDeploymentUrl: undefined
+        });
+      }
+    } catch (e) {}
 
     return null;
   }
