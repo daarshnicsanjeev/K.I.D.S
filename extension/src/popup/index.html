@@ -275,7 +275,7 @@
             <li><strong>1. Log in:</strong> Open your school ERP or kids platform in a browser tab and sign in.</li>
             <li><strong>2. Authorize:</strong> Click <em>"1. Authorize & Capture Active Tab"</em> below to connect.</li>
             <li><strong>3. Navigate:</strong> In that tab, navigate to the specific page you want to track (e.g. Homework, Attendance, Game stats).</li>
-            <li><strong>4. Track:</strong> Return here and click <em>"2. Track & Register Page"</em> to save it.</li>
+            <li><strong>4. Name & Track:</strong> Enter a custom name below (e.g. "Homework", "Chess Rating") and click <em>"2. Track & Register Page"</em>.</li>
           </ol>
         </div>
 
@@ -290,18 +290,24 @@
           </div>
         </div>
 
-        <!-- Phase 2: Track & Register Feature -->
+        <!-- Phase 2: Track & Register Feature (with Editable Name) -->
         <div id="featureSection" class="hidden mt-1" aria-hidden="true" hidden>
           <div class="status-box mb-2" style="border-left: 3px solid var(--success-color);">
             <span>✅</span>
-            <span><strong>Tab Connected!</strong> Navigate to your target page (e.g. Homework, Attendance, Grades) in that tab, then click below:</span>
+            <span><strong>Tab Connected!</strong> Navigate to your target page, customize the feature name below, and click Track:</span>
           </div>
+
+          <div class="form-group mb-2">
+            <label for="txtPortalFeatureName" style="font-size: 0.75rem; font-weight: 600; color: var(--brand-navy);">Page / Feature Name (e.g. Homework, Attendance, Stats):</label>
+            <input type="text" id="txtPortalFeatureName" placeholder="e.g. Homework" maxlength="40" style="padding: 6px 8px; font-size: 0.75rem;" />
+          </div>
+
           <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2">
             📸 2. Track & Register Page
           </button>
           <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden>
             <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--brand-navy);">✨ Active Tracked Features:</h4>
-            <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0;"></ul>
+            <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
           </div>
         </div>
 

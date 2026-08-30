@@ -67,6 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const connectionStatusBox = document.getElementById('connectionStatusBox') as HTMLElement;
   const connectionStatusText = document.getElementById('connectionStatusText') as HTMLElement;
   const featureSection = document.getElementById('featureSection') as HTMLElement;
+  const txtPortalFeatureName = document.getElementById('txtPortalFeatureName') as HTMLInputElement;
   const btnRegisterFeature = document.getElementById('btnRegisterFeature') as HTMLButtonElement;
   const activeFeaturesBox = document.getElementById('activeFeaturesBox') as HTMLElement;
   const step3RegisteredToolsList = document.getElementById('step3RegisteredToolsList') as HTMLUListElement;
@@ -717,6 +718,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       setA11yVisibility(featureSection, true);
       if (connectionStatusText) connectionStatusText.textContent = `Connected to: ${new URL(activeTab.url).hostname}`;
+
+      const suggestedName = (activeTab.title || 'Dashboard')
+        .replace(/[^a-zA-Z0-9 _-]/g, '')
+        .trim()
+        .substring(0, 30);
+      if (txtPortalFeatureName) {
+        txtPortalFeatureName.value = suggestedName || 'Dashboard';
+        txtPortalFeatureName.focus();
+      }
     } catch (e: any) {
       if (connectionStatusText) connectionStatusText.textContent = `Error: ${e.message}`;
     } finally {
@@ -733,23 +743,31 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!activeTab || !activeTab.url) throw new Error('No active tab.');
 
       const urlObj = new URL(activeTab.url);
-      const featureName = (activeTab.title || 'Dashboard').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 30);
+      const customName = (txtPortalFeatureName?.value || activeTab.title || 'Dashboard').trim();
+      const cleanFeature = customName.replace(/[^a-zA-Z0-9 _-]/g, '').trim().substring(0, 30) || 'Portal Page';
+      const funcSuffix = cleanFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
       const newTool = {
         domain: urlObj.hostname,
-        feature: featureName,
-        name: `get_${featureName.toLowerCase()}`,
+        feature: cleanFeature,
+        name: `get_${funcSuffix}`,
         url: activeTab.url
       };
 
       let existingTools = currentConfiguringProfile?.registeredTools || [];
-      if (!existingTools.some((t: any) => t.url === newTool.url)) {
+      const existingIdx = existingTools.findIndex((t: any) => t.url === newTool.url);
+      if (existingIdx >= 0) {
+        existingTools[existingIdx] = newTool;
+      } else {
         existingTools.push(newTool);
-        if (currentConfiguringProfile) {
-          currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: existingTools });
-        }
       }
+
+      if (currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: existingTools });
+      }
+
       renderStep3RegisteredTools();
-      alert(`🎉 Successfully tracking "${featureName}" for ${currentConfiguringProfile?.name || 'child'}!`);
+      alert(`🎉 Successfully tracking "${cleanFeature}" for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
       alert(`Tracking failed: ${e.message}`);
     } finally {
@@ -763,16 +781,64 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tools = currentConfiguringProfile?.registeredTools || [];
     step3RegisteredToolsList.innerHTML = '';
     if (tools.length === 0) {
-      activeFeaturesBox?.classList.add('hidden');
+      setA11yVisibility(activeFeaturesBox, false);
       return;
     }
-    activeFeaturesBox?.classList.remove('hidden');
-    tools.forEach((t: any) => {
+    setA11yVisibility(activeFeaturesBox, true);
+    tools.forEach((t: any, idx: number) => {
       const li = document.createElement('li');
       li.style.fontSize = '0.74rem';
-      li.style.padding = '3px 0';
-      li.textContent = `🔹 ${t.feature} (${t.domain})`;
+      li.style.padding = '6px 8px';
+      li.style.background = 'var(--card-surface)';
+      li.style.borderRadius = '6px';
+      li.style.border = '1px solid var(--border-color)';
+      li.style.display = 'flex';
+      li.style.justifyContent = 'space-between';
+      li.style.alignItems = 'center';
+      li.style.gap = '6px';
+
+      li.innerHTML = `
+        <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+          <span>🔹</span> <strong>${t.feature}</strong> <span style="font-size:0.68rem; color:var(--text-muted);">(${t.domain})</span>
+        </div>
+        <div style="display: flex; gap: 4px;">
+          <button class="btn btn-secondary btn-sm btn-rename-feature" data-index="${idx}" style="font-size: 0.68rem; padding: 2px 6px;">✏️ Rename</button>
+          <button class="btn btn-danger btn-sm btn-delete-feature" data-index="${idx}" style="font-size: 0.68rem; padding: 2px 6px;">🗑️</button>
+        </div>
+      `;
       step3RegisteredToolsList.appendChild(li);
+    });
+
+    // Wire Rename & Delete button listeners
+    document.querySelectorAll('.btn-rename-feature').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        const targetTool = tools[idx];
+        if (!targetTool) return;
+        const newName = prompt(`Enter a new name for "${targetTool.feature}":`, targetTool.feature);
+        if (newName && newName.trim()) {
+          const clean = newName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').substring(0, 30);
+          targetTool.feature = clean;
+          targetTool.name = `get_${clean.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '')}`;
+          if (currentConfiguringProfile) {
+            currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+          }
+          renderStep3RegisteredTools();
+        }
+      });
+    });
+
+    document.querySelectorAll('.btn-delete-feature').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
+        if (confirm(`Remove "${tools[idx]?.feature}" from tracked pages?`)) {
+          tools.splice(idx, 1);
+          if (currentConfiguringProfile) {
+            currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+          }
+          renderStep3RegisteredTools();
+        }
+      });
     });
   }
 
