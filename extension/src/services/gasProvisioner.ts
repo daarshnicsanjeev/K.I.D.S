@@ -253,7 +253,7 @@ export class GasProvisionerService {
     };
   }
 
-  private static CONFIG_FILE_NAME = 'school_mcp_config.json';
+  private static CONFIG_FILE_NAME = 'K.I.D.S._mcp_config.json';
 
   /**
    * Pure Apps Script REST API Verification:
@@ -397,12 +397,12 @@ export class GasProvisionerService {
   }
 
   /**
-   * Reads persistent school_mcp_config.json from Google Drive.
+   * Reads persistent K.I.D.S._mcp_config.json from Google Drive.
    */
   private static async loadDriveConfigFile(token: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey: string } | null> {
     try {
-      this.log('🔍 Searching Drive for extension config file (school_mcp_config.json)...');
-      const query = encodeURIComponent(`name = '${this.CONFIG_FILE_NAME}' and trashed = false`);
+      this.log('🔍 Searching Drive for K.I.D.S. extension config file (K.I.D.S._mcp_config.json)...');
+      const query = encodeURIComponent(`(name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
       const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)&pageSize=10`;
       const res = await fetch(url, { headers: { 'Authorization': `Bearer ${token}` } });
       if (!res.ok) return null;
@@ -426,11 +426,11 @@ export class GasProvisionerService {
   }
 
   /**
-   * Saves persistent school_mcp_config.json to Google Drive.
+   * Saves persistent K.I.D.S._mcp_config.json to Google Drive.
    */
   private static async saveDriveConfigFile(scriptId: string, deploymentId: string, accessKey: string, webAppUrl: string, token: string): Promise<void> {
     try {
-      this.log('💾 Saving configuration to Drive (school_mcp_config.json)...');
+      this.log('💾 Saving configuration to Drive (K.I.D.S._mcp_config.json)...');
       const configData = JSON.stringify({ scriptId, deploymentId, accessKey, webAppUrl, updatedAt: new Date().toISOString() });
       
       const query = encodeURIComponent(`name = '${this.CONFIG_FILE_NAME}' and trashed = false`);
@@ -449,7 +449,7 @@ export class GasProvisionerService {
           },
           body: configData
         });
-        this.log(`✅ Updated existing school_mcp_config.json in Drive.`);
+        this.log(`✅ Updated existing K.I.D.S._mcp_config.json in Drive.`);
       } else {
         const metadata = {
           name: this.CONFIG_FILE_NAME,
@@ -617,11 +617,11 @@ export class GasProvisionerService {
    * Creates a new Google Apps Script project via Apps Script REST API (POST /v1/projects).
    */
   private static async createProject(token: string): Promise<any> {
-    let projectTitle = 'Personal School MCP Sync Engine';
+    let projectTitle = 'Kids Intelligent Dashboard System (K.I.D.S.)';
     try {
       const active = await ChildManager.getActiveProfile();
       if (active && active.name) {
-        projectTitle = `School Portal MCP Server - ${active.name}`;
+        projectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${active.name}`;
       }
     } catch (e) {}
 
@@ -2264,7 +2264,7 @@ var DriveContentExtractor = {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
-        description: 'Production Release Version 1'
+        description: 'Kids Intelligent Dashboard System (K.I.D.S.) Version 1'
       })
     });
 
@@ -2289,7 +2289,7 @@ var DriveContentExtractor = {
       body: JSON.stringify({
         versionNumber: versionNumber,
         manifestFileName: 'appsscript',
-        description: 'Production MCP Sync Server Deployment'
+        description: 'Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment'
       })
     });
 
@@ -2315,7 +2315,7 @@ var DriveContentExtractor = {
         deploymentConfig: {
           versionNumber: versionNumber,
           manifestFileName: 'appsscript',
-          description: `Production release v${versionNumber}`
+          description: 'Kids Intelligent Dashboard System (K.I.D.S.) MCP Server Deployment v' + versionNumber
         }
       })
     });

@@ -5,7 +5,7 @@ function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({
     status: "ok",
     mcpVersion: "1.0",
-    name: "School Portal MCP Server"
+    name: "Kids Intelligent Dashboard System (K.I.D.S.) MCP Server"
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -29,7 +29,7 @@ function doPost(e) {
           tools: {}
         },
         serverInfo: {
-          name: "School Portal MCP Server",
+          name: "Kids Intelligent Dashboard System (K.I.D.S.) MCP Server",
           version: "1.0.0"
         }
       };
