@@ -84,7 +84,7 @@ export class GasProvisionerService {
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (!forceNew) {
-      this.log('🔍 Searching Google Drive for extension config file (school_mcp_config.json)...');
+      this.log('🔍 Searching Google Drive for extension config file (K.I.D.S._mcp_config.json)...');
       const configFromDrive = await this.loadDriveConfigFile(token);
       if (configFromDrive && configFromDrive.scriptId) {
         const isAlive = await this.verifyScriptAlive(configFromDrive.scriptId, token);
@@ -95,7 +95,7 @@ export class GasProvisionerService {
           this.log(`⚠️ Drive config project ${configFromDrive.scriptId} is not accessible. Discarding stale config...`);
         }
       } else {
-        this.log('ℹ️ No school_mcp_config.json found in Google Drive. Clearing stale local cache for fresh project creation...');
+        this.log('ℹ️ No K.I.D.S._mcp_config.json found in Google Drive. Clearing stale local cache for fresh project creation...');
         if (typeof chrome !== 'undefined' && chrome.storage) {
           if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
           if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_deployment_id', 'mcp_gas_url', 'access_key']).catch(() => {});
@@ -465,7 +465,7 @@ export class GasProvisionerService {
           headers: { 'Authorization': `Bearer ${token}` },
           body: form
         });
-        this.log('✅ Created school_mcp_config.json in Drive root.');
+        this.log('✅ Created K.I.D.S._mcp_config.json in Drive root.');
       }
     } catch (e) {
       this.log(`⚠️ Could not save Drive config file: ${e}`);
