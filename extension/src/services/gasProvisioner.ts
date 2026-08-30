@@ -255,6 +255,20 @@ export class GasProvisionerService {
   public static async verifyScriptAlive(scriptId: string, token: string): Promise<boolean> {
     if (!scriptId) return false;
     try {
+      // 1. Check Google Drive file metadata to ensure project is NOT in the Bin/Trash
+      const driveRes = await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}?fields=id,name,trashed`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (driveRes.ok) {
+        const fileData = await driveRes.json();
+        if (fileData.trashed) {
+          this.log(`⚠️ Project ${scriptId} (${fileData.name || 'unnamed'}) is in the Bin/Trash.`);
+          return false;
+        }
+        return true;
+      }
+
+      // 2. Fallback to Apps Script content check
       const scriptRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/content`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
@@ -281,6 +295,12 @@ export class GasProvisionerService {
             webAppUrl: activeChild.gasDeploymentUrl || '',
             accessKey: ''
           };
+        } else {
+          this.log(`⚠️ Profile project ${activeChild.gasScriptId} is trashed/deleted. Purging stale profile ID...`);
+          await ChildManager.updateProfile(activeChild.id, {
+            gasScriptId: undefined,
+            gasDeploymentUrl: undefined
+          });
         }
       }
     } catch (e) {}
@@ -301,6 +321,10 @@ export class GasProvisionerService {
           if (isAlive) {
             this.log(`📦 Found existing active project in Chrome storage: ${scriptId}`);
             return { scriptId, deploymentId, webAppUrl, accessKey };
+          } else {
+            this.log(`⚠️ Cached project ${scriptId} was deleted or moved to trash. Purging stale credentials...`);
+            if (chrome.storage.sync) await chrome.storage.sync.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
+            if (chrome.storage.local) await chrome.storage.local.remove(['mcp_gas_script_id', 'mcp_gas_url', 'mcp_gas_deployment_id']);
           }
         }
       } catch (e) {
