@@ -37,27 +37,6 @@ chrome.runtime.onInstalled.addListener(async (details) => {
   };
 
   await chrome.storage.local.set(restoredState);
-
-  // Update GAS backend ONLY when the extension itself is updated
-  if (details.reason === 'update') {
-    const CURRENT_GAS_SCRIPT_VERSION = '2.3.0';
-    if (restoredState.mcp_gas_url && (restoredState as any).gas_script_version !== CURRENT_GAS_SCRIPT_VERSION) {
-      try {
-        const result = await GasProvisionerService.provision();
-        const updated = {
-          mcp_gas_url: result.webAppUrl,
-          mcp_gas_script_id: result.scriptId,
-          gas_script_version: CURRENT_GAS_SCRIPT_VERSION,
-          last_script_updated_at: new Date().toISOString()
-        };
-        await chrome.storage.local.set(updated);
-        if (chrome.storage.sync) await chrome.storage.sync.set(updated);
-        console.log(`[ServiceWorker] Updated GAS script to v${CURRENT_GAS_SCRIPT_VERSION} on extension update.`);
-      } catch (err) {
-        console.warn('[ServiceWorker] Auto-update GAS script on extension update skipped/failed:', err);
-      }
-    }
-  }
 });
 
 let isSyncInProgress = false;
