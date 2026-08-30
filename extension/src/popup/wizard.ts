@@ -298,6 +298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (found) {
           currentConfiguringProfile = found;
           await ChildManager.setActiveProfileId(found.id);
+          await chrome.storage.local.set({ wizard_configuring_child_id: found.id, wizard_current_step: 1 }).catch(() => {});
           populateStep1ForEditing(found);
           showWizardStep(1);
         }
@@ -342,7 +343,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // ==========================================
-  // INITIAL STARTUP ROUTING
+  // INITIAL STARTUP ROUTING (MULTI-CHILD SAFE)
   // ==========================================
   const activeProfile = await ChildManager.getActiveProfile();
   const isFullyConfigured = activeProfile && Boolean(
@@ -351,16 +352,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     (activeProfile.registeredTools && activeProfile.registeredTools.length > 0)
   );
 
-  const wizardState = await chrome.storage.local.get(['wizard_current_step']);
+  const wizardState = await chrome.storage.local.get(['wizard_current_step', 'wizard_configuring_child_id']);
   const savedStep = wizardState.wizard_current_step ? Number(wizardState.wizard_current_step) : 0;
+  const savedChildId = wizardState.wizard_configuring_child_id;
 
-  if (activeProfile && activeProfile.name && !activeProfile.name.toLowerCase().startsWith('child 1')) {
-    currentConfiguringProfile = activeProfile;
-    populateStep1ForEditing(activeProfile);
+  const allProfiles = await ChildManager.getProfiles(false);
+  let targetProfile: ChildProfile | null = null;
+  if (savedChildId) {
+    targetProfile = allProfiles.find(p => p.id === savedChildId) || null;
+  }
+  if (!targetProfile) {
+    targetProfile = activeProfile;
+  }
+
+  if (targetProfile && targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1')) {
+    currentConfiguringProfile = targetProfile;
+    await ChildManager.setActiveProfileId(targetProfile.id);
+    populateStep1ForEditing(targetProfile);
   }
 
   if (savedStep >= 1 && savedStep <= 4) {
-    // If the user was in the middle of step 2, 3, or 4 when switching tabs, resume directly there!
+    // If user was in the middle of step 2, 3, or 4 for THIS specific child, resume directly!
     showWizardStep(savedStep);
   } else if (isFullyConfigured && activeProfile) {
     currentConfiguringProfile = activeProfile;
@@ -430,6 +442,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     } else {
       currentConfiguringProfile = await ChildManager.createProfile(validation.cleanName, selectedYear);
+    }
+
+    if (currentConfiguringProfile) {
+      await ChildManager.setActiveProfileId(currentConfiguringProfile.id);
+      await chrome.storage.local.set({ wizard_configuring_child_id: currentConfiguringProfile.id }).catch(() => {});
     }
 
     if (lblStep1ActiveChild) {
@@ -792,8 +809,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   // FAMILY DASHBOARD ACTIONS
   // ==========================================
-  btnAddAnotherKid?.addEventListener('click', () => {
+  btnAddAnotherKid?.addEventListener('click', async () => {
     currentConfiguringProfile = null;
+    await chrome.storage.local.remove(['wizard_configuring_child_id']).catch(() => {});
+    await chrome.storage.local.set({ wizard_current_step: 1 }).catch(() => {});
     if (txtStep1ChildName) txtStep1ChildName.value = '';
     step1ChildSetupBox?.classList.remove('hidden');
     step1ChildConfirmedBadge?.classList.add('hidden');
