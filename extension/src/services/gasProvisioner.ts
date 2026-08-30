@@ -717,8 +717,7 @@ function doGet(e) {
     status: 'online',
     server: serverName,
     childName: CONFIG.childName || 'Student',
-    academicYear: CONFIG.academicYear || '',
-    accessKey: e.parameter ? e.parameter.accessKey : null
+    academicYear: CONFIG.academicYear || ''
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
