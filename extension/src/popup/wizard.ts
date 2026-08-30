@@ -149,6 +149,42 @@ document.addEventListener('DOMContentLoaded', async () => {
   refreshDiagnosticLogs();
   setInterval(refreshDiagnosticLogs, 3000);
 
+  // Accessibility & Visibility Helper for JAWS / Screen Readers
+  function setA11yVisibility(el: HTMLElement | null, isVisible: boolean) {
+    if (!el) return;
+    if (isVisible) {
+      el.classList.remove('hidden');
+      el.removeAttribute('hidden');
+      el.setAttribute('aria-hidden', 'false');
+    } else {
+      el.classList.add('hidden');
+      el.setAttribute('hidden', '');
+      el.setAttribute('aria-hidden', 'true');
+    }
+  }
+
+  const mainAppContainer = document.getElementById('mainAppContainer') as HTMLElement;
+
+  function openModal(modalEl: HTMLElement | null) {
+    if (!modalEl) return;
+    setA11yVisibility(modalEl, true);
+    if (mainAppContainer) {
+      mainAppContainer.setAttribute('aria-hidden', 'true');
+      mainAppContainer.setAttribute('inert', '');
+    }
+    const focusTarget = modalEl.querySelector('button, [tabindex="0"]') as HTMLElement;
+    focusTarget?.focus();
+  }
+
+  function closeModal(modalEl: HTMLElement | null) {
+    if (!modalEl) return;
+    setA11yVisibility(modalEl, false);
+    if (mainAppContainer) {
+      mainAppContainer.setAttribute('aria-hidden', 'false');
+      mainAppContainer.removeAttribute('inert');
+    }
+  }
+
   // Stepper Visuals & Click Handlers
   function updateStepper(step: number) {
     currentWizardStep = step;
@@ -162,8 +198,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const line = document.getElementById(`line${i}`);
       if (dot) {
         dot.classList.remove('active', 'completed');
-        if (i === step) dot.classList.add('active');
-        else if (i < step) dot.classList.add('completed');
+        if (i === step) {
+          dot.classList.add('active');
+          dot.setAttribute('aria-current', 'step');
+        } else {
+          dot.removeAttribute('aria-current');
+          if (i < step) dot.classList.add('completed');
+        }
       }
       if (line) {
         line.classList.remove('completed');
@@ -178,6 +219,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     dot?.addEventListener('click', () => {
       showWizardStep(i);
     });
+    dot?.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        showWizardStep(i);
+      }
+    });
   }
 
   // View Navigation Controllers: Configure Mode (Steps 1-4) vs Family Dashboard
@@ -188,29 +235,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // 1. Completely hide Family Dashboard in Configure Mode
-    cardFamilyDashboard?.classList.add('hidden');
+    setA11yVisibility(cardFamilyDashboard, false);
     
     // 2. Show Stepper & Step Badge
-    wizardStepper?.classList.remove('hidden');
-    if (stepBadge) stepBadge.classList.remove('hidden');
+    setA11yVisibility(wizardStepper, true);
+    if (stepBadge) setA11yVisibility(stepBadge, true);
 
-    // 3. Toggle step cards
-    cardStep1?.classList.add('hidden');
-    cardStep2?.classList.add('hidden');
-    cardStep3?.classList.add('hidden');
-    cardStep4?.classList.add('hidden');
+    // 3. Toggle step cards with full ARIA/JAWS screen-reader isolation
+    setA11yVisibility(cardStep1, step === 1);
+    setA11yVisibility(cardStep2, step === 2);
+    setA11yVisibility(cardStep3, step === 3);
+    setA11yVisibility(cardStep4, step === 4);
 
     updateStepper(step);
 
-    if (step === 1) cardStep1?.classList.remove('hidden');
-    else if (step === 2) {
-      cardStep2?.classList.remove('hidden');
+    if (step === 2) {
       updateStep2RadioLabels();
     } else if (step === 3) {
-      cardStep3?.classList.remove('hidden');
       renderStep3RegisteredTools();
     } else if (step === 4) {
-      cardStep4?.classList.remove('hidden');
       if (lblStep4KidName && currentConfiguringProfile) {
         lblStep4KidName.textContent = currentConfiguringProfile.name;
       }
@@ -219,19 +262,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   async function showFamilyDashboard() {
-    // Hide all Wizard step cards & Stepper
-    cardStep1?.classList.add('hidden');
-    cardStep2?.classList.add('hidden');
-    cardStep3?.classList.add('hidden');
-    cardStep4?.classList.add('hidden');
-    wizardStepper?.classList.add('hidden');
+    // Hide all Wizard step cards & Stepper with full JAWS accessibility isolation
+    setA11yVisibility(cardStep1, false);
+    setA11yVisibility(cardStep2, false);
+    setA11yVisibility(cardStep3, false);
+    setA11yVisibility(cardStep4, false);
+    setA11yVisibility(wizardStepper, false);
 
     if (stepBadge) {
       stepBadge.textContent = 'Dashboard';
       stepBadge.style.background = 'var(--brand-navy)';
     }
 
-    cardFamilyDashboard?.classList.remove('hidden');
+    setA11yVisibility(cardFamilyDashboard, true);
     await renderFamilyDashboardProfiles();
   }
 
@@ -377,7 +420,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!restoringProgressOverlay) return;
     restoringProgressOverlay.classList.add('fade-out');
     setTimeout(() => {
-      restoringProgressOverlay.classList.add('hidden');
+      setA11yVisibility(restoringProgressOverlay, false);
     }, 200);
   }
 
@@ -602,15 +645,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // STEP 3 HANDLERS (PORTALS & SKIP MODAL)
   // ==========================================
   btnSkipStep3?.addEventListener('click', () => {
-    gamingAlertModal?.classList.remove('hidden');
+    openModal(gamingAlertModal);
   });
 
   btnModalTrackGaming?.addEventListener('click', () => {
-    gamingAlertModal?.classList.add('hidden');
+    closeModal(gamingAlertModal);
   });
 
   btnModalContinueSkip?.addEventListener('click', () => {
-    gamingAlertModal?.classList.add('hidden');
+    closeModal(gamingAlertModal);
     showWizardStep(4);
   });
 
@@ -799,7 +842,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     if (!hasClassroom && !hasPortals && !hasChats) {
       if (lblInvariantKidName) lblInvariantKidName.textContent = prof.name;
-      invariantModal?.classList.remove('hidden');
+      openModal(invariantModal);
       return;
     }
 
@@ -817,7 +860,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnFinishChildSetup?.addEventListener('click', completeChildSetup);
   btnFinishSetupBottom?.addEventListener('click', completeChildSetup);
   btnCloseInvariantModal?.addEventListener('click', () => {
-    invariantModal?.classList.add('hidden');
+    closeModal(invariantModal);
   });
 
   btnNavStep4ToStep3?.addEventListener('click', () => showWizardStep(3));

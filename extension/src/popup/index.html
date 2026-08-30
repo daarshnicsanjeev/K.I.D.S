@@ -8,58 +8,58 @@
 </head>
 <body>
   <!-- Progress Restoration Indicator -->
-  <div id="restoringProgressOverlay" class="restoring-overlay">
+  <div id="restoringProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="polite" aria-hidden="true" hidden>
     <div class="restoring-spinner"></div>
     <div style="font-size: 0.88rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif;">Restoring Progress...</div>
     <div style="font-size: 0.72rem; color: var(--text-muted);" id="lblRestoringSubtext">Loading your active setup</div>
   </div>
 
-  <div class="container">
+  <!-- Gaming & Video Platform Educational Alert Modal (Step 3 Skip) -->
+  <div id="gamingAlertModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalGamingTitle" aria-hidden="true" hidden>
+    <div class="modal-content">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;">🎮</div>
+      <h3 id="modalGamingTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Track Kids Platforms & Games</h3>
+      
+      <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #334155; margin-bottom: 14px; text-align: left; border-left: 4px solid #ed8936;">
+        💡 <strong>Did you know?</strong> Beyond school portals, you can track <strong>kids' educational games, video platforms, and learning dashboards</strong> (e.g. Chess.com, Scratch, Khan Academy, YouTube Kids) to monitor your child's screen time and learning progress!
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnModalTrackGaming" class="btn btn-primary" style="flex: 1; font-size: 0.78rem;">🎮 Track Platform</button>
+        <button id="btnModalContinueSkip" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Continue ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Minimum Platform Invariant Warning Modal (Step 4 Finish) -->
+  <div id="invariantModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalInvariantTitle" aria-hidden="true" hidden>
+    <div class="modal-content">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;">⚠️</div>
+      <h3 id="modalInvariantTitle" style="font-size: 0.98rem; font-weight: 700; color: #991b1b; margin-bottom: 8px;">At Least One Platform Required</h3>
+      
+      <div style="background: #fef2f2; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #991b1b; margin-bottom: 14px; text-align: left; border-left: 4px solid #ef4444;">
+        Please connect at least <strong>one source</strong> (Google Classroom in Step 2, a School/Kids Portal in Step 3, or a School Chat Group in Step 4) so your AI assistant has data to analyze for <span id="lblInvariantKidName" style="font-weight: 700;">your child</span>.
+      </div>
+
+      <button id="btnCloseInvariantModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem;">
+        Got it, let me connect a source
+      </button>
+    </div>
+  </div>
+
+  <div class="container" id="mainAppContainer">
     <header class="header">
       <div class="logo-title">
         <span class="icon">🎓</span>
         <h1 id="appHeaderTitle">Kids Intelligent Dashboard System (K.I.D.S.)</h1>
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
-        <span id="stepBadge" class="badge">Step 1 of 4</span>
+        <span id="stepBadge" class="badge" aria-live="polite">Step 1 of 4</span>
       </div>
     </header>
 
-    <!-- Gaming & Video Platform Educational Alert Modal (Step 3 Skip) -->
-    <div id="gamingAlertModal" class="modal-overlay hidden">
-      <div class="modal-content">
-        <div style="font-size: 2.2rem; margin-bottom: 6px;">🎮</div>
-        <h3 style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Track Kids Platforms & Games</h3>
-        
-        <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #334155; margin-bottom: 14px; text-align: left; border-left: 4px solid #ed8936;">
-          💡 <strong>Did you know?</strong> Beyond school portals, you can track <strong>kids' educational games, video platforms, and learning dashboards</strong> (e.g. Chess.com, Scratch, Khan Academy, YouTube Kids) to monitor your child's screen time and learning progress!
-        </div>
-
-        <div style="display: flex; gap: 8px;">
-          <button id="btnModalTrackGaming" class="btn btn-primary" style="flex: 1; font-size: 0.78rem;">🎮 Track Platform</button>
-          <button id="btnModalContinueSkip" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Continue ➔</button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Minimum Platform Invariant Warning Modal (Step 4 Finish) -->
-    <div id="invariantModal" class="modal-overlay hidden">
-      <div class="modal-content">
-        <div style="font-size: 2.2rem; margin-bottom: 6px;">⚠️</div>
-        <h3 style="font-size: 0.98rem; font-weight: 700; color: #991b1b; margin-bottom: 8px;">At Least One Platform Required</h3>
-        
-        <div style="background: #fef2f2; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #991b1b; margin-bottom: 14px; text-align: left; border-left: 4px solid #ef4444;">
-          Please connect at least <strong>one source</strong> (Google Classroom in Step 2, a School/Kids Portal in Step 3, or a School Chat Group in Step 4) so your AI assistant has data to analyze for <span id="lblInvariantKidName" style="font-weight: 700;">your child</span>.
-        </div>
-
-        <button id="btnCloseInvariantModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem;">
-          Got it, let me connect a source
-        </button>
-      </div>
-    </div>
-
     <!-- On-Device Gemini Nano AI Normalizer Status Bar -->
-    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #ffffff; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.75rem; cursor: pointer;" title="Click to view Gemini Nano AI status">
+    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #ffffff; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.75rem; cursor: pointer;" title="Click to view Gemini Nano AI status" role="status" aria-label="AI Engine Status">
       <div style="display: flex; align-items: center; gap: 5px;">
         <span>✨</span>
         <span style="color: var(--text-secondary); font-weight: 600;">Built-in AI:</span>
@@ -69,21 +69,21 @@
     </div>
 
     <!-- Stepper Indicator (4 Steps) -->
-    <div id="wizardStepper" class="stepper" style="cursor: pointer;" title="Click any step to navigate">
-      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid First Name">1</div>
-      <div class="step-line" id="line1"></div>
-      <div class="step-dot" id="dot2" title="Step 2: Google Classroom & MCP Server">2</div>
-      <div class="step-line" id="line2"></div>
-      <div class="step-dot" id="dot3" title="Step 3: School & Kids Portals">3</div>
-      <div class="step-line" id="line3"></div>
-      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups (WhatsApp)">4</div>
+    <div id="wizardStepper" class="stepper" role="navigation" aria-label="Onboarding Progress Stepper">
+      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid First Name" aria-label="Step 1: Parent Account and Kid First Name" tabindex="0" role="button">1</div>
+      <div class="step-line" id="line1" aria-hidden="true"></div>
+      <div class="step-dot" id="dot2" title="Step 2: Google Classroom & MCP Server" aria-label="Step 2: Google Classroom and MCP Server" tabindex="0" role="button">2</div>
+      <div class="step-line" id="line2" aria-hidden="true"></div>
+      <div class="step-dot" id="dot3" title="Step 3: School & Kids Portals" aria-label="Step 3: School and Kids Portals" tabindex="0" role="button">3</div>
+      <div class="step-line" id="line3" aria-hidden="true"></div>
+      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" aria-label="Step 4: School Chat Groups" tabindex="0" role="button">4</div>
     </div>
 
     <main class="main-content">
       <!-- ========================================== -->
       <!-- VIEW A: FAMILY DASHBOARD (Configured View) -->
       <!-- ========================================== -->
-      <section id="familyDashboardCard" class="card hidden">
+      <section id="familyDashboardCard" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <h2>Family Profiles & MCP Servers</h2>
           <button id="btnAddAnotherKid" class="btn btn-primary btn-sm" style="background: var(--brand-navy);">
@@ -130,7 +130,7 @@
       <!-- ========================================== -->
 
       <!-- Step 1: Personal Account & Kid First Name & Academic Year -->
-      <section id="step1Card" class="card">
+      <section id="step1Card" class="card" aria-hidden="false">
         <h2>Step 1: Parent Account & Kid First Name</h2>
         <p class="subtitle">
           Connect your <strong>Personal Google Account</strong>. Your private cloud is used to store your kid's archives and attachments securely in <code>K.I.D.S. Data</code>.
@@ -149,11 +149,11 @@
         </button>
 
         <!-- Kid Setup Box -->
-        <div id="step1ChildSetupBox" class="hidden mb-2" style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
+        <div id="step1ChildSetupBox" class="hidden mb-2" aria-hidden="true" hidden style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
           <div class="form-group">
             <label for="txtStep1ChildName">Kid's First Name (letters only):</label>
             <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" />
-            <span id="lblStep1NameError" class="hidden" style="font-size: 0.72rem; color: #ef4444; font-weight: 600;"></span>
+            <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600;"></span>
           </div>
 
           <div class="form-group">
@@ -169,7 +169,7 @@
         </div>
 
         <!-- Confirmed Kid Profile Status -->
-        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" style="border-left: 3px solid var(--success-color);">
+        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color);">
           <span>👤</span>
           <div>
             <strong>Configuring Profile:</strong>
@@ -177,7 +177,7 @@
           </div>
         </div>
 
-        <div id="step1ConnectedActions" class="hidden">
+        <div id="step1ConnectedActions" class="hidden" aria-hidden="true" hidden>
           <div style="display: flex; gap: 6px;">
             <button id="btnStep1SwitchAccount" class="btn btn-secondary btn-sm" style="flex: 1;">
               🔄 Switch Account
@@ -190,7 +190,7 @@
       </section>
 
       <!-- Step 2: Google Classroom & MCP Server (Personalized Radio Selection) -->
-      <section id="step2Card" class="card hidden">
+      <section id="step2Card" class="card hidden" aria-hidden="true" hidden>
         <h2>Step 2: Google Classroom & MCP Server</h2>
         <p class="subtitle" id="lblStep2Subtitle">Does your child's school use Google Classroom?</p>
 
@@ -234,7 +234,7 @@
         </div>
 
         <!-- Section 2B: Personal Account MCP Server Flow (Classroom Skipped) -->
-        <div id="step2PersonalMcpSection" class="hidden">
+        <div id="step2PersonalMcpSection" class="hidden" aria-hidden="true" hidden>
           <div class="status-box mb-2" style="border-left: 3px solid var(--accent-color);">
             <span>⚡</span>
             <div style="font-size: 0.74rem;">
@@ -260,7 +260,7 @@
       </section>
 
       <!-- Step 3: School & Kids Portals (Universal Capture with Skip) -->
-      <section id="step3Card" class="card hidden">
+      <section id="step3Card" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <h2>Step 3: School & Kids Portals</h2>
           <button id="btnSkipStep3" class="btn btn-outline btn-sm">⏭️ Skip Portals</button>
@@ -273,14 +273,14 @@
           <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2">
             🚀 1. Capture & Verify Active Tab
           </button>
-          <div id="connectionStatusBox" class="status-box hidden">
+          <div id="connectionStatusBox" class="status-box hidden" aria-hidden="true" hidden>
             <span class="status-icon" id="connectionStatusIcon">⏳</span>
             <span id="connectionStatusText">Verifying portal connection...</span>
           </div>
         </div>
 
         <!-- Phase 2: Feature Registration -->
-        <div id="featureSection" class="hidden mt-2">
+        <div id="featureSection" class="hidden mt-2" aria-hidden="true" hidden>
           <div class="status-box mb-2" style="border-left: 3px solid var(--success-color);">
             <span>✅</span>
             <span><strong>Tab Connected!</strong> Open any specific page (e.g. Homework, Attendance, Game stats) and click below to capture it.</span>
@@ -288,7 +288,7 @@
           <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2">
             📸 2. Register Active Page
           </button>
-          <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden">
+          <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden>
             <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--brand-navy);">✨ Active Tracked Features:</h4>
             <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0;"></ul>
           </div>
@@ -301,7 +301,7 @@
       </section>
 
       <!-- Step 4: School Chat Groups & Communities (Dual-Path Guidance) -->
-      <section id="step4Card" class="card hidden">
+      <section id="step4Card" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <h2>Step 4: School Chat Groups</h2>
           <button id="btnFinishChildSetup" class="btn btn-success btn-sm" style="font-weight: 700;">🎉 Finish Setup</button>
@@ -330,7 +330,7 @@
             <button id="btnScanDriveExports" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">
               🔍 Show Recent Uploads from Google Drive
             </button>
-            <div id="driveExportsContainer" class="hidden mt-1" style="display: flex; flex-direction: column; gap: 4px;">
+            <div id="driveExportsContainer" class="hidden mt-1" aria-hidden="true" hidden style="display: flex; flex-direction: column; gap: 4px;">
               <div id="driveExportsList" style="display: flex; flex-direction: column; gap: 4px;"></div>
             </div>
           </div>
@@ -349,7 +349,7 @@
               <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm" style="flex: 1; background: var(--brand-navy);">
                 📸 1-Click Track Active Chat
               </button>
-              <button id="btnStopActiveSync" class="btn btn-danger btn-sm hidden">
+              <button id="btnStopActiveSync" class="btn btn-danger btn-sm hidden" aria-hidden="true" hidden>
                 ⏹️ Stop Sync
               </button>
             </div>
