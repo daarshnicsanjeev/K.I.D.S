@@ -180,6 +180,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // View Navigation Controllers: Configure Mode (Steps 1-4) vs Family Dashboard
   function showWizardStep(step: number) {
+    // Persist current wizard step across popup close/open (e.g. when opening classroom in another tab)
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.set({ wizard_current_step: step }).catch(() => {});
+    }
+
     // 1. Completely hide Family Dashboard in Configure Mode
     cardFamilyDashboard?.classList.add('hidden');
     
@@ -346,14 +351,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     (activeProfile.registeredTools && activeProfile.registeredTools.length > 0)
   );
 
-  if (isFullyConfigured && activeProfile) {
+  const wizardState = await chrome.storage.local.get(['wizard_current_step']);
+  const savedStep = wizardState.wizard_current_step ? Number(wizardState.wizard_current_step) : 0;
+
+  if (activeProfile && activeProfile.name && !activeProfile.name.toLowerCase().startsWith('child 1')) {
+    currentConfiguringProfile = activeProfile;
+    populateStep1ForEditing(activeProfile);
+  }
+
+  if (savedStep >= 1 && savedStep <= 4) {
+    // If the user was in the middle of step 2, 3, or 4 when switching tabs, resume directly there!
+    showWizardStep(savedStep);
+  } else if (isFullyConfigured && activeProfile) {
     currentConfiguringProfile = activeProfile;
     await showFamilyDashboard();
   } else {
-    if (activeProfile && activeProfile.name && !activeProfile.name.toLowerCase().startsWith('child 1')) {
-      currentConfiguringProfile = activeProfile;
-      populateStep1ForEditing(activeProfile);
-    }
     showWizardStep(1);
   }
 
@@ -761,6 +773,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     await ChildManager.updateProfile(prof.id, {
       trackedChats: state.tracked_whatsapp_chats || []
     });
+
+    await chrome.storage.local.remove(['wizard_current_step']).catch(() => {});
 
     await WhatsAppDiagnosticLogger.log('SUCCESS', 'CHILD', `Completed configuration for ${prof.name}!`);
     alert(`🎉 Setup completed for ${prof.name}! Returning to Family Dashboard.`);
