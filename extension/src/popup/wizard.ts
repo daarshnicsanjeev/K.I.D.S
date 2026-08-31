@@ -519,6 +519,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
       } catch (e) {}
+
+      // Immediately create/sync top-level K.I.D.S._Data_config.json and Year config in Drive
+      PersonalDriveService.syncFullModularHierarchy(auth.token).catch(() => {});
     } catch (e: any) {
       alert(`Google Sign-In failed: ${e.message || String(e)}`);
       btnStep1ConnectPersonal.textContent = '🔐 Sign in with Personal Google Account';
@@ -562,6 +565,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       await ChildManager.setActiveProfileId(currentConfiguringProfile.id);
       await chrome.storage.local.set({ wizard_configuring_child_id: currentConfiguringProfile.id }).catch(() => {});
     }
+
+    // Immediately persist 5-tier modular configs (K.I.D.S._Data_config.json, Year config, Kid config)
+    PersonalDriveService.getValidToken(false).then(token => {
+      if (token) PersonalDriveService.syncFullModularHierarchy(token).catch(() => {});
+    }).catch(() => {});
 
     if (lblStep1ActiveChild) {
       lblStep1ActiveChild.textContent = `${validation.cleanName} (${selectedYear})`;
