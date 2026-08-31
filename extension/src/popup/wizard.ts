@@ -58,8 +58,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
 
   // Step 3 UI Elements
-  const step3McpUrlDisplay = document.getElementById('step3McpUrlDisplay') as HTMLInputElement;
-  const btnCopyUrlStep3 = document.getElementById('btnCopyUrlStep3') as HTMLButtonElement;
   const btnCaptureVerifyPortal = document.getElementById('btnCaptureVerifyPortal') as HTMLButtonElement;
   const connectionStatusBox = document.getElementById('connectionStatusBox') as HTMLElement;
   const connectionStatusIcon = document.getElementById('connectionStatusIcon') as HTMLElement;
@@ -685,15 +683,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   // STEP 3 HANDLERS (TRACKED SCHOOL PORTALS)
   // ==========================================
-  btnCopyUrlStep3?.addEventListener('click', () => {
-    if (step3McpUrlDisplay && step3McpUrlDisplay.value) {
-      navigator.clipboard.writeText(step3McpUrlDisplay.value);
-      const orig = btnCopyUrlStep3.textContent;
-      btnCopyUrlStep3.textContent = '✅ Copied!';
-      setTimeout(() => { if (btnCopyUrlStep3) btnCopyUrlStep3.textContent = orig || '📋 Copy Link'; }, 2000);
-    }
-  });
-
   function detectFeatureName(url: string, title: string, heading: string, activeNav: string, bodySnippet: string): string {
     const lowerUrl = url.toLowerCase();
     const lowerHeading = heading.toLowerCase();
