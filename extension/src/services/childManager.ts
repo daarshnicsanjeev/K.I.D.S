@@ -17,6 +17,7 @@ export interface ChildProfile {
   deployedGasVersion?: string;
   deployedGasHash?: string;
   hasClassroom?: boolean;
+  portalDomain?: string;
   registeredTools?: any[];
   trackedChats?: any[];
 }

@@ -266,6 +266,26 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (step === 2) {
       updateStep2RadioLabels();
     } else if (step === 3) {
+      const isPortalVerified = Boolean(
+        currentConfiguringProfile?.portalDomain ||
+        (currentConfiguringProfile?.registeredTools && currentConfiguringProfile.registeredTools.length > 0)
+      );
+
+      if (isPortalVerified) {
+        setA11yVisibility(featureSection, true);
+        setA11yVisibility(btnSkipStep3, false);
+        setA11yVisibility(connectionStatusBox, true);
+        if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
+        if (connectionStatusText) {
+          connectionStatusText.textContent = `Portal Connected! (${currentConfiguringProfile?.portalDomain || 'Active Portal'})`;
+        }
+      } else {
+        setA11yVisibility(featureSection, false);
+        setA11yVisibility(btnSkipStep3, true);
+        setA11yVisibility(connectionStatusBox, false);
+        if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
+        if (connectionStatusText) connectionStatusText.textContent = 'Verifying portal connection...';
+      }
       renderStep3RegisteredTools();
     } else if (step === 4) {
       if (lblStep4KidName && currentConfiguringProfile) {
@@ -769,9 +789,14 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const domain = new URL(activeTab.url).hostname;
+      if (currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { portalDomain: domain });
+      }
+
       if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
       if (connectionStatusText) connectionStatusText.textContent = `Portal Connected! (${domain})`;
       setA11yVisibility(featureSection, true);
+      setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
     } catch (e: any) {
       if (connectionStatusIcon) connectionStatusIcon.textContent = '⚠️';
@@ -824,9 +849,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       if (currentConfiguringProfile) {
-        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: existingTools });
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { 
+          registeredTools: existingTools,
+          portalDomain: domain
+        });
       }
 
+      setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
       alert(`🎉 Successfully captured & registered feature '${targetFeature}' for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
@@ -840,8 +869,12 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnCaptureVerifyPortal?.addEventListener('click', executePortalVerification);
   btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
 
-  btnAddAnotherPlatform?.addEventListener('click', () => {
+  btnAddAnotherPlatform?.addEventListener('click', async () => {
+    if (currentConfiguringProfile) {
+      currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { portalDomain: undefined });
+    }
     setA11yVisibility(featureSection, false);
+    setA11yVisibility(btnSkipStep3, true);
     setA11yVisibility(connectionStatusBox, false);
     if (connectionStatusText) connectionStatusText.textContent = 'Verifying portal connection...';
     if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
