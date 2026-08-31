@@ -31,13 +31,13 @@
       "js": ["autoDeployScript.js"]
     },
     {
-      "matches": ["https://web.whatsapp.com/*", "https://web.telegram.org/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["injected.js"],
       "world": "MAIN",
       "run_at": "document_start"
     },
     {
-      "matches": ["https://web.whatsapp.com/*", "https://web.telegram.org/*"],
+      "matches": ["http://*/*", "https://*/*"],
       "js": ["content.js"],
       "run_at": "document_start"
     }
