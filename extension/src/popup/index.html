@@ -14,6 +14,23 @@
     <div style="font-size: 0.72rem; color: var(--text-muted);" id="lblRestoringSubtext">Loading your active setup</div>
   </div>
 
+  <!-- Educational Gaming & Video Platform Alert Modal (Step 3 Skip) -->
+  <div id="gamingAlertModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalGamingTitle" aria-hidden="true" hidden>
+    <div class="modal-content">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;">🎮</div>
+      <h3 id="modalGamingTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Track Kids Platforms & Games</h3>
+      
+      <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #334155; margin-bottom: 14px; text-align: left; border-left: 4px solid #ed8936;">
+        💡 <strong>Did you know?</strong> Beyond school portals, you can track <strong>kids' educational games, video platforms, and learning dashboards</strong> (e.g. Chess.com, Scratch, Khan Academy, YouTube Kids) to monitor your child's screen time and learning progress!
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnModalTrackGaming" class="btn btn-primary" style="flex: 1; font-size: 0.78rem;">🎮 Track a Platform</button>
+        <button id="btnModalContinueSkip" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">⏭️ Continue to Step 4 ➔</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Minimum Platform Invariant Warning Modal (Step 4 Finish) -->
   <div id="invariantModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalInvariantTitle" aria-hidden="true" hidden>
     <div class="modal-content">
@@ -245,7 +262,10 @@
       <section id="step3Card" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <h2>Step 3: Tracked School Portals</h2>
-          <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 2</button>
+          <div style="display: flex; gap: 6px;">
+            <button id="btnSkipStep3" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;">⏭️ Skip Portals</button>
+            <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back</button>
+          </div>
         </div>
 
         <!-- Phase 1: Portal Connection Verification -->

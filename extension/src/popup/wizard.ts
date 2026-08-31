@@ -22,6 +22,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const aiStatusBadge = document.getElementById('aiStatusBadge') as HTMLElement;
 
   // Modals
+  const gamingAlertModal = document.getElementById('gamingAlertModal') as HTMLElement;
+  const btnModalTrackGaming = document.getElementById('btnModalTrackGaming') as HTMLButtonElement;
+  const btnModalContinueSkip = document.getElementById('btnModalContinueSkip') as HTMLButtonElement;
   const invariantModal = document.getElementById('invariantModal') as HTMLElement;
   const lblInvariantKidName = document.getElementById('lblInvariantKidName') as HTMLElement;
   const btnCloseInvariantModal = document.getElementById('btnCloseInvariantModal') as HTMLButtonElement;
@@ -58,6 +61,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
 
   // Step 3 UI Elements
+  const btnSkipStep3 = document.getElementById('btnSkipStep3') as HTMLButtonElement;
   const btnCaptureVerifyPortal = document.getElementById('btnCaptureVerifyPortal') as HTMLButtonElement;
   const connectionStatusBox = document.getElementById('connectionStatusBox') as HTMLElement;
   const connectionStatusIcon = document.getElementById('connectionStatusIcon') as HTMLElement;
@@ -681,8 +685,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnNavStep2ToStep3?.addEventListener('click', () => showWizardStep(3));
 
   // ==========================================
-  // STEP 3 HANDLERS (TRACKED SCHOOL PORTALS)
+  // STEP 3 HANDLERS (TRACKED SCHOOL PORTALS & SKIP MODAL)
   // ==========================================
+  btnSkipStep3?.addEventListener('click', () => {
+    openModal(gamingAlertModal);
+  });
+
+  btnModalTrackGaming?.addEventListener('click', () => {
+    closeModal(gamingAlertModal);
+  });
+
+  btnModalContinueSkip?.addEventListener('click', () => {
+    closeModal(gamingAlertModal);
+    showWizardStep(4);
+  });
+
   function detectFeatureName(url: string, title: string, heading: string, activeNav: string, bodySnippet: string): string {
     const lowerUrl = url.toLowerCase();
     const lowerHeading = heading.toLowerCase();
