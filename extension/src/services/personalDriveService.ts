@@ -389,6 +389,62 @@ export class PersonalDriveService {
   }
 
   /**
+   * Scans Google Drive for all child configurations and restores full profiles for seamless machine-change migration.
+   */
+  public static async restoreAllProfilesFromDrive(token?: string): Promise<{ restoredCount: number; profiles: any[] }> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const q = encodeURIComponent(`name contains 'K.I.D.S._' and name contains '_config.json' and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=30`, {}, validToken);
+
+      if (!searchRes.ok) return { restoredCount: 0, profiles: [] };
+      const searchData = await searchRes.json();
+      if (!searchData.files || searchData.files.length === 0) return { restoredCount: 0, profiles: [] };
+
+      const existingProfiles = await ChildManager.getProfiles(false);
+      const restoredMap = new Map<string, any>();
+      existingProfiles.forEach(p => restoredMap.set(p.name.toLowerCase().trim(), p));
+
+      for (const file of searchData.files) {
+        try {
+          const contentRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {}, validToken);
+          if (contentRes.ok) {
+            const config = await contentRes.json();
+            if (config && config.childName && config.scriptId) {
+              const key = config.childName.toLowerCase().trim();
+              const existing = restoredMap.get(key);
+
+              const mergedProfile = {
+                id: config.childId || existing?.id || `child_${key}_${Date.now()}`,
+                name: config.childName,
+                academicYear: config.academicYear || existing?.academicYear || '2026-2027',
+                createdAt: existing?.createdAt || Date.now(),
+                hasClassroom: config.hasClassroom !== undefined ? config.hasClassroom : (existing?.hasClassroom !== false),
+                portalDomain: config.portalDomain || existing?.portalDomain,
+                registeredTools: (config.registeredTools && config.registeredTools.length > 0) ? config.registeredTools : (existing?.registeredTools || []),
+                gasScriptId: config.scriptId,
+                gasDeploymentUrl: config.webAppUrl,
+                trackedChats: existing?.trackedChats || []
+              };
+
+              restoredMap.set(key, mergedProfile);
+            }
+          }
+        } catch (fileErr) {}
+      }
+
+      const finalProfiles = Array.from(restoredMap.values());
+      if (finalProfiles.length > 0) {
+        await ChildManager.saveProfiles(finalProfiles);
+      }
+
+      return { restoredCount: finalProfiles.length, profiles: finalProfiles };
+    } catch (e) {
+      return { restoredCount: 0, profiles: [] };
+    }
+  }
+
+  /**
    * Loads all messages from K.I.D.S._[ChildName]_archive.json in Google Drive.
    */
   public static async loadAllMessagesFromPersonalDrive(

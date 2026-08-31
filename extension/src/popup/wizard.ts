@@ -506,6 +506,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       setA11yVisibility(btnStep1ConnectPersonal, false);
       setA11yVisibility(step1ConnectedActions, true);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
+
+      // Auto-restore child profiles, MCP servers, and Step 3 portal tools from Drive on machine change!
+      try {
+        const restored = await PersonalDriveService.restoreAllProfilesFromDrive(auth.token);
+        if (restored.restoredCount > 0) {
+          await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🎉 Restored ${restored.restoredCount} child profile(s) from Google Drive.`);
+          const active = await ChildManager.getActiveProfile();
+          if (active) {
+            currentConfiguringProfile = active;
+            populateStep1ForEditing(active);
+          }
+        }
+      } catch (e) {}
     } catch (e: any) {
       alert(`Google Sign-In failed: ${e.message || String(e)}`);
       btnStep1ConnectPersonal.textContent = '🔐 Sign in with Personal Google Account';

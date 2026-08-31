@@ -277,7 +277,19 @@ export class GasProvisionerService {
   /**
    * Reads persistent K.I.D.S._[Child]_[Year]_config.json from Google Drive.
    */
-  private static async loadDriveConfigFile(token: string, childName?: string, academicYear?: string): Promise<{ scriptId: string; deploymentId: string; webAppUrl: string; accessKey: string } | null> {
+  public static async loadDriveConfigFile(token: string, childName?: string, academicYear?: string): Promise<{
+    childId?: string;
+    childName?: string;
+    academicYear?: string;
+    hasClassroom?: boolean;
+    portalDomain?: string;
+    registeredTools?: any[];
+    scriptId: string;
+    deploymentId: string;
+    webAppUrl: string;
+    accessKey: string;
+    updatedAt?: string;
+  } | null> {
     const targetFileName = this.getConfigFileName(childName, academicYear);
     try {
       this.log(`🔍 Searching Drive for extension config file (${targetFileName})...`);
@@ -295,7 +307,7 @@ export class GasProvisionerService {
         });
         if (contentRes.ok) {
           const config = await contentRes.json();
-          this.log(`✅ Loaded existing configuration from Drive: scriptId=${config.scriptId}, deploymentId=${config.deploymentId}`);
+          this.log(`✅ Loaded existing configuration from Drive: scriptId=${config.scriptId}, deploymentId=${config.deploymentId}, tools=${config.registeredTools?.length || 0}`);
           return config;
         }
       }
@@ -306,16 +318,50 @@ export class GasProvisionerService {
   }
 
   /**
-   * Saves persistent K.I.D.S._[Child]_[Year]_config.json to Google Drive without duplicate creation.
+   * Saves persistent K.I.D.S._[Child]_[Year]_config.json to Google Drive inside the child's academic year folder.
    */
-  private static async saveDriveConfigFile(scriptId: string, deploymentId: string, accessKey: string, webAppUrl: string, token: string, childName?: string, academicYear?: string): Promise<void> {
-    const targetFileName = this.getConfigFileName(childName, academicYear);
+  public static async saveDriveConfigFile(
+    scriptId: string,
+    deploymentId: string,
+    accessKey: string,
+    webAppUrl: string,
+    token: string,
+    childName?: string,
+    academicYear?: string,
+    profileOverrides?: Partial<ChildProfile>
+  ): Promise<void> {
+    const activeChild = await ChildManager.getActiveProfile();
+    const cleanChild = childName || activeChild?.name || 'Child';
+    const cleanYear = academicYear || activeChild?.academicYear || '2026-2027';
+    const targetFileName = this.getConfigFileName(cleanChild, cleanYear);
+
+    const mergedProfile = {
+      ...(activeChild || {}),
+      ...(profileOverrides || {})
+    };
+
     try {
-      this.log(`💾 Saving configuration to Drive (${targetFileName})...`);
-      const configData = JSON.stringify({ scriptId, deploymentId, accessKey, webAppUrl, childName, academicYear, updatedAt: new Date().toISOString() });
+      this.log(`💾 Saving configuration & Step 3 portal tools to Drive (${targetFileName})...`);
       
+      const configData = JSON.stringify({
+        childId: mergedProfile.id || `child_${cleanChild.toLowerCase()}`,
+        childName: cleanChild,
+        academicYear: cleanYear,
+        hasClassroom: mergedProfile.hasClassroom !== false,
+        portalDomain: mergedProfile.portalDomain || undefined,
+        registeredTools: mergedProfile.registeredTools || [],
+        scriptId,
+        deploymentId,
+        accessKey,
+        webAppUrl,
+        updatedAt: new Date().toISOString()
+      }, null, 2);
+      
+      // Resolve or create academic year folder
+      const folderId = await this.getOrCreateAcademicYearFolder(token, cleanChild, cleanYear);
+
       const query = encodeURIComponent(`(name = '${targetFileName}' or name = '${this.CONFIG_FILE_NAME}' or name = 'school_mcp_config.json') and trashed = false`);
-      const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name)`, {
+      const searchRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,parents)`, {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       const searchData = await searchRes.json();
@@ -347,10 +393,14 @@ export class GasProvisionerService {
         });
         this.log(`✅ Updated existing ${targetFileName} in Drive (ID: ${fileId}).`);
       } else {
-        const metadata = {
+        const metadata: any = {
           name: targetFileName,
           mimeType: 'application/json'
         };
+        if (folderId) {
+          metadata.parents = [folderId];
+        }
+
         const form = new FormData();
         form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
         form.append('file', new Blob([configData], { type: 'application/json' }));
@@ -360,10 +410,73 @@ export class GasProvisionerService {
           headers: { 'Authorization': `Bearer ${token}` },
           body: form
         });
-        this.log(`✅ Created ${targetFileName} in Drive root.`);
+        this.log(`✅ Created ${targetFileName} in Drive (${cleanYear} folder).`);
       }
     } catch (e) {
       this.log(`⚠️ Could not save Drive config file: ${e}`);
+    }
+  }
+
+  private static async getOrCreateAcademicYearFolder(token: string, childName: string, academicYear: string): Promise<string | null> {
+    try {
+      let rootId: string | null = null;
+      const rootQ = encodeURIComponent(`name = 'K.I.D.S. Data' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const rootRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${rootQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const rootData = await rootRes.json();
+      if (rootData.files && rootData.files.length > 0) {
+        rootId = rootData.files[0].id;
+      } else {
+        const createRootRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'K.I.D.S. Data', mimeType: 'application/vnd.google-apps.folder' })
+        });
+        if (createRootRes.ok) {
+          const created = await createRootRes.json();
+          rootId = created.id;
+        }
+      }
+      if (!rootId) return null;
+
+      let kidFolderId: string | null = null;
+      const kidQ = encodeURIComponent(`name = '${childName}' and '${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const kidRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${kidQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const kidData = await kidRes.json();
+      if (kidData.files && kidData.files.length > 0) {
+        kidFolderId = kidData.files[0].id;
+      } else {
+        const createKidRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: childName, mimeType: 'application/vnd.google-apps.folder', parents: [rootId] })
+        });
+        if (createKidRes.ok) {
+          const created = await createKidRes.json();
+          kidFolderId = created.id;
+        }
+      }
+      if (!kidFolderId) return null;
+
+      let yearFolderId: string | null = null;
+      const yearQ = encodeURIComponent(`name = '${academicYear}' and '${kidFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const yearRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${yearQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const yearData = await yearRes.json();
+      if (yearData.files && yearData.files.length > 0) {
+        yearFolderId = yearData.files[0].id;
+      } else {
+        const createYearRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: academicYear, mimeType: 'application/vnd.google-apps.folder', parents: [kidFolderId] })
+        });
+        if (createYearRes.ok) {
+          const created = await createYearRes.json();
+          yearFolderId = created.id;
+        }
+      }
+      return yearFolderId;
+    } catch {
+      return null;
     }
   }
 
