@@ -338,20 +338,22 @@ export class GasProvisionerService {
     try {
       this.log(`💾 Saving modular 5-tier configuration for ${cleanChild} (${cleanYear})...`);
       
+      const driveToken = await PersonalDriveService.getValidToken(false).catch(() => token);
+
       if (activeChild && profileOverrides) {
         await ChildManager.updateProfile(activeChild.id, profileOverrides);
       }
 
-      await PersonalDriveService.saveKidConfig(token, cleanChild, cleanYear, {
+      await PersonalDriveService.saveKidConfig(driveToken, cleanChild, cleanYear, {
         gasScriptId: scriptId,
         gasDeploymentUrl: webAppUrl,
         ...(profileOverrides || {})
       });
 
-      await PersonalDriveService.savePortalToolsConfig(token, cleanChild, cleanYear);
-      await PersonalDriveService.saveMessagingToolsConfig(token, cleanChild, cleanYear);
-      await PersonalDriveService.saveYearConfig(token, cleanYear);
-      await PersonalDriveService.saveRootConfig(token);
+      await PersonalDriveService.savePortalToolsConfig(driveToken, cleanChild, cleanYear);
+      await PersonalDriveService.saveMessagingToolsConfig(driveToken, cleanChild, cleanYear);
+      await PersonalDriveService.saveYearConfig(driveToken, cleanYear);
+      await PersonalDriveService.saveRootConfig(driveToken);
 
       this.log(`✅ Saved 5-tier modular configuration to Google Drive for ${cleanChild} (${cleanYear}).`);
     } catch (e) {
@@ -368,9 +370,10 @@ export class GasProvisionerService {
       const cleanChild = childName || activeChild?.name || 'Child';
       const cleanYear = academicYear || activeChild?.academicYear || '2026-2027';
 
-      const kidInfo = await PersonalDriveService.getOrCreateKidFolder(token, cleanChild, cleanYear).catch(() => null);
+      const driveToken = await PersonalDriveService.getValidToken(false).catch(() => token);
+      const kidInfo = await PersonalDriveService.getOrCreateKidFolder(driveToken, cleanChild, cleanYear).catch(() => null);
       if (kidInfo) {
-        const kidConfig = await PersonalDriveService.readJsonFileInFolder(token, kidInfo.id, `${cleanChild}_config.json`).catch(() => null);
+        const kidConfig = await PersonalDriveService.readJsonFileInFolder(driveToken, kidInfo.id, `${cleanChild}_config.json`).catch(() => null);
         if (kidConfig && kidConfig.scriptId) {
           const isAlive = await this.verifyScriptAlive(kidConfig.scriptId, token);
           if (isAlive) {
