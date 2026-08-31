@@ -22,10 +22,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const aiStatusBadge = document.getElementById('aiStatusBadge') as HTMLElement;
 
   // Modals
-  const gamingAlertModal = document.getElementById('gamingAlertModal') as HTMLElement;
-  const btnModalTrackGaming = document.getElementById('btnModalTrackGaming') as HTMLButtonElement;
-  const btnModalContinueSkip = document.getElementById('btnModalContinueSkip') as HTMLButtonElement;
-
   const invariantModal = document.getElementById('invariantModal') as HTMLElement;
   const lblInvariantKidName = document.getElementById('lblInvariantKidName') as HTMLElement;
   const btnCloseInvariantModal = document.getElementById('btnCloseInvariantModal') as HTMLButtonElement;
@@ -62,15 +58,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
 
   // Step 3 UI Elements
-  const btnSkipStep3 = document.getElementById('btnSkipStep3') as HTMLButtonElement;
+  const step3McpUrlDisplay = document.getElementById('step3McpUrlDisplay') as HTMLInputElement;
+  const btnCopyUrlStep3 = document.getElementById('btnCopyUrlStep3') as HTMLButtonElement;
   const btnCaptureVerifyPortal = document.getElementById('btnCaptureVerifyPortal') as HTMLButtonElement;
   const connectionStatusBox = document.getElementById('connectionStatusBox') as HTMLElement;
+  const connectionStatusIcon = document.getElementById('connectionStatusIcon') as HTMLElement;
   const connectionStatusText = document.getElementById('connectionStatusText') as HTMLElement;
   const featureSection = document.getElementById('featureSection') as HTMLElement;
-  const txtPortalFeatureName = document.getElementById('txtPortalFeatureName') as HTMLInputElement;
   const btnRegisterFeature = document.getElementById('btnRegisterFeature') as HTMLButtonElement;
   const activeFeaturesBox = document.getElementById('activeFeaturesBox') as HTMLElement;
   const step3RegisteredToolsList = document.getElementById('step3RegisteredToolsList') as HTMLUListElement;
+  const btnAddAnotherPlatform = document.getElementById('btnAddAnotherPlatform') as HTMLButtonElement;
   const btnNavStep3ToStep2 = document.getElementById('btnNavStep3ToStep2') as HTMLButtonElement;
   const btnNavStep3ToStep4 = document.getElementById('btnNavStep3ToStep4') as HTMLButtonElement;
 
@@ -685,77 +683,134 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnNavStep2ToStep3?.addEventListener('click', () => showWizardStep(3));
 
   // ==========================================
-  // STEP 3 HANDLERS (PORTALS & SKIP MODAL)
+  // STEP 3 HANDLERS (TRACKED SCHOOL PORTALS)
   // ==========================================
-  btnSkipStep3?.addEventListener('click', () => {
-    openModal(gamingAlertModal);
-  });
-
-  btnModalTrackGaming?.addEventListener('click', () => {
-    closeModal(gamingAlertModal);
-  });
-
-  btnModalContinueSkip?.addEventListener('click', () => {
-    closeModal(gamingAlertModal);
-    showWizardStep(4);
-  });
-
-  btnCaptureVerifyPortal?.addEventListener('click', async () => {
-    btnCaptureVerifyPortal.disabled = true;
-    btnCaptureVerifyPortal.textContent = '⏳ Authorizing Tab...';
-    setA11yVisibility(connectionStatusBox, true);
-    if (connectionStatusText) connectionStatusText.textContent = 'Connecting to active browser tab...';
-
-    try {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab || !activeTab.id || !activeTab.url) {
-        throw new Error('No active browser tab found. Please open your school or kids portal in Chrome and log in.');
-      }
-
-      if (activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
-        throw new Error('Cannot connect to Chrome system pages. Please open your school website or kids platform.');
-      }
-
-      setA11yVisibility(featureSection, true);
-      if (connectionStatusText) connectionStatusText.textContent = `Connected to: ${new URL(activeTab.url).hostname}`;
-
-      const suggestedName = (activeTab.title || 'Dashboard')
-        .replace(/[^a-zA-Z0-9 _-]/g, '')
-        .trim()
-        .substring(0, 30);
-      if (txtPortalFeatureName) {
-        txtPortalFeatureName.value = suggestedName || 'Dashboard';
-        txtPortalFeatureName.focus();
-      }
-    } catch (e: any) {
-      if (connectionStatusText) connectionStatusText.textContent = `Error: ${e.message}`;
-    } finally {
-      btnCaptureVerifyPortal.disabled = false;
-      btnCaptureVerifyPortal.textContent = '🚀 1. Authorize & Capture Active Tab';
+  btnCopyUrlStep3?.addEventListener('click', () => {
+    if (step3McpUrlDisplay && step3McpUrlDisplay.value) {
+      navigator.clipboard.writeText(step3McpUrlDisplay.value);
+      const orig = btnCopyUrlStep3.textContent;
+      btnCopyUrlStep3.textContent = '✅ Copied!';
+      setTimeout(() => { if (btnCopyUrlStep3) btnCopyUrlStep3.textContent = orig || '📋 Copy Link'; }, 2000);
     }
   });
 
-  btnRegisterFeature?.addEventListener('click', async () => {
-    btnRegisterFeature.disabled = true;
-    btnRegisterFeature.textContent = '⏳ Tracking Page...';
+  function detectFeatureName(url: string, title: string, heading: string, activeNav: string, bodySnippet: string): string {
+    const lowerUrl = url.toLowerCase();
+    const lowerHeading = heading.toLowerCase();
+    const lowerNav = activeNav.toLowerCase();
+    const lowerTitle = title.toLowerCase();
+    const lowerBody = bodySnippet.substring(0, 800).toLowerCase();
+
+    // 1. Check Active SPA Menu/Nav Tab FIRST (Crucial for Single Page Apps like EduSprint!)
+    if (lowerNav.includes('classwork') || lowerNav.includes('class work')) return 'Classwork';
+    if (lowerNav.includes('homework') || lowerNav.includes('home work') || lowerNav.includes('assignment')) return 'Homework';
+    if (lowerNav.includes('attendance') || lowerNav.includes('present')) return 'Attendance';
+    if (lowerNav.includes('grade') || lowerNav.includes('marks') || lowerNav.includes('reportcard') || lowerNav.includes('result')) return 'Gradebook';
+    if (lowerNav.includes('timetable') || lowerNav.includes('schedule') || lowerNav.includes('routine')) return 'Timetable';
+    if (lowerNav.includes('circular') || lowerNav.includes('notice') || lowerNav.includes('announcement')) return 'Circulars';
+
+    // 2. Check Active Page Main Heading / Breadcrumb SECOND
+    if (lowerHeading.includes('classwork') || lowerHeading.includes('class work')) return 'Classwork';
+    if (lowerHeading.includes('homework') || lowerHeading.includes('home work') || lowerHeading.includes('assignment')) return 'Homework';
+    if (lowerHeading.includes('attendance')) return 'Attendance';
+    if (lowerHeading.includes('grade') || lowerHeading.includes('marks')) return 'Gradebook';
+    if (lowerHeading.includes('timetable')) return 'Timetable';
+
+    // 3. Check Active Tab URL Path THIRD
+    if (lowerUrl.includes('classwork') || lowerUrl.includes('class_work') || lowerUrl.includes('class-work')) return 'Classwork';
+    if (lowerUrl.includes('homework') || lowerUrl.includes('home_work') || lowerUrl.includes('home-work') || lowerUrl.includes('assignment')) return 'Homework';
+    if (lowerUrl.includes('attendance') || lowerUrl.includes('present')) return 'Attendance';
+    if (lowerUrl.includes('grade') || lowerUrl.includes('marks') || lowerUrl.includes('reportcard') || lowerUrl.includes('result')) return 'Gradebook';
+    if (lowerUrl.includes('timetable') || lowerUrl.includes('schedule') || lowerUrl.includes('routine')) return 'Timetable';
+
+    if (heading && heading.length > 2 && heading.length < 30) {
+      return heading;
+    }
+
+    // 4. Check Page Title FOURTH
+    if (lowerTitle.includes('classwork')) return 'Classwork';
+    if (lowerTitle.includes('homework')) return 'Homework';
+    if (lowerTitle.includes('attendance')) return 'Attendance';
+
+    // 5. Check Body Text snippet LAST (Fallback - compare occurrences if SPA)
+    const classworkCount = (lowerBody.match(/classwork|class work/g) || []).length;
+    const homeworkCount = (lowerBody.match(/homework|home work/g) || []).length;
+    const attendanceCount = (lowerBody.match(/attendance|present|absent/g) || []).length;
+
+    if (classworkCount > homeworkCount && classworkCount > attendanceCount) return 'Classwork';
+    if (homeworkCount > classworkCount && homeworkCount > attendanceCount) return 'Homework';
+    if (attendanceCount > 0 && attendanceCount > homeworkCount) return 'Attendance';
+
+    if (title && !title.toLowerCase().includes('http')) {
+      const firstPart = title.split('-')[0].split('|')[0].trim();
+      if (firstPart.length > 2 && firstPart.length < 30) return firstPart;
+    }
+    return 'School Feature';
+  }
+
+  async function executePortalVerification() {
+    if (!btnCaptureVerifyPortal) return;
+    btnCaptureVerifyPortal.disabled = true;
+    btnCaptureVerifyPortal.textContent = '⏳ Verifying Active Tab Connection...';
+    setA11yVisibility(connectionStatusBox, true);
+    if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
+    if (connectionStatusText) connectionStatusText.textContent = 'Querying active browser tab...';
+
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab || !activeTab.url) throw new Error('No active tab.');
+      if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
+        throw new Error('Please open your school portal tab (e.g. EduSprint, Canvas, Moodle) in Chrome and sign in first.');
+      }
 
-      const urlObj = new URL(activeTab.url);
-      const customName = (txtPortalFeatureName?.value || activeTab.title || 'Dashboard').trim();
-      const cleanFeature = customName.replace(/[^a-zA-Z0-9 _-]/g, '').trim().substring(0, 30) || 'Portal Page';
-      const funcSuffix = cleanFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+      const domain = new URL(activeTab.url).hostname;
+      if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
+      if (connectionStatusText) connectionStatusText.textContent = `Portal Connected! (${domain})`;
+      setA11yVisibility(featureSection, true);
+      renderStep3RegisteredTools();
+    } catch (e: any) {
+      if (connectionStatusIcon) connectionStatusIcon.textContent = '⚠️';
+      if (connectionStatusText) connectionStatusText.textContent = `Error: ${e.message}`;
+    } finally {
+      btnCaptureVerifyPortal.disabled = false;
+      btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
+    }
+  }
+
+  async function executeFeatureRegistration() {
+    if (!btnRegisterFeature) return;
+    btnRegisterFeature.disabled = true;
+    btnRegisterFeature.textContent = '⏳ Auto-Capturing & Testing Active Feature...';
+
+    try {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
+        throw new Error('Please open your school portal tab (e.g. EduSprint) in Chrome before clicking Capture.');
+      }
+
+      const domRes = await chrome.scripting.executeScript({
+        target: { tabId: activeTab.id },
+        func: () => {
+          const h1 = document.querySelector('h1, h2, .page-title, .title')?.textContent?.trim() || '';
+          const activeNav = document.querySelector('.active, .selected, [aria-selected="true"], .nav-link.active')?.textContent?.trim() || '';
+          const body = document.body ? document.body.innerText.substring(0, 1000) : '';
+          return { title: document.title || '', h1, activeNav, body };
+        }
+      }).catch(() => null);
+
+      const extracted = (domRes && domRes[0] && domRes[0].result) ? domRes[0].result : { title: activeTab.title || '', h1: '', activeNav: '', body: '' };
+      const targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
+      const domain = new URL(activeTab.url).hostname;
+      const funcSuffix = targetFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
 
       const newTool = {
-        domain: urlObj.hostname,
-        feature: cleanFeature,
+        domain,
+        feature: targetFeature,
         name: `get_${funcSuffix}`,
         url: activeTab.url
       };
 
       let existingTools = currentConfiguringProfile?.registeredTools || [];
-      const existingIdx = existingTools.findIndex((t: any) => t.url === newTool.url);
+      const existingIdx = existingTools.findIndex((t: any) => t.feature === targetFeature || t.url === newTool.url);
       if (existingIdx >= 0) {
         existingTools[existingIdx] = newTool;
       } else {
@@ -767,13 +822,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       renderStep3RegisteredTools();
-      alert(`🎉 Successfully tracking "${cleanFeature}" for ${currentConfiguringProfile?.name || 'child'}!`);
+      alert(`🎉 Successfully captured & registered feature '${targetFeature}' for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
-      alert(`Tracking failed: ${e.message}`);
+      alert(`Feature Registration Error: ${e.message}`);
     } finally {
       btnRegisterFeature.disabled = false;
-      btnRegisterFeature.textContent = '📸 2. Track & Register Page';
+      btnRegisterFeature.textContent = '📸 2. Auto-Capture & Register Active Feature';
     }
+  }
+
+  btnCaptureVerifyPortal?.addEventListener('click', executePortalVerification);
+  btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
+
+  btnAddAnotherPlatform?.addEventListener('click', () => {
+    setA11yVisibility(featureSection, false);
+    setA11yVisibility(connectionStatusBox, false);
+    if (connectionStatusText) connectionStatusText.textContent = 'Verifying portal connection...';
+    if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
   });
 
   function renderStep3RegisteredTools() {
@@ -787,51 +852,47 @@ document.addEventListener('DOMContentLoaded', async () => {
     setA11yVisibility(activeFeaturesBox, true);
     tools.forEach((t: any, idx: number) => {
       const li = document.createElement('li');
-      li.style.fontSize = '0.74rem';
-      li.style.padding = '6px 8px';
-      li.style.background = 'var(--card-surface)';
-      li.style.borderRadius = '6px';
-      li.style.border = '1px solid var(--border-color)';
       li.style.display = 'flex';
       li.style.justifyContent = 'space-between';
       li.style.alignItems = 'center';
-      li.style.gap = '6px';
+      li.style.padding = '6px 10px';
+      li.style.marginBottom = '4px';
+      li.style.backgroundColor = 'var(--card-surface)';
+      li.style.borderRadius = '6px';
+      li.style.border = '1px solid var(--border-color)';
+      li.style.fontSize = '0.78rem';
 
-      li.innerHTML = `
-        <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-          <span>🔹</span> <strong>${t.feature}</strong> <span style="font-size:0.68rem; color:var(--text-muted);">(${t.domain})</span>
-        </div>
-        <div style="display: flex; gap: 4px;">
-          <button class="btn btn-secondary btn-sm btn-rename-feature" data-index="${idx}" style="font-size: 0.68rem; padding: 2px 6px;">✏️ Rename</button>
-          <button class="btn btn-danger btn-sm btn-delete-feature" data-index="${idx}" style="font-size: 0.68rem; padding: 2px 6px;">🗑️</button>
-        </div>
-      `;
-      step3RegisteredToolsList.appendChild(li);
-    });
+      li.innerHTML = `<span>📌 <strong>${t.feature}</strong> <span style="color:var(--text-muted); font-size:0.72rem;">(${t.domain})</span></span>`;
 
-    // Wire Rename & Delete button listeners
-    document.querySelectorAll('.btn-rename-feature').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
-        const targetTool = tools[idx];
-        if (!targetTool) return;
-        const newName = prompt(`Enter a new name for "${targetTool.feature}":`, targetTool.feature);
-        if (newName && newName.trim()) {
+      const actionsDiv = document.createElement('div');
+      actionsDiv.style.display = 'flex';
+      actionsDiv.style.gap = '4px';
+
+      const btnRename = document.createElement('button');
+      btnRename.className = 'btn btn-secondary btn-sm';
+      btnRename.style.padding = '2px 8px';
+      btnRename.style.fontSize = '0.7rem';
+      btnRename.textContent = '✏️ Rename';
+      btnRename.addEventListener('click', async () => {
+        const newName = prompt(`Enter custom feature name for '${t.feature}' (e.g. Classwork, Homework, Attendance):`, t.feature);
+        if (newName && newName.trim() && newName.trim() !== t.feature) {
           const clean = newName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').substring(0, 30);
-          targetTool.feature = clean;
-          targetTool.name = `get_${clean.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '')}`;
+          t.feature = clean;
+          t.name = `get_${clean.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '')}`;
           if (currentConfiguringProfile) {
             currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
           }
           renderStep3RegisteredTools();
         }
       });
-    });
 
-    document.querySelectorAll('.btn-delete-feature').forEach(btn => {
-      btn.addEventListener('click', async (e) => {
-        const idx = Number((e.currentTarget as HTMLElement).getAttribute('data-index'));
-        if (confirm(`Remove "${tools[idx]?.feature}" from tracked pages?`)) {
+      const btnDel = document.createElement('button');
+      btnDel.className = 'btn btn-danger btn-sm';
+      btnDel.style.padding = '2px 8px';
+      btnDel.style.fontSize = '0.7rem';
+      btnDel.textContent = '🗑️ Remove';
+      btnDel.addEventListener('click', async () => {
+        if (confirm(`Remove feature '${t.feature}' from tracked list?`)) {
           tools.splice(idx, 1);
           if (currentConfiguringProfile) {
             currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
@@ -839,6 +900,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           renderStep3RegisteredTools();
         }
       });
+
+      actionsDiv.appendChild(btnRename);
+      actionsDiv.appendChild(btnDel);
+      li.appendChild(actionsDiv);
+      step3RegisteredToolsList.appendChild(li);
     });
   }
 

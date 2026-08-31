@@ -14,23 +14,6 @@
     <div style="font-size: 0.72rem; color: var(--text-muted);" id="lblRestoringSubtext">Loading your active setup</div>
   </div>
 
-  <!-- Gaming & Video Platform Educational Alert Modal (Step 3 Skip) -->
-  <div id="gamingAlertModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalGamingTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">🎮</div>
-      <h3 id="modalGamingTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Track Kids Platforms & Games</h3>
-      
-      <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #334155; margin-bottom: 14px; text-align: left; border-left: 4px solid #ed8936;">
-        💡 <strong>Did you know?</strong> Beyond school portals, you can track <strong>kids' educational games, video platforms, and learning dashboards</strong> (e.g. Chess.com, Scratch, Khan Academy, YouTube Kids) to monitor your child's screen time and learning progress!
-      </div>
-
-      <div style="display: flex; gap: 8px;">
-        <button id="btnModalTrackGaming" class="btn btn-primary" style="flex: 1; font-size: 0.78rem;">🎮 Track Platform</button>
-        <button id="btnModalContinueSkip" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Continue ➔</button>
-      </div>
-    </div>
-  </div>
-
   <!-- Minimum Platform Invariant Warning Modal (Step 4 Finish) -->
   <div id="invariantModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalInvariantTitle" aria-hidden="true" hidden>
     <div class="modal-content">
@@ -258,53 +241,48 @@
         </div>
       </section>
 
-      <!-- Step 3: School & Kids Portals (Universal Capture with Skip) -->
+      <!-- Step 3: Add & Manage School Portal Features -->
       <section id="step3Card" class="card hidden" aria-hidden="true" hidden>
-        <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Step 3: School & Kids Portals</h2>
-          <button id="btnSkipStep3" class="btn btn-outline btn-sm">⏭️ Skip Portals</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+          <h2>Step 3: Tracked School Portals</h2>
+          <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back to Step 2</button>
         </div>
-        <p class="subtitle">Connect your school ERP (e.g. EduSprint, Canvas), or track kids' educational games & video platforms.</p>
 
-        <!-- 4-Step User Action Workflow Guide -->
-        <div style="background: var(--card-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-bottom: 8px;">
-          <div style="font-size: 0.78rem; font-weight: 700; color: var(--brand-navy); margin-bottom: 6px;">
-            📋 How to Connect & Track:
+        <!-- Permanent Copyable MCP Server Link -->
+        <div class="url-copy-box mb-2" style="background: var(--card-surface); padding: 8px; border-radius: 6px; border: 1px solid var(--border-color);">
+          <label for="step3McpUrlDisplay" style="font-size: 0.75rem; font-weight: 600; color: var(--brand-navy); display: block; margin-bottom: 4px;">🔗 Your Personal MCP Server Link:</label>
+          <div style="display: flex; gap: 6px;">
+            <input type="text" id="step3McpUrlDisplay" readonly style="flex: 1; font-size: 0.75rem; padding: 4px 8px; background: white; border: 1px solid var(--border-color); color: var(--text-primary); border-radius: 4px;">
+            <button id="btnCopyUrlStep3" class="btn btn-secondary btn-sm" style="padding: 4px 8px; font-size: 0.75rem;">📋 Copy Link</button>
           </div>
-          <ol style="margin-left: 16px; font-size: 0.74rem; color: var(--text-secondary); line-height: 1.45; display: flex; flex-direction: column; gap: 4px;">
-            <li><strong>1. Log in:</strong> Open your school ERP or kids platform in a browser tab and sign in.</li>
-            <li><strong>2. Authorize:</strong> Click <em>"1. Authorize & Capture Active Tab"</em> below to connect.</li>
-            <li><strong>3. Navigate:</strong> In that tab, navigate to the specific page you want to track (e.g. Homework, Attendance, Game stats).</li>
-            <li><strong>4. Name & Track:</strong> Enter a custom name below (e.g. "Homework", "Chess Rating") and click <em>"2. Track & Register Page"</em>.</li>
-          </ol>
         </div>
-
-        <!-- Phase 1: Capture & Authorize Tab -->
+        
+        <!-- Phase 1: Portal Connection Verification -->
         <div id="connectionSection">
-          <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2">
-            🚀 1. Authorize & Capture Active Tab
+          <p class="subtitle">1. Log in to your school website (e.g. EduSprint, Canvas, Moodle) in an active browser tab.<br>2. Right after login, click below to verify portal connection.</p>
+          
+          <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button" aria-label="Capture & Verify Active Portal Connection">
+            🚀 1. Capture & Verify Portal Connection
           </button>
-          <div id="connectionStatusBox" class="status-box hidden" aria-hidden="true" hidden>
+
+          <div id="connectionStatusBox" class="status-box hidden" aria-hidden="true" hidden aria-live="polite" aria-atomic="true">
             <span class="status-icon" id="connectionStatusIcon">⏳</span>
             <span id="connectionStatusText">Verifying portal connection...</span>
           </div>
         </div>
 
-        <!-- Phase 2: Track & Register Feature (with Editable Name) -->
-        <div id="featureSection" class="hidden mt-1" aria-hidden="true" hidden>
-          <div class="status-box mb-2" style="border-left: 3px solid var(--success-color);">
-            <span>✅</span>
-            <span><strong>Tab Connected!</strong> Navigate to your target page, customize the feature name below, and click Track:</span>
+        <!-- Phase 2: Feature Tool Registration -->
+        <div id="featureSection" class="hidden mt-2" aria-hidden="true" hidden aria-live="polite">
+          <div class="status-box mb-2">
+            <span class="status-icon">✅</span>
+            <span><strong>Portal Connected!</strong> Open any feature page on your school portal (e.g. Homework, Attendance, Classwork) that you want to track, then click below to capture it.</span>
           </div>
 
-          <div class="form-group mb-2">
-            <label for="txtPortalFeatureName" style="font-size: 0.75rem; font-weight: 600; color: var(--brand-navy);">Page / Feature Name (e.g. Homework, Attendance, Stats):</label>
-            <input type="text" id="txtPortalFeatureName" placeholder="e.g. Homework" maxlength="40" style="padding: 6px 8px; font-size: 0.75rem;" />
-          </div>
-
-          <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2">
-            📸 2. Track & Register Page
+          <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2" tabindex="0" role="button" aria-label="Capture and Register Active Feature">
+            📸 2. Auto-Capture & Register Active Feature
           </button>
+
+          <!-- Active Registered Features Box -->
           <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden>
             <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--brand-navy);">✨ Active Tracked Features:</h4>
             <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
@@ -312,8 +290,12 @@
         </div>
 
         <div style="display: flex; gap: 6px; margin-top: 8px;">
-          <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back</button>
-          <button id="btnNavStep3ToStep4" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">➡️ Continue to Step 4</button>
+          <button id="btnAddAnotherPlatform" class="btn btn-outline btn-sm" style="flex: 1;">
+            🔄 Reset Portal
+          </button>
+          <button id="btnNavStep3ToStep4" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">
+            ➡️ Continue to Step 4 (School Chat Groups)
+          </button>
         </div>
       </section>
 
