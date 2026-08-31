@@ -875,7 +875,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       }).catch(() => null);
 
       const extracted = (domRes && domRes[0] && domRes[0].result) ? domRes[0].result : { title: activeTab.title || '', h1: '', activeNav: '', body: '' };
-      let targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
       const domain = new URL(activeTab.url).hostname;
       const cleanDomainPrefix = domain.replace(/^www\./, '').split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -887,6 +886,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentConfiguringProfile = profs[0];
       }
 
+      const currentDomains = currentConfiguringProfile?.portalDomains || (currentConfiguringProfile?.portalDomain ? [currentConfiguringProfile.portalDomain] : []);
+      const isDomainVerified = currentDomains.some((d: string) => d.toLowerCase() === domain.toLowerCase());
+
+      if (!isDomainVerified) {
+        setA11yVisibility(featureSection, false);
+        setA11yVisibility(connectionStatusBox, true);
+        if (connectionStatusIcon) connectionStatusIcon.textContent = 'ℹ️';
+        if (connectionStatusText) connectionStatusText.textContent = `New portal detected: ${domain}. Please verify connection first.`;
+        if (btnCaptureVerifyPortal) {
+          btnCaptureVerifyPortal.disabled = false;
+          btnCaptureVerifyPortal.textContent = `🚀 1. Capture & Verify Portal (${domain})`;
+          btnCaptureVerifyPortal.focus();
+        }
+        alert(`⚠️ Unverified Portal (${domain}):\n\nPlease click "🚀 1. Capture & Verify Portal Connection" first to connect ${domain} before capturing its features.`);
+        return;
+      }
+
+      let targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
       let existingTools = currentConfiguringProfile?.registeredTools || [];
 
       // Auto-disambiguate generic features if capturing multiple items
@@ -912,7 +929,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         existingTools.push(newTool);
       }
 
-      const currentDomains = currentConfiguringProfile?.portalDomains || (currentConfiguringProfile?.portalDomain ? [currentConfiguringProfile.portalDomain] : []);
       if (!currentDomains.includes(domain)) {
         currentDomains.push(domain);
       }
