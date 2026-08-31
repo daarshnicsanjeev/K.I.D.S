@@ -811,8 +811,17 @@ document.addEventListener('DOMContentLoaded', async () => {
         const profs = await ChildManager.getProfiles(true);
         currentConfiguringProfile = profs[0];
       }
+      
+      const currentDomains = currentConfiguringProfile?.portalDomains || (currentConfiguringProfile?.portalDomain ? [currentConfiguringProfile.portalDomain] : []);
+      if (!currentDomains.includes(domain)) {
+        currentDomains.push(domain);
+      }
+
       if (currentConfiguringProfile) {
-        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { portalDomain: domain });
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { 
+          portalDomain: domain,
+          portalDomains: currentDomains
+        });
       }
 
       if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
@@ -837,7 +846,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
-        throw new Error('Please open your school portal tab (e.g. EduSprint) in Chrome before clicking Capture.');
+        throw new Error('Please open your school portal tab (e.g. EduSprint, Canvas, Khan Academy) in Chrome before clicking Capture.');
       }
 
       const domRes = await chrome.scripting.executeScript({
@@ -853,12 +862,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       const extracted = (domRes && domRes[0] && domRes[0].result) ? domRes[0].result : { title: activeTab.title || '', h1: '', activeNav: '', body: '' };
       const targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
       const domain = new URL(activeTab.url).hostname;
+      const cleanDomainPrefix = domain.replace(/^www\./, '').split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
       const funcSuffix = targetFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
 
       const newTool = {
         domain,
         feature: targetFeature,
-        name: `get_${funcSuffix}`,
+        name: `get_${cleanDomainPrefix ? cleanDomainPrefix + '_' : ''}${funcSuffix}`,
         url: activeTab.url
       };
 
@@ -871,23 +881,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       let existingTools = currentConfiguringProfile?.registeredTools || [];
-      const existingIdx = existingTools.findIndex((t: any) => t.feature === targetFeature || t.url === newTool.url);
+      const existingIdx = existingTools.findIndex((t: any) => (t.feature === targetFeature && t.domain === domain) || t.url === newTool.url);
       if (existingIdx >= 0) {
         existingTools[existingIdx] = newTool;
       } else {
         existingTools.push(newTool);
       }
 
+      const currentDomains = currentConfiguringProfile?.portalDomains || (currentConfiguringProfile?.portalDomain ? [currentConfiguringProfile.portalDomain] : []);
+      if (!currentDomains.includes(domain)) {
+        currentDomains.push(domain);
+      }
+
       if (currentConfiguringProfile) {
         currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { 
           registeredTools: existingTools,
-          portalDomain: domain
+          portalDomain: domain,
+          portalDomains: currentDomains
         });
       }
 
       setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
-      alert(`🎉 Successfully captured & registered feature '${targetFeature}' for ${currentConfiguringProfile?.name || 'child'}!`);
+      alert(`🎉 Successfully captured & registered feature '${targetFeature}' (${domain}) for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
       alert(`Feature Registration Error: ${e.message}`);
     } finally {
@@ -900,14 +916,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
 
   btnAddAnotherPlatform?.addEventListener('click', async () => {
-    if (currentConfiguringProfile) {
-      currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { portalDomain: undefined });
-    }
     setA11yVisibility(featureSection, false);
-    setA11yVisibility(btnSkipStep3, true);
+    setA11yVisibility(btnSkipStep3, (currentConfiguringProfile?.registeredTools?.length || 0) === 0);
     setA11yVisibility(connectionStatusBox, false);
     if (connectionStatusText) connectionStatusText.textContent = 'Verifying portal connection...';
     if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
+    if (btnCaptureVerifyPortal) {
+      btnCaptureVerifyPortal.disabled = false;
+      btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
+    }
   });
 
   async function renderStep3RegisteredTools() {
@@ -922,61 +939,86 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
     setA11yVisibility(activeFeaturesBox, true);
-    tools.forEach((t: any, idx: number) => {
-      const li = document.createElement('li');
-      li.style.display = 'flex';
-      li.style.justifyContent = 'space-between';
-      li.style.alignItems = 'center';
-      li.style.padding = '6px 10px';
-      li.style.marginBottom = '4px';
-      li.style.backgroundColor = 'var(--card-surface)';
-      li.style.borderRadius = '6px';
-      li.style.border = '1px solid var(--border-color)';
-      li.style.fontSize = '0.78rem';
 
-      li.innerHTML = `<span>📌 <strong>${t.feature}</strong> <span style="color:var(--text-muted); font-size:0.72rem;">(${t.domain})</span></span>`;
+    const domainGroups: { [domain: string]: any[] } = {};
+    tools.forEach((t: any) => {
+      const d = t.domain || 'General School Portal';
+      if (!domainGroups[d]) domainGroups[d] = [];
+      domainGroups[d].push(t);
+    });
 
-      const actionsDiv = document.createElement('div');
-      actionsDiv.style.display = 'flex';
-      actionsDiv.style.gap = '4px';
+    Object.keys(domainGroups).forEach(dom => {
+      const groupHeader = document.createElement('li');
+      groupHeader.style.listStyle = 'none';
+      groupHeader.style.fontSize = '0.74rem';
+      groupHeader.style.fontWeight = 'bold';
+      groupHeader.style.color = 'var(--primary-color, #2563eb)';
+      groupHeader.style.padding = '6px 4px 2px 4px';
+      groupHeader.style.borderBottom = '1px solid var(--border-color)';
+      groupHeader.style.marginBottom = '4px';
+      groupHeader.innerHTML = `🌐 ${dom} <span style="color:var(--text-muted); font-size:0.7rem; font-weight:normal;">(${domainGroups[dom].length} features)</span>`;
+      step3RegisteredToolsList.appendChild(groupHeader);
 
-      const btnRename = document.createElement('button');
-      btnRename.className = 'btn btn-secondary btn-sm';
-      btnRename.style.padding = '2px 8px';
-      btnRename.style.fontSize = '0.7rem';
-      btnRename.textContent = '✏️ Rename';
-      btnRename.addEventListener('click', async () => {
-        const newName = prompt(`Enter custom feature name for '${t.feature}' (e.g. Classwork, Homework, Attendance):`, t.feature);
-        if (newName && newName.trim() && newName.trim() !== t.feature) {
-          const clean = newName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').substring(0, 30);
-          t.feature = clean;
-          t.name = `get_${clean.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '')}`;
-          if (currentConfiguringProfile) {
-            currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+      domainGroups[dom].forEach((t: any) => {
+        const globalIdx = tools.indexOf(t);
+        const li = document.createElement('li');
+        li.style.display = 'flex';
+        li.style.justifyContent = 'space-between';
+        li.style.alignItems = 'center';
+        li.style.padding = '6px 10px';
+        li.style.marginBottom = '4px';
+        li.style.backgroundColor = 'var(--card-surface)';
+        li.style.borderRadius = '6px';
+        li.style.border = '1px solid var(--border-color)';
+        li.style.fontSize = '0.78rem';
+
+        li.innerHTML = `<span>📌 <strong>${t.feature}</strong> <code style="font-size:0.7rem; color:var(--text-muted);">${t.name}</code></span>`;
+
+        const actionsDiv = document.createElement('div');
+        actionsDiv.style.display = 'flex';
+        actionsDiv.style.gap = '4px';
+
+        const btnRename = document.createElement('button');
+        btnRename.className = 'btn btn-secondary btn-sm';
+        btnRename.style.padding = '2px 8px';
+        btnRename.style.fontSize = '0.7rem';
+        btnRename.textContent = '✏️ Rename';
+        btnRename.addEventListener('click', async () => {
+          const newName = prompt(`Enter custom feature name for '${t.feature}':`, t.feature);
+          if (newName && newName.trim() && newName.trim() !== t.feature) {
+            const clean = newName.trim().replace(/[^a-zA-Z0-9 _-]/g, '').substring(0, 30);
+            t.feature = clean;
+            const cleanDomainPrefix = (t.domain || '').replace(/^www\./, '').split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+            t.name = `get_${cleanDomainPrefix ? cleanDomainPrefix + '_' : ''}${clean.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '')}`;
+            if (currentConfiguringProfile) {
+              currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+            }
+            renderStep3RegisteredTools();
           }
-          renderStep3RegisteredTools();
-        }
-      });
+        });
 
-      const btnDel = document.createElement('button');
-      btnDel.className = 'btn btn-danger btn-sm';
-      btnDel.style.padding = '2px 8px';
-      btnDel.style.fontSize = '0.7rem';
-      btnDel.textContent = '🗑️ Remove';
-      btnDel.addEventListener('click', async () => {
-        if (confirm(`Remove feature '${t.feature}' from tracked list?`)) {
-          tools.splice(idx, 1);
-          if (currentConfiguringProfile) {
-            currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+        const btnDel = document.createElement('button');
+        btnDel.className = 'btn btn-danger btn-sm';
+        btnDel.style.padding = '2px 8px';
+        btnDel.style.fontSize = '0.7rem';
+        btnDel.textContent = '🗑️ Remove';
+        btnDel.addEventListener('click', async () => {
+          if (confirm(`Remove feature '${t.feature}' (${t.domain}) from tracked list?`)) {
+            if (globalIdx >= 0) {
+              tools.splice(globalIdx, 1);
+            }
+            if (currentConfiguringProfile) {
+              currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { registeredTools: tools });
+            }
+            renderStep3RegisteredTools();
           }
-          renderStep3RegisteredTools();
-        }
-      });
+        });
 
-      actionsDiv.appendChild(btnRename);
-      actionsDiv.appendChild(btnDel);
-      li.appendChild(actionsDiv);
-      step3RegisteredToolsList.appendChild(li);
+        actionsDiv.appendChild(btnRename);
+        actionsDiv.appendChild(btnDel);
+        li.appendChild(actionsDiv);
+        step3RegisteredToolsList.appendChild(li);
+      });
     });
   }
 

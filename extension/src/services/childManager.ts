@@ -18,6 +18,7 @@ export interface ChildProfile {
   deployedGasHash?: string;
   hasClassroom?: boolean;
   portalDomain?: string;
+  portalDomains?: string[];
   registeredTools?: any[];
   trackedChats?: any[];
 }
@@ -126,7 +127,8 @@ export class ChildManager {
             ...lp,
             registeredTools: (Array.isArray(lp.registeredTools) && lp.registeredTools.length > 0) ? lp.registeredTools : (sp.registeredTools || []),
             trackedChats: (Array.isArray(lp.trackedChats) && lp.trackedChats.length > 0) ? lp.trackedChats : (sp.trackedChats || []),
-            portalDomain: lp.portalDomain || sp.portalDomain
+            portalDomain: lp.portalDomain || sp.portalDomain,
+            portalDomains: (Array.isArray(lp.portalDomains) && lp.portalDomains.length > 0) ? lp.portalDomains : (sp.portalDomains || [])
           };
         });
       }
@@ -208,6 +210,9 @@ export class ChildManager {
         }
         if (activeProf.portalDomain) {
           payload['portal_domain'] = activeProf.portalDomain;
+        }
+        if (Array.isArray(activeProf.portalDomains)) {
+          payload['portal_domains'] = activeProf.portalDomains;
         }
         if (activeProf.gasDeploymentUrl) {
           payload['mcp_gas_url'] = activeProf.gasDeploymentUrl;
