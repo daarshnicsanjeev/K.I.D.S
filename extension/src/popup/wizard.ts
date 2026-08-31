@@ -860,25 +860,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       const domRes = await chrome.scripting.executeScript({
         target: { tabId: activeTab.id },
         func: () => {
-          const h1 = document.querySelector('h1, h2, .page-title, .title')?.textContent?.trim() || '';
-          const activeNav = document.querySelector('.active, .selected, [aria-selected="true"], .nav-link.active')?.textContent?.trim() || '';
-          const body = document.body ? document.body.innerText.substring(0, 1000) : '';
-          return { title: document.title || '', h1, activeNav, body };
+          const title = document.title || '';
+          const headings = Array.from(document.querySelectorAll('h1, h2, h3, .page-title, .title, .card-header, .header-title, .breadcrumb-item.active, [data-testid="page-title"]'))
+            .map(el => el.textContent?.trim())
+            .filter(Boolean) as string[];
+          const h1 = headings[0] || '';
+          const activeNav = Array.from(document.querySelectorAll('.active, .selected, [aria-selected="true"], .nav-link.active, .menu-item-active, li.active a, .tab-active, [class*="active"]'))
+            .map(el => el.textContent?.trim())
+            .filter(t => t && t.length > 2 && t.length < 35)
+            .join(' | ');
+          const body = document.body ? document.body.innerText.substring(0, 1500) : '';
+          return { title, h1, headings, activeNav, body };
         }
       }).catch(() => null);
 
       const extracted = (domRes && domRes[0] && domRes[0].result) ? domRes[0].result : { title: activeTab.title || '', h1: '', activeNav: '', body: '' };
-      const targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
+      let targetFeature = detectFeatureName(activeTab.url, extracted.title, extracted.h1, extracted.activeNav, extracted.body);
       const domain = new URL(activeTab.url).hostname;
       const cleanDomainPrefix = domain.replace(/^www\./, '').split('.')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
-      const funcSuffix = targetFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
-
-      const newTool = {
-        domain,
-        feature: targetFeature,
-        name: `get_${cleanDomainPrefix ? cleanDomainPrefix + '_' : ''}${funcSuffix}`,
-        url: activeTab.url
-      };
 
       if (!currentConfiguringProfile) {
         currentConfiguringProfile = await ChildManager.getActiveProfile();
@@ -889,7 +888,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       let existingTools = currentConfiguringProfile?.registeredTools || [];
-      const existingIdx = existingTools.findIndex((t: any) => (t.feature === targetFeature && t.domain === domain) || t.url === newTool.url);
+
+      // Auto-disambiguate generic features if capturing multiple items
+      const duplicateCount = existingTools.filter((t: any) => (t.domain || '').toLowerCase() === domain.toLowerCase() && (t.feature || '').toLowerCase().startsWith(targetFeature.toLowerCase())).length;
+      if (duplicateCount > 0 && targetFeature === 'School Feature') {
+        targetFeature = `School Feature ${duplicateCount + 1}`;
+      }
+
+      const funcSuffix = targetFeature.toLowerCase().replace(/[\s-]+/g, '_').replace(/[^a-z0-9_]/g, '');
+
+      const newTool = {
+        domain,
+        feature: targetFeature,
+        name: `get_${cleanDomainPrefix ? cleanDomainPrefix + '_' : ''}${funcSuffix}`,
+        url: activeTab.url
+      };
+
+      // SAFE DEDUPLICATION: Only update if BOTH domain and feature match exactly. Never overwrite different features on same URL!
+      const existingIdx = existingTools.findIndex((t: any) => (t.feature || '').toLowerCase() === targetFeature.toLowerCase() && (t.domain || '').toLowerCase() === domain.toLowerCase());
       if (existingIdx >= 0) {
         existingTools[existingIdx] = newTool;
       } else {
