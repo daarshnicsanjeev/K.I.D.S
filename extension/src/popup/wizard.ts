@@ -899,6 +899,13 @@ document.addEventListener('DOMContentLoaded', async () => {
           portalDomain: domain,
           portalDomains: currentDomains
         });
+
+        // Background sync to Drive 5-tier portal tools config
+        PersonalDriveService.getValidToken(false).then(token => {
+          if (token && currentConfiguringProfile) {
+            PersonalDriveService.savePortalToolsConfig(token, currentConfiguringProfile.name, currentConfiguringProfile.academicYear, existingTools).catch(() => {});
+          }
+        }).catch(() => {});
       }
 
       setA11yVisibility(btnSkipStep3, false);

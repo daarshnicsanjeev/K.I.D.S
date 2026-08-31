@@ -1,4 +1,4 @@
-import { ChildManager } from './childManager';
+import { ChildManager, ChildProfile } from './childManager';
 import { WhatsAppDiagnosticLogger } from './whatsappLogger';
 import { WhatsAppExportParser, ParsedWhatsAppExport } from './whatsAppExportParser';
 import { AiNormalizerService } from './aiNormalizer';
@@ -360,188 +360,403 @@ export class PersonalDriveService {
   }
 
   /**
-   * Gets or creates the dedicated kid subfolder inside K.I.D.S. Data -> [AcademicYear] -> [FirstName].
+   * Helper to write or update a JSON file inside a specific Google Drive folder.
    */
-  public static async getOrCreatePersonalFolder(token?: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; yearFolderId: string; kidFolderId: string }> {
-    const validToken = token || await this.getValidToken(false);
-    const rootFolder = await this.getOrCreateRootFolder(validToken);
-    const resolvedChild = await this.resolveChildName(childName);
+  public static async saveJsonFileInFolder(token: string, folderId: string, fileName: string, data: any): Promise<string> {
+    const payload = JSON.stringify(data, null, 2);
+    const q = encodeURIComponent(`name = '${fileName}' and '${folderId}' in parents and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, token);
 
-    // 1. Resolve Academic Year
+    if (searchRes.ok) {
+      const searchData = await searchRes.json();
+      if (searchData.files && searchData.files.length > 0) {
+        const fileId = searchData.files[0].id;
+        await this.fetchWithAuth(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload
+        }, token);
+        return fileId;
+      }
+    }
+
+    const boundary = '-------314159265358979323846';
+    const delimiter = `\r\n--${boundary}\r\n`;
+    const closeDelimiter = `\r\n--${boundary}--`;
+    const metadata = { name: fileName, mimeType: 'application/json', parents: [folderId] };
+    const multipartBody = delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) + delimiter + 'Content-Type: application/json\r\n\r\n' + payload + closeDelimiter;
+
+    const createRes = await this.fetchWithAuth('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+      body: multipartBody
+    }, token);
+
+    const created = await createRes.json();
+    return created.id;
+  }
+
+  /**
+   * Helper to read and parse a JSON file from a specific Google Drive folder.
+   */
+  public static async readJsonFileInFolder(token: string, folderId: string, fileName: string): Promise<any | null> {
+    const q = encodeURIComponent(`name = '${fileName}' and '${folderId}' in parents and trashed = false`);
+    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, token);
+    if (!searchRes.ok) return null;
+    const searchData = await searchRes.json();
+    if (!searchData.files || searchData.files.length === 0) return null;
+
+    const fileId = searchData.files[0].id;
+    const contentRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, token);
+    if (!contentRes.ok) return null;
+    return await contentRes.json();
+  }
+
+  /**
+   * Tier 1: Gets or creates Academic Year folder under K.I.D.S. Data.
+   */
+  public static async getOrCreateYearFolder(token: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; year: string }> {
+    const rootFolder = await this.getOrCreateRootFolder(token);
     let year = academicYear;
     if (!year) {
       const activeProf = await ChildManager.getActiveProfile();
       year = (activeProf && activeProf.academicYear) ? activeProf.academicYear : ChildManager.getCalculatedAcademicYears().current;
     }
+    const yearFolder = await this.getOrCreateSubfolder(token, year, rootFolder.id, `K.I.D.S. Academic Year ${year}`);
+    return { id: yearFolder.id, webViewLink: yearFolder.webViewLink, rootId: rootFolder.id, year };
+  }
 
-    // 2. Get or create Academic Year folder (e.g. 2026-2027) inside K.I.D.S. Data
-    const yearFolder = await this.getOrCreateSubfolder(validToken, year, rootFolder.id, `K.I.D.S. Academic Year ${year}`);
-
-    // 3. Get or create Kid folder (e.g. Atharva) inside Academic Year folder
-    const kidFolder = await this.getOrCreateSubfolder(validToken, resolvedChild, yearFolder.id, `K.I.D.S. Profile for ${resolvedChild} (${year})`);
-
+  /**
+   * Tier 2: Gets or creates Kid folder under Academic Year folder.
+   */
+  public static async getOrCreateKidFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; yearFolderId: string; kidName: string; year: string }> {
+    const yearInfo = await this.getOrCreateYearFolder(token, academicYear);
+    const resolvedChild = await this.resolveChildName(childName);
+    const kidFolder = await this.getOrCreateSubfolder(token, resolvedChild, yearInfo.id, `K.I.D.S. Profile for ${resolvedChild} (${yearInfo.year})`);
     return {
       id: kidFolder.id,
       webViewLink: kidFolder.webViewLink,
-      rootId: rootFolder.id,
-      yearFolderId: yearFolder.id,
-      kidFolderId: kidFolder.id
+      rootId: yearInfo.rootId,
+      yearFolderId: yearInfo.id,
+      kidName: resolvedChild,
+      year: yearInfo.year
     };
   }
 
   /**
-   * Saves the master Family Registry (K.I.D.S._family_registry.json) at the root of K.I.D.S. Data folder.
-   * This is the single authoritative source of truth for all children across academic years.
+   * Backwards compatible alias for getOrCreateKidFolder.
    */
-  public static async saveFamilyRegistry(token?: string): Promise<void> {
-    try {
-      const validToken = token || await this.getValidToken(false);
-      const rootFolder = await this.getOrCreateRootFolder(validToken);
-      const profiles = await ChildManager.getProfiles(false);
-      const activeProf = await ChildManager.getActiveProfile();
-
-      const registry = {
-        updatedAt: new Date().toISOString(),
-        activeChildId: activeProf?.id,
-        childrenCount: profiles.length,
-        children: profiles.map(p => ({
-          id: p.id,
-          name: p.name,
-          academicYear: p.academicYear,
-          hasClassroom: p.hasClassroom !== false,
-          portalDomains: p.portalDomains || (p.portalDomain ? [p.portalDomain] : []),
-          toolsCount: p.registeredTools?.length || 0,
-          registeredTools: p.registeredTools || [],
-          gasScriptId: p.gasScriptId,
-          gasDeploymentUrl: p.gasDeploymentUrl,
-          trackedChatsCount: p.trackedChats?.length || 0
-        }))
-      };
-
-      const fileName = 'K.I.D.S._family_registry.json';
-      const payload = JSON.stringify(registry, null, 2);
-
-      const q = encodeURIComponent(`name = '${fileName}' and '${rootFolder.id}' in parents and trashed = false`);
-      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
-
-      if (searchRes.ok) {
-        const searchData = await searchRes.json();
-        if (searchData.files && searchData.files.length > 0) {
-          const fileId = searchData.files[0].id;
-          await this.fetchWithAuth(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: payload
-          }, validToken);
-          return;
-        }
-      }
-
-      // Create brand new registry file
-      const boundary = '-------314159265358979323846';
-      const delimiter = `\r\n--${boundary}\r\n`;
-      const closeDelimiter = `\r\n--${boundary}--`;
-      const metadata = { name: fileName, mimeType: 'application/json', parents: [rootFolder.id] };
-      const multipartBody = delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) + delimiter + 'Content-Type: application/json\r\n\r\n' + payload + closeDelimiter;
-
-      await this.fetchWithAuth('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST',
-        headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
-        body: multipartBody
-      }, validToken);
-    } catch (e) {}
+  public static async getOrCreatePersonalFolder(token?: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; yearFolderId: string; kidFolderId: string }> {
+    const validToken = token || await this.getValidToken(false);
+    const kidInfo = await this.getOrCreateKidFolder(validToken, childName, academicYear);
+    return {
+      id: kidInfo.id,
+      webViewLink: kidInfo.webViewLink,
+      rootId: kidInfo.rootId,
+      yearFolderId: kidInfo.yearFolderId,
+      kidFolderId: kidInfo.id
+    };
   }
 
   /**
-   * Scans Google Drive for all child configurations and restores full profiles for seamless machine-change migration.
+   * Tier 3A: Gets or creates portal_tools folder under Kid folder.
+   */
+  public static async getOrCreatePortalToolsFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; kidFolderId: string }> {
+    const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+    const portalFolder = await this.getOrCreateSubfolder(token, 'portal_tools', kidInfo.id, `Portal Tools Configuration for ${kidInfo.kidName}`);
+    return { id: portalFolder.id, webViewLink: portalFolder.webViewLink, kidFolderId: kidInfo.id };
+  }
+
+  /**
+   * Tier 3B: Gets or creates messaging_tools folder under Kid folder.
+   */
+  public static async getOrCreateMessagingToolsFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; kidFolderId: string }> {
+    const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+    const msgFolder = await this.getOrCreateSubfolder(token, 'messaging_tools', kidInfo.id, `Messaging Tools & Chat Archives for ${kidInfo.kidName}`);
+    return { id: msgFolder.id, webViewLink: msgFolder.webViewLink, kidFolderId: kidInfo.id };
+  }
+
+  /**
+   * Tier 0 Saver: Saves K.I.D.S._Data_config.json at root of K.I.D.S. Data folder.
+   */
+  public static async saveRootConfig(token: string): Promise<void> {
+    const rootFolder = await this.getOrCreateRootFolder(token);
+    const state = await chrome.storage.local.get(['personal_drive_account_email']);
+    const profiles = await ChildManager.getProfiles(false);
+    const activeProf = await ChildManager.getActiveProfile();
+    const activeYear = activeProf?.academicYear || ChildManager.getCalculatedAcademicYears().current;
+
+    // Collect distinct academic years
+    const yearSet = new Set<string>();
+    profiles.forEach(p => { if (p.academicYear) yearSet.add(p.academicYear); });
+    if (yearSet.size === 0) yearSet.add(activeYear);
+
+    const rootConfig = {
+      version: '1.0',
+      updatedAt: new Date().toISOString(),
+      personalEmailAddress: state.personal_drive_account_email || '',
+      activeAcademicYear: activeYear,
+      academicYears: Array.from(yearSet).map(yr => ({
+        year: yr,
+        isActive: yr === activeYear,
+        relativeConfigPath: `${yr}/${yr}_config.json`
+      }))
+    };
+
+    await this.saveJsonFileInFolder(token, rootFolder.id, 'K.I.D.S._Data_config.json', rootConfig);
+  }
+
+  /**
+   * Tier 1 Saver: Saves [AcademicYear]_config.json inside Academic Year folder.
+   */
+  public static async saveYearConfig(token: string, academicYear?: string): Promise<void> {
+    const yearInfo = await this.getOrCreateYearFolder(token, academicYear);
+    const profiles = await ChildManager.getProfiles(false);
+    const yearProfiles = profiles.filter(p => !p.academicYear || p.academicYear === yearInfo.year);
+    const activeProf = await ChildManager.getActiveProfile();
+
+    const activeIdInYear = (activeProf && activeProf.academicYear === yearInfo.year) ? activeProf.id : (yearProfiles.length > 0 ? yearProfiles[0].id : null);
+
+    const yearConfig = {
+      academicYear: yearInfo.year,
+      updatedAt: new Date().toISOString(),
+      activeChildId: activeIdInYear,
+      children: yearProfiles.map(p => ({
+        id: p.id,
+        childName: p.name,
+        isActive: p.id === activeIdInYear,
+        isRemoved: false,
+        relativeConfigPath: `${p.name}/${p.name}_config.json`
+      }))
+    };
+
+    await this.saveJsonFileInFolder(token, yearInfo.id, `${yearInfo.year}_config.json`, yearConfig);
+  }
+
+  /**
+   * Tier 2 Saver: Saves [KidName]_config.json inside Kid folder.
+   */
+  public static async saveKidConfig(token: string, childName?: string, academicYear?: string, overrides?: Partial<ChildProfile>): Promise<void> {
+    const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+    const activeProf = await ChildManager.getActiveProfile();
+    const profiles = await ChildManager.getProfiles(false);
+    const currentProf = profiles.find(p => p.name.toLowerCase() === kidInfo.kidName.toLowerCase()) || activeProf;
+
+    const merged = { ...(currentProf || {}), ...(overrides || {}) };
+
+    const kidConfig = {
+      kidName: kidInfo.kidName,
+      academicYear: kidInfo.year,
+      hasClassroom: merged.hasClassroom !== false,
+      classroomEmail: merged.accountEmail || '',
+      scriptId: merged.gasScriptId || '',
+      deploymentId: merged.gasDeploymentUrl ? (merged.gasDeploymentUrl.match(/\/macros\/s\/([^\/]+)\/exec/) || [])[1] || '' : '',
+      url: merged.gasDeploymentUrl || '',
+      relativePortalToolsConfigPath: 'portal_tools/portal_tools_config.json',
+      relativeMessagingToolsPath: 'messaging_tools',
+      updatedAt: new Date().toISOString()
+    };
+
+    await this.saveJsonFileInFolder(token, kidInfo.id, `${kidInfo.kidName}_config.json`, kidConfig);
+  }
+
+  /**
+   * Tier 3A Saver: Saves portal_tools/portal_tools_config.json.
+   */
+  public static async savePortalToolsConfig(token: string, childName?: string, academicYear?: string, customTools?: any[]): Promise<void> {
+    const portalInfo = await this.getOrCreatePortalToolsFolder(token, childName, academicYear);
+    const activeProf = await ChildManager.getActiveProfile();
+    const profiles = await ChildManager.getProfiles(false);
+    const currentProf = profiles.find(p => p.name.toLowerCase() === (childName || '').toLowerCase()) || activeProf;
+
+    const tools = customTools || currentProf?.registeredTools || [];
+
+    // Group tools by domain
+    const portalMap = new Map<string, any[]>();
+    tools.forEach((t: any) => {
+      const dom = t.domain || 'general';
+      if (!portalMap.has(dom)) portalMap.set(dom, []);
+      portalMap.get(dom)!.push({
+        feature: t.feature,
+        name: t.name,
+        url: t.url
+      });
+    });
+
+    const portalsArray = Array.from(portalMap.entries()).map(([domain, toolList]) => ({
+      domain,
+      portalName: domain.replace(/^www\./, '').split('.')[0].toUpperCase(),
+      baseUrl: `https://${domain}`,
+      tools: toolList
+    }));
+
+    const config = {
+      kidName: childName || currentProf?.name || 'Child',
+      academicYear: academicYear || currentProf?.academicYear || '2026-2027',
+      updatedAt: new Date().toISOString(),
+      portals: portalsArray
+    };
+
+    await this.saveJsonFileInFolder(token, portalInfo.id, 'portal_tools_config.json', config);
+  }
+
+  /**
+   * Tier 3B Saver: Saves messaging_tools/messaging_tools_config.json.
+   */
+  public static async saveMessagingToolsConfig(token: string, childName?: string, academicYear?: string, customGroups?: any[]): Promise<void> {
+    const msgInfo = await this.getOrCreateMessagingToolsFolder(token, childName, academicYear);
+    const activeProf = await ChildManager.getActiveProfile();
+    const profiles = await ChildManager.getProfiles(false);
+    const currentProf = profiles.find(p => p.name.toLowerCase() === (childName || '').toLowerCase()) || activeProf;
+
+    const tracked = customGroups || currentProf?.trackedChats || [];
+
+    const config = {
+      kidName: childName || currentProf?.name || 'Child',
+      academicYear: academicYear || currentProf?.academicYear || '2026-2027',
+      updatedAt: new Date().toISOString(),
+      totalTrackedGroups: tracked.length,
+      supportedPlatforms: ['WhatsApp', 'Telegram', 'Discord', 'Google Chat'],
+      groups: tracked.map((g: any) => {
+        const cleanName = (g.name || g.chatName || 'School Group').replace(/[\\/:*?"<>|]/g, '_');
+        return {
+          id: g.id || `group_${cleanName.toLowerCase()}`,
+          platform: g.platform || 'WhatsApp',
+          chatName: g.name || g.chatName || cleanName,
+          folderName: cleanName,
+          relativeFolderPath: cleanName,
+          archiveFileName: `K.I.D.S._${cleanName}_archive.json`,
+          isActive: g.enabled !== false,
+          lastSyncAt: g.lastSync || new Date().toISOString(),
+          noticesCount: g.noticeCount || 0
+        };
+      })
+    };
+
+    await this.saveJsonFileInFolder(token, msgInfo.id, 'messaging_tools_config.json', config);
+  }
+
+  /**
+   * Syncs all 5 tiers of the modular hierarchy to Google Drive in one orchestrated operation.
+   */
+  public static async syncFullModularHierarchy(token?: string): Promise<void> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const profiles = await ChildManager.getProfiles(false);
+
+      await this.saveRootConfig(validToken);
+
+      const years = new Set<string>();
+      profiles.forEach(p => { if (p.academicYear) years.add(p.academicYear); });
+
+      for (const yr of years) {
+        await this.saveYearConfig(validToken, yr);
+      }
+
+      for (const p of profiles) {
+        await this.saveKidConfig(validToken, p.name, p.academicYear);
+        await this.savePortalToolsConfig(validToken, p.name, p.academicYear);
+        await this.saveMessagingToolsConfig(validToken, p.name, p.academicYear);
+      }
+    } catch (e) {
+      console.warn('[PersonalDriveService] syncFullModularHierarchy warning:', e);
+    }
+  }
+
+  /**
+   * Complete Machine-Change Cloud Recovery:
+   * Traverses Tier 0 (Root) -> Tier 1 (Year) -> Tier 2 (Kid) -> Tier 3 (Portal & Messaging Tools)
+   * and restores full ChildProfile[] into extension storage in seconds!
    */
   public static async restoreAllProfilesFromDrive(token?: string): Promise<{ restoredCount: number; profiles: any[] }> {
     try {
       const validToken = token || await this.getValidToken(false);
       const rootFolder = await this.getOrCreateRootFolder(validToken);
 
-      // 1. Fast Path: Check for master K.I.D.S._family_registry.json at root
-      const regQ = encodeURIComponent(`name = 'K.I.D.S._family_registry.json' and '${rootFolder.id}' in parents and trashed = false`);
-      const regRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${regQ}&fields=files(id,name)`, {}, validToken);
-      if (regRes.ok) {
-        const regData = await regRes.json();
-        if (regData.files && regData.files.length > 0) {
-          const fileId = regData.files[0].id;
-          const regContentRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
-          if (regContentRes.ok) {
-            const registry = await regContentRes.json();
-            if (registry && Array.isArray(registry.children) && registry.children.length > 0) {
-              const restoredProfiles = registry.children.map((c: any) => ({
-                id: c.id || `child_${c.name.toLowerCase()}_${Date.now()}`,
-                name: c.name,
-                academicYear: c.academicYear || '2026-2027',
-                createdAt: Date.now(),
-                hasClassroom: c.hasClassroom !== false,
-                portalDomain: (c.portalDomains && c.portalDomains[0]) || undefined,
-                portalDomains: c.portalDomains || [],
-                registeredTools: c.registeredTools || [],
-                gasScriptId: c.gasScriptId,
-                gasDeploymentUrl: c.gasDeploymentUrl,
-                trackedChats: c.trackedChats || []
-              }));
+      // 1. Read Root Config (Tier 0)
+      const rootConfig = await this.readJsonFileInFolder(validToken, rootFolder.id, 'K.I.D.S._Data_config.json');
+      const activeYear = rootConfig?.activeAcademicYear || ChildManager.getCalculatedAcademicYears().current;
 
-              await ChildManager.saveProfiles(restoredProfiles, registry.activeChildId || restoredProfiles[0].id);
-              return { restoredCount: restoredProfiles.length, profiles: restoredProfiles };
+      // 2. Read Year Config (Tier 1)
+      const yearInfo = await this.getOrCreateYearFolder(validToken, activeYear);
+      const yearConfig = await this.readJsonFileInFolder(validToken, yearInfo.id, `${activeYear}_config.json`);
+
+      const restoredProfiles: any[] = [];
+      const childrenList = (yearConfig && Array.isArray(yearConfig.children)) ? yearConfig.children : [];
+
+      for (const childItem of childrenList) {
+        if (childItem.isRemoved) continue;
+        const childName = childItem.childName;
+        const kidInfo = await this.getOrCreateKidFolder(validToken, childName, activeYear);
+
+        // 3. Read Kid Config (Tier 2)
+        const kidConfig = await this.readJsonFileInFolder(validToken, kidInfo.id, `${childName}_config.json`);
+
+        // 4. Read Portal Tools Config (Tier 3A)
+        const portalInfo = await this.getOrCreatePortalToolsFolder(validToken, childName, activeYear);
+        const portalConfig = await this.readJsonFileInFolder(validToken, portalInfo.id, 'portal_tools_config.json');
+
+        const flattenedTools: any[] = [];
+        const portalDomains: string[] = [];
+        if (portalConfig && Array.isArray(portalConfig.portals)) {
+          portalConfig.portals.forEach((p: any) => {
+            if (p.domain && !portalDomains.includes(p.domain)) portalDomains.push(p.domain);
+            if (Array.isArray(p.tools)) {
+              p.tools.forEach((t: any) => {
+                flattenedTools.push({
+                  domain: p.domain,
+                  feature: t.feature,
+                  name: t.name,
+                  url: t.url
+                });
+              });
             }
-          }
+          });
         }
+
+        // 5. Read Messaging Tools Config (Tier 3B)
+        const msgInfo = await this.getOrCreateMessagingToolsFolder(validToken, childName, activeYear);
+        const msgConfig = await this.readJsonFileInFolder(validToken, msgInfo.id, 'messaging_tools_config.json');
+
+        const restoredChats: any[] = [];
+        if (msgConfig && Array.isArray(msgConfig.groups)) {
+          msgConfig.groups.forEach((g: any) => {
+            restoredChats.push({
+              id: g.id,
+              name: g.chatName,
+              platform: g.platform || 'WhatsApp',
+              enabled: g.isActive !== false,
+              lastSync: g.lastSyncAt,
+              noticeCount: g.noticesCount || 0
+            });
+          });
+        }
+
+        restoredProfiles.push({
+          id: childItem.id || `child_${childName.toLowerCase()}_${Date.now()}`,
+          name: childName,
+          academicYear: activeYear,
+          createdAt: Date.now(),
+          hasClassroom: kidConfig?.hasClassroom !== false,
+          accountEmail: kidConfig?.classroomEmail || undefined,
+          gasScriptId: kidConfig?.scriptId || undefined,
+          gasDeploymentUrl: kidConfig?.url || undefined,
+          portalDomain: portalDomains[0] || undefined,
+          portalDomains,
+          registeredTools: flattenedTools,
+          trackedChats: restoredChats
+        });
       }
 
-      // 2. Fallback Path: Search individual config files
-      const q = encodeURIComponent(`name contains 'K.I.D.S._' and name contains '_config.json' and trashed = false`);
-      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=30`, {}, validToken);
-
-      if (!searchRes.ok) return { restoredCount: 0, profiles: [] };
-      const searchData = await searchRes.json();
-      if (!searchData.files || searchData.files.length === 0) return { restoredCount: 0, profiles: [] };
-
-      const existingProfiles = await ChildManager.getProfiles(false);
-      const restoredMap = new Map<string, any>();
-      existingProfiles.forEach(p => restoredMap.set(p.name.toLowerCase().trim(), p));
-
-      for (const file of searchData.files) {
-        try {
-          const contentRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${file.id}?alt=media`, {}, validToken);
-          if (contentRes.ok) {
-            const config = await contentRes.json();
-            if (config && config.childName && config.scriptId) {
-              const key = config.childName.toLowerCase().trim();
-              const existing = restoredMap.get(key);
-
-              const mergedProfile = {
-                id: config.childId || existing?.id || `child_${key}_${Date.now()}`,
-                name: config.childName,
-                academicYear: config.academicYear || existing?.academicYear || '2026-2027',
-                createdAt: existing?.createdAt || Date.now(),
-                hasClassroom: config.hasClassroom !== undefined ? config.hasClassroom : (existing?.hasClassroom !== false),
-                portalDomain: config.portalDomain || existing?.portalDomain,
-                portalDomains: config.portalDomains || (config.portalDomain ? [config.portalDomain] : []),
-                registeredTools: (config.registeredTools && config.registeredTools.length > 0) ? config.registeredTools : (existing?.registeredTools || []),
-                gasScriptId: config.scriptId,
-                gasDeploymentUrl: config.webAppUrl,
-                trackedChats: existing?.trackedChats || []
-              };
-
-              restoredMap.set(key, mergedProfile);
-            }
-          }
-        } catch (fileErr) {}
+      if (restoredProfiles.length > 0) {
+        const activeId = yearConfig?.activeChildId || restoredProfiles[0].id;
+        await ChildManager.saveProfiles(restoredProfiles, activeId);
+        return { restoredCount: restoredProfiles.length, profiles: restoredProfiles };
       }
 
-      const finalProfiles = Array.from(restoredMap.values());
-      if (finalProfiles.length > 0) {
-        await ChildManager.saveProfiles(finalProfiles);
-        // Persist master registry
-        await this.saveFamilyRegistry(validToken);
-      }
-
-      return { restoredCount: finalProfiles.length, profiles: finalProfiles };
+      return { restoredCount: 0, profiles: [] };
     } catch (e) {
+      console.warn('[PersonalDriveService] restoreAllProfilesFromDrive error:', e);
       return { restoredCount: 0, profiles: [] };
     }
   }
@@ -557,7 +772,7 @@ export class PersonalDriveService {
     try {
       const validToken = token || await this.getValidToken(false);
       const resolvedChild = await this.resolveChildName(childName);
-      const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild, academicYear);
+      const folder = await this.getOrCreateMessagingToolsFolder(validToken, resolvedChild, academicYear);
       const archiveFileName = `K.I.D.S._${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
       const q = encodeURIComponent(`name = '${archiveFileName}' and '${folder.id}' in parents and trashed = false`);
@@ -579,7 +794,7 @@ export class PersonalDriveService {
   }
 
   /**
-   * Saves messages to K.I.D.S._[ChildName]_archive.json in the child's folder.
+   * Saves messages to K.I.D.S._[ChildName]_archive.json in the child's messaging_tools folder.
    */
   public static async saveMessagesToPersonalDrive(
     token?: string,
@@ -591,7 +806,7 @@ export class PersonalDriveService {
 
     const validToken = token || await this.getValidToken(false);
     const resolvedChild = await this.resolveChildName(childName);
-    const folder = await this.getOrCreatePersonalFolder(validToken, resolvedChild, academicYear);
+    const folder = await this.getOrCreateMessagingToolsFolder(validToken, resolvedChild, academicYear);
     const archiveFileName = `K.I.D.S._${resolvedChild}_${this.ARCHIVE_FILE_NAME}`;
 
     await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_START] Preparing archive upload for ${resolvedChild} in folder "${folder.id}"`, {
@@ -1223,10 +1438,10 @@ export class PersonalDriveService {
   ): Promise<{ id: string; webViewLink?: string }> {
     const validToken = token || await this.getValidToken(false);
     const resolvedChild = await this.resolveChildName(childName);
-    const childFolder = await this.getOrCreatePersonalFolder(validToken, resolvedChild);
+    const msgFolder = await this.getOrCreateMessagingToolsFolder(validToken, resolvedChild);
     const cleanGroupName = (groupName || 'General').replace(/[\\/:*?"<>|]/g, '_').trim();
 
-    const q = encodeURIComponent(`name = '${cleanGroupName}' and '${childFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+    const q = encodeURIComponent(`name = '${cleanGroupName}' and '${msgFolder.id}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
     const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, validToken);
 
     if (searchRes.ok) {
@@ -1244,7 +1459,7 @@ export class PersonalDriveService {
         body: JSON.stringify({
           name: cleanGroupName,
           mimeType: 'application/vnd.google-apps.folder',
-          parents: [childFolder.id],
+          parents: [msgFolder.id],
           description: `School chat group archive for ${cleanGroupName} (${resolvedChild})`
         })
       },
