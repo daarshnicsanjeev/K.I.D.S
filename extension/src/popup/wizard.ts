@@ -444,10 +444,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     targetProfile = activeProfile;
   }
 
-  if (targetProfile && targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1')) {
+  if (targetProfile) {
     currentConfiguringProfile = targetProfile;
     await ChildManager.setActiveProfileId(targetProfile.id);
-    populateStep1ForEditing(targetProfile);
+    if (targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1')) {
+      populateStep1ForEditing(targetProfile);
+    }
   }
 
   function dismissRestoringOverlay() {
@@ -789,6 +791,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
 
       const domain = new URL(activeTab.url).hostname;
+      if (!currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+      }
+      if (!currentConfiguringProfile) {
+        const profs = await ChildManager.getProfiles(true);
+        currentConfiguringProfile = profs[0];
+      }
       if (currentConfiguringProfile) {
         currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, { portalDomain: domain });
       }
@@ -840,6 +849,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         url: activeTab.url
       };
 
+      if (!currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+      }
+      if (!currentConfiguringProfile) {
+        const profs = await ChildManager.getProfiles(true);
+        currentConfiguringProfile = profs[0];
+      }
+
       let existingTools = currentConfiguringProfile?.registeredTools || [];
       const existingIdx = existingTools.findIndex((t: any) => t.feature === targetFeature || t.url === newTool.url);
       if (existingIdx >= 0) {
@@ -880,8 +897,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
   });
 
-  function renderStep3RegisteredTools() {
+  async function renderStep3RegisteredTools() {
     if (!step3RegisteredToolsList) return;
+    if (!currentConfiguringProfile) {
+      currentConfiguringProfile = await ChildManager.getActiveProfile();
+    }
     const tools = currentConfiguringProfile?.registeredTools || [];
     step3RegisteredToolsList.innerHTML = '';
     if (tools.length === 0) {

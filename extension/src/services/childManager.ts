@@ -111,7 +111,28 @@ export class ChildManager {
       }
     }
 
-    let profiles: ChildProfile[] = syncData[this.STORAGE_KEY_PROFILES] || localData[this.STORAGE_KEY_PROFILES] || [];
+    const localProfiles: ChildProfile[] = Array.isArray(localData[this.STORAGE_KEY_PROFILES]) ? localData[this.STORAGE_KEY_PROFILES] : [];
+    const syncProfiles: ChildProfile[] = Array.isArray(syncData[this.STORAGE_KEY_PROFILES]) ? syncData[this.STORAGE_KEY_PROFILES] : [];
+
+    let profiles: ChildProfile[] = [];
+    if (localProfiles.length > 0) {
+      profiles = localProfiles;
+      if (syncProfiles.length > 0) {
+        profiles = localProfiles.map(lp => {
+          const sp = syncProfiles.find(s => s.id === lp.id);
+          if (!sp) return lp;
+          return {
+            ...sp,
+            ...lp,
+            registeredTools: (Array.isArray(lp.registeredTools) && lp.registeredTools.length > 0) ? lp.registeredTools : (sp.registeredTools || []),
+            trackedChats: (Array.isArray(lp.trackedChats) && lp.trackedChats.length > 0) ? lp.trackedChats : (sp.trackedChats || []),
+            portalDomain: lp.portalDomain || sp.portalDomain
+          };
+        });
+      }
+    } else if (syncProfiles.length > 0) {
+      profiles = syncProfiles;
+    }
 
     // Filter out invalid/empty entries
     profiles = profiles.filter(p => p && p.id && p.name);
@@ -148,9 +169,9 @@ export class ChildManager {
 
     let activeId: string | undefined;
     if (typeof chrome !== 'undefined' && chrome.storage) {
-      const syncData = chrome.storage.sync ? await chrome.storage.sync.get([this.STORAGE_KEY_ACTIVE_ID]) : {};
       const localData = chrome.storage.local ? await chrome.storage.local.get([this.STORAGE_KEY_ACTIVE_ID]) : {};
-      activeId = syncData[this.STORAGE_KEY_ACTIVE_ID] || localData[this.STORAGE_KEY_ACTIVE_ID];
+      const syncData = chrome.storage.sync ? await chrome.storage.sync.get([this.STORAGE_KEY_ACTIVE_ID]) : {};
+      activeId = localData[this.STORAGE_KEY_ACTIVE_ID] || syncData[this.STORAGE_KEY_ACTIVE_ID];
     }
 
     const found = profiles.find(p => p.id === activeId);
@@ -163,6 +184,15 @@ export class ChildManager {
    * Saves profiles to both sync and local storage for cross-machine resilience.
    */
   public static async saveProfiles(profiles: ChildProfile[], activeId?: string): Promise<void> {
+    if (!activeId && profiles.length > 0) {
+      try {
+        const local = await chrome.storage.local.get([this.STORAGE_KEY_ACTIVE_ID]);
+        activeId = local[this.STORAGE_KEY_ACTIVE_ID] || profiles[0].id;
+      } catch {
+        activeId = profiles[0].id;
+      }
+    }
+
     const payload: Record<string, any> = {
       [this.STORAGE_KEY_PROFILES]: profiles
     };
@@ -172,6 +202,12 @@ export class ChildManager {
       if (activeProf) {
         if (Array.isArray(activeProf.trackedChats)) {
           payload['tracked_whatsapp_chats'] = activeProf.trackedChats;
+        }
+        if (Array.isArray(activeProf.registeredTools)) {
+          payload['registered_portal_tools'] = activeProf.registeredTools;
+        }
+        if (activeProf.portalDomain) {
+          payload['portal_domain'] = activeProf.portalDomain;
         }
         if (activeProf.gasDeploymentUrl) {
           payload['mcp_gas_url'] = activeProf.gasDeploymentUrl;
