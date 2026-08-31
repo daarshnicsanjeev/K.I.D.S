@@ -438,27 +438,9 @@ export class GasProvisionerService {
       }
       if (!rootId) return null;
 
-      let kidFolderId: string | null = null;
-      const kidQ = encodeURIComponent(`name = '${childName}' and '${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-      const kidRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${kidQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
-      const kidData = await kidRes.json();
-      if (kidData.files && kidData.files.length > 0) {
-        kidFolderId = kidData.files[0].id;
-      } else {
-        const createKidRes = await fetch('https://www.googleapis.com/drive/v3/files', {
-          method: 'POST',
-          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: childName, mimeType: 'application/vnd.google-apps.folder', parents: [rootId] })
-        });
-        if (createKidRes.ok) {
-          const created = await createKidRes.json();
-          kidFolderId = created.id;
-        }
-      }
-      if (!kidFolderId) return null;
-
+      // 1. Academic Year folder under K.I.D.S. Data
       let yearFolderId: string | null = null;
-      const yearQ = encodeURIComponent(`name = '${academicYear}' and '${kidFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const yearQ = encodeURIComponent(`name = '${academicYear}' and '${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
       const yearRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${yearQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
       const yearData = await yearRes.json();
       if (yearData.files && yearData.files.length > 0) {
@@ -467,14 +449,34 @@ export class GasProvisionerService {
         const createYearRes = await fetch('https://www.googleapis.com/drive/v3/files', {
           method: 'POST',
           headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: academicYear, mimeType: 'application/vnd.google-apps.folder', parents: [kidFolderId] })
+          body: JSON.stringify({ name: academicYear, mimeType: 'application/vnd.google-apps.folder', parents: [rootId] })
         });
         if (createYearRes.ok) {
           const created = await createYearRes.json();
           yearFolderId = created.id;
         }
       }
-      return yearFolderId;
+      if (!yearFolderId) return null;
+
+      // 2. Kid folder under Academic Year folder
+      let kidFolderId: string | null = null;
+      const kidQ = encodeURIComponent(`name = '${childName}' and '${yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const kidRes = await fetch(`https://www.googleapis.com/drive/v3/files?q=${kidQ}&fields=files(id)`, { headers: { 'Authorization': `Bearer ${token}` } });
+      const kidData = await kidRes.json();
+      if (kidData.files && kidData.files.length > 0) {
+        kidFolderId = kidData.files[0].id;
+      } else {
+        const createKidRes = await fetch('https://www.googleapis.com/drive/v3/files', {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: childName, mimeType: 'application/vnd.google-apps.folder', parents: [yearFolderId] })
+        });
+        if (createKidRes.ok) {
+          const created = await createKidRes.json();
+          kidFolderId = created.id;
+        }
+      }
+      return kidFolderId;
     } catch {
       return null;
     }

@@ -360,32 +360,96 @@ export class PersonalDriveService {
   }
 
   /**
-   * Gets or creates the dedicated academic year subfolder inside K.I.D.S. Data -> [FirstName] -> [AcademicYear].
+   * Gets or creates the dedicated kid subfolder inside K.I.D.S. Data -> [AcademicYear] -> [FirstName].
    */
-  public static async getOrCreatePersonalFolder(token?: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; kidFolderId: string }> {
+  public static async getOrCreatePersonalFolder(token?: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; rootId: string; yearFolderId: string; kidFolderId: string }> {
     const validToken = token || await this.getValidToken(false);
     const rootFolder = await this.getOrCreateRootFolder(validToken);
     const resolvedChild = await this.resolveChildName(childName);
 
-    // 1. Get or create Kid folder (e.g. Atharva)
-    const kidFolder = await this.getOrCreateSubfolder(validToken, resolvedChild, rootFolder.id, `K.I.D.S. Profile for ${resolvedChild}`);
-
-    // 2. Resolve Academic Year
+    // 1. Resolve Academic Year
     let year = academicYear;
     if (!year) {
       const activeProf = await ChildManager.getActiveProfile();
       year = (activeProf && activeProf.academicYear) ? activeProf.academicYear : ChildManager.getCalculatedAcademicYears().current;
     }
 
-    // 3. Get or create Academic Year folder (e.g. 2026-2027)
-    const yearFolder = await this.getOrCreateSubfolder(validToken, year, kidFolder.id, `K.I.D.S. Academic Year ${year} for ${resolvedChild}`);
+    // 2. Get or create Academic Year folder (e.g. 2026-2027) inside K.I.D.S. Data
+    const yearFolder = await this.getOrCreateSubfolder(validToken, year, rootFolder.id, `K.I.D.S. Academic Year ${year}`);
+
+    // 3. Get or create Kid folder (e.g. Atharva) inside Academic Year folder
+    const kidFolder = await this.getOrCreateSubfolder(validToken, resolvedChild, yearFolder.id, `K.I.D.S. Profile for ${resolvedChild} (${year})`);
 
     return {
-      id: yearFolder.id,
-      webViewLink: yearFolder.webViewLink,
+      id: kidFolder.id,
+      webViewLink: kidFolder.webViewLink,
       rootId: rootFolder.id,
+      yearFolderId: yearFolder.id,
       kidFolderId: kidFolder.id
     };
+  }
+
+  /**
+   * Saves the master Family Registry (K.I.D.S._family_registry.json) at the root of K.I.D.S. Data folder.
+   * This is the single authoritative source of truth for all children across academic years.
+   */
+  public static async saveFamilyRegistry(token?: string): Promise<void> {
+    try {
+      const validToken = token || await this.getValidToken(false);
+      const rootFolder = await this.getOrCreateRootFolder(validToken);
+      const profiles = await ChildManager.getProfiles(false);
+      const activeProf = await ChildManager.getActiveProfile();
+
+      const registry = {
+        updatedAt: new Date().toISOString(),
+        activeChildId: activeProf?.id,
+        childrenCount: profiles.length,
+        children: profiles.map(p => ({
+          id: p.id,
+          name: p.name,
+          academicYear: p.academicYear,
+          hasClassroom: p.hasClassroom !== false,
+          portalDomains: p.portalDomains || (p.portalDomain ? [p.portalDomain] : []),
+          toolsCount: p.registeredTools?.length || 0,
+          registeredTools: p.registeredTools || [],
+          gasScriptId: p.gasScriptId,
+          gasDeploymentUrl: p.gasDeploymentUrl,
+          trackedChatsCount: p.trackedChats?.length || 0
+        }))
+      };
+
+      const fileName = 'K.I.D.S._family_registry.json';
+      const payload = JSON.stringify(registry, null, 2);
+
+      const q = encodeURIComponent(`name = '${fileName}' and '${rootFolder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)`, {}, validToken);
+
+      if (searchRes.ok) {
+        const searchData = await searchRes.json();
+        if (searchData.files && searchData.files.length > 0) {
+          const fileId = searchData.files[0].id;
+          await this.fetchWithAuth(`https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: payload
+          }, validToken);
+          return;
+        }
+      }
+
+      // Create brand new registry file
+      const boundary = '-------314159265358979323846';
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelimiter = `\r\n--${boundary}--`;
+      const metadata = { name: fileName, mimeType: 'application/json', parents: [rootFolder.id] };
+      const multipartBody = delimiter + 'Content-Type: application/json; charset=UTF-8\r\n\r\n' + JSON.stringify(metadata) + delimiter + 'Content-Type: application/json\r\n\r\n' + payload + closeDelimiter;
+
+      await this.fetchWithAuth('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST',
+        headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body: multipartBody
+      }, validToken);
+    } catch (e) {}
   }
 
   /**
@@ -394,6 +458,41 @@ export class PersonalDriveService {
   public static async restoreAllProfilesFromDrive(token?: string): Promise<{ restoredCount: number; profiles: any[] }> {
     try {
       const validToken = token || await this.getValidToken(false);
+      const rootFolder = await this.getOrCreateRootFolder(validToken);
+
+      // 1. Fast Path: Check for master K.I.D.S._family_registry.json at root
+      const regQ = encodeURIComponent(`name = 'K.I.D.S._family_registry.json' and '${rootFolder.id}' in parents and trashed = false`);
+      const regRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${regQ}&fields=files(id,name)`, {}, validToken);
+      if (regRes.ok) {
+        const regData = await regRes.json();
+        if (regData.files && regData.files.length > 0) {
+          const fileId = regData.files[0].id;
+          const regContentRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
+          if (regContentRes.ok) {
+            const registry = await regContentRes.json();
+            if (registry && Array.isArray(registry.children) && registry.children.length > 0) {
+              const restoredProfiles = registry.children.map((c: any) => ({
+                id: c.id || `child_${c.name.toLowerCase()}_${Date.now()}`,
+                name: c.name,
+                academicYear: c.academicYear || '2026-2027',
+                createdAt: Date.now(),
+                hasClassroom: c.hasClassroom !== false,
+                portalDomain: (c.portalDomains && c.portalDomains[0]) || undefined,
+                portalDomains: c.portalDomains || [],
+                registeredTools: c.registeredTools || [],
+                gasScriptId: c.gasScriptId,
+                gasDeploymentUrl: c.gasDeploymentUrl,
+                trackedChats: c.trackedChats || []
+              }));
+
+              await ChildManager.saveProfiles(restoredProfiles, registry.activeChildId || restoredProfiles[0].id);
+              return { restoredCount: restoredProfiles.length, profiles: restoredProfiles };
+            }
+          }
+        }
+      }
+
+      // 2. Fallback Path: Search individual config files
       const q = encodeURIComponent(`name contains 'K.I.D.S._' and name contains '_config.json' and trashed = false`);
       const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name)&pageSize=30`, {}, validToken);
 
@@ -421,6 +520,7 @@ export class PersonalDriveService {
                 createdAt: existing?.createdAt || Date.now(),
                 hasClassroom: config.hasClassroom !== undefined ? config.hasClassroom : (existing?.hasClassroom !== false),
                 portalDomain: config.portalDomain || existing?.portalDomain,
+                portalDomains: config.portalDomains || (config.portalDomain ? [config.portalDomain] : []),
                 registeredTools: (config.registeredTools && config.registeredTools.length > 0) ? config.registeredTools : (existing?.registeredTools || []),
                 gasScriptId: config.scriptId,
                 gasDeploymentUrl: config.webAppUrl,
@@ -436,6 +536,8 @@ export class PersonalDriveService {
       const finalProfiles = Array.from(restoredMap.values());
       if (finalProfiles.length > 0) {
         await ChildManager.saveProfiles(finalProfiles);
+        // Persist master registry
+        await this.saveFamilyRegistry(validToken);
       }
 
       return { restoredCount: finalProfiles.length, profiles: finalProfiles };
