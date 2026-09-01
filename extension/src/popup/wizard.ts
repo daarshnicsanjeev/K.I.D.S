@@ -194,9 +194,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   const mainAppContainer = document.getElementById('mainAppContainer') as HTMLElement;
+  let lastFocusedElement: HTMLElement | null = null;
 
-  function openModal(modalEl: HTMLElement | null) {
+  function openModal(modalEl: HTMLElement | null, triggerEl?: HTMLElement | null) {
     if (!modalEl) return;
+    if (triggerEl) {
+      lastFocusedElement = triggerEl;
+    } else if (document.activeElement instanceof HTMLElement && !modalEl.contains(document.activeElement)) {
+      lastFocusedElement = document.activeElement;
+    }
     setA11yVisibility(modalEl, true);
     if (mainAppContainer) {
       mainAppContainer.setAttribute('aria-hidden', 'true');
@@ -206,12 +212,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     focusTarget?.focus();
   }
 
-  function closeModal(modalEl: HTMLElement | null) {
+  function closeModal(modalEl: HTMLElement | null, restoreFocus: boolean = true) {
     if (!modalEl) return;
     setA11yVisibility(modalEl, false);
     if (mainAppContainer) {
       mainAppContainer.setAttribute('aria-hidden', 'false');
       mainAppContainer.removeAttribute('inert');
+    }
+    if (restoreFocus && lastFocusedElement && document.contains(lastFocusedElement)) {
+      const target = lastFocusedElement;
+      setTimeout(() => {
+        if (target && document.contains(target) && !target.hasAttribute('disabled')) {
+          target.focus();
+        }
+      }, 60);
     }
   }
 
@@ -768,6 +782,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       GasProvisionerService.setProgressCallback(undefined);
       targetBtn.disabled = false;
       targetBtn.textContent = isPersonalAccount ? '⚡ 1-Click Create MCP Server in Personal Account' : (btnOpenApiSettings?.classList.contains('hidden') ? '⚡ 2. Create / Update MCP Server' : '⚡ 3. Create / Update MCP Server');
+      setTimeout(() => {
+        targetBtn?.focus();
+      }, 60);
     }
   }
 
@@ -788,7 +805,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       boxModalAccountGuidance.style.borderLeftColor = '#3b82f6';
       boxModalAccountGuidance.style.color = '#1e40af';
     }
-    openModal(step2AccountGuidanceModal);
+    openModal(step2AccountGuidanceModal, btnCreateMcpServer);
   });
 
   btnCreatePersonalMcpServer?.addEventListener('click', async () => {
@@ -811,15 +828,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       boxModalAccountGuidance.style.borderLeftColor = '#10b981';
       boxModalAccountGuidance.style.color = '#065f46';
     }
-    openModal(step2AccountGuidanceModal);
+    openModal(step2AccountGuidanceModal, btnCreatePersonalMcpServer);
   });
 
   btnCancelAccountGuidanceModal?.addEventListener('click', () => {
-    closeModal(step2AccountGuidanceModal);
+    closeModal(step2AccountGuidanceModal, true);
   });
 
   btnProceedAccountGuidanceModal?.addEventListener('click', () => {
-    closeModal(step2AccountGuidanceModal);
+    closeModal(step2AccountGuidanceModal, false);
     const kidName = currentConfiguringProfile?.name || 'Child';
     if (isPendingDeploymentPersonal) {
       if (lblToolsAuthInstruction) {
@@ -836,11 +853,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         lblToolsAuthBenefit.innerHTML = `✅ <em>Authorizing all tools enables <strong>${kidName}</strong>'s MCP server to query assignments, coursework, worksheets, and teacher announcements seamlessly.</em>`;
       }
     }
-    openModal(toolsAuthGuidanceModal);
+    openModal(toolsAuthGuidanceModal, isPendingDeploymentPersonal ? btnCreatePersonalMcpServer : btnCreateMcpServer);
   });
 
   btnProceedToolsAuthModal?.addEventListener('click', () => {
-    closeModal(toolsAuthGuidanceModal);
+    closeModal(toolsAuthGuidanceModal, false);
     deployMcpServer(isPendingDeploymentPersonal);
   });
 
@@ -1027,6 +1044,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       closeModal(mcpDeployProgressOverlay);
       btnCaptureVerifyPortal.disabled = false;
       btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
+      setTimeout(() => {
+        btnCaptureVerifyPortal?.focus();
+      }, 60);
     }
   }
 
@@ -1040,7 +1060,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '20%';
     if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Analyzing active page DOM headings & navigation...';
     if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 4 (20%)';
-    openModal(mcpDeployProgressOverlay);
+    openModal(mcpDeployProgressOverlay, btnRegisterFeature);
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1209,19 +1229,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       closeModal(mcpDeployProgressOverlay);
       btnRegisterFeature.disabled = false;
       btnRegisterFeature.textContent = '📸 2. Auto-Capture & Register Active Feature';
+      setTimeout(() => {
+        btnRegisterFeature?.focus();
+      }, 60);
     }
   }
 
   btnCaptureVerifyPortal?.addEventListener('click', () => {
-    openModal(portalSecurityNoticeModal);
+    openModal(portalSecurityNoticeModal, btnCaptureVerifyPortal);
   });
 
   btnCancelPortalSecurityModal?.addEventListener('click', () => {
-    closeModal(portalSecurityNoticeModal);
+    closeModal(portalSecurityNoticeModal, true);
   });
 
   btnProceedPortalSecurityModal?.addEventListener('click', () => {
-    closeModal(portalSecurityNoticeModal);
+    closeModal(portalSecurityNoticeModal, false);
     executePortalVerification();
   });
 
@@ -1236,6 +1259,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (btnCaptureVerifyPortal) {
       btnCaptureVerifyPortal.disabled = false;
       btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
+      setTimeout(() => {
+        btnCaptureVerifyPortal?.focus();
+      }, 60);
     }
   });
 
@@ -1379,6 +1405,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } finally {
       btnScanDriveExports.disabled = false;
       btnScanDriveExports.textContent = '🔍 Show Recent Uploads from Google Drive';
+      setTimeout(() => {
+        btnScanDriveExports?.focus();
+      }, 60);
     }
   });
 
@@ -1399,6 +1428,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     } finally {
       btnCaptureActiveChat.disabled = false;
       btnCaptureActiveChat.textContent = '📸 1-Click Track Active Chat';
+      setTimeout(() => {
+        btnCaptureActiveChat?.focus();
+      }, 60);
     }
   });
 
@@ -1418,6 +1450,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (btnCaptureActiveChat) {
         btnCaptureActiveChat.disabled = false;
         btnCaptureActiveChat.textContent = '📸 1-Click Track Active Chat';
+        setTimeout(() => {
+          btnCaptureActiveChat?.focus();
+        }, 60);
       }
     }
   });
@@ -1482,6 +1517,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         } finally {
           btnSyncNow.disabled = false;
           btnSyncNow.textContent = '🔄 Sync';
+          setTimeout(() => btnSyncNow?.focus(), 60);
           await renderStep4TrackedChats();
         }
       });
@@ -1583,19 +1619,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     } finally {
       btnDownloadFamilySkill.disabled = false;
       btnDownloadFamilySkill.textContent = '📥 Download K.I.D.S._SKILL.md';
+      setTimeout(() => {
+        btnDownloadFamilySkill?.focus();
+      }, 60);
     }
   });
 
   // Diagnostic Log Buttons
-  btnFetchWhatsAppLogs?.addEventListener('click', refreshDiagnosticLogs);
+  btnFetchWhatsAppLogs?.addEventListener('click', async () => {
+    await refreshDiagnosticLogs();
+    setTimeout(() => {
+      btnFetchWhatsAppLogs?.focus();
+    }, 60);
+  });
   btnClearWhatsAppLogs?.addEventListener('click', async () => {
     await WhatsAppDiagnosticLogger.clearLogs();
     if (txtActivityLog) txtActivityLog.value = '';
+    setTimeout(() => {
+      btnClearWhatsAppLogs?.focus();
+    }, 60);
   });
   btnCopyActivityLog?.addEventListener('click', async () => {
     if (txtActivityLog && txtActivityLog.value) {
       await navigator.clipboard.writeText(txtActivityLog.value);
       alert('📋 Diagnostic logs copied to clipboard!');
+      setTimeout(() => {
+        btnCopyActivityLog?.focus();
+      }, 60);
     }
   });
 });
