@@ -1351,44 +1351,118 @@ document.addEventListener('DOMContentLoaded', async () => {
   // STEP 4 HANDLERS (DUAL-PATH WHATSAPP & FINISH)
   // ==========================================
   btnScanDriveExports?.addEventListener('click', async () => {
+    // If already open, toggle closed
+    if (driveExportsContainer && !driveExportsContainer.classList.contains('hidden') && !driveExportsContainer.hasAttribute('hidden')) {
+      setA11yVisibility(driveExportsContainer, false);
+      btnScanDriveExports.textContent = '🔍 Show Recent Uploads from Google Drive';
+      setTimeout(() => btnScanDriveExports?.focus(), 60);
+      return;
+    }
+
     btnScanDriveExports.disabled = true;
-    btnScanDriveExports.textContent = '⏳ Scanning Drive...';
+    btnScanDriveExports.textContent = '⏳ Scanning Google Drive...';
     try {
       const token = cachedPersonalToken || await PersonalDriveService.getValidToken(false);
+      const query = encodeURIComponent(
+        "trashed = false and (name contains '.zip' or name contains '.txt' or mimeType = 'application/zip' or mimeType = 'application/x-zip-compressed' or mimeType = 'text/plain')"
+      );
       const res = await PersonalDriveService.fetchWithAuth(
-        `https://www.googleapis.com/drive/v3/files?q=mimeType%20%3D%20'application%2Fzip'%20or%20mimeType%20%3D%20'text%2Fplain'&orderBy=modifiedTime%20desc&pageSize=10&fields=files(id,name,modifiedTime)`,
+        `https://www.googleapis.com/drive/v3/files?q=${query}&orderBy=modifiedTime%20desc&pageSize=15&fields=files(id,name,mimeType,size,modifiedTime)`,
         {},
         token
       );
-      if (res.ok) {
-        const data = await res.json();
-        driveExportsContainer?.classList.remove('hidden');
-        driveExportsList.innerHTML = '';
-        if (data.files && data.files.length > 0) {
-          data.files.forEach((f: any) => {
-            const item = document.createElement('button');
-            item.className = 'btn btn-secondary btn-sm';
-            item.style.textAlign = 'left';
-            item.style.width = '100%';
-            item.textContent = `📄 ${f.name}`;
-            item.addEventListener('click', async () => {
-              if (confirm(`Import entire historical archive from "${f.name}" for ${currentConfiguringProfile?.name}?`)) {
-                await PersonalDriveService.ingestWhatsAppExport(f.id, currentConfiguringProfile?.name, token);
-                alert(`✅ Historical import complete!`);
-                await renderStep4TrackedChats();
-              }
-            });
-            driveExportsList?.appendChild(item);
-          });
-        } else {
-          driveExportsList.innerHTML = `<span style="font-size:0.72rem;color:var(--text-muted);">No exported .zip or .txt files found in your Google Drive.</span>`;
-        }
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Google Drive API error (HTTP ${res.status}): ${errText}`);
       }
+
+      const data = await res.json();
+      setA11yVisibility(driveExportsContainer, true);
+      driveExportsList.innerHTML = '';
+
+      const kidName = currentConfiguringProfile?.name || (await ChildManager.getActiveProfile())?.name || 'Atharva';
+
+      if (data.files && data.files.length > 0) {
+        data.files.forEach((f: any) => {
+          const itemCard = document.createElement('div');
+          itemCard.style.background = 'var(--card-surface)';
+          itemCard.style.border = '1px solid var(--border-color)';
+          itemCard.style.borderRadius = '6px';
+          itemCard.style.padding = '6px 8px';
+          itemCard.style.display = 'flex';
+          itemCard.style.justifyContent = 'space-between';
+          itemCard.style.alignItems = 'center';
+          itemCard.style.gap = '6px';
+
+          const sizeKb = f.size ? `${(parseInt(f.size, 10) / 1024).toFixed(0)} KB` : '';
+          const modDate = f.modifiedTime ? new Date(f.modifiedTime).toLocaleDateString() : '';
+
+          const infoDiv = document.createElement('div');
+          infoDiv.style.overflow = 'hidden';
+          infoDiv.style.textOverflow = 'ellipsis';
+          infoDiv.style.whiteSpace = 'nowrap';
+          infoDiv.innerHTML = `<strong style="font-size:0.75rem;">📄 ${f.name}</strong><br><span style="font-size:0.68rem; color:var(--text-muted);">${sizeKb ? sizeKb + ' • ' : ''}${modDate}</span>`;
+
+          const btnImport = document.createElement('button');
+          btnImport.className = 'btn btn-primary btn-sm';
+          btnImport.style.padding = '3px 10px';
+          btnImport.style.fontSize = '0.72rem';
+          btnImport.style.fontWeight = '700';
+          btnImport.style.whiteSpace = 'nowrap';
+          btnImport.textContent = `📥 Import`;
+
+          btnImport.addEventListener('click', async () => {
+            if (confirm(`Import entire historical archive from "${f.name}" for ${kidName}?`)) {
+              btnImport.disabled = true;
+              btnImport.textContent = '⏳ Importing...';
+
+              // Show progress bar
+              if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `Importing Archive for ${kidName}...`;
+              if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '30%';
+              if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Downloading "${f.name}" & extracting attachments...`;
+              if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 3 (30%)';
+              openModal(mcpDeployProgressOverlay, btnImport);
+
+              try {
+                if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '65%';
+                if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Normalizing notices & indexing media...';
+                if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 2 of 3 (65%)';
+
+                const importRes = await PersonalDriveService.ingestWhatsAppExport(f.id, kidName, token);
+
+                if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '100%';
+                if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Import complete! Added ${importRes.noticesCount || 0} notices.`;
+                if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 3 of 3 (100%)';
+
+                closeModal(mcpDeployProgressOverlay);
+                alert(`🎉 Successfully imported "${f.name}"! Discovered ${importRes.attachmentsCount || 0} attachments and indexed ${importRes.noticesCount || 0} messages.`);
+                await renderStep4TrackedChats();
+              } catch (importErr: any) {
+                closeModal(mcpDeployProgressOverlay);
+                alert(`Import Error: ${importErr.message || String(importErr)}`);
+              } finally {
+                closeModal(mcpDeployProgressOverlay);
+                btnImport.disabled = false;
+                btnImport.textContent = '📥 Import';
+                setTimeout(() => btnImport?.focus(), 60);
+              }
+            }
+          });
+
+          itemCard.appendChild(infoDiv);
+          itemCard.appendChild(btnImport);
+          driveExportsList?.appendChild(itemCard);
+        });
+      } else {
+        driveExportsList.innerHTML = `<div style="font-size: 0.74rem; color: #92400e; background: #fffbeb; padding: 8px 10px; border-radius: 6px; border-left: 3px solid #f59e0b;">No exported chat (.zip or .txt) files found in your Google Drive.<br><span style="color: #78350f; font-size: 0.68rem; margin-top: 2px; display: block;">💡 <strong>How to export:</strong> On WhatsApp mobile, open group ➔ Tap (⋮) ➔ <strong>More</strong> ➔ <strong>Export chat</strong> ➔ <strong>Attach Media</strong> ➔ Upload to Google Drive.</span></div>`;
+      }
+      btnScanDriveExports.textContent = '🔍 Hide / Re-scan Google Drive Uploads';
     } catch (e: any) {
       alert(`Drive scan failed: ${e.message}`);
+      btnScanDriveExports.textContent = '🔍 Show Recent Uploads from Google Drive';
     } finally {
       btnScanDriveExports.disabled = false;
-      btnScanDriveExports.textContent = '🔍 Show Recent Uploads from Google Drive';
       setTimeout(() => {
         btnScanDriveExports?.focus();
       }, 60);
