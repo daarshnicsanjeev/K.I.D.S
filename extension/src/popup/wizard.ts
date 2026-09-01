@@ -701,7 +701,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '10%';
     if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Authenticating with Google Apps Script API...';
     if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 5 (10%)';
-    setA11yVisibility(mcpDeployProgressOverlay, true);
+    openModal(mcpDeployProgressOverlay);
 
     GasProvisionerService.setProgressCallback((percent, phaseText, subtext) => {
       if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${percent}%`;
@@ -737,12 +737,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         await WhatsAppDiagnosticLogger.log('SUCCESS', 'GAS', `Deployed MCP Server for ${kidName}: ${deployRes.webAppUrl}`);
         
         // Hide progress overlay right before showing the final success alert
-        setA11yVisibility(mcpDeployProgressOverlay, false);
+        closeModal(mcpDeployProgressOverlay);
         alert(`🎉 MCP Server successfully created for ${kidName}!`);
       }
     } catch (e: any) {
       // Hide progress overlay on error
-      setA11yVisibility(mcpDeployProgressOverlay, false);
+      closeModal(mcpDeployProgressOverlay);
 
       // On failure, re-enable and show button 2 so the user can easily toggle API settings
       const state = await chrome.storage.local.get(['personal_drive_account_email']);
@@ -753,7 +753,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       alert(`MCP Server creation failed: ${e.message || String(e)}`);
     } finally {
-      setA11yVisibility(mcpDeployProgressOverlay, false);
+      closeModal(mcpDeployProgressOverlay);
       GasProvisionerService.setProgressCallback(undefined);
       targetBtn.disabled = false;
       targetBtn.textContent = isPersonalAccount ? '⚡ 1-Click Create MCP Server in Personal Account' : (btnOpenApiSettings?.classList.contains('hidden') ? '⚡ 2. Create / Update MCP Server' : '⚡ 3. Create / Update MCP Server');
