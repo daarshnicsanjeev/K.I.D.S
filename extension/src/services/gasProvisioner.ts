@@ -55,6 +55,18 @@ export class GasProvisionerService {
     return outdated;
   }
 
+  private static progressCallback?: (percent: number, phaseText: string, subtext: string) => void;
+
+  public static setProgressCallback(cb?: (percent: number, phaseText: string, subtext: string) => void) {
+    this.progressCallback = cb;
+  }
+
+  public static reportProgress(percent: number, phaseText: string, subtext: string) {
+    if (this.progressCallback) {
+      try { this.progressCallback(percent, phaseText, subtext); } catch (e) {}
+    }
+  }
+
   public static log(msg: string) {
     console.log(`[School MCP] ${msg}`);
     if (this.logCallback) {
@@ -69,6 +81,7 @@ export class GasProvisionerService {
    * Main provisioning pipeline: Auth -> Reuse or Create Project -> Update Content -> Deploy -> Verify.
    */
   public static async provision(forceNew: boolean = false): Promise<ProvisionResult> {
+    this.reportProgress(10, 'Phase 1 of 5 (10%)', 'Requesting Google OAuth consent & permissions...');
     this.log('🔐 Requesting Google OAuth token with required permissions...');
     const token = await this.getAuthToken();
     if (!token) {
@@ -82,6 +95,7 @@ export class GasProvisionerService {
     const academicYear = activeChild?.academicYear || '';
     this.log(`👶 Target Child Profile: ${childName} (${academicYear}) (ID: ${activeChild?.id || 'default'})`);
 
+    this.reportProgress(25, 'Phase 2 of 5 (25%)', `Searching for existing project for ${childName}...`);
     let existing: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (!forceNew) {
@@ -124,11 +138,13 @@ export class GasProvisionerService {
       this.log(`🎯 Existing project matched for ${childName}: scriptId=${scriptId}, deploymentId=${deploymentId || 'new'}`);
 
       // 1. UPDATE existing script code files directly (Code.gs, WorkspaceFetcher.gs, etc.)
+      this.reportProgress(50, 'Phase 3 of 5 (50%)', 'Pushing updated server codebase & tool handlers...');
       this.log(`📤 Pushing backend code files (PUT /v1/projects/${scriptId}/content)...`);
       await this.updateProjectContent(scriptId, accessKey, token, childName, academicYear);
       this.log('✅ Code content updated successfully.');
 
       // 2. CREATE a new immutable version
+      this.reportProgress(70, 'Phase 4 of 5 (70%)', 'Creating version & updating Web App deployment...');
       this.log(`🏷️ Creating version (POST /v1/projects/${scriptId}/versions)...`);
       const version = await this.createVersion(scriptId, token, childName, academicYear);
       const versionNumber = version.versionNumber || 1;
@@ -152,12 +168,15 @@ export class GasProvisionerService {
       }
     } else {
       // Create new Apps Script project for active child in student account
+      this.reportProgress(40, 'Phase 2 of 5 (40%)', `Creating dedicated Google Apps Script project for ${childName}...`);
       this.log(`📁 Creating new project for ${childName} in student Google account (POST /v1/projects)...`);
       const project = await this.createProject(token);
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
+      this.reportProgress(60, 'Phase 3 of 5 (60%)', 'Uploading MCP server code and manifest...');
       this.log('📤 Uploading server code files and manifest (appsscript.json)...');
       await this.updateProjectContent(scriptId, accessKey, token, childName, academicYear);
+      this.reportProgress(75, 'Phase 4 of 5 (75%)', 'Creating version and deploying executable Web App...');
       this.log('🏷️ Creating version 1 (POST /v1/projects/.../versions)...');
       const version = await this.createVersion(scriptId, token, childName, academicYear);
       this.log('🚀 Deploying Web App with manifest appsscript (POST /v1/projects/.../deployments)...');
@@ -187,6 +206,7 @@ export class GasProvisionerService {
     }
 
     // Step 4: Persist configuration in Google Drive (Authoritative cloud source of truth)
+    this.reportProgress(88, 'Phase 5 of 5 (88%)', 'Saving 5-tier modular configuration to Google Drive...');
     this.log('💾 Saving configuration to Drive...');
     await this.saveDriveConfigFile(scriptId, deploymentId, accessKey, webAppUrl, token, childName, academicYear);
 
@@ -208,6 +228,7 @@ export class GasProvisionerService {
     }
     
     // Pre-warm Google Services & Bind Scopes via Execution API
+    this.reportProgress(94, 'Phase 5 of 5 (94%)', 'Pre-warming Google Workspace services...');
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
     await this.runTestAuth(scriptId, token);
 
@@ -215,6 +236,7 @@ export class GasProvisionerService {
     await this.ensureScriptAuthorized(webAppUrl, token, scriptId, activeChild?.accountEmail);
 
     // Verify Server Execution via authenticated Web App ping & Execution API
+    this.reportProgress(98, 'Phase 5 of 5 (98%)', 'Verifying live MCP Server tools...');
     this.log(`🧪 Verifying MCP Server tools (Authenticated Bearer Token & Execution API)...`);
     let verifiedTools: any[] = [];
     let needsAuth = false;
@@ -234,6 +256,8 @@ export class GasProvisionerService {
         { name: 'get_school_portal_notifications' }
       ];
     }
+
+    this.reportProgress(100, 'Complete (100%)', 'MCP Server created & verified successfully!');
 
     return {
       success: true,

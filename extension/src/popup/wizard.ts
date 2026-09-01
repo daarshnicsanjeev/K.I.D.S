@@ -30,6 +30,13 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblInvariantKidName = document.getElementById('lblInvariantKidName') as HTMLElement;
   const btnCloseInvariantModal = document.getElementById('btnCloseInvariantModal') as HTMLButtonElement;
 
+  // Progress & Deployment Overlays
+  const mcpDeployProgressOverlay = document.getElementById('mcpDeployProgressOverlay') as HTMLElement;
+  const lblMcpDeployTitle = document.getElementById('lblMcpDeployTitle') as HTMLElement;
+  const mcpDeployProgressBar = document.getElementById('mcpDeployProgressBar') as HTMLElement;
+  const lblMcpDeploySubtext = document.getElementById('lblMcpDeploySubtext') as HTMLElement;
+  const lblMcpDeployPhase = document.getElementById('lblMcpDeployPhase') as HTMLElement;
+
   // Step 2 Guidance Modals
   const studentAccountGuidanceModal = document.getElementById('studentAccountGuidanceModal') as HTMLElement;
   const lblModalChildName = document.getElementById('lblModalChildName') as HTMLElement;
@@ -689,8 +696,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     targetBtn.disabled = true;
     targetBtn.textContent = '⏳ Deploying MCP Server...';
 
+    const kidName = currentConfiguringProfile?.name || 'Atharva';
+    if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `Creating MCP Server for ${kidName}...`;
+    if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '10%';
+    if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Authenticating with Google Apps Script API...';
+    if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 5 (10%)';
+    setA11yVisibility(mcpDeployProgressOverlay, true);
+
+    GasProvisionerService.setProgressCallback((percent, phaseText, subtext) => {
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${percent}%`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = phaseText;
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = subtext;
+    });
+
     try {
-      const kidName = currentConfiguringProfile?.name || 'Atharva';
       let token = cachedPersonalToken;
       if (!isPersonalAccount) {
         // Use School account flow or Personal token fallback
@@ -716,9 +735,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 2. Create / Update MCP Server';
 
         await WhatsAppDiagnosticLogger.log('SUCCESS', 'GAS', `Deployed MCP Server for ${kidName}: ${deployRes.webAppUrl}`);
+        
+        // Hide progress overlay right before showing the final success alert
+        setA11yVisibility(mcpDeployProgressOverlay, false);
         alert(`🎉 MCP Server successfully created for ${kidName}!`);
       }
     } catch (e: any) {
+      // Hide progress overlay on error
+      setA11yVisibility(mcpDeployProgressOverlay, false);
+
       // On failure, re-enable and show button 2 so the user can easily toggle API settings
       const state = await chrome.storage.local.get(['personal_drive_account_email']);
       const parentAccount = state.personal_drive_account_email || '';
@@ -728,6 +753,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       alert(`MCP Server creation failed: ${e.message || String(e)}`);
     } finally {
+      setA11yVisibility(mcpDeployProgressOverlay, false);
+      GasProvisionerService.setProgressCallback(undefined);
       targetBtn.disabled = false;
       targetBtn.textContent = isPersonalAccount ? '⚡ 1-Click Create MCP Server in Personal Account' : (btnOpenApiSettings?.classList.contains('hidden') ? '⚡ 2. Create / Update MCP Server' : '⚡ 3. Create / Update MCP Server');
     }
