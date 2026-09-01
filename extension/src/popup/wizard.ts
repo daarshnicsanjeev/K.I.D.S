@@ -99,7 +99,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnRegisterFeature = document.getElementById('btnRegisterFeature') as HTMLButtonElement;
   const activeFeaturesBox = document.getElementById('activeFeaturesBox') as HTMLElement;
   const step3RegisteredToolsList = document.getElementById('step3RegisteredToolsList') as HTMLUListElement;
-  const btnAddAnotherPlatform = document.getElementById('btnAddAnotherPlatform') as HTMLButtonElement;
   const btnNavStep3ToStep2 = document.getElementById('btnNavStep3ToStep2') as HTMLButtonElement;
   const btnNavStep3ToStep4 = document.getElementById('btnNavStep3ToStep4') as HTMLButtonElement;
 
@@ -1249,21 +1248,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
-
-  btnAddAnotherPlatform?.addEventListener('click', async () => {
-    setA11yVisibility(featureSection, false);
-    setA11yVisibility(btnSkipStep3, (currentConfiguringProfile?.registeredTools?.length || 0) === 0);
-    setA11yVisibility(connectionStatusBox, false);
-    if (connectionStatusText) connectionStatusText.textContent = 'Verifying portal connection...';
-    if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
-    if (btnCaptureVerifyPortal) {
-      btnCaptureVerifyPortal.disabled = false;
-      btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
-      setTimeout(() => {
-        btnCaptureVerifyPortal?.focus();
-      }, 60);
-    }
-  });
 
   async function renderStep3RegisteredTools() {
     if (!step3RegisteredToolsList) return;
