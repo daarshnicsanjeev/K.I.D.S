@@ -4,6 +4,7 @@ import { GasProvisionerService } from '../services/gasProvisioner';
 import { AiNormalizerService } from '../services/aiNormalizer';
 import { SkillGeneratorService } from '../services/skillGenerator';
 import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
+import { SyncLifecycleManager } from '../services/syncLifecycleManager';
 
 document.addEventListener('DOMContentLoaded', async () => {
   // Navigation & Container Elements
@@ -1219,27 +1220,119 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   });
 
+  btnStopActiveSync?.addEventListener('click', async () => {
+    btnStopActiveSync.disabled = true;
+    btnStopActiveSync.textContent = '⏳ Stopping...';
+    try {
+      await SyncLifecycleManager.requestAbort();
+      await WhatsAppDiagnosticLogger.log('INFO', 'CONN', '⏹️ [USER_ABORT] Manual sync cancellation requested by user.');
+      alert('⏹️ Sync stopped.');
+    } catch (e: any) {
+      alert(`Stop error: ${e.message}`);
+    } finally {
+      setA11yVisibility(btnStopActiveSync, false);
+      btnStopActiveSync.disabled = false;
+      btnStopActiveSync.textContent = '⏹️ Stop Sync';
+      if (btnCaptureActiveChat) {
+        btnCaptureActiveChat.disabled = false;
+        btnCaptureActiveChat.textContent = '📸 1-Click Track Active Chat';
+      }
+    }
+  });
+
   async function renderStep4TrackedChats() {
     if (!trackedChatsList) return;
     const state = await chrome.storage.local.get(['tracked_whatsapp_chats']);
     const list: any[] = state.tracked_whatsapp_chats || currentConfiguringProfile?.trackedChats || [];
     trackedChatsList.innerHTML = '';
     if (list.length === 0) {
-      trackedChatsEmpty?.classList.remove('hidden');
+      setA11yVisibility(trackedChatsEmpty, true);
       return;
     }
-    trackedChatsEmpty?.classList.add('hidden');
-    list.forEach(c => {
+    setA11yVisibility(trackedChatsEmpty, false);
+
+    list.forEach((c, idx) => {
       const li = document.createElement('li');
-      li.style.fontSize = '0.74rem';
-      li.style.padding = '4px 8px';
+      li.style.fontSize = '0.76rem';
+      li.style.padding = '6px 10px';
+      li.style.marginBottom = '4px';
       li.style.background = 'var(--card-surface)';
-      li.style.borderRadius = '4px';
+      li.style.borderRadius = '6px';
       li.style.border = '1px solid var(--border-color)';
       li.style.display = 'flex';
       li.style.justifyContent = 'space-between';
       li.style.alignItems = 'center';
-      li.innerHTML = `<span>💬 <strong>${c.title}</strong></span> <span style="font-size:0.68rem;color:var(--success-color);">Active</span>`;
+
+      const platformIcon = c.platform === 'telegram' ? '✈️' : (c.platform === 'discord' ? '🎮' : '💬');
+      const platformName = (c.platform || 'WhatsApp').toUpperCase();
+
+      const infoDiv = document.createElement('div');
+      infoDiv.style.flex = '1';
+      infoDiv.style.marginRight = '8px';
+      infoDiv.style.lineHeight = '1.3';
+      infoDiv.innerHTML = `
+        <div>${platformIcon} <strong>${c.title}</strong> <span style="font-size:0.68rem; color:var(--text-muted);">[${platformName}]</span></div>
+        <div style="font-size:0.68rem; color:var(--success-color);">● Active Sync & Auto-Archive</div>
+      `;
+
+      const actionsDiv = document.createElement('div');
+      actionsDiv.style.display = 'flex';
+      actionsDiv.style.gap = '4px';
+
+      const btnSyncNow = document.createElement('button');
+      btnSyncNow.className = 'btn btn-secondary btn-sm';
+      btnSyncNow.style.padding = '2px 8px';
+      btnSyncNow.style.fontSize = '0.7rem';
+      btnSyncNow.textContent = '🔄 Sync';
+      btnSyncNow.addEventListener('click', async () => {
+        btnSyncNow.disabled = true;
+        btnSyncNow.textContent = '⏳...';
+        try {
+          const res = await chrome.runtime.sendMessage({
+            type: 'SYNC_WHATSAPP_CHATS',
+            payload: { isManualSync: true, targetChat: c.title }
+          });
+          if (res && res.status === 'success') {
+            alert(`🎉 Synced ${c.title}!`);
+          }
+        } catch (e: any) {
+          alert(`Sync error: ${e.message}`);
+        } finally {
+          btnSyncNow.disabled = false;
+          btnSyncNow.textContent = '🔄 Sync';
+          await renderStep4TrackedChats();
+        }
+      });
+
+      const btnRemove = document.createElement('button');
+      btnRemove.className = 'btn btn-danger btn-sm';
+      btnRemove.style.padding = '2px 8px';
+      btnRemove.style.fontSize = '0.7rem';
+      btnRemove.textContent = '🗑️ Remove';
+      btnRemove.addEventListener('click', async () => {
+        if (confirm(`Remove "${c.title}" from tracked school chat groups?`)) {
+          list.splice(idx, 1);
+          await chrome.storage.local.set({ tracked_whatsapp_chats: list });
+          if (currentConfiguringProfile) {
+            currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
+              trackedChats: list
+            });
+            // Update 5-tier messaging tools config on Drive
+            PersonalDriveService.getValidToken(false).then(tok => {
+              if (tok && currentConfiguringProfile) {
+                PersonalDriveService.saveMessagingToolsConfig(tok, currentConfiguringProfile.name, currentConfiguringProfile.academicYear, list).catch(() => {});
+              }
+            }).catch(() => {});
+          }
+          await renderStep4TrackedChats();
+        }
+      });
+
+      actionsDiv.appendChild(btnSyncNow);
+      actionsDiv.appendChild(btnRemove);
+
+      li.appendChild(infoDiv);
+      li.appendChild(actionsDiv);
       trackedChatsList.appendChild(li);
     });
   }
