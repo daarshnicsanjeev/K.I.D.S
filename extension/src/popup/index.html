@@ -108,6 +108,53 @@
     </div>
   </div>
 
+  <!-- Step 3 Portal Security & Privacy Transparency Modal -->
+  <div id="portalSecurityNoticeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalPortalSecurityTitle" aria-hidden="true" hidden>
+    <div class="modal-content" style="max-width: 380px; text-align: left; padding: 16px;">
+      <div style="text-align: center; font-size: 2rem; margin-bottom: 4px;">🛡️</div>
+      <h3 id="modalPortalSecurityTitle" style="font-size: 0.95rem; font-weight: 700; color: #1a365d; text-align: center; margin-bottom: 10px;">
+        Portal Connection: Privacy & Security Transparency
+      </h3>
+
+      <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 12px;">
+        <!-- What we DON'T capture -->
+        <div style="background: #fef2f2; border-left: 3px solid #ef4444; padding: 6px 8px; border-radius: 4px;">
+          <strong style="color: #991b1b;">🚫 What We NEVER Capture:</strong>
+          <div style="color: #7f1d1d; margin-top: 2px;">Your school login passwords, payment cards, banking info, or browsing history outside school portals.</div>
+        </div>
+
+        <!-- What we DO capture -->
+        <div style="background: #eff6ff; border-left: 3px solid #3b82f6; padding: 6px 8px; border-radius: 4px;">
+          <strong style="color: #1e40af;">📋 What We Capture:</strong>
+          <div style="color: #1e3a8a; margin-top: 2px;">School portal domain (e.g. <code>edusprint.in</code>), active session authentication tokens, and page menu headings for homework/attendance.</div>
+        </div>
+
+        <!-- Why we capture -->
+        <div style="background: #f0fdf4; border-left: 3px solid #10b981; padding: 6px 8px; border-radius: 4px;">
+          <strong style="color: #065f46;">🎯 Why We Capture It:</strong>
+          <div style="color: #064e3b; margin-top: 2px;">To allow Gemini Spark to fetch your child's live homework, attendance, and timetables 24/7 without prompting you to log in repeatedly.</div>
+        </div>
+
+        <!-- Where it is stored -->
+        <div style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 6px 8px; border-radius: 4px;">
+          <strong style="color: #92400e;">💾 Where It Is Stored:</strong>
+          <div style="color: #78350f; margin-top: 2px;">Stored <strong>exclusively in your Private Google Drive</strong> (<code>K.I.D.S. Data</code>) and your child's dedicated Google Apps Script server. <em>Zero 3rd-party servers or external databases.</em></div>
+        </div>
+
+        <!-- How secure -->
+        <div style="background: #f8fafc; border-left: 3px solid #64748b; padding: 6px 8px; border-radius: 4px;">
+          <strong style="color: #334155;">🔒 Security & Revocation:</strong>
+          <div style="color: #475569; margin-top: 2px;">Protected by a 128-bit cryptographic key. You can delete captured portals or revoke session access anytime with 1 click.</div>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCancelPortalSecurityModal" class="btn btn-secondary" style="flex: 1; font-size: 0.76rem;">Cancel</button>
+        <button id="btnProceedPortalSecurityModal" class="btn btn-primary" style="flex: 1.6; font-size: 0.76rem; font-weight: 700;">Proceed & Verify Portal ➔</button>
+      </div>
+    </div>
+  </div>
+
   <div class="container" id="mainAppContainer">
     <header class="header">
       <div class="logo-title">

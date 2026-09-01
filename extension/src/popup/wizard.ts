@@ -53,6 +53,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblToolsAuthBenefit = document.getElementById('lblToolsAuthBenefit') as HTMLElement;
   const btnProceedToolsAuthModal = document.getElementById('btnProceedToolsAuthModal') as HTMLButtonElement;
 
+  // Step 3 Portal Security & Privacy Transparency Modal
+  const portalSecurityNoticeModal = document.getElementById('portalSecurityNoticeModal') as HTMLElement;
+  const btnCancelPortalSecurityModal = document.getElementById('btnCancelPortalSecurityModal') as HTMLButtonElement;
+  const btnProceedPortalSecurityModal = document.getElementById('btnProceedPortalSecurityModal') as HTMLButtonElement;
+
   // Step 1 UI Elements
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
@@ -1156,7 +1161,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  btnCaptureVerifyPortal?.addEventListener('click', executePortalVerification);
+  btnCaptureVerifyPortal?.addEventListener('click', () => {
+    openModal(portalSecurityNoticeModal);
+  });
+
+  btnCancelPortalSecurityModal?.addEventListener('click', () => {
+    closeModal(portalSecurityNoticeModal);
+  });
+
+  btnProceedPortalSecurityModal?.addEventListener('click', () => {
+    closeModal(portalSecurityNoticeModal);
+    executePortalVerification();
+  });
+
   btnRegisterFeature?.addEventListener('click', executeFeatureRegistration);
 
   btnAddAnotherPlatform?.addEventListener('click', async () => {
