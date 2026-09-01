@@ -925,6 +925,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (connectionStatusIcon) connectionStatusIcon.textContent = '⏳';
     if (connectionStatusText) connectionStatusText.textContent = 'Querying active browser tab...';
 
+    const kidName = currentConfiguringProfile?.name || 'Atharva';
+    if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `Verifying Portal Connection for ${kidName}...`;
+    if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '20%';
+    if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Querying active school portal tab & domain...';
+    if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 4 (20%)';
+    openModal(mcpDeployProgressOverlay);
+
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!activeTab || !activeTab.id || !activeTab.url || activeTab.url.startsWith('chrome://') || activeTab.url.startsWith('chrome-extension://')) {
@@ -939,6 +946,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const profs = await ChildManager.getProfiles(true);
         currentConfiguringProfile = profs[0];
       }
+
+      // Progress Phase 2
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '50%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Extracting active session authentication tokens for ${domain}...`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 2 of 4 (50%)';
 
       // Extract active authentication cookies for the portal domain
       let capturedCookies = '';
@@ -958,6 +970,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           capturedCookies = (cookieRes && cookieRes[0] && cookieRes[0].result) ? cookieRes[0].result : '';
         } catch (e) {}
       }
+
+      // Progress Phase 3
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '80%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Testing connection handshake with Google Apps Script MCP Server...';
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 3 of 4 (80%)';
 
       // Perform cloud handshake with Google Apps Script MCP Server if provisioned
       if (currentConfiguringProfile?.gasDeploymentUrl) {
@@ -991,15 +1008,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
       }
 
+      // Progress Phase 4
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '100%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Portal connection verified successfully (${domain})!`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 4 of 4 (100%)';
+
       if (connectionStatusIcon) connectionStatusIcon.textContent = '✅';
       if (connectionStatusText) connectionStatusText.textContent = `Portal Connected & Handshake Verified! (${domain})`;
       setA11yVisibility(featureSection, true);
       setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
+      closeModal(mcpDeployProgressOverlay);
     } catch (e: any) {
+      closeModal(mcpDeployProgressOverlay);
       if (connectionStatusIcon) connectionStatusIcon.textContent = '⚠️';
       if (connectionStatusText) connectionStatusText.textContent = `Error: ${e.message}`;
     } finally {
+      closeModal(mcpDeployProgressOverlay);
       btnCaptureVerifyPortal.disabled = false;
       btnCaptureVerifyPortal.textContent = '🚀 1. Capture & Verify Portal Connection';
     }
@@ -1009,6 +1034,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (!btnRegisterFeature) return;
     btnRegisterFeature.disabled = true;
     btnRegisterFeature.textContent = '⏳ Auto-Capturing & Testing Active Feature...';
+
+    const kidName = currentConfiguringProfile?.name || 'Atharva';
+    if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `Auto-Capturing Feature for ${kidName}...`;
+    if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '20%';
+    if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = 'Analyzing active page DOM headings & navigation...';
+    if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 1 of 4 (20%)';
+    openModal(mcpDeployProgressOverlay);
 
     try {
       const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -1049,6 +1081,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       const isDomainVerified = currentDomains.some((d: string) => d.toLowerCase() === domain.toLowerCase());
 
       if (!isDomainVerified) {
+        closeModal(mcpDeployProgressOverlay);
         setA11yVisibility(featureSection, false);
         setA11yVisibility(connectionStatusBox, true);
         if (connectionStatusIcon) connectionStatusIcon.textContent = 'ℹ️';
@@ -1080,6 +1113,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         url: activeTab.url
       };
 
+      // Progress Phase 2
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '55%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Packaging security tokens & endpoint spec for ${targetFeature}...`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 2 of 4 (55%)';
+
       // Extract active cookies for the auth payload
       let capturedCookies = '';
       try {
@@ -1098,6 +1136,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           capturedCookies = (cookieRes && cookieRes[0] && cookieRes[0].result) ? cookieRes[0].result : '';
         } catch (e) {}
       }
+
+      // Progress Phase 3
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '80%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Registering '${targetFeature}' tool on Apps Script MCP Server...`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 3 of 4 (80%)';
 
       // Register feature and authentication security payload on Google Apps Script MCP Server
       if (currentConfiguringProfile?.gasDeploymentUrl) {
@@ -1150,12 +1193,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }).catch(() => {});
       }
 
+      // Progress Phase 4
+      if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = '100%';
+      if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = `Tool '${targetFeature}' registered & synced to Drive!`;
+      if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = 'Phase 4 of 4 (100%)';
+
       setA11yVisibility(btnSkipStep3, false);
       renderStep3RegisteredTools();
+      closeModal(mcpDeployProgressOverlay);
       alert(`🎉 Successfully captured & registered feature '${targetFeature}' (${domain}) for ${currentConfiguringProfile?.name || 'child'}!`);
     } catch (e: any) {
+      closeModal(mcpDeployProgressOverlay);
       alert(`Feature Registration Error: ${e.message}`);
     } finally {
+      closeModal(mcpDeployProgressOverlay);
       btnRegisterFeature.disabled = false;
       btnRegisterFeature.textContent = '📸 2. Auto-Capture & Register Active Feature';
     }
