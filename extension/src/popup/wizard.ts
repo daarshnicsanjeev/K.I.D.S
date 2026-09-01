@@ -38,14 +38,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblMcpDeployPhase = document.getElementById('lblMcpDeployPhase') as HTMLElement;
 
   // Step 2 Guidance Modals
-  const studentAccountGuidanceModal = document.getElementById('studentAccountGuidanceModal') as HTMLElement;
-  const lblModalChildName = document.getElementById('lblModalChildName') as HTMLElement;
-  const lblModalChildName2 = document.getElementById('lblModalChildName2') as HTMLElement;
-  const btnCancelStudentAccountModal = document.getElementById('btnCancelStudentAccountModal') as HTMLButtonElement;
-  const btnProceedStudentAccountModal = document.getElementById('btnProceedStudentAccountModal') as HTMLButtonElement;
+  const step2AccountGuidanceModal = document.getElementById('step2AccountGuidanceModal') as HTMLElement;
+  const lblModalAccountIcon = document.getElementById('lblModalAccountIcon') as HTMLElement;
+  const lblModalAccountTitle = document.getElementById('lblModalAccountTitle') as HTMLElement;
+  const boxModalAccountGuidance = document.getElementById('boxModalAccountGuidance') as HTMLElement;
+  const lblModalAccountBadge = document.getElementById('lblModalAccountBadge') as HTMLElement;
+  const lblModalAccountInstruction = document.getElementById('lblModalAccountInstruction') as HTMLElement;
+  const lblModalAccountWarning = document.getElementById('lblModalAccountWarning') as HTMLElement;
+  const btnCancelAccountGuidanceModal = document.getElementById('btnCancelAccountGuidanceModal') as HTMLButtonElement;
+  const btnProceedAccountGuidanceModal = document.getElementById('btnProceedAccountGuidanceModal') as HTMLButtonElement;
 
   const toolsAuthGuidanceModal = document.getElementById('toolsAuthGuidanceModal') as HTMLElement;
-  const lblModalChildNameAuth = document.getElementById('lblModalChildNameAuth') as HTMLElement;
+  const lblToolsAuthInstruction = document.getElementById('lblToolsAuthInstruction') as HTMLElement;
+  const lblToolsAuthBenefit = document.getElementById('lblToolsAuthBenefit') as HTMLElement;
   const btnProceedToolsAuthModal = document.getElementById('btnProceedToolsAuthModal') as HTMLButtonElement;
 
   // Step 1 UI Elements
@@ -118,6 +123,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnClearWhatsAppLogs = document.getElementById('btnClearWhatsAppLogs') as HTMLButtonElement;
 
   let currentWizardStep = 1;
+  let isPendingDeploymentPersonal = false;
   let currentConfiguringProfile: ChildProfile | null = null;
   let cachedPersonalToken: string | null = null;
 
@@ -761,29 +767,77 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   btnCreateMcpServer?.addEventListener('click', () => {
+    isPendingDeploymentPersonal = false;
     const kidName = currentConfiguringProfile?.name || 'Child';
-    if (lblModalChildName) lblModalChildName.textContent = kidName;
-    if (lblModalChildName2) lblModalChildName2.textContent = kidName;
-    openModal(studentAccountGuidanceModal);
+    if (lblModalAccountIcon) lblModalAccountIcon.textContent = '🎓';
+    if (lblModalAccountTitle) lblModalAccountTitle.textContent = `Select ${kidName}'s School Account`;
+    if (lblModalAccountBadge) lblModalAccountBadge.textContent = '🎓 School Account Required:';
+    if (lblModalAccountInstruction) {
+      lblModalAccountInstruction.innerHTML = `On the upcoming Google Sign-In screen, please <strong>select or enter ${kidName}'s School Google Account</strong> (the student account enrolled in Google Classroom).`;
+    }
+    if (lblModalAccountWarning) {
+      lblModalAccountWarning.innerHTML = `⚠️ <em>Do not select your parent personal account for Google Classroom MCP provisioning.</em>`;
+    }
+    if (boxModalAccountGuidance) {
+      boxModalAccountGuidance.style.background = '#eff6ff';
+      boxModalAccountGuidance.style.borderLeftColor = '#3b82f6';
+      boxModalAccountGuidance.style.color = '#1e40af';
+    }
+    openModal(step2AccountGuidanceModal);
   });
 
-  btnCancelStudentAccountModal?.addEventListener('click', () => {
-    closeModal(studentAccountGuidanceModal);
+  btnCreatePersonalMcpServer?.addEventListener('click', async () => {
+    isPendingDeploymentPersonal = true;
+    const state = await chrome.storage.local.get(['personal_drive_account_email']);
+    const parentEmail = state.personal_drive_account_email || 'your personal email';
+    const kidName = currentConfiguringProfile?.name || 'Child';
+
+    if (lblModalAccountIcon) lblModalAccountIcon.textContent = '🔒';
+    if (lblModalAccountTitle) lblModalAccountTitle.textContent = 'Select Your Personal Google Account';
+    if (lblModalAccountBadge) lblModalAccountBadge.textContent = '🔒 Personal Account Required:';
+    if (lblModalAccountInstruction) {
+      lblModalAccountInstruction.innerHTML = `On the upcoming Google Sign-In screen, please <strong>select or enter your Personal Google Account</strong> (<code>${parentEmail}</code>) connected in Step 1 — <strong>not any other account</strong>.`;
+    }
+    if (lblModalAccountWarning) {
+      lblModalAccountWarning.innerHTML = `⚠️ <em>Do not select any school, student, or work account.</em>`;
+    }
+    if (boxModalAccountGuidance) {
+      boxModalAccountGuidance.style.background = '#f0fdf4';
+      boxModalAccountGuidance.style.borderLeftColor = '#10b981';
+      boxModalAccountGuidance.style.color = '#065f46';
+    }
+    openModal(step2AccountGuidanceModal);
   });
 
-  btnProceedStudentAccountModal?.addEventListener('click', () => {
-    closeModal(studentAccountGuidanceModal);
+  btnCancelAccountGuidanceModal?.addEventListener('click', () => {
+    closeModal(step2AccountGuidanceModal);
+  });
+
+  btnProceedAccountGuidanceModal?.addEventListener('click', () => {
+    closeModal(step2AccountGuidanceModal);
     const kidName = currentConfiguringProfile?.name || 'Child';
-    if (lblModalChildNameAuth) lblModalChildNameAuth.textContent = kidName;
+    if (isPendingDeploymentPersonal) {
+      if (lblToolsAuthInstruction) {
+        lblToolsAuthInstruction.innerHTML = `On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Drive storage, Gmail notices, and Calendar) for ${kidName}.`;
+      }
+      if (lblToolsAuthBenefit) {
+        lblToolsAuthBenefit.innerHTML = `✅ <em>Authorizing all tools enables <strong>${kidName}</strong>'s personal MCP server to access your private storage and school notices seamlessly.</em>`;
+      }
+    } else {
+      if (lblToolsAuthInstruction) {
+        lblToolsAuthInstruction.innerHTML = `On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, Gmail, and Calendar).`;
+      }
+      if (lblToolsAuthBenefit) {
+        lblToolsAuthBenefit.innerHTML = `✅ <em>Authorizing all tools enables <strong>${kidName}</strong>'s MCP server to query assignments, coursework, worksheets, and teacher announcements seamlessly.</em>`;
+      }
+    }
     openModal(toolsAuthGuidanceModal);
   });
 
   btnProceedToolsAuthModal?.addEventListener('click', () => {
     closeModal(toolsAuthGuidanceModal);
-    deployMcpServer(false);
+    deployMcpServer(isPendingDeploymentPersonal);
   });
-
-  btnCreatePersonalMcpServer?.addEventListener('click', () => deployMcpServer(true));
 
   btnNavStep2ToStep1?.addEventListener('click', () => showWizardStep(1));
   btnNavStep2ToStep3?.addEventListener('click', () => showWizardStep(3));

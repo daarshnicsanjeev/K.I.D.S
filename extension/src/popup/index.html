@@ -67,22 +67,22 @@
     </div>
   </div>
 
-  <!-- Student Account Guidance Modal (Step 2 Before Google Auth) -->
-  <div id="studentAccountGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalStudentAccountTitle" aria-hidden="true" hidden>
+  <!-- Step 2 Account Selection Guidance Modal (Before Google Auth) -->
+  <div id="step2AccountGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="lblModalAccountTitle" aria-hidden="true" hidden>
     <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">👤</div>
-      <h3 id="modalStudentAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select <span id="lblModalChildName">Child</span>'s School Account</h3>
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" id="lblModalAccountIcon">👤</div>
+      <h3 id="lblModalAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select Google Account</h3>
       
-      <div style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
-        🎓 <strong>School Account Required:</strong><br>
-        On the upcoming Google Sign-In screen, please <strong>select or enter <span id="lblModalChildName2" style="font-weight:700;">your child</span>'s School Google Account</strong> (the student account enrolled in Google Classroom).
-        <hr style="border: 0; border-top: 1px solid #bfdbfe; margin: 8px 0;">
-        ⚠️ <em>Do not select your parent personal account for Google Classroom MCP provisioning.</em>
+      <div id="boxModalAccountGuidance" style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
+        <span id="lblModalAccountBadge" style="font-weight: 700;">🎓 School Account Required:</span><br>
+        <span id="lblModalAccountInstruction">On the upcoming Google Sign-In screen, please select or enter your child's School Google Account.</span>
+        <hr style="border: 0; border-top: 1px solid #bfdbfe; margin: 8px 0;" id="hrModalAccount">
+        <span id="lblModalAccountWarning">⚠️ <em>Do not select your parent personal account for Google Classroom MCP provisioning.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnCancelStudentAccountModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Cancel</button>
-        <button id="btnProceedStudentAccountModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;">Proceed to Sign In ➔</button>
+        <button id="btnCancelAccountGuidanceModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Cancel</button>
+        <button id="btnProceedAccountGuidanceModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;">Proceed to Sign In ➔</button>
       </div>
     </div>
   </div>
@@ -95,9 +95,9 @@
       
       <div style="background: #ecfdf5; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #065f46; margin-bottom: 14px; text-align: left; border-left: 4px solid #10b981;">
         🔑 <strong>Authorize All Tools:</strong><br>
-        On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, Gmail, and Calendar).
+        <span id="lblToolsAuthInstruction">On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, Gmail, and Calendar).</span>
         <hr style="border: 0; border-top: 1px solid #a7f3d0; margin: 8px 0;">
-        ✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s MCP server to query assignments, coursework, worksheets, and teacher announcements seamlessly.</em>
+        <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s MCP server to query assignments, coursework, worksheets, and teacher announcements seamlessly.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
