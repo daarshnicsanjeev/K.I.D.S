@@ -30,6 +30,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblInvariantKidName = document.getElementById('lblInvariantKidName') as HTMLElement;
   const btnCloseInvariantModal = document.getElementById('btnCloseInvariantModal') as HTMLButtonElement;
 
+  // Step 2 Guidance Modals
+  const studentAccountGuidanceModal = document.getElementById('studentAccountGuidanceModal') as HTMLElement;
+  const lblModalChildName = document.getElementById('lblModalChildName') as HTMLElement;
+  const lblModalChildName2 = document.getElementById('lblModalChildName2') as HTMLElement;
+  const btnCancelStudentAccountModal = document.getElementById('btnCancelStudentAccountModal') as HTMLButtonElement;
+  const btnProceedStudentAccountModal = document.getElementById('btnProceedStudentAccountModal') as HTMLButtonElement;
+
+  const toolsAuthGuidanceModal = document.getElementById('toolsAuthGuidanceModal') as HTMLElement;
+  const lblModalChildNameAuth = document.getElementById('lblModalChildNameAuth') as HTMLElement;
+  const btnProceedToolsAuthModal = document.getElementById('btnProceedToolsAuthModal') as HTMLButtonElement;
+
   // Step 1 UI Elements
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
@@ -722,7 +733,29 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  btnCreateMcpServer?.addEventListener('click', () => deployMcpServer(false));
+  btnCreateMcpServer?.addEventListener('click', () => {
+    const kidName = currentConfiguringProfile?.name || 'Child';
+    if (lblModalChildName) lblModalChildName.textContent = kidName;
+    if (lblModalChildName2) lblModalChildName2.textContent = kidName;
+    openModal(studentAccountGuidanceModal);
+  });
+
+  btnCancelStudentAccountModal?.addEventListener('click', () => {
+    closeModal(studentAccountGuidanceModal);
+  });
+
+  btnProceedStudentAccountModal?.addEventListener('click', () => {
+    closeModal(studentAccountGuidanceModal);
+    const kidName = currentConfiguringProfile?.name || 'Child';
+    if (lblModalChildNameAuth) lblModalChildNameAuth.textContent = kidName;
+    openModal(toolsAuthGuidanceModal);
+  });
+
+  btnProceedToolsAuthModal?.addEventListener('click', () => {
+    closeModal(toolsAuthGuidanceModal);
+    deployMcpServer(false);
+  });
+
   btnCreatePersonalMcpServer?.addEventListener('click', () => deployMcpServer(true));
 
   btnNavStep2ToStep1?.addEventListener('click', () => showWizardStep(1));
