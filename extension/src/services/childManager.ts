@@ -10,10 +10,17 @@ export interface ChildProfile {
   academicYear: string; // e.g. "2026-2027"
   createdAt: number;
   accountEmail?: string;
+  studentAccountEmail?: string;
+  schoolEmailDomain?: string;
+  photoDataUrl?: string;
   folderId?: string;
   folderUrl?: string;
   gasScriptId?: string;
   gasDeploymentUrl?: string;
+  personalGasScriptId?: string;
+  personalGasDeploymentUrl?: string;
+  schoolGasScriptId?: string;
+  schoolGasDeploymentUrl?: string;
   deployedGasVersion?: string;
   deployedGasHash?: string;
   hasClassroom?: boolean;
@@ -21,6 +28,9 @@ export interface ChildProfile {
   portalDomains?: string[];
   registeredTools?: any[];
   trackedChats?: any[];
+  lastSchoolSync?: string;
+  lastPortalSync?: string;
+  isRemoved?: boolean;
 }
 
 export class ChildManager {
@@ -44,7 +54,7 @@ export class ChildManager {
   }
 
   /**
-   * Validates clean first name (letters only, 2-30 characters) for UI inputs.
+   * Validates clean first name (letters, spaces, hyphens, 2-30 characters) for UI inputs.
    */
   public static validateFirstName(name: string): { valid: boolean; error?: string; cleanName: string } {
     const raw = (name || '').trim();
@@ -57,11 +67,14 @@ export class ChildManager {
     if (raw.length > 30) {
       return { valid: false, error: 'First name cannot exceed 30 letters.', cleanName: raw };
     }
-    if (!/^[a-zA-Z]+$/.test(raw)) {
-      return { valid: false, error: 'Please enter only letters (no spaces, numbers, or special characters).', cleanName: raw.replace(/[^a-zA-Z]/g, '') };
+    if (!/^[a-zA-Z\s'-]+$/.test(raw)) {
+      return { valid: false, error: 'Please enter only letters, spaces, or hyphens.', cleanName: raw.replace(/[^a-zA-Z\s'-]/g, '') };
     }
-    // Capitalize first letter, lower remaining
-    const formatted = raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+    // Capitalize each word nicely
+    const formatted = raw
+      .split(/[\s-]+/)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+      .join(raw.includes('-') ? '-' : ' ');
     return { valid: true, cleanName: formatted };
   }
 

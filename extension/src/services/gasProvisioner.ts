@@ -2,8 +2,8 @@ import { ChildManager, ChildProfile } from './childManager';
 import { AuthService } from './authService';
 import { PersonalDriveService } from './personalDriveService';
 
-export const CURRENT_GAS_SERVER_VERSION = '3.4.0';
-export const CURRENT_GAS_CHANGELOG = 'Universal Chronological Sorting & Dynamic Child Archive Resolution: Forces newest-first notice ordering and auto-mirrors the full master archive to Google Apps Script';
+export const CURRENT_GAS_SERVER_VERSION = '4.0.0';
+export const CURRENT_GAS_CHANGELOG = 'Autonomous Dual-Worker Cloud Ingestion Engine: 1-Min Classroom & Gmail Cron, 6-Hour Portal Worker, & Native Direct Google Drive Vaulting';
 
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
@@ -2595,4 +2595,150 @@ var DriveContentExtractor = {
       this.log(`ℹ️ Preflight note: ${e.message}`);
     }
   }
+
+  /**
+   * Provisions Worker A in Student's School Account (1-Minute Classroom & Gmail Cron).
+   */
+  public static async provisionSchoolWorker(
+    studentToken: string,
+    parentFolderId: string,
+    childName: string,
+    academicYear: string,
+    studentEmail: string,
+    schoolDomain: string
+  ): Promise<ProvisionResult> {
+    this.log(`🎓 Provisioning Worker A (Student Account: ${studentEmail || 'School'}) for ${childName}...`);
+    this.reportProgress(20, 'Step 2: Connecting School Account', 'Setting up Student Google Apps Script Project...');
+
+    // 1. Create or Find Project
+    const project = await this.createProject(studentToken);
+    const scriptId = project.scriptId;
+    this.log(`📦 Created Apps Script Project for School Worker: ${scriptId}`);
+
+    // 2. Update Content
+    const accessKey = `kids_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    await this.updateProjectContent(scriptId, accessKey, studentToken, childName, academicYear);
+    this.log(`📄 Uploaded Cloud Ingestion modules (Classroom, Gmail, Digest) to project.`);
+
+    // 3. Create Version & Deployment
+    this.reportProgress(60, 'Step 2: Deploying Cloud Worker', 'Deploying Web App & Cron trigger...');
+    const version = await this.createVersion(scriptId, studentToken, childName, academicYear);
+    const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
+    const deploymentId = deployment.deploymentId;
+    const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
+    this.log(`🚀 Deployed Student Web App: ${webAppUrl}`);
+
+    // 4. Ensure Permissions / Authorization Handshake
+    this.reportProgress(80, 'Step 2: Verifying Permissions', 'Checking Google Permissions handshake...');
+    await this.ensureScriptAuthorized(webAppUrl, studentToken, scriptId, studentEmail);
+
+    // 5. Configure 1-Minute Cron Trigger & Run Initial Sync
+    try {
+      await fetch(webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'setup_triggers',
+          params: { type: 'school_1min' }
+        })
+      });
+
+      this.log('⏱️ Set up 1-minute autonomous cloud trigger for Google Classroom & Gmail.');
+
+      await fetch(webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'sync_classroom_and_gmail',
+          params: {
+            targetFolderId: parentFolderId,
+            childName,
+            academicYear,
+            schoolDomain
+          }
+        })
+      });
+
+      this.log('📥 Completed initial full Classroom & Gmail ingestion to Google Drive!');
+    } catch (syncErr) {
+      this.log(`⚠️ Initial sync note: ${syncErr}`);
+    }
+
+    // 6. Update Child Profile
+    const active = await ChildManager.getActiveProfile();
+    if (active && active.id) {
+      await ChildManager.updateProfile(active.id, {
+        schoolGasScriptId: scriptId,
+        schoolGasDeploymentUrl: webAppUrl,
+        studentAccountEmail: studentEmail,
+        schoolEmailDomain: schoolDomain,
+        lastSchoolSync: new Date().toISOString()
+      });
+    }
+
+    this.reportProgress(100, 'Step 2 Complete', 'School Account connected and syncing every 1 minute!');
+    return {
+      success: true,
+      scriptId,
+      deploymentId,
+      webAppUrl,
+      verifiedTools: ['sync_classroom_and_gmail']
+    };
+  }
+
+  /**
+   * Provisions Worker B in Parent's Personal Account (6-Hour Autonomous Portal Scraper).
+   */
+  public static async provisionPersonalWorker(
+    parentToken: string,
+    parentFolderId: string,
+    childName: string,
+    academicYear: string
+  ): Promise<ProvisionResult> {
+    this.log(`🌐 Provisioning Worker B (Personal Portal Scraper) for ${childName}...`);
+    this.reportProgress(30, 'Step 3: Setting Up Portal Worker', 'Configuring Personal Cloud Worker...');
+
+    const project = await this.createProject(parentToken);
+    const scriptId = project.scriptId;
+    const accessKey = `portal_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+
+    await this.updateProjectContent(scriptId, accessKey, parentToken, childName, academicYear);
+    const version = await this.createVersion(scriptId, parentToken, childName, academicYear);
+    const deployment = await this.createDeployment(scriptId, version.versionNumber, parentToken, childName, academicYear);
+    const deploymentId = deployment.deploymentId;
+    const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
+
+    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId);
+
+    // Setup 6-Hour Cron
+    try {
+      await fetch(webAppUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          method: 'setup_triggers',
+          params: { type: 'portal_6hr' }
+        })
+      });
+      this.log('⏱️ Set up 6-hour autonomous cloud trigger for School Portals.');
+    } catch (e) {}
+
+    const active = await ChildManager.getActiveProfile();
+    if (active && active.id) {
+      await ChildManager.updateProfile(active.id, {
+        personalGasScriptId: scriptId,
+        personalGasDeploymentUrl: webAppUrl,
+        lastPortalSync: new Date().toISOString()
+      });
+    }
+
+    return {
+      success: true,
+      scriptId,
+      deploymentId,
+      webAppUrl,
+      verifiedTools: ['sync_all_portals', 'register_portal_job']
+    };
+  }
 }
+

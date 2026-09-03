@@ -1,11 +1,11 @@
 /**
- * Google Apps Script MCP Engine Entry Point (JSON-RPC 2.0 over HTTP POST)
+ * Google Apps Script Cloud Ingestion Engine (JSON-RPC 2.0 & Autonomous Triggers)
  */
 function doGet(e) {
   return ContentService.createTextOutput(JSON.stringify({
     status: "ok",
-    mcpVersion: "1.0",
-    name: "Kids Intelligent Dashboard System (K.I.D.S.) MCP Server"
+    version: "4.0.0",
+    name: "Kids Intelligent Dashboard System (K.I.D.S.) Cloud Ingestion Engine"
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
@@ -19,33 +19,28 @@ function doPost(e) {
     var method = json.method;
     var params = json.params || {};
     var id = json.id;
-
     var result;
 
     if (method === "initialize") {
       result = {
         protocolVersion: "2024-11-05",
-        capabilities: {
-          tools: {}
-        },
-        serverInfo: {
-          name: "Kids Intelligent Dashboard System (K.I.D.S.) MCP Server",
-          version: "1.0.0"
-        }
+        capabilities: { tools: {} },
+        serverInfo: { name: "K.I.D.S. Cloud Ingestion Engine", version: "4.0.0" }
       };
     } else if (method === "notifications/initialized") {
-      return ContentService.createTextOutput(JSON.stringify({
-        jsonrpc: "2.0",
-        id: id !== undefined ? id : null
-      })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({ jsonrpc: "2.0", id: id !== undefined ? id : null })).setMimeType(ContentService.MimeType.JSON);
     } else if (method === "tools/list") {
       result = handleToolsList();
     } else if (method === "tools/call") {
       result = handleToolsCall(params.name, params.arguments || {});
-    } else if (method === "register_mcp_tool") {
-      result = handleRegisterTool(params);
-    } else if (method === "test_preflight_proxy") {
-      result = handlePreflightProxy(params);
+    } else if (method === "sync_classroom_and_gmail") {
+      result = handleSyncClassroomAndGmail(params);
+    } else if (method === "sync_all_portals") {
+      result = handleSyncAllPortals(params);
+    } else if (method === "register_portal_job" || method === "register_mcp_tool") {
+      result = handleRegisterPortalJob(params);
+    } else if (method === "setup_triggers") {
+      result = handleSetupTriggers(params);
     } else {
       throw new Error("Method not supported: " + method);
     }
@@ -65,134 +60,170 @@ function doPost(e) {
   }
 }
 
-function handleToolsList() {
-  var nativeTools = [
-    {
-      name: 'get_google_classroom_work',
-      description: 'Fetch student homework and courses from Google Classroom.',
-      inputSchema: { type: 'object', properties: {} }
-    },
-    {
-      name: 'get_school_gmail_messages',
-      description: 'Fetch school circulars and announcements from Gmail.',
-      inputSchema: { type: 'object', properties: {} }
-    },
-    {
-      name: 'get_calendar_events',
-      description: 'Fetch upcoming school calendar events and deadlines.',
-      inputSchema: { type: 'object', properties: {} }
-    },
-    {
-      name: 'search_school_whatsapp_messages',
-      description: 'Search and query school WhatsApp chat history, homework notices, teacher announcements, attire reminders, and PDFs archived on Google Drive.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Keyword, topic, or question to search for (e.g. "homework", "attire", "bistro", "Radha Krishna", "science notes", "assembly")' },
-          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' },
-          group_name: { type: 'string', description: 'Filter by specific WhatsApp group name (e.g. "Grade 3B IG parent group 26-27" or "3B Cambridge 2026 - 27")' },
-          category: { type: 'string', description: 'Filter by notice category: HOMEWORK, CIRCULAR_NOTICE, EVENT_ACTIVITY, EXAM_SCHEDULE, or GENERAL_CHAT' },
-          limit: { type: 'number', description: 'Maximum number of notices to return (default 40)' }
-        }
-      }
-    },
-    {
-      name: 'get_school_groups_manifest',
-      description: 'Retrieve the semantic AI index of all tracked school WhatsApp groups, group descriptions, total notices count, and primary senders.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' }
-        }
-      }
-    },
-    {
-      name: 'get_latest_school_notices',
-      description: 'Fetch the most recent school notices and homework updates from the WhatsApp archive.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          child_name: { type: 'string', description: 'Child profile name (default "Atharva")' },
-          limit: { type: 'number', description: 'Number of recent notices to return (default 25)' },
-          group_name: { type: 'string', description: 'Optional group name filter' }
-        }
-      }
-    }
-  ];
+function handleSyncClassroomAndGmail(params) {
+  var folderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+  var childName = params.childName || 'Atharva';
+  var academicYear = params.academicYear || '2026-2027';
+  var schoolDomain = params.schoolDomain || '';
 
-  var registered = StorageRepository.getRegisteredTools();
-  var portalTools = registered.map(function (t) {
-    return {
-      name: t.name,
-      description: 'Fetch ' + t.feature + ' data from school portal ' + t.domain,
-      inputSchema: { type: 'object', properties: {} }
-    };
+  if (!folderId) throw new Error("targetFolderId is required for Classroom & Gmail sync.");
+
+  PropertiesService.getScriptProperties().setProperties({
+    target_folder_id: folderId,
+    child_name: childName,
+    academic_year: academicYear,
+    school_domain: schoolDomain
   });
 
-  return { tools: nativeTools.concat(portalTools) };
+  var classroomRes = ClassroomIngester.sync(folderId, childName, academicYear, false);
+  var gmailRes = GmailIngester.sync(folderId, childName, academicYear, schoolDomain, false);
+  var digestRes = DigestBuilder.build(folderId, childName, academicYear);
+
+  return {
+    success: true,
+    classroom: classroomRes,
+    gmail: gmailRes,
+    digest: digestRes
+  };
+}
+
+function handleSyncAllPortals(params) {
+  var res = PortalIngester.syncAll();
+  return { success: true, result: res };
+}
+
+function handleRegisterPortalJob(params) {
+  var childId = params.childId || 'default_child';
+  var kidName = params.childName || params.kidName || 'Atharva';
+  var portalFolderId = params.portalFolderId || params.targetFolderId;
+  var domain = params.domain;
+  var feature = params.feature;
+  var endpointSpec = params.endpoint_spec || { url: params.url };
+  var authSpec = params.auth_spec || { cookies: params.cookies };
+
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('multi_child_portal_registry');
+  var registry = raw ? JSON.parse(raw) : { children: [] };
+
+  var child = registry.children.find(function(c) { return c.childId === childId || c.kidName.toLowerCase() === kidName.toLowerCase(); });
+  if (!child) {
+    child = {
+      childId: childId,
+      kidName: kidName,
+      portalFolderId: portalFolderId,
+      domains: {}
+    };
+    registry.children.push(child);
+  }
+
+  if (portalFolderId) child.portalFolderId = portalFolderId;
+  if (!child.domains) child.domains = {};
+  if (!child.domains[domain]) {
+    child.domains[domain] = {
+      security_payload: { cookies: authSpec.cookies || '' },
+      features: []
+    };
+  } else if (authSpec && authSpec.cookies) {
+    child.domains[domain].security_payload = { cookies: authSpec.cookies };
+  }
+
+  var existingIdx = child.domains[domain].features.findIndex(function(f) { return f.name.toLowerCase() === feature.toLowerCase(); });
+  if (existingIdx >= 0) {
+    child.domains[domain].features[existingIdx] = { name: feature, endpoint: endpointSpec.url };
+  } else {
+    child.domains[domain].features.push({ name: feature, endpoint: endpointSpec.url });
+  }
+
+  props.setProperty('multi_child_portal_registry', JSON.stringify(registry));
+  McpLogger.log('SUCCESS', 'PORTAL_REGISTER_OK', 'Registered portal feature ' + feature + ' for ' + kidName + ' (' + domain + ')');
+
+  return { registered: true, childId: childId, domain: domain, feature: feature };
+}
+
+function handleSetupTriggers(params) {
+  var type = params.type; // 'school_1min' or 'portal_6hr'
+  if (type === 'school_1min') {
+    setupMinuteTrigger();
+    return { triggerSet: true, cadence: 'everyMinutes(1)' };
+  } else if (type === 'portal_6hr') {
+    setupSixHourTrigger();
+    return { triggerSet: true, cadence: 'everyHours(6)' };
+  }
+  return { triggerSet: false, error: 'Unknown trigger type' };
+}
+
+/**
+ * Worker A Trigger: 1-Minute Incremental Background Cron for School Account
+ */
+function runIncrementalSchoolSync() {
+  var props = PropertiesService.getScriptProperties();
+  var folderId = props.getProperty('target_folder_id');
+  var childName = props.getProperty('child_name') || 'Atharva';
+  var academicYear = props.getProperty('academic_year') || '2026-2027';
+  var schoolDomain = props.getProperty('school_domain') || '';
+
+  if (!folderId) return;
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) return;
+
+  try {
+    ClassroomIngester.sync(folderId, childName, academicYear, true);
+    GmailIngester.sync(folderId, childName, academicYear, schoolDomain, true);
+    DigestBuilder.build(folderId, childName, academicYear);
+  } catch (e) {
+    McpLogger.log('ERROR', 'SCHOOL_CRON_ERROR', '1-Minute sync error: ' + e);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+/**
+ * Worker B Trigger: 6-Hour Background Cron for Personal Account
+ */
+function runIncrementalPortalSync() {
+  PortalIngester.syncAll();
+}
+
+function setupMinuteTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'runIncrementalSchoolSync') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('runIncrementalSchoolSync').timeBased().everyMinutes(1).create();
+  McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 1-minute cloud time trigger for Google Classroom & Gmail sync.');
+}
+
+function setupSixHourTrigger() {
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'runIncrementalPortalSync') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+  ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
+  McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 6-hour cloud time trigger for School Portal scraping.');
+}
+
+function handleToolsList() {
+  return {
+    tools: [
+      { name: 'sync_classroom_and_gmail', description: 'Run full sync of Classroom & Gmail', inputSchema: { type: 'object', properties: {} } },
+      { name: 'sync_all_portals', description: 'Run full scraping of registered school portals', inputSchema: { type: 'object', properties: {} } },
+      { name: 'register_portal_job', description: 'Register a child school portal endpoint', inputSchema: { type: 'object', properties: {} } }
+    ]
+  };
 }
 
 function handleToolsCall(name, args) {
-  if (name === 'get_google_classroom_work') {
-    return WorkspaceFetcher.getGoogleClassroomWork();
-  } else if (name === 'get_school_gmail_messages') {
-    return WorkspaceFetcher.getSchoolGmailMessages();
-  } else if (name === 'get_calendar_events') {
-    return WorkspaceFetcher.getCalendarEvents();
-  } else if (name === 'search_school_whatsapp_messages' || name === 'query_whatsapp_history' || name === 'get_whatsapp_school_updates') {
-    return WorkspaceFetcher.searchWhatsAppMessages(args);
-  } else if (name === 'get_school_groups_manifest') {
-    return WorkspaceFetcher.getGroupsManifest(args);
-  } else if (name === 'get_latest_school_notices') {
-    return WorkspaceFetcher.getLatestSchoolNotices(args);
+  if (name === 'sync_classroom_and_gmail') {
+    return handleSyncClassroomAndGmail(args);
+  } else if (name === 'sync_all_portals') {
+    return handleSyncAllPortals(args);
+  } else if (name === 'register_portal_job') {
+    return handleRegisterPortalJob(args);
   }
-
-  // Check registered portal tools
-  var registered = StorageRepository.getRegisteredTools();
-  for (var i = 0; i < registered.length; i++) {
-    if (registered[i].name === name) {
-      return PortalApiFetcher.fetchPortalData(registered[i]);
-    }
-  }
-
   throw new Error('Tool not found: ' + name);
-}
-
-function handleRegisterTool(params) {
-  var domain = params.domain;
-  var feature = params.feature;
-  var endpointSpec = params.endpoint_spec;
-  var authSpec = params.auth_spec;
-
-  var toolName = StorageRepository.saveTool(domain, feature, endpointSpec, authSpec);
-  return { registered: true, toolName: toolName };
-}
-
-function handlePreflightProxy(params) {
-  var mockSpec = {
-    endpoint_spec: params.endpoint_spec,
-    auth_spec: params.auth_spec
-  };
-  var res = PortalApiFetcher.fetchPortalData(mockSpec);
-  return { success: true, data: res };
-}
-
-function jsonRpcSuccess(result, id) {
-  var payload = {
-    jsonrpc: '2.0',
-    result: result,
-    id: id
-  };
-  return ContentService.createTextOutput(JSON.stringify(payload))
-    .setMimeType(ContentService.MimeType.JSON);
-}
-
-function jsonRpcError(code, message, id) {
-  var payload = {
-    jsonrpc: '2.0',
-    error: { code: code, message: message },
-    id: id
-  };
-  return ContentService.createTextOutput(JSON.stringify(payload))
-    .setMimeType(ContentService.MimeType.JSON);
 }

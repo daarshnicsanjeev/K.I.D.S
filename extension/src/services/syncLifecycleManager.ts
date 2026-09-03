@@ -36,6 +36,14 @@ export class SyncLifecycleManager {
     isManual = false,
     specificGroup?: string
   ): Promise<{ allowed: boolean; reason?: string }> {
+    // Check Network Online Status
+    if (typeof navigator !== 'undefined' && typeof navigator.onLine === 'boolean' && !navigator.onLine) {
+      return {
+        allowed: false,
+        reason: 'Network offline. Background sync paused until connection is restored.'
+      };
+    }
+
     const status = await this.getLockStatus();
 
     // Check Ingestion Lock
@@ -76,6 +84,28 @@ export class SyncLifecycleManager {
     }
 
     return { allowed: true };
+  }
+
+  /**
+   * Saves a resumable sync checkpoint cursor for a child group.
+   */
+  public static async saveCheckpoint(childId: string, groupName: string, cursor: any): Promise<void> {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      const key = `sync_checkpoint_${childId}_${groupName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      await chrome.storage.local.set({ [key]: { cursor, savedAt: Date.now() } });
+    }
+  }
+
+  /**
+   * Retrieves a resumable sync checkpoint cursor for a child group.
+   */
+  public static async getCheckpoint(childId: string, groupName: string): Promise<any | null> {
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      const key = `sync_checkpoint_${childId}_${groupName.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const state = await chrome.storage.local.get([key]);
+      return state[key] ? state[key].cursor : null;
+    }
+    return null;
   }
 
   /**

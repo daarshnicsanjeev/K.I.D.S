@@ -468,12 +468,209 @@ export class PersonalDriveService {
   }
 
   /**
+   * Gets or creates a dedicated per-domain portal folder with an attachments subfolder.
+   */
+  public static async getOrCreateDomainPortalFolder(token: string, childName: string, academicYear: string, domain: string): Promise<{ domainFolderId: string; attachmentsFolderId: string; webViewLink?: string }> {
+    const portalInfo = await this.getOrCreatePortalToolsFolder(token, childName, academicYear);
+    const cleanDomain = domain.toLowerCase().replace(/[^a-z0-9.-]/g, '_');
+    const domFolder = await this.getOrCreateSubfolder(token, cleanDomain, portalInfo.id, `Portal Archive for ${cleanDomain}`);
+    const attachFolder = await this.getOrCreateSubfolder(token, 'attachments', domFolder.id, `Attachments for ${cleanDomain}`);
+    return { domainFolderId: domFolder.id, attachmentsFolderId: attachFolder.id, webViewLink: domFolder.webViewLink };
+  }
+
+  /**
    * Tier 3B: Gets or creates messaging_tools folder under Kid folder.
    */
   public static async getOrCreateMessagingToolsFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; webViewLink?: string; kidFolderId: string }> {
     const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
     const msgFolder = await this.getOrCreateSubfolder(token, 'messaging_tools', kidInfo.id, `Messaging Tools & Chat Archives for ${kidInfo.kidName}`);
     return { id: msgFolder.id, webViewLink: msgFolder.webViewLink, kidFolderId: kidInfo.id };
+  }
+
+  /**
+   * Tier 3C: Gets or creates classroom folder and attachments subfolder under Kid folder.
+   */
+  public static async getOrCreateClassroomFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; attachmentsFolderId: string; webViewLink?: string; kidFolderId: string }> {
+    const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+    const classFolder = await this.getOrCreateSubfolder(token, 'classroom', kidInfo.id, `Google Classroom Coursework for ${kidInfo.kidName}`);
+    const attachFolder = await this.getOrCreateSubfolder(token, 'attachments', classFolder.id, `Classroom Worksheets & Attachments for ${kidInfo.kidName}`);
+    return { id: classFolder.id, attachmentsFolderId: attachFolder.id, webViewLink: classFolder.webViewLink, kidFolderId: kidInfo.id };
+  }
+
+  /**
+   * Tier 3D: Gets or creates emails folder and attachments subfolder under Kid folder.
+   */
+  public static async getOrCreateEmailsFolder(token: string, childName?: string, academicYear?: string): Promise<{ id: string; attachmentsFolderId: string; webViewLink?: string; kidFolderId: string }> {
+    const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+    const emailsFolder = await this.getOrCreateSubfolder(token, 'emails', kidInfo.id, `School Circular Emails for ${kidInfo.kidName}`);
+    const attachFolder = await this.getOrCreateSubfolder(token, 'attachments', emailsFolder.id, `Email Circular Attachments for ${kidInfo.kidName}`);
+    return { id: emailsFolder.id, attachmentsFolderId: attachFolder.id, webViewLink: emailsFolder.webViewLink, kidFolderId: kidInfo.id };
+  }
+
+  /**
+   * Tier 4: Gets or creates profile folder and uploads Child Photo.
+   */
+  public static async uploadChildPhoto(token: string, childName: string, academicYear: string, photoDataUrl: string): Promise<{ fileId: string; photoUrl: string } | null> {
+    try {
+      const kidInfo = await this.getOrCreateKidFolder(token, childName, academicYear);
+      const profileFolder = await this.getOrCreateSubfolder(token, 'profile', kidInfo.id, `Profile and Reference Photo for ${kidInfo.kidName}`);
+
+      const fileName = `${kidInfo.kidName}_photo.jpg`;
+      const base64Data = photoDataUrl.includes(',') ? photoDataUrl.split(',')[1] : photoDataUrl;
+      const binaryString = atob(base64Data);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+      }
+
+      const boundary = '-------314159265358979323846';
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelimiter = `\r\n--${boundary}--`;
+
+      const metadata = {
+        name: fileName,
+        mimeType: 'image/jpeg',
+        parents: [profileFolder.id]
+      };
+
+      // Search for existing photo in folder
+      const q = encodeURIComponent(`name = '${fileName}' and '${profileFolder.id}' in parents and trashed = false`);
+      const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,webViewLink)`, {}, token);
+      let existingFileId = null;
+      if (searchRes.ok) {
+        const sData = await searchRes.json();
+        if (sData.files && sData.files.length > 0) existingFileId = sData.files[0].id;
+      }
+
+      if (existingFileId) {
+        const updateRes = await this.fetchWithAuth(
+          `https://www.googleapis.com/upload/drive/v3/files/${existingFileId}?uploadType=media`,
+          {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'image/jpeg' },
+            body: bytes
+          },
+          token
+        );
+        if (updateRes.ok) {
+          const upData = await updateRes.json();
+          return { fileId: existingFileId, photoUrl: upData.webViewLink || '' };
+        }
+      } else {
+        const multipartBody = new Blob([
+          delimiter,
+          'Content-Type: application/json; charset=UTF-8\r\n\r\n',
+          JSON.stringify(metadata),
+          delimiter,
+          'Content-Type: image/jpeg\r\n\r\n',
+          bytes,
+          closeDelimiter
+        ]);
+
+        const uploadRes = await this.fetchWithAuth(
+          'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+            body: multipartBody
+          },
+          token
+        );
+
+        if (uploadRes.ok) {
+          const createData = await uploadRes.json();
+          return { fileId: createData.id, photoUrl: createData.webViewLink || '' };
+        }
+      }
+    } catch (e) {
+      console.warn('[PersonalDriveService] Failed to upload child photo to Drive:', e);
+    }
+    return null;
+  }
+
+  /**
+   * Shares the child's folder with the student's Google account (role: writer).
+   */
+  public static async shareFolderWithStudentAccount(token: string, folderId: string, studentEmail: string): Promise<any> {
+    const url = `https://www.googleapis.com/drive/v3/files/${folderId}/permissions?sendNotificationEmail=false`;
+    const res = await this.fetchWithAuth(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          role: 'writer',
+          type: 'user',
+          emailAddress: studentEmail
+        })
+      },
+      token
+    );
+
+    if (!res.ok) {
+      const err = await res.text();
+      throw new Error(`Failed to grant folder write permissions to ${studentEmail}: ${err}`);
+    }
+    return await res.json();
+  }
+
+  /**
+   * Retrieves Google Drive storage quota and computes K.I.D.S. Data folder usage.
+   */
+  public static async getStorageQuotaInfo(token?: string): Promise<{
+    limitBytes: number;
+    usageBytes: number;
+    limitReadable: string;
+    usageReadable: string;
+    percentUsed: number;
+    kidsDataUsageBytes: number;
+    kidsDataUsageReadable: string;
+    kidsDataPercentOfQuota: number;
+  }> {
+    const validToken = token || await this.getValidToken(false);
+    const formatBytes = (bytes: number) => {
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const i = Math.floor(Math.log(bytes) / Math.log(k));
+      return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
+    };
+
+    let limitBytes = 15 * 1024 * 1024 * 1024; // Default 15 GB
+    let usageBytes = 0;
+
+    try {
+      const aboutRes = await this.fetchWithAuth('https://www.googleapis.com/drive/v3/about?fields=storageQuota', {}, validToken);
+      if (aboutRes.ok) {
+        const aboutData = await aboutRes.json();
+        if (aboutData.storageQuota) {
+          limitBytes = parseInt(aboutData.storageQuota.limit || String(15 * 1024 * 1024 * 1024), 10);
+          usageBytes = parseInt(aboutData.storageQuota.usage || '0', 10);
+        }
+      }
+    } catch (e) {}
+
+    // Estimate K.I.D.S. Data folder size from cached messages & files
+    let kidsBytes = 0;
+    try {
+      const state = await chrome.storage.local.get(['kids_drive_usage_bytes']);
+      kidsBytes = state.kids_drive_usage_bytes || (12 * 1024 * 1024); // Estimated fallback ~12MB
+    } catch (e) {}
+
+    const percentUsed = limitBytes > 0 ? (usageBytes / limitBytes) * 100 : 0;
+    const kidsDataPercentOfQuota = limitBytes > 0 ? (kidsBytes / limitBytes) * 100 : 0;
+
+    return {
+      limitBytes,
+      usageBytes,
+      limitReadable: formatBytes(limitBytes),
+      usageReadable: formatBytes(usageBytes),
+      percentUsed: parseFloat(percentUsed.toFixed(1)),
+      kidsDataUsageBytes: kidsBytes,
+      kidsDataUsageReadable: formatBytes(kidsBytes),
+      kidsDataPercentOfQuota: parseFloat(kidsDataPercentOfQuota.toFixed(2))
+    };
   }
 
   /**
@@ -1822,10 +2019,11 @@ export class PersonalDriveService {
     }
   }
 
-  /**
-   * Retrieves the most recently uploaded files from Google Drive so the user can select their export.
-   */
-  public static async searchWhatsAppExports(token?: string, forceRefresh = false): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; createdTime?: string; webViewLink?: string }>> {
+  public static async searchDriveExports(token?: string, forceRefresh = false) {
+    return this.searchWhatsAppExports(token, forceRefresh);
+  }
+
+  public static async searchWhatsAppExports(token?: string, forceRefresh = false): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; sizeReadable?: string; createdTime?: string; modifiedTime?: string; webViewLink?: string }>> {
     try {
       let validToken = token || await this.getValidToken(forceRefresh);
       await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [RECENT_FILES_SCAN] Fetching recent files from Google Drive...');

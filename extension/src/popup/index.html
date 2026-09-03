@@ -7,6 +7,12 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <!-- Offline Alert Banner -->
+  <div id="offlineBanner" class="hidden" style="background: #ef4444; color: #ffffff; text-align: center; padding: 6px 10px; font-size: 0.76rem; font-weight: 700; display: flex; align-items: center; justify-content: center; gap: 6px;" role="alert">
+    <span>⚡</span>
+    <span>Offline Mode: Displaying cached records. Cloud sync will resume automatically when online.</span>
+  </div>
+
   <!-- Progress Restoration Indicator -->
   <div id="restoringProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="polite" aria-hidden="true" hidden>
     <div class="restoring-spinner"></div>
@@ -14,11 +20,11 @@
     <div style="font-size: 0.72rem; color: var(--text-muted);" id="lblRestoringSubtext">Loading your active setup</div>
   </div>
 
-  <!-- MCP Server Deployment Progress Overlay -->
+  <!-- Cloud Deployment Progress Overlay -->
   <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="dialog" aria-modal="true" aria-live="polite" aria-hidden="true" hidden style="padding: 20px; text-align: center;">
     <div class="restoring-spinner" style="border-top-color: #2563eb; width: 36px; height: 36px;"></div>
     <div style="font-size: 0.95rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 6px;" id="lblMcpDeployTitle">
-      Creating MCP Server...
+      Connecting Cloud Ingestion Engine...
     </div>
     
     <!-- Visual Progress Bar -->
@@ -34,50 +40,17 @@
     </div>
   </div>
 
-  <!-- Educational Gaming & Video Platform Alert Modal (Step 3 Skip) -->
-  <div id="gamingAlertModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalGamingTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">🎮</div>
-      <h3 id="modalGamingTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Track Kids Platforms & Games</h3>
-      
-      <div style="background: #f8fafc; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #334155; margin-bottom: 14px; text-align: left; border-left: 4px solid #ed8936;">
-        💡 <strong>Did you know?</strong> Beyond school portals, you can track <strong>kids' educational games, video platforms, and learning dashboards</strong> (e.g. Chess.com, Scratch, Khan Academy, YouTube Kids) to monitor your child's screen time and learning progress!
-      </div>
-
-      <div style="display: flex; gap: 8px;">
-        <button id="btnModalTrackGaming" class="btn btn-primary" style="flex: 1; font-size: 0.78rem;">🎮 Track a Platform</button>
-        <button id="btnModalContinueSkip" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">⏭️ Continue to Step 4 ➔</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Minimum Platform Invariant Warning Modal (Step 4 Finish) -->
-  <div id="invariantModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalInvariantTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">⚠️</div>
-      <h3 id="modalInvariantTitle" style="font-size: 0.98rem; font-weight: 700; color: #991b1b; margin-bottom: 8px;">At Least One Platform Required</h3>
-      
-      <div style="background: #fef2f2; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #991b1b; margin-bottom: 14px; text-align: left; border-left: 4px solid #ef4444;">
-        Please connect at least <strong>one source</strong> (Google Classroom in Step 2, a School/Kids Portal in Step 3, or a School Chat Group in Step 4) so your AI assistant has data to analyze for <span id="lblInvariantKidName" style="font-weight: 700;">your child</span>.
-      </div>
-
-      <button id="btnCloseInvariantModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem;">
-        Got it, let me connect a source
-      </button>
-    </div>
-  </div>
-
-  <!-- Step 2 Account Selection Guidance Modal (Before Google Auth) -->
+  <!-- Step 2 Student Account Guidance Modal (Before Google Auth) -->
   <div id="step2AccountGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="lblModalAccountTitle" aria-hidden="true" hidden>
     <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;" id="lblModalAccountIcon">👤</div>
-      <h3 id="lblModalAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select Google Account</h3>
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" id="lblModalAccountIcon">🎓</div>
+      <h3 id="lblModalAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select Student School Google Account</h3>
       
       <div id="boxModalAccountGuidance" style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
-        <span id="lblModalAccountBadge" style="font-weight: 700;">🎓 School Account Required:</span><br>
-        <span id="lblModalAccountInstruction">On the upcoming Google Sign-In screen, please select or enter your child's School Google Account.</span>
+        <span id="lblModalAccountBadge" style="font-weight: 700;">🏫 Student School Account Required:</span><br>
+        <span id="lblModalAccountInstruction">On the upcoming Google Sign-In screen, please select your child's School Google Account (e.g. <code>atharva@school.com</code>).</span>
         <hr style="border: 0; border-top: 1px solid #bfdbfe; margin: 8px 0;" id="hrModalAccount">
-        <span id="lblModalAccountWarning">⚠️ <em>Do not select your parent personal account for Google Classroom MCP provisioning.</em></span>
+        <span id="lblModalAccountWarning">⚠️ <em>Do not select your parent personal account here. Step 2 is dedicated to your child's school account.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
@@ -91,19 +64,37 @@
   <div id="toolsAuthGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalToolsAuthTitle" aria-hidden="true" hidden>
     <div class="modal-content">
       <div style="font-size: 2.2rem; margin-bottom: 6px;">⚡</div>
-      <h3 id="modalToolsAuthTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Authorize All Tools for Optimum Functioning</h3>
+      <h3 id="modalToolsAuthTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Authorize School Cloud Worker</h3>
       
       <div style="background: #ecfdf5; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #065f46; margin-bottom: 14px; text-align: left; border-left: 4px solid #10b981;">
         🔑 <strong>Authorize All Tools:</strong><br>
-        <span id="lblToolsAuthInstruction">On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, Gmail, and Calendar).</span>
+        <span id="lblToolsAuthInstruction">On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, and Gmail).</span>
         <hr style="border: 0; border-top: 1px solid #a7f3d0; margin: 8px 0;">
-        <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s MCP server to query assignments, coursework, worksheets, and teacher announcements seamlessly.</em></span>
+        <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s cloud worker to sync assignments, coursework, worksheets, and teacher circulars every 1 minute.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
         <button id="btnProceedToolsAuthModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem; font-weight: 700;">
-          Got it, Proceed to Create MCP Server ➔
+          Got it, Proceed to Deploy Worker ➔
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2 Switch Student Account Confirmation Modal -->
+  <div id="modalConfirmSwitchStudentAccount" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalSwitchAccountTitle" aria-hidden="true" hidden>
+    <div class="modal-content">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;">🔄</div>
+      <h3 id="modalSwitchAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Switch Student School Account?</h3>
+      
+      <div style="background: #fffbeb; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #92400e; margin-bottom: 14px; text-align: left; border-left: 4px solid #f59e0b;">
+        Are you sure you want to switch the student school account for <span id="lblSwitchChildName" style="font-weight: 700;">this child</span>?<br><br>
+        <em>Your existing connection will remain safely active until the new account is fully verified.</em>
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCancelSwitchStudentModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Cancel</button>
+        <button id="btnConfirmSwitchStudentModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;">Yes, Switch Account ➔</button>
       </div>
     </div>
   </div>
@@ -117,34 +108,24 @@
       </h3>
 
       <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 12px;">
-        <!-- What we DON'T capture -->
         <div style="background: #fef2f2; border-left: 3px solid #ef4444; padding: 6px 8px; border-radius: 4px;">
           <strong style="color: #991b1b;">🚫 What We NEVER Capture:</strong>
           <div style="color: #7f1d1d; margin-top: 2px;">Your school login passwords, payment cards, banking info, or browsing history outside school portals.</div>
         </div>
 
-        <!-- What we DO capture -->
         <div style="background: #eff6ff; border-left: 3px solid #3b82f6; padding: 6px 8px; border-radius: 4px;">
           <strong style="color: #1e40af;">📋 What We Capture:</strong>
-          <div style="color: #1e3a8a; margin-top: 2px;">School portal domain (e.g. <code>edusprint.in</code>), active session authentication tokens, and page menu headings for homework/attendance.</div>
+          <div style="color: #1e3a8a; margin-top: 2px;">School portal domain (e.g. <code>edusprint.in</code>), session cookies, and menu endpoints for homework and attendance.</div>
         </div>
 
-        <!-- Why we capture -->
         <div style="background: #f0fdf4; border-left: 3px solid #10b981; padding: 6px 8px; border-radius: 4px;">
-          <strong style="color: #065f46;">🎯 Why We Capture It:</strong>
-          <div style="color: #064e3b; margin-top: 2px;">To allow Gemini Spark to fetch your child's live homework, attendance, and timetables 24/7 without prompting you to log in repeatedly.</div>
+          <strong style="color: #065f46;">🎯 24/7 Cloud Execution:</strong>
+          <div style="color: #064e3b; margin-top: 2px;">A dedicated cloud worker runs every 6 hours in Google Cloud, fetching updates into your Google Drive even when your machine is off.</div>
         </div>
 
-        <!-- Where it is stored -->
         <div style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 6px 8px; border-radius: 4px;">
-          <strong style="color: #92400e;">💾 Where It Is Stored:</strong>
-          <div style="color: #78350f; margin-top: 2px;">Stored <strong>exclusively in your Private Google Drive</strong> (<code>K.I.D.S. Data</code>) and your child's dedicated Google Apps Script server. <em>Zero 3rd-party servers or external databases.</em></div>
-        </div>
-
-        <!-- How secure -->
-        <div style="background: #f8fafc; border-left: 3px solid #64748b; padding: 6px 8px; border-radius: 4px;">
-          <strong style="color: #334155;">🔒 Security & Revocation:</strong>
-          <div style="color: #475569; margin-top: 2px;">Protected by a 128-bit cryptographic key. You can delete captured portals or revoke session access anytime with 1 click.</div>
+          <strong style="color: #92400e;">💾 Private Google Drive:</strong>
+          <div style="color: #78350f; margin-top: 2px;">All portal data is saved directly to your <code>K.I.D.S. Data/</code> folder. Zero 3rd-party servers.</div>
         </div>
       </div>
 
@@ -166,25 +147,15 @@
       </div>
     </header>
 
-    <!-- On-Device Gemini Nano AI Normalizer Status Bar -->
-    <div id="aiStatusPillBar" style="display: flex; align-items: center; justify-content: space-between; background: #ffffff; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--border-color); font-size: 0.75rem; cursor: pointer;" title="Click to view Gemini Nano AI status" role="status" aria-label="AI Engine Status">
-      <div style="display: flex; align-items: center; gap: 5px;">
-        <span>✨</span>
-        <span style="color: var(--text-secondary); font-weight: 600;">Built-in AI:</span>
-        <span id="aiStatusBadge" style="background: #e2e8f0; color: #1e293b; font-size: 0.7rem; padding: 2px 7px; border-radius: 4px; font-weight: 600;">Checking...</span>
-      </div>
-      <span style="font-size: 0.72rem; color: var(--brand-navy); font-weight: 600;">ℹ️ Help</span>
-    </div>
-
     <!-- Stepper Indicator (4 Steps) -->
     <div id="wizardStepper" class="stepper" role="navigation" aria-label="Onboarding Progress Stepper">
-      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid First Name" aria-label="Step 1: Parent Account and Kid First Name" tabindex="0" role="button">1</div>
+      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid Profile" tabindex="0" role="button">1</div>
       <div class="step-line" id="line1" aria-hidden="true"></div>
-      <div class="step-dot" id="dot2" title="Step 2: Google Classroom & MCP Server" aria-label="Step 2: Google Classroom and MCP Server" tabindex="0" role="button">2</div>
+      <div class="step-dot" id="dot2" title="Step 2: Student School Account" tabindex="0" role="button">2</div>
       <div class="step-line" id="line2" aria-hidden="true"></div>
-      <div class="step-dot" id="dot3" title="Step 3: School & Kids Portals" aria-label="Step 3: School and Kids Portals" tabindex="0" role="button">3</div>
+      <div class="step-dot" id="dot3" title="Step 3: School Portals" tabindex="0" role="button">3</div>
       <div class="step-line" id="line3" aria-hidden="true"></div>
-      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" aria-label="Step 4: School Chat Groups" tabindex="0" role="button">4</div>
+      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" tabindex="0" role="button">4</div>
     </div>
 
     <main class="main-content">
@@ -193,61 +164,49 @@
       <!-- ========================================== -->
       <section id="familyDashboardCard" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Family Profiles & MCP Servers</h2>
+          <h2>Family Profiles & Cloud Vault</h2>
           <button id="btnAddAnotherKid" class="btn btn-primary btn-sm" style="background: var(--brand-navy);">
             ➕ Add Another Kid
           </button>
         </div>
 
-        <p class="subtitle">Manage configured kid profiles, view dedicated MCP Server URLs, and download your personalized AI skill file.</p>
+        <p class="subtitle">Autonomous Google Drive cloud ingestion status across all children.</p>
+
+        <!-- Live Google Drive Storage Meter Box -->
+        <div id="familyStorageQuotaBox" class="status-box mb-2" style="background: #f8fafc; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 4px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+            <span style="font-size: 0.76rem; font-weight: 700; color: var(--brand-navy);">💾 Google Drive Storage:</span>
+            <span id="lblStorageQuotaUsed" style="font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);">Calculating...</span>
+          </div>
+          <div style="width: 100%; background: #e2e8f0; height: 6px; border-radius: 999px; overflow: hidden;">
+            <div id="storageQuotaProgressBar" style="width: 2%; height: 100%; background: #10b981; border-radius: 999px; transition: width 0.35s ease;"></div>
+          </div>
+          <div id="lblKidsDataUsageText" style="font-size: 0.7rem; color: var(--text-muted);">K.I.D.S. Data: 0 B</div>
+        </div>
 
         <!-- Dynamic List of Configured Kid Cards -->
         <div id="familyProfilesList" style="display: flex; flex-direction: column; gap: 8px;"></div>
 
-        <!-- One-Time Setup Guidance Banner -->
-        <div class="status-box" style="border-left: 3px solid var(--accent-color); background: #fffbeb;">
-          <span style="font-size: 1.1rem;">⚙️</span>
-          <div style="font-size: 0.74rem; color: #92400e; line-height: 1.4;">
-            <strong>One-Time Setup:</strong> Add each kid's MCP Server URL into Gemini Spark Connected Apps <strong>only 1 time</strong>. Once authorized, it remains permanently connected.
-          </div>
-        </div>
-
-        <!-- Family AI Skill Hub Section -->
-        <div class="guidance-box" style="background: #f8fafc; border: 1.5px solid var(--brand-navy);">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-            <p class="guidance-title" style="margin: 0; color: var(--brand-navy);">⚡ K.I.D.S. Family AI Assistant Skill</p>
-            <span class="badge" style="background: var(--brand-navy); font-size: 0.68rem;">Dynamic SLM</span>
-          </div>
-          <p style="font-size: 0.74rem; color: var(--text-secondary); margin-bottom: 8px; line-height: 1.4;">
-            Download your customized <code>K.I.D.S._SKILL.md</code>. It automatically routes queries for all your kids, embeds master tool schemas, and applies the next-period default deadline rule.
-          </p>
-
-          <div style="display: flex; gap: 6px;">
-            <button id="btnDownloadFamilySkill" class="btn btn-primary btn-sm" style="flex: 1.2;">
-              📥 Download K.I.D.S._SKILL.md
-            </button>
-            <a href="https://gemini.google.com/spark/skills" target="_blank" class="btn btn-secondary btn-sm" style="flex: 1; text-decoration: none; text-align: center;">
-              ✨ Open Gemini Skills
-            </a>
-          </div>
-        </div>
+        <button id="btnDownloadFamilySkill" class="btn btn-secondary btn-sm mt-2" style="font-size: 0.76rem; width: 100%; font-weight: 600;">
+          📥 Download K.I.D.S._SKILL.md
+        </button>
       </section>
 
       <!-- ========================================== -->
       <!-- VIEW B: 4-STEP PER-KID ONBOARDING WIZARD   -->
       <!-- ========================================== -->
 
-      <!-- Step 1: Personal Account & Kid First Name & Academic Year -->
+      <!-- Step 1: Fixed Parent Account, Kid Name, Academic Year & Reference Photo -->
       <section id="step1Card" class="card" aria-hidden="false">
-        <h2>Step 1: Parent Account & Kid First Name</h2>
+        <h2>Step 1: Parent Account & Kid Profile</h2>
         <p class="subtitle">
-          Connect your <strong>Personal Google Account</strong>. Your private cloud is used to store your kid's archives and attachments securely in <code>K.I.D.S. Data</code>.
+          Connect your <strong>Personal Google Account</strong>. All child data and attachments will be vaulted securely in your private <code>K.I.D.S. Data/</code> Google Drive.
         </p>
 
         <div class="status-box mb-1">
           <span>🔒</span>
           <div>
-            <strong>Parent Account:</strong>
+            <strong>Parent Account (Subscription Owner):</strong>
             <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;">Not connected</span>
           </div>
         </div>
@@ -259,16 +218,34 @@
         <!-- Kid Setup Box -->
         <div id="step1ChildSetupBox" class="hidden mb-2" aria-hidden="true" hidden style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
           <div class="form-group">
-            <label for="txtStep1ChildName">Kid's First Name (letters only):</label>
+            <label for="txtStep1ChildName">Kid's First Name (letters, spaces, hyphens):</label>
             <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" />
             <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600;"></span>
           </div>
 
           <div class="form-group">
             <label for="selStep1AcademicYear">Academic Year:</label>
-            <select id="selStep1AcademicYear">
-              <!-- Options populated dynamically -->
-            </select>
+            <select id="selStep1AcademicYear"></select>
+          </div>
+
+          <!-- Child Photo Upload Field -->
+          <div class="form-group" style="margin-top: 4px;">
+            <label style="display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">
+              📸 Child Reference Photo (Optional - for Event/Activity Identification):
+            </label>
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <div id="photoPreviewContainer" style="width: 48px; height: 48px; border-radius: 50%; background: #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--brand-navy); flex-shrink: 0;">
+                <img id="imgChildPhotoPreview" src="" alt="Child avatar preview" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
+                <span id="lblPhotoPlaceholder" style="font-size: 1.4rem;">👶</span>
+              </div>
+              <div style="flex: 1;">
+                <input type="file" id="fileChildPhoto" accept="image/jpeg,image/png,image/webp" style="display: none;" />
+                <button type="button" id="btnUploadPhotoTrigger" class="btn btn-secondary btn-sm" style="font-size: 0.72rem; padding: 4px 8px;">
+                  📁 Choose Photo
+                </button>
+                <span id="lblPhotoFileName" style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">No file chosen</span>
+              </div>
+            </div>
           </div>
 
           <button id="btnStep1SaveChild" class="btn btn-primary btn-sm" style="width: 100%; font-weight: 700; margin-top: 4px;">
@@ -277,8 +254,11 @@
         </div>
 
         <!-- Confirmed Kid Profile Status -->
-        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color);">
-          <span>👤</span>
+        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); display: flex; align-items: center; gap: 10px;">
+          <div id="confirmedAvatarWrapper" style="width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--success-color); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+            <img id="imgConfirmedAvatar" src="" alt="Child avatar" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
+            <span id="lblConfirmedPlaceholder" style="font-size: 1.1rem;">👶</span>
+          </div>
           <div>
             <strong>Configuring Profile:</strong>
             <span id="lblStep1ActiveChild" style="color: var(--success-color); font-weight: 700; display: block;"></span>
@@ -286,87 +266,64 @@
         </div>
 
         <div id="step1ConnectedActions" class="hidden" aria-hidden="true" hidden>
-          <div style="display: flex; gap: 6px;">
-            <button id="btnStep1SwitchAccount" class="btn btn-secondary btn-sm" style="flex: 1;">
-              🔄 Switch Account
-            </button>
-            <button id="btnStep1Continue" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">
-              ➡️ Continue to Step 2
-            </button>
-          </div>
+          <button id="btnStep1Continue" class="btn btn-primary btn-hero" style="width: 100%; font-weight: 700;">
+            ➡️ Continue to Step 2 (School Google Account)
+          </button>
         </div>
       </section>
 
-      <!-- Step 2: Google Classroom & MCP Server (Personalized Radio Selection) -->
+      <!-- Step 2: Student School Google Account (Classroom & School Gmail) -->
       <section id="step2Card" class="card hidden" aria-hidden="true" hidden>
-        <h2>Step 2: Google Classroom & MCP Server</h2>
-        <p class="subtitle" id="lblStep2Subtitle">Does your child's school use Google Classroom?</p>
-
-        <!-- Interactive Radio Button Group -->
-        <div class="radio-card-group mb-2">
-          <label class="radio-card selected" id="radioCardClassroomYes">
-            <input type="radio" name="classroomUsage" id="radioClassroomYes" value="yes" checked />
-            <div class="radio-card-content">
-              <div class="radio-card-title" id="lblRadioTitleYes">Atharva's school is using Google Classroom</div>
-              <div class="radio-card-desc">Connect school account to fetch assignments, coursework, and PDF worksheets automatically.</div>
-            </div>
-          </label>
-
-          <label class="radio-card" id="radioCardClassroomNo">
-            <input type="radio" name="classroomUsage" id="radioClassroomNo" value="no" />
-            <div class="radio-card-content">
-              <div class="radio-card-title" id="lblRadioTitleNo">Atharva's school is NOT using Google Classroom</div>
-              <div class="radio-card-desc">No school account needed! MCP Server will be created directly in your Personal Google Account.</div>
-            </div>
-          </label>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h2>Step 2: Student School Google Account</h2>
+          <button id="btnSkipStep2Top" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;">
+            ⏭️ Skip School Google Account
+          </button>
         </div>
+        
+        <p class="subtitle" id="lblStep2Subtitle">
+          Connect your child's school-provided Google account to sync teacher circulars, homework assignments, and worksheets every 1 minute.
+        </p>
 
-        <!-- Section 2A: School Google Classroom Flow -->
-        <div id="step2ClassroomSection">
-          <div class="guidance-box mb-2">
-            <p class="guidance-title">👤 Account Selection Guide:</p>
-            <div style="font-size: 0.74rem; line-height: 1.4;">
-              When prompted, select the <strong>Student's School Google Account</strong> (enrolled in Google Classroom).
-            </div>
+        <!-- School Account Connection Box -->
+        <div class="guidance-box mb-2">
+          <p class="guidance-title">🎓 Student Account Setup & 1-Min Cloud Worker:</p>
+          <div style="font-size: 0.74rem; line-height: 1.4; color: #334155;">
+            Deploys an autonomous background worker in the student's Google account that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.
           </div>
-
-          <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-1">
-            🌐 1. Open Google Classroom & Sign In
-          </button>
-          <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1">
-            🔗 2. Enable Google Apps Script API
-          </button>
-          <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2">
-            ⚡ 3. Create / Update MCP Server
-          </button>
         </div>
 
-        <!-- Section 2B: Personal Account MCP Server Flow (Classroom Skipped) -->
-        <div id="step2PersonalMcpSection" class="hidden" aria-hidden="true" hidden>
-          <div class="status-box mb-2" style="border-left: 3px solid var(--accent-color);">
-            <span>⚡</span>
-            <div style="font-size: 0.74rem;">
-              Click below to deploy your dedicated MCP Server in your verified Personal Google Account.
-            </div>
+        <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-1">
+          🌐 1. Sign In with Student School Google Account
+        </button>
+        <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1">
+          🔗 2. Enable Google Apps Script API
+        </button>
+        <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2">
+          ⚡ 3. Deploy School Cloud Worker & 1-Min Trigger
+        </button>
+
+        <!-- Connected School Account Badge -->
+        <div id="step2ConnectedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color);">
+          <span>🟢</span>
+          <div style="flex: 1;">
+            <strong>Connected School Account:</strong>
+            <span id="lblStep2StudentEmail" style="color: var(--success-color); font-weight: 700; display: block;"></span>
+            <span style="font-size: 0.7rem; color: var(--text-muted);">⏱️ 1-Minute Cloud Sync Active</span>
           </div>
-          <button id="btnCreatePersonalMcpServer" class="btn btn-success btn-hero mb-2">
-            ⚡ 1-Click Create MCP Server in Personal Account
+          <button id="btnTriggerSwitchStudentAccount" class="btn btn-secondary btn-sm" style="font-size: 0.7rem; padding: 2px 6px;">
+            🔄 Switch
           </button>
         </div>
 
-        <!-- Server Link Input (Readonly by default & Auto-Verified) -->
-        <div class="url-input-container mb-2">
-          <label for="gasUrlInput" style="font-size: 0.75rem; font-weight: 600; color: var(--text-secondary);">Generated MCP Server URL (Auto-Verified):</label>
-          <input type="url" id="gasUrlInput" readonly placeholder="Auto-generated upon MCP Server creation..." style="background: var(--card-surface); cursor: default;">
-        </div>
-
-        <div style="display: flex; gap: 6px;">
+        <div style="display: flex; gap: 6px; margin-top: 6px;">
           <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back</button>
+          <button id="btnSkipStep2Bottom" class="btn btn-outline btn-sm" style="flex: 1.2; font-size: 0.72rem;">⏭️ Skip School Account</button>
           <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">➡️ Continue to Step 3</button>
         </div>
       </section>
 
-      <!-- Step 3: Add & Manage School Portal Features -->
+      <!-- Step 3: Tracked School Portals (Autonomous 6-Hour Cloud Scraper) -->
       <section id="step3Card" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
           <h2>Step 3: Tracked School Portals</h2>
@@ -376,10 +333,12 @@
           </div>
         </div>
 
+        <p class="subtitle">
+          Connect web portals (e.g. EduSprint, Canvas, ERPs). The personal cloud worker executes 24/7 every 6 hours in Google Cloud.
+        </p>
+
         <!-- Phase 1: Portal Connection Verification -->
         <div id="connectionSection">
-          <p class="subtitle">1. Log in to your school website (e.g. EduSprint, Canvas, Moodle) in an active browser tab.<br>2. Right after login, click below to verify portal connection.</p>
-          
           <button id="btnCaptureVerifyPortal" class="btn btn-primary btn-hero mb-2" tabindex="0" role="button" aria-label="Capture & Verify Active Portal Connection">
             🚀 1. Capture & Verify Portal Connection
           </button>
@@ -394,7 +353,7 @@
         <div id="featureSection" class="hidden mt-2" aria-hidden="true" hidden aria-live="polite">
           <div class="status-box mb-2">
             <span class="status-icon">✅</span>
-            <span><strong>Portal Connected!</strong> Open any feature page on your school portal (e.g. Homework, Attendance, Classwork) that you want to track, then click below to capture it.</span>
+            <span><strong>Portal Connected!</strong> Open any feature page (e.g. Homework, Attendance) on your portal, then click below.</span>
           </div>
 
           <button id="btnRegisterFeature" class="btn btn-success btn-hero mb-2" tabindex="0" role="button" aria-label="Capture and Register Active Feature">
@@ -415,18 +374,17 @@
         </div>
       </section>
 
-      <!-- Step 4: School Chat Groups & Communities (Dual-Path Guidance) -->
+      <!-- Step 4: School Chat Groups & Communities -->
       <section id="step4Card" class="card hidden" aria-hidden="true" hidden>
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <h2>Step 4: School Chat Groups</h2>
           <button id="btnFinishChildSetup" class="btn btn-success btn-sm" style="font-weight: 700;">🎉 Finish Setup</button>
         </div>
 
-        <!-- Kid Scoping Alert Banner -->
         <div class="status-box mb-1" style="border-left: 3px solid var(--accent-color); background: #fffbeb;">
           <span>⚠️</span>
           <div style="font-size: 0.73rem; color: #92400e; line-height: 1.35;">
-            <strong>Child Scoping:</strong> Only track groups belonging directly to <span id="lblStep4KidName" style="font-weight: 700;">this kid</span>. For siblings, add their groups separately under their own profile.
+            <strong>Child Scoping:</strong> Track groups belonging directly to <span id="lblStep4KidName" style="font-weight: 700;">this kid</span>.
           </div>
         </div>
 
@@ -437,11 +395,6 @@
             <div style="font-size: 0.78rem; font-weight: 700; color: var(--brand-navy); margin-bottom: 4px;">
               📥 Path A: Existing / Older Groups (Full Year Export with Media)
             </div>
-            <ol style="margin-left: 14px; font-size: 0.72rem; color: var(--text-secondary); line-height: 1.4;">
-              <li>On Mobile: Open group ➔ Tap (⋮) ➔ <strong>More</strong> ➔ <strong>Export chat</strong>.</li>
-              <li>Select <strong>"Attach Media"</strong> (captures homework PDFs & worksheets).</li>
-              <li>Share/Upload the file directly to your <strong>Google Drive</strong>.</li>
-            </ol>
             <button id="btnScanDriveExports" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">
               🔍 Show Recent Uploads from Google Drive
             </button>
@@ -457,9 +410,6 @@
             <div style="font-size: 0.78rem; font-weight: 700; color: var(--brand-navy); margin-bottom: 4px;">
               📸 Path B: New Groups & Daily Auto-Sync (WhatsApp / Telegram)
             </div>
-            <p style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 6px;">
-              Open your group in WhatsApp Web or Telegram Web, then click below:
-            </p>
             <div style="display: flex; gap: 6px;">
               <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm" style="flex: 1; background: var(--brand-navy);">
                 📸 1-Click Track Active Chat
@@ -489,14 +439,11 @@
       </section>
     </main>
 
-    <!-- ========================================== -->
-    <!-- PERSISTENT UNIFIED DIAGNOSTIC LOG STREAM   -->
-    <!-- (Visible in Wizard & Family Dashboard)     -->
-    <!-- ========================================== -->
+    <!-- PERSISTENT UNIFIED DIAGNOSTIC LOG STREAM -->
     <div id="unifiedLogsCard" class="card mt-1" style="background: #ffffff; border: 1px solid var(--border-color); padding: 10px;">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
         <label for="txtActivityLog" style="font-weight: 700; font-size: 0.78rem; color: var(--brand-navy); display: block;">
-          📋 Multi-Kid Sync & Diagnostic Stream:
+          📋 Multi-Kid Cloud Sync Diagnostic Stream:
         </label>
         <span style="font-size: 0.7rem; color: var(--text-muted);">Auto-updating</span>
       </div>

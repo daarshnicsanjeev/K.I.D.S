@@ -8,7 +8,7 @@ export interface WhatsAppLogEntry {
   timestamp: string;
   rawTimestamp?: number;
   level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS';
-  category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD';
+  category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD' | 'PORTAL';
   message: string;
   metadata?: Record<string, any>;
 }
@@ -19,7 +19,7 @@ export class WhatsAppDiagnosticLogger {
 
   public static async log(
     level: 'INFO' | 'WARN' | 'ERROR' | 'SUCCESS',
-    category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD',
+    category: 'CONN' | 'EXTRACT' | 'FILTER' | 'DRIVE' | 'SCAN' | 'OCR' | 'ATTACHMENT' | 'AUTH' | 'GAS' | 'CHILD' | 'PORTAL',
     message: string,
     metadata?: Record<string, any>
   ): Promise<void> {
