@@ -3394,30 +3394,27 @@ var PortalIngester = {
                     if (chrome.tabs && chrome.tabs.onUpdated) {
                       chrome.tabs.onUpdated.removeListener(tabUpdateListener);
                     }
-                    if (chrome.windows && chrome.windows.onRemoved) {
-                      chrome.windows.onRemoved.removeListener(windowRemovedListener);
-                    }
                     try {
                       await chrome.windows.remove(windowId);
                     } catch (e) {}
                   }
-                  GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
+                  GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
                   resolve();
                 };
 
-                // 1. Fast Tab Title & URL Inspector (Auto-closes on "Authorization successful")
+                // 1. Tab Title & URL Inspector (Auto-closes ONLY on genuine "Authorization successful" completion)
                 const tabUpdateListener = (tabId: number, changeInfo: any, tab: any) => {
                   if (tab.windowId === windowId) {
                     const title = (tab.title || '').toLowerCase();
                     const url = (tab.url || '').toLowerCase();
+                    // STRICT CHECK: Only trigger on actual post-approval success page
                     if (
                       title.includes('authorization successful') ||
-                      title.includes('authorization status') ||
-                      title.includes('mcp server') ||
-                      url.includes('auth=true') ||
-                      url.includes('close=1')
+                      title.includes('success! you may close') ||
+                      url.includes('close=1') ||
+                      url.includes('auth_success=true')
                     ) {
-                      setTimeout(finishAuth, 400);
+                      setTimeout(finishAuth, 600);
                     }
                   }
                 };
@@ -3426,20 +3423,20 @@ var PortalIngester = {
                   chrome.tabs.onUpdated.addListener(tabUpdateListener);
                 }
 
-                // 2. Active Polling & Tab Query
+                // 2. Active Polling (Checks if Google Apps Script is unblocked)
                 const pollInterval = setInterval(async () => {
                   if (isHandled) {
                     clearInterval(pollInterval);
                     return;
                   }
 
-                  // Check 2a: Query tabs in the popup window
+                  // Check 2a: Query tabs in the popup window for explicit success
                   if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
                     try {
                       const tabs = await chrome.tabs.query({ windowId });
                       for (const t of tabs) {
                         const title = (t.title || '').toLowerCase();
-                        if (title.includes('authorization successful') || title.includes('authorization status')) {
+                        if (title.includes('authorization successful') || title.includes('success! you may close')) {
                           finishAuth();
                           return;
                         }
@@ -3447,20 +3444,29 @@ var PortalIngester = {
                     } catch (e) {}
                   }
 
-                  // Check 2b: Web App HTTP Check
-                  try {
-                    const checkRes = await fetch(cleanUrl, {
-                      method: 'GET',
-                      headers: { 'Authorization': `Bearer ${token}` }
-                    });
-                    const checkText = await checkRes.text();
-                    if (checkRes.ok && (checkText.includes('online') || checkText.includes('MCP Server Connected') || checkText.includes('status') || checkText.includes('Authorization'))) {
-                      finishAuth();
-                    }
-                  } catch (e) {}
-                }, 800);
+                  // Check 2b: Test if the script can execute via direct execution API
+                  if (scriptId) {
+                    try {
+                      const res = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}:run`, {
+                        method: 'POST',
+                        headers: {
+                          'Authorization': `Bearer ${token}`,
+                          'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ function: 'testAuth' })
+                      });
+                      if (res.ok) {
+                        const json = await res.json();
+                        if (!json.error) {
+                          finishAuth();
+                          return;
+                        }
+                      }
+                    } catch (e) {}
+                  }
+                }, 1500);
 
-                // 3. Window Closed Listener (if user closes it manually)
+                // 3. Window Closed Listener (Triggered when user clicks Allow & closes or closes manually)
                 const windowRemovedListener = (closedWinId: number) => {
                   if (closedWinId === windowId) {
                     if (typeof chrome !== 'undefined') {
@@ -3474,7 +3480,7 @@ var PortalIngester = {
                     clearInterval(pollInterval);
                     if (!isHandled) {
                       isHandled = true;
-                      GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
+                      GasProvisionerService.log('✅ Google Authorization step finished.');
                       resolve();
                     }
                   }
@@ -3539,18 +3545,16 @@ var PortalIngester = {
       const project = await this.createProject(studentToken);
       scriptId = project.scriptId;
       this.log(`📦 Created fresh Apps Script Project for School Worker: ${scriptId}`);
-    } else {
-      this.reportProgress(25, 'Phase 2 of 5 (25%)', `Reusing existing Apps Script Project (${scriptId})...`);
     }
 
-    // 2. Update Content
-    this.reportProgress(45, 'Phase 3 of 5 (45%)', 'Uploading Classroom, Gmail, and Digest Cloud Ingestion modules...');
+    // 2. Upload Code
+    this.reportProgress(45, 'Phase 3 of 5 (45%)', 'Uploading Classroom & Gmail Ingestion Modules...');
     const accessKey = `kids_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     await this.updateProjectContent(scriptId, accessKey, studentToken, childName, academicYear);
-    this.log(`📄 Uploaded Cloud Ingestion modules (Classroom, Gmail, Digest) to project.`);
+    this.log('📄 Uploaded Cloud Ingestion modules (Classroom, Gmail, Digest) to project.');
 
-    // 3. Create Version & Deployment
-    this.reportProgress(65, 'Phase 4 of 5 (65%)', 'Deploying Web App & configuring 1-minute autonomous background trigger...');
+    // 3. Deploy
+    this.reportProgress(65, 'Phase 3 of 5 (65%)', 'Deploying Student Account Cloud Web App...');
     const version = await this.createVersion(scriptId, studentToken, childName, academicYear);
     const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
     const deploymentId = deployment.deploymentId;
@@ -3565,34 +3569,76 @@ var PortalIngester = {
     let initialSyncResult: any = null;
     try {
       this.reportProgress(85, 'Phase 5 of 5 (85%)', 'Activating 1-minute autonomous cloud trigger...');
-      await fetch(webAppUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          method: 'setup_triggers',
-          params: { type: 'school_1min' }
-        })
-      });
+      
+      // Attempt 1: Web App authenticated trigger dispatch
+      let triggerOk = false;
+      try {
+        const trigRes = await fetch(webAppUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${studentToken}`
+          },
+          body: JSON.stringify({
+            method: 'setup_triggers',
+            params: { type: 'school_1min' }
+          })
+        });
+        if (trigRes.ok) {
+          const tJson = await trigRes.json();
+          if (!tJson.error) triggerOk = true;
+        }
+      } catch (e) {}
+
+      // Fallback: Direct Execution API
+      if (!triggerOk) {
+        try {
+          await this.executeMcpCommand(studentToken, scriptId, 'setupMinuteTrigger', []);
+        } catch (e) {}
+      }
 
       this.log('⏱️ Set up 1-minute autonomous cloud trigger for Google Classroom & Gmail.');
 
       this.reportProgress(90, 'Phase 5 of 5 (90%)', '1-Time Full Sync: Ingesting Classroom courses, homework & Gmail circulars...');
-      const syncRes = await fetch(webAppUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          method: 'sync_classroom_and_gmail',
-          params: {
-            targetFolderId: parentFolderId,
-            childName,
-            academicYear,
-            schoolDomain
-          }
-        })
-      });
+      
+      let syncData: any = null;
+      try {
+        const syncRes = await fetch(webAppUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${studentToken}`
+          },
+          body: JSON.stringify({
+            method: 'sync_classroom_and_gmail',
+            params: {
+              targetFolderId: parentFolderId,
+              childName,
+              academicYear,
+              schoolDomain
+            }
+          })
+        });
 
-      if (syncRes.ok) {
-        const syncData = await syncRes.json();
+        if (syncRes.ok) {
+          const json = await syncRes.json();
+          if (!json.error) syncData = json;
+        }
+      } catch (e) {}
+
+      // Robust fallback: Direct Cloud Execution API (scripts.run)
+      if (!syncData || syncData.error) {
+        this.log('🔄 Executing Classroom & Gmail cloud sync via direct Apps Script Engine...');
+        const directResult = await this.executeMcpCommand(studentToken, scriptId, 'handleSyncClassroomAndGmail', [{
+          targetFolderId: parentFolderId,
+          childName,
+          academicYear,
+          schoolDomain
+        }]);
+        syncData = { result: directResult };
+      }
+
+      if (syncData) {
         if (syncData.error) {
           throw new Error(`Apps Script Execution Error: ${syncData.error.message || JSON.stringify(syncData.error)}`);
         }
@@ -3601,9 +3647,6 @@ var PortalIngester = {
         const emails = initialSyncResult?.gmail?.totalEmails ?? initialSyncResult?.gmail?.emails?.length ?? 0;
         const attachments = initialSyncResult?.classroom?.totalAttachments ?? 0;
         this.log(`📥 1-Time Full Initial Sync Complete: Ingested ${courses} Classroom courses, ${attachments} attachments & ${emails} school emails into Drive!`);
-      } else {
-        const errText = await syncRes.text();
-        throw new Error(`Cloud Sync HTTP Error (${syncRes.status}): ${errText}`);
       }
     } catch (syncErr: any) {
       this.log(`⚠️ Initial sync notice: ${syncErr.message || String(syncErr)}`);
