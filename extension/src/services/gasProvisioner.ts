@@ -3402,19 +3402,24 @@ var PortalIngester = {
                   resolve();
                 };
 
-                // 1. Tab Title & URL Inspector (Auto-closes ONLY on genuine "Authorization successful" completion)
+                let windowOpenedAt = Date.now();
+
+                // 1. Tab Title & URL Inspector (Auto-closes on post-approval success page)
                 const tabUpdateListener = (tabId: number, changeInfo: any, tab: any) => {
                   if (tab.windowId === windowId) {
                     const title = (tab.title || '').toLowerCase();
                     const url = (tab.url || '').toLowerCase();
-                    // STRICT CHECK: Only trigger on actual post-approval success page
+                    const ageMs = Date.now() - windowOpenedAt;
+
+                    // Match post-approval completion states
                     if (
                       title.includes('authorization successful') ||
                       title.includes('success! you may close') ||
+                      (title.includes('mcp server') && ageMs > 2500) ||
                       url.includes('close=1') ||
                       url.includes('auth_success=true')
                     ) {
-                      setTimeout(finishAuth, 600);
+                      setTimeout(finishAuth, 500);
                     }
                   }
                 };
@@ -3434,9 +3439,14 @@ var PortalIngester = {
                   if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
                     try {
                       const tabs = await chrome.tabs.query({ windowId });
+                      const ageMs = Date.now() - windowOpenedAt;
                       for (const t of tabs) {
                         const title = (t.title || '').toLowerCase();
-                        if (title.includes('authorization successful') || title.includes('success! you may close')) {
+                        if (
+                          title.includes('authorization successful') ||
+                          title.includes('success! you may close') ||
+                          (title.includes('mcp server') && ageMs > 2500)
+                        ) {
                           finishAuth();
                           return;
                         }
