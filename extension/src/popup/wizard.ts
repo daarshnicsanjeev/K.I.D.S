@@ -61,8 +61,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblStep1ActiveChild = document.getElementById('lblStep1ActiveChild') as HTMLElement;
   const imgConfirmedAvatar = document.getElementById('imgConfirmedAvatar') as HTMLImageElement;
   const lblConfirmedPlaceholder = document.getElementById('lblConfirmedPlaceholder') as HTMLElement;
-  const step1ConnectedActions = document.getElementById('step1ConnectedActions') as HTMLElement;
-  const btnStep1Continue = document.getElementById('btnStep1Continue') as HTMLButtonElement;
 
   // Step 2 UI Elements
   const btnSkipStep2Top = document.getElementById('btnSkipStep2Top') as HTMLButtonElement;
@@ -352,7 +350,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     step1ChildSetupBox?.classList.remove('hidden');
     step1ChildConfirmedBadge?.classList.remove('hidden');
-    step1ConnectedActions?.classList.remove('hidden');
   }
 
   // ==========================================
@@ -415,11 +412,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = state.personal_drive_account_email;
       setA11yVisibility(step1ChildSetupBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
-      setA11yVisibility(step1ConnectedActions, true);
     } else {
       setA11yVisibility(btnStep1ConnectPersonal, true);
       setA11yVisibility(step1ChildSetupBox, false);
-      setA11yVisibility(step1ConnectedActions, false);
     }
   } catch {}
 
@@ -435,7 +430,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = auth.email;
       setA11yVisibility(step1ChildSetupBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
-      setA11yVisibility(step1ConnectedActions, true);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
 
       try {
@@ -567,11 +561,6 @@ document.addEventListener('DOMContentLoaded', async () => {
       lblStep1ActiveChild.textContent = `${validation.cleanName} (${selectedYear})`;
     }
     step1ChildConfirmedBadge?.classList.remove('hidden');
-    step1ConnectedActions?.classList.remove('hidden');
-    showWizardStep(2);
-  });
-
-  btnStep1Continue?.addEventListener('click', () => {
     showWizardStep(2);
   });
 
