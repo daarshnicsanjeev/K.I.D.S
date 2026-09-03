@@ -12,7 +12,7 @@ var ClassroomIngester = {
       var classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
       var attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
 
-      var courses = this.fetchAllCourses();
+      var courses = this.fetchAllCourses(academicYear);
       var allCourseData = [];
       var totalAttachments = 0;
 
@@ -158,10 +158,11 @@ var ClassroomIngester = {
     }
   },
 
-  fetchAllCourses: function() {
+  fetchAllCourses: function(academicYear) {
     var courses = [];
     try {
-      var res = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE', 'PROVISIONED', 'ARCHIVED'] });
+      // Strictly query ACTIVE courses only (exclude ARCHIVED, PROVISIONED, or DECLINED)
+      var res = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] });
       if (res && res.courses) courses = res.courses;
     } catch (e) {
       try {
@@ -169,7 +170,44 @@ var ClassroomIngester = {
         if (fallbackRes && fallbackRes.courses) courses = fallbackRes.courses;
       } catch (e2) {}
     }
-    return courses;
+
+    var self = this;
+    var filtered = courses.filter(function(c) {
+      return self.isCurrentClass(c, academicYear);
+    });
+
+    McpLogger.log('INFO', 'CLASSROOM_COURSES_FILTERED', 'Found ' + courses.length + ' active courses in account; filtered to ' + filtered.length + ' current-year classes.');
+    return filtered;
+  },
+
+  isCurrentClass: function(course, targetAcademicYear) {
+    if (!course) return false;
+    if (course.courseState && course.courseState !== 'ACTIVE') return false;
+
+    var fullName = ((course.name || '') + ' ' + (course.section || '') + ' ' + (course.descriptionHeading || '')).toLowerCase();
+
+    if (targetAcademicYear) {
+      var yearMatch = targetAcademicYear.match(/(\d{4})\s*-\s*(\d{4})/);
+      if (yearMatch) {
+        var startYear = parseInt(yearMatch[1], 10);
+        var endYear = parseInt(yearMatch[2], 10);
+
+        // Check for explicit prior school years (e.g. 2023-2024, 2024-2025, 2025-2026, 24-25, 25-26)
+        for (var y = startYear - 4; y < startYear; y++) {
+          var yNext = y + 1;
+          var fullPastPattern = y + '-' + yNext;
+          var shortPastPattern = (y % 100) + '-' + (yNext % 100);
+          if (fullName.includes(fullPastPattern) || fullName.includes(shortPastPattern)) {
+            if (!fullName.includes(targetAcademicYear) && !fullName.includes((startYear % 100) + '-' + (endYear % 100))) {
+              McpLogger.log('INFO', 'CLASS_FILTER_PAST', 'Excluding past class: ' + course.name + ' (Belongs to past year ' + fullPastPattern + ')');
+              return false;
+            }
+          }
+        }
+      }
+    }
+
+    return true;
   },
 
   downloadMaterialAttachment: function(mat, attachFolder, courseName, itemTitle) {
