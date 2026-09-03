@@ -13,6 +13,9 @@
     <span>Offline Mode: Displaying cached records. Cloud sync will resume automatically when online.</span>
   </div>
 
+  <!-- Dedicated Screen Reader Live Announcer Region (JAWS, NVDA, VoiceOver) -->
+  <div id="jawsLiveAnnouncer" class="sr-only" aria-live="assertive" aria-atomic="true"></div>
+
   <!-- Progress Restoration Indicator -->
   <div id="restoringProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="polite" aria-hidden="true" hidden>
     <div class="restoring-spinner"></div>
@@ -21,14 +24,14 @@
   </div>
 
   <!-- Cloud Deployment Progress Overlay -->
-  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="assertive" aria-modal="true" aria-hidden="true" hidden style="padding: 16px 20px; text-align: center; background: #ffffff; overflow-y: auto;">
+  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="region" aria-label="Deployment and Sync Status" tabindex="-1" style="padding: 16px 20px; text-align: center; background: #ffffff; overflow-y: auto;">
     <div class="restoring-spinner" style="border-top-color: #2563eb; width: 36px; height: 36px; border-width: 4px; margin-top: 4px;"></div>
-    <div style="font-size: 0.95rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 8px;" id="lblMcpDeployTitle">
+    <div style="font-size: 0.95rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 8px;" id="lblMcpDeployTitle" role="heading" aria-level="2">
       Phase 1 of 5 (15%)
     </div>
     
-    <!-- ARIA-Compliant Visual Progress Bar (Read by JAWS) -->
-    <div style="width: 92%; background: #e2e8f0; border-radius: 999px; height: 10px; margin: 10px auto 6px auto; overflow: hidden; border: 1.5px solid #cbd5e1;" role="progressbar" id="mcpDeployProgressContainer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15" aria-label="Deployment and Data Ingestion Progress">
+    <!-- ARIA-Compliant Focusable Visual Progress Bar (Read by JAWS) -->
+    <div style="width: 92%; background: #e2e8f0; border-radius: 999px; height: 12px; margin: 10px auto 6px auto; overflow: hidden; border: 1.5px solid #cbd5e1; outline-offset: 2px;" role="progressbar" id="mcpDeployProgressContainer" tabindex="0" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15" aria-valuetext="Phase 1 of 5 (15%): Authenticating Student School Account" aria-label="Cloud Deployment and Data Ingestion Progress Bar">
       <div id="mcpDeployProgressBar" style="width: 15%; height: 100%; background: linear-gradient(90deg, #2563eb, #10b981); border-radius: 999px; transition: width 0.35s ease;"></div>
     </div>
     

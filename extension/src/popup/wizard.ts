@@ -18,6 +18,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const cardStep2 = document.getElementById('step2Card') as HTMLElement;
   const cardStep3 = document.getElementById('step3Card') as HTMLElement;
   const cardStep4 = document.getElementById('step4Card') as HTMLElement;
+  // Screen Reader Live Announcer
+  const jawsLiveAnnouncer = document.getElementById('jawsLiveAnnouncer') as HTMLElement;
 
   // Progress & Deployment Overlays
   const mcpDeployProgressOverlay = document.getElementById('mcpDeployProgressOverlay') as HTMLElement;
@@ -243,15 +245,17 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   populateAcademicYears();
 
-  // Accessibility & Visibility Helper
+  // Accessibility & Visibility Helper (JAWS & Screen Reader Compliant)
   function setA11yVisibility(el: HTMLElement | null, isVisible: boolean) {
     if (!el) return;
     if (isVisible) {
       el.classList.remove('hidden');
       el.removeAttribute('hidden');
+      el.removeAttribute('aria-hidden');
     } else {
       el.classList.add('hidden');
       el.setAttribute('hidden', '');
+      el.setAttribute('aria-hidden', 'true');
     }
   }
 
@@ -725,16 +729,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     setA11yVisibility(mcpDeployProgressOverlay, true);
     setA11yVisibility(step2InlineProgressBar, true);
 
+    setTimeout(() => {
+      mcpDeployProgressContainer?.focus();
+    }, 100);
+
     try {
       GasProvisionerService.setProgressCallback((pct, phase, sub) => {
         if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${pct}%`;
         if (mcpDeployProgressContainer) {
           mcpDeployProgressContainer.setAttribute('aria-valuenow', String(pct));
-          mcpDeployProgressContainer.setAttribute('aria-valuetext', `${phase}: ${sub}`);
+          mcpDeployProgressContainer.setAttribute('aria-valuetext', `Progress ${pct} percent. ${phase}: ${sub}`);
         }
         if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `🚀 ${phase}`;
         if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = sub;
         if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = `Phase Progress: ${pct}% complete`;
+
+        if (jawsLiveAnnouncer) {
+          jawsLiveAnnouncer.textContent = `Progress ${pct} percent. ${phase}. ${sub}`;
+        }
 
         if (step2ProgressFill) step2ProgressFill.style.width = `${pct}%`;
         if (lblStep2ProgressPercent) lblStep2ProgressPercent.textContent = `${pct}%`;
