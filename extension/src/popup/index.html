@@ -139,7 +139,7 @@
   <div class="container" id="mainAppContainer">
     <header class="header">
       <div class="logo-title">
-        <span class="icon">🎓</span>
+        <span class="icon" aria-hidden="true">🎓</span>
         <h1 id="appHeaderTitle">Kids Intelligent Dashboard System (K.I.D.S.)</h1>
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
@@ -149,13 +149,13 @@
 
     <!-- Stepper Indicator (4 Steps) -->
     <div id="wizardStepper" class="stepper" role="navigation" aria-label="Onboarding Progress Stepper">
-      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid Profile" tabindex="0" role="button">1</div>
+      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid Profile" tabindex="0" role="button" aria-label="Step 1: Parent Account & Kid Profile">1</div>
       <div class="step-line" id="line1" aria-hidden="true"></div>
-      <div class="step-dot" id="dot2" title="Step 2: Student School Account" tabindex="0" role="button">2</div>
+      <div class="step-dot" id="dot2" title="Step 2: Student School Account" tabindex="0" role="button" aria-label="Step 2: Student School Account">2</div>
       <div class="step-line" id="line2" aria-hidden="true"></div>
-      <div class="step-dot" id="dot3" title="Step 3: School Portals" tabindex="0" role="button">3</div>
+      <div class="step-dot" id="dot3" title="Step 3: School Portals" tabindex="0" role="button" aria-label="Step 3: School Portals">3</div>
       <div class="step-line" id="line3" aria-hidden="true"></div>
-      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" tabindex="0" role="button">4</div>
+      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" tabindex="0" role="button" aria-label="Step 4: School Chat Groups">4</div>
     </div>
 
     <main class="main-content">
@@ -166,7 +166,7 @@
         <div style="display: flex; justify-content: space-between; align-items: center;">
           <h2>Family Profiles & Cloud Vault</h2>
           <button id="btnAddAnotherKid" class="btn btn-primary btn-sm" style="background: var(--brand-navy);">
-            ➕ Add Another Kid
+            <span aria-hidden="true">➕</span> Add Another Kid
           </button>
         </div>
 
@@ -175,7 +175,7 @@
         <!-- Live Google Drive Storage Meter Box -->
         <div id="familyStorageQuotaBox" class="status-box mb-2" style="background: #f8fafc; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 4px;">
           <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-            <span style="font-size: 0.76rem; font-weight: 700; color: var(--brand-navy);">💾 Google Drive Storage:</span>
+            <span style="font-size: 0.76rem; font-weight: 700; color: var(--brand-navy);"><span aria-hidden="true">💾</span> Google Drive Storage:</span>
             <span id="lblStorageQuotaUsed" style="font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);">Calculating...</span>
           </div>
           <div style="width: 100%; background: #e2e8f0; height: 6px; border-radius: 999px; overflow: hidden;">
@@ -204,7 +204,7 @@
         </p>
 
         <div class="status-box mb-1">
-          <span>🔒</span>
+          <span aria-hidden="true">🔒</span>
           <div>
             <strong>Parent Account (Subscription Owner):</strong>
             <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;">Not connected</span>
@@ -236,7 +236,7 @@
             <div style="display: flex; align-items: center; gap: 10px;">
               <div id="photoPreviewContainer" style="width: 48px; height: 48px; border-radius: 50%; background: #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--brand-navy); flex-shrink: 0;">
                 <img id="imgChildPhotoPreview" src="" alt="Child avatar preview" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
-                <span id="lblPhotoPlaceholder" style="font-size: 1.4rem;">👶</span>
+                <span id="lblPhotoPlaceholder" aria-hidden="true" style="font-size: 1.4rem;">👶</span>
               </div>
               <div style="flex: 1;">
                 <input type="file" id="fileChildPhoto" accept="image/jpeg,image/png,image/webp" style="display: none;" />
@@ -257,7 +257,7 @@
         <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); display: flex; align-items: center; gap: 10px;">
           <div id="confirmedAvatarWrapper" style="width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--success-color); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
             <img id="imgConfirmedAvatar" src="" alt="Child avatar" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
-            <span id="lblConfirmedPlaceholder" style="font-size: 1.1rem;">👶</span>
+            <span id="lblConfirmedPlaceholder" aria-hidden="true" style="font-size: 1.1rem;">👶</span>
           </div>
           <div>
             <strong>Configuring Profile:</strong>
