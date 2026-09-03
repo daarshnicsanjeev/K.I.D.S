@@ -21,22 +21,31 @@
   </div>
 
   <!-- Cloud Deployment Progress Overlay -->
-  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="assertive" aria-modal="true" aria-hidden="true" hidden style="padding: 24px; text-align: center; background: #ffffff;">
-    <div class="restoring-spinner" style="border-top-color: #2563eb; width: 40px; height: 40px; border-width: 4px;"></div>
-    <div style="font-size: 1rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 10px;" id="lblMcpDeployTitle">
+  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="assertive" aria-modal="true" aria-hidden="true" hidden style="padding: 16px 20px; text-align: center; background: #ffffff; overflow-y: auto;">
+    <div class="restoring-spinner" style="border-top-color: #2563eb; width: 36px; height: 36px; border-width: 4px; margin-top: 4px;"></div>
+    <div style="font-size: 0.95rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 8px;" id="lblMcpDeployTitle">
       Phase 1 of 5 (15%)
     </div>
     
     <!-- ARIA-Compliant Visual Progress Bar (Read by JAWS) -->
-    <div style="width: 90%; background: #e2e8f0; border-radius: 999px; height: 12px; margin: 14px auto 8px auto; overflow: hidden; border: 1.5px solid #cbd5e1;" role="progressbar" id="mcpDeployProgressContainer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15" aria-label="Deployment and Data Ingestion Progress">
+    <div style="width: 92%; background: #e2e8f0; border-radius: 999px; height: 10px; margin: 10px auto 6px auto; overflow: hidden; border: 1.5px solid #cbd5e1;" role="progressbar" id="mcpDeployProgressContainer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15" aria-label="Deployment and Data Ingestion Progress">
       <div id="mcpDeployProgressBar" style="width: 15%; height: 100%; background: linear-gradient(90deg, #2563eb, #10b981); border-radius: 999px; transition: width 0.35s ease;"></div>
     </div>
     
-    <div style="font-size: 0.8rem; color: #1e3a8a; font-weight: 600; margin-top: 4px;" id="lblMcpDeploySubtext">
+    <div style="font-size: 0.78rem; color: #1e3a8a; font-weight: 600; margin-top: 2px;" id="lblMcpDeploySubtext">
       Authenticating Student School Account & Google Apps Script API...
     </div>
-    <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 4px;" id="lblMcpDeployPhase">
+    <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 2px;" id="lblMcpDeployPhase">
       Please wait while Classroom & Gmail are synced into Google Drive...
+    </div>
+
+    <!-- Live Deep Log Terminal Inside Overlay -->
+    <div style="margin-top: 12px; text-align: left; width: 94%; margin-left: auto; margin-right: auto;">
+      <div style="font-size: 0.7rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
+        <span>📋 Live Deep Diagnostics Log</span>
+        <span style="font-size: 0.65rem; font-weight: 600; color: #10b981;">● Live Stream</span>
+      </div>
+      <textarea id="txtMcpOverlayLog" readonly aria-label="Deployment and Synchronization Deep Log" style="width: 100%; height: 175px; font-family: Consolas, 'Courier New', monospace; font-size: 0.68rem; background: #0f172a; color: #38bdf8; border: 1px solid #334155; border-radius: 8px; padding: 8px; resize: none; box-sizing: border-box; line-height: 1.4; outline: none;"></textarea>
     </div>
   </div>
 

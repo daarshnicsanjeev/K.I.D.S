@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblMcpDeployTitle = document.getElementById('lblMcpDeployTitle') as HTMLElement;
   const lblMcpDeploySubtext = document.getElementById('lblMcpDeploySubtext') as HTMLElement;
   const lblMcpDeployPhase = document.getElementById('lblMcpDeployPhase') as HTMLElement;
+  const txtMcpOverlayLog = document.getElementById('txtMcpOverlayLog') as HTMLTextAreaElement;
 
   // Step 2 Guidance Modals
   const step2AccountGuidanceModal = document.getElementById('step2AccountGuidanceModal') as HTMLElement;
@@ -1112,24 +1113,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Diagnostic Logs Controls (Real-Time Live Streaming)
   async function refreshDiagnosticLogs() {
-    if (!txtActivityLog) return;
     try {
       const logs = await WhatsAppDiagnosticLogger.getRecentLogs(35);
-      txtActivityLog.value = logs;
-      txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
+      if (txtActivityLog) {
+        txtActivityLog.value = logs;
+        txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
+      }
+      if (txtMcpOverlayLog) {
+        txtMcpOverlayLog.value = logs;
+        txtMcpOverlayLog.scrollTop = txtMcpOverlayLog.scrollHeight;
+      }
     } catch {}
   }
 
   GasProvisionerService.logCallback = (msg: string) => {
-    if (!txtActivityLog) return;
     const time = new Date().toLocaleTimeString();
     const formatted = `[${time}] [INFO] [WA_GAS] ${msg}`;
-    if (txtActivityLog.value === 'No WhatsApp diagnostic logs recorded yet.' || !txtActivityLog.value.trim()) {
-      txtActivityLog.value = formatted;
-    } else {
-      txtActivityLog.value += `\n${formatted}`;
+    if (txtActivityLog) {
+      if (txtActivityLog.value === 'No WhatsApp diagnostic logs recorded yet.' || !txtActivityLog.value.trim()) {
+        txtActivityLog.value = formatted;
+      } else {
+        txtActivityLog.value += `\n${formatted}`;
+      }
+      txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
     }
-    txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
+    if (txtMcpOverlayLog) {
+      if (!txtMcpOverlayLog.value.trim()) {
+        txtMcpOverlayLog.value = formatted;
+      } else {
+        txtMcpOverlayLog.value += `\n${formatted}`;
+      }
+      txtMcpOverlayLog.scrollTop = txtMcpOverlayLog.scrollHeight;
+    }
   };
 
   if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
