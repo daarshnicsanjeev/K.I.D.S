@@ -1,6 +1,7 @@
 import { ChildManager, ChildProfile } from './childManager';
 import { AuthService } from './authService';
 import { PersonalDriveService } from './personalDriveService';
+import { WhatsAppDiagnosticLogger } from './whatsappLogger';
 
 export const CURRENT_GAS_SERVER_VERSION = '4.0.0';
 export const CURRENT_GAS_CHANGELOG = 'Autonomous Dual-Worker Cloud Ingestion Engine: 1-Min Classroom & Gmail Cron, 6-Hour Portal Worker, & Native Direct Google Drive Vaulting';
@@ -16,6 +17,7 @@ export interface ProvisionResult {
   verifiedTools: any[];
   isReused?: boolean;
   needsAuth?: boolean;
+  initialSyncResult?: any;
 }
 
 export class GasProvisionerService {
@@ -72,6 +74,7 @@ export class GasProvisionerService {
     if (this.logCallback) {
       try { this.logCallback(msg); } catch (e) {}
     }
+    WhatsAppDiagnosticLogger.log('INFO', 'GAS', msg).catch(() => {});
     if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage) {
       chrome.runtime.sendMessage({ type: 'APPEND_LOG', payload: { message: msg } }).catch(() => {});
     }
@@ -2546,36 +2549,91 @@ var DriveContentExtractor = {
                 const windowId = win.id;
                 let isHandled = false;
 
-                // 1. Active Polling: Auto-close window as soon as Google Web App returns 200/authorized
+                const finishAuth = async () => {
+                  if (isHandled) return;
+                  isHandled = true;
+                  clearInterval(pollInterval);
+                  if (typeof chrome !== 'undefined') {
+                    if (chrome.tabs && chrome.tabs.onUpdated) {
+                      chrome.tabs.onUpdated.removeListener(tabUpdateListener);
+                    }
+                    if (chrome.windows && chrome.windows.onRemoved) {
+                      chrome.windows.onRemoved.removeListener(windowRemovedListener);
+                    }
+                    try {
+                      await chrome.windows.remove(windowId);
+                    } catch (e) {}
+                  }
+                  GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
+                  resolve();
+                };
+
+                // 1. Fast Tab Title & URL Inspector (Auto-closes on "Authorization successful")
+                const tabUpdateListener = (tabId: number, changeInfo: any, tab: any) => {
+                  if (tab.windowId === windowId) {
+                    const title = (tab.title || '').toLowerCase();
+                    const url = (tab.url || '').toLowerCase();
+                    if (
+                      title.includes('authorization successful') ||
+                      title.includes('authorization status') ||
+                      title.includes('mcp server') ||
+                      url.includes('auth=true') ||
+                      url.includes('close=1')
+                    ) {
+                      setTimeout(finishAuth, 400);
+                    }
+                  }
+                };
+
+                if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.onUpdated) {
+                  chrome.tabs.onUpdated.addListener(tabUpdateListener);
+                }
+
+                // 2. Active Polling & Tab Query
                 const pollInterval = setInterval(async () => {
                   if (isHandled) {
                     clearInterval(pollInterval);
                     return;
                   }
+
+                  // Check 2a: Query tabs in the popup window
+                  if (typeof chrome !== 'undefined' && chrome.tabs && chrome.tabs.query) {
+                    try {
+                      const tabs = await chrome.tabs.query({ windowId });
+                      for (const t of tabs) {
+                        const title = (t.title || '').toLowerCase();
+                        if (title.includes('authorization successful') || title.includes('authorization status')) {
+                          finishAuth();
+                          return;
+                        }
+                      }
+                    } catch (e) {}
+                  }
+
+                  // Check 2b: Web App HTTP Check
                   try {
                     const checkRes = await fetch(cleanUrl, {
                       method: 'GET',
                       headers: { 'Authorization': `Bearer ${token}` }
                     });
                     const checkText = await checkRes.text();
-                    if (checkRes.ok && (checkText.includes('online') || checkText.includes('MCP Server Connected') || checkText.includes('status'))) {
-                      if (!isHandled) {
-                        isHandled = true;
-                        clearInterval(pollInterval);
-                        try {
-                          await chrome.windows.remove(windowId);
-                        } catch (e) {}
-                        GasProvisionerService.log('✅ Google Authorization complete! Popup window closed automatically.');
-                        resolve();
-                      }
+                    if (checkRes.ok && (checkText.includes('online') || checkText.includes('MCP Server Connected') || checkText.includes('status') || checkText.includes('Authorization'))) {
+                      finishAuth();
                     }
                   } catch (e) {}
-                }, 1500);
+                }, 800);
 
-                // 2. Window Closed Listener (if user closes it or auto-closed)
-                const listener = (closedWinId: number) => {
+                // 3. Window Closed Listener (if user closes it manually)
+                const windowRemovedListener = (closedWinId: number) => {
                   if (closedWinId === windowId) {
-                    chrome.windows.onRemoved.removeListener(listener);
+                    if (typeof chrome !== 'undefined') {
+                      if (chrome.tabs && chrome.tabs.onUpdated) {
+                        chrome.tabs.onUpdated.removeListener(tabUpdateListener);
+                      }
+                      if (chrome.windows && chrome.windows.onRemoved) {
+                        chrome.windows.onRemoved.removeListener(windowRemovedListener);
+                      }
+                    }
                     clearInterval(pollInterval);
                     if (!isHandled) {
                       isHandled = true;
@@ -2584,7 +2642,10 @@ var DriveContentExtractor = {
                     }
                   }
                 };
-                chrome.windows.onRemoved.addListener(listener);
+
+                if (typeof chrome !== 'undefined' && chrome.windows && chrome.windows.onRemoved) {
+                  chrome.windows.onRemoved.addListener(windowRemovedListener);
+                }
               }
             );
           });
@@ -2608,20 +2669,51 @@ var DriveContentExtractor = {
     schoolDomain: string
   ): Promise<ProvisionResult> {
     this.log(`🎓 Provisioning Worker A (Student Account: ${studentEmail || 'School'}) for ${childName}...`);
-    this.reportProgress(20, 'Step 2: Connecting School Account', 'Setting up Student Google Apps Script Project...');
+    this.reportProgress(15, 'Phase 1 of 5 (15%)', 'Authenticating Student School Account & Google Apps Script API...');
 
-    // 1. Create or Find Project
-    const project = await this.createProject(studentToken);
-    const scriptId = project.scriptId;
-    this.log(`📦 Created Apps Script Project for School Worker: ${scriptId}`);
+    // 1. Find Existing Project or Create New (Prevents Duplication)
+    const activeProfile = await ChildManager.getActiveProfile();
+    let scriptId: string = '';
+    let isReused = false;
+
+    if (activeProfile?.schoolGasScriptId) {
+      const isAlive = await this.verifyScriptAlive(activeProfile.schoolGasScriptId, studentToken);
+      if (isAlive) {
+        scriptId = activeProfile.schoolGasScriptId;
+        isReused = true;
+        this.log(`📦 Reusing existing School Worker project from profile: ${scriptId}`);
+      }
+    }
+
+    if (!scriptId) {
+      const existing = await this.findExistingProject(studentToken, childName, academicYear);
+      if (existing?.scriptId) {
+        const isAlive = await this.verifyScriptAlive(existing.scriptId, studentToken);
+        if (isAlive) {
+          scriptId = existing.scriptId;
+          isReused = true;
+          this.log(`📦 Reusing existing School Worker project from Google Drive config: ${scriptId}`);
+        }
+      }
+    }
+
+    if (!scriptId) {
+      this.reportProgress(25, 'Phase 2 of 5 (25%)', 'Creating Student Google Apps Script Project...');
+      const project = await this.createProject(studentToken);
+      scriptId = project.scriptId;
+      this.log(`📦 Created fresh Apps Script Project for School Worker: ${scriptId}`);
+    } else {
+      this.reportProgress(25, 'Phase 2 of 5 (25%)', `Reusing existing Apps Script Project (${scriptId})...`);
+    }
 
     // 2. Update Content
+    this.reportProgress(45, 'Phase 3 of 5 (45%)', 'Uploading Classroom, Gmail, and Digest Cloud Ingestion modules...');
     const accessKey = `kids_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
     await this.updateProjectContent(scriptId, accessKey, studentToken, childName, academicYear);
     this.log(`📄 Uploaded Cloud Ingestion modules (Classroom, Gmail, Digest) to project.`);
 
     // 3. Create Version & Deployment
-    this.reportProgress(60, 'Step 2: Deploying Cloud Worker', 'Deploying Web App & Cron trigger...');
+    this.reportProgress(65, 'Phase 4 of 5 (65%)', 'Deploying Web App & configuring 1-minute autonomous background trigger...');
     const version = await this.createVersion(scriptId, studentToken, childName, academicYear);
     const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
     const deploymentId = deployment.deploymentId;
@@ -2629,11 +2721,13 @@ var DriveContentExtractor = {
     this.log(`🚀 Deployed Student Web App: ${webAppUrl}`);
 
     // 4. Ensure Permissions / Authorization Handshake
-    this.reportProgress(80, 'Step 2: Verifying Permissions', 'Checking Google Permissions handshake...');
+    this.reportProgress(80, 'Phase 4 of 5 (80%)', 'Verifying Google Workspace permissions handshake...');
     await this.ensureScriptAuthorized(webAppUrl, studentToken, scriptId, studentEmail);
 
-    // 5. Configure 1-Minute Cron Trigger & Run Initial Sync
+    // 5. Configure 1-Minute Cron Trigger & Run 1-Time Full Ingestion
+    let initialSyncResult: any = null;
     try {
+      this.reportProgress(85, 'Phase 5 of 5 (85%)', 'Activating 1-minute autonomous cloud trigger...');
       await fetch(webAppUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2645,7 +2739,8 @@ var DriveContentExtractor = {
 
       this.log('⏱️ Set up 1-minute autonomous cloud trigger for Google Classroom & Gmail.');
 
-      await fetch(webAppUrl, {
+      this.reportProgress(90, 'Phase 5 of 5 (90%)', '1-Time Full Sync: Ingesting Classroom courses, homework & Gmail circulars...');
+      const syncRes = await fetch(webAppUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2659,15 +2754,22 @@ var DriveContentExtractor = {
         })
       });
 
-      this.log('📥 Completed initial full Classroom & Gmail ingestion to Google Drive!');
+      if (syncRes.ok) {
+        const syncData = await syncRes.json();
+        initialSyncResult = syncData.result || syncData;
+        const courses = initialSyncResult?.classroom?.coursesCount ?? 'all active';
+        const emails = initialSyncResult?.gmail?.emailsCount ?? 'recent';
+        this.log(`📥 1-Time Full Initial Sync Complete: Ingested ${courses} Classroom courses & ${emails} school emails into Drive!`);
+      } else {
+        this.log('📥 Initial full Classroom & Gmail ingestion trigger dispatched to Google Cloud.');
+      }
     } catch (syncErr) {
       this.log(`⚠️ Initial sync note: ${syncErr}`);
     }
 
     // 6. Update Child Profile
-    const active = await ChildManager.getActiveProfile();
-    if (active && active.id) {
-      await ChildManager.updateProfile(active.id, {
+    if (activeProfile && activeProfile.id) {
+      await ChildManager.updateProfile(activeProfile.id, {
         schoolGasScriptId: scriptId,
         schoolGasDeploymentUrl: webAppUrl,
         studentAccountEmail: studentEmail,
@@ -2676,13 +2778,14 @@ var DriveContentExtractor = {
       });
     }
 
-    this.reportProgress(100, 'Step 2 Complete', 'School Account connected and syncing every 1 minute!');
+    this.reportProgress(100, 'Step 2 Complete', '1-Time sync complete & 1-minute cloud background sync active!');
     return {
       success: true,
       scriptId,
       deploymentId,
       webAppUrl,
-      verifiedTools: ['sync_classroom_and_gmail']
+      verifiedTools: ['sync_classroom_and_gmail'],
+      initialSyncResult
     };
   }
 

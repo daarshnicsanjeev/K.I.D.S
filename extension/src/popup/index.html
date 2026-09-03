@@ -41,40 +41,40 @@
   </div>
 
   <!-- Step 2 Student Account Guidance Modal (Before Google Auth) -->
-  <div id="step2AccountGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="lblModalAccountTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;" id="lblModalAccountIcon">🎓</div>
-      <h3 id="lblModalAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select Student School Google Account</h3>
+  <div id="step2AccountGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="lblModalAccountTitle" aria-describedby="boxModalAccountGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" id="lblModalAccountIcon" aria-hidden="true">🎓</div>
+      <h3 id="lblModalAccountTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Select Student School Google Account</h3>
       
       <div id="boxModalAccountGuidance" style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
         <span id="lblModalAccountBadge" style="font-weight: 700;">🏫 Student School Account Required:</span><br>
         <span id="lblModalAccountInstruction">On the upcoming Google Sign-In screen, please select your child's School Google Account (e.g. <code>atharva@school.com</code>).</span>
-        <hr style="border: 0; border-top: 1px solid #bfdbfe; margin: 8px 0;" id="hrModalAccount">
+        <hr style="border: 0; border-top: 1px solid #bfdbfe; margin: 8px 0;" id="hrModalAccount" aria-hidden="true">
         <span id="lblModalAccountWarning">⚠️ <em>Do not select your parent personal account here. Step 2 is dedicated to your child's school account.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnCancelAccountGuidanceModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Cancel</button>
-        <button id="btnProceedAccountGuidanceModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;">Proceed to Sign In ➔</button>
+        <button id="btnCancelAccountGuidanceModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel and return to Step 2">Cancel</button>
+        <button id="btnProceedAccountGuidanceModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;" aria-label="Proceed to Google Sign In">Proceed to Sign In ➔</button>
       </div>
     </div>
   </div>
 
   <!-- Tools Authorization Guidance Modal (Step 2 Before / During Permissions) -->
-  <div id="toolsAuthGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalToolsAuthTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">⚡</div>
-      <h3 id="modalToolsAuthTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Authorize School Cloud Worker</h3>
+  <div id="toolsAuthGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalToolsAuthTitle" aria-describedby="boxToolsAuthGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">⚡</div>
+      <h3 id="modalToolsAuthTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Authorize School Cloud Worker</h3>
       
-      <div style="background: #ecfdf5; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #065f46; margin-bottom: 14px; text-align: left; border-left: 4px solid #10b981;">
+      <div id="boxToolsAuthGuidance" style="background: #ecfdf5; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #065f46; margin-bottom: 14px; text-align: left; border-left: 4px solid #10b981;">
         🔑 <strong>Authorize All Tools:</strong><br>
         <span id="lblToolsAuthInstruction">On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, and Gmail).</span>
-        <hr style="border: 0; border-top: 1px solid #a7f3d0; margin: 8px 0;">
+        <hr style="border: 0; border-top: 1px solid #a7f3d0; margin: 8px 0;" aria-hidden="true">
         <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s cloud worker to sync assignments, coursework, worksheets, and teacher circulars every 1 minute.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnProceedToolsAuthModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem; font-weight: 700;">
+        <button id="btnProceedToolsAuthModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem; font-weight: 700;" aria-label="Proceed to Deploy School Cloud Worker">
           Got it, Proceed to Deploy Worker ➔
         </button>
       </div>
@@ -82,32 +82,32 @@
   </div>
 
   <!-- Step 2 Switch Student Account Confirmation Modal -->
-  <div id="modalConfirmSwitchStudentAccount" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalSwitchAccountTitle" aria-hidden="true" hidden>
-    <div class="modal-content">
-      <div style="font-size: 2.2rem; margin-bottom: 6px;">🔄</div>
-      <h3 id="modalSwitchAccountTitle" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Switch Student School Account?</h3>
+  <div id="modalConfirmSwitchStudentAccount" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalSwitchAccountTitle" aria-describedby="boxModalSwitchAccount" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">🔄</div>
+      <h3 id="modalSwitchAccountTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Switch Student School Account?</h3>
       
-      <div style="background: #fffbeb; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #92400e; margin-bottom: 14px; text-align: left; border-left: 4px solid #f59e0b;">
+      <div id="boxModalSwitchAccount" style="background: #fffbeb; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #92400e; margin-bottom: 14px; text-align: left; border-left: 4px solid #f59e0b;">
         Are you sure you want to switch the student school account for <span id="lblSwitchChildName" style="font-weight: 700;">this child</span>?<br><br>
         <em>Your existing connection will remain safely active until the new account is fully verified.</em>
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnCancelSwitchStudentModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;">Cancel</button>
-        <button id="btnConfirmSwitchStudentModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;">Yes, Switch Account ➔</button>
+        <button id="btnCancelSwitchStudentModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel account switch">Cancel</button>
+        <button id="btnConfirmSwitchStudentModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;" aria-label="Confirm and proceed to switch account">Yes, Switch Account ➔</button>
       </div>
     </div>
   </div>
 
   <!-- Step 3 Portal Security & Privacy Transparency Modal -->
-  <div id="portalSecurityNoticeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalPortalSecurityTitle" aria-hidden="true" hidden>
-    <div class="modal-content" style="max-width: 380px; text-align: left; padding: 16px;">
-      <div style="text-align: center; font-size: 2rem; margin-bottom: 4px;">🛡️</div>
-      <h3 id="modalPortalSecurityTitle" style="font-size: 0.95rem; font-weight: 700; color: #1a365d; text-align: center; margin-bottom: 10px;">
+  <div id="portalSecurityNoticeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalPortalSecurityTitle" aria-describedby="boxPortalSecurityNotice" aria-hidden="true" hidden>
+    <div class="modal-content" role="document" style="max-width: 380px; text-align: left; padding: 16px;">
+      <div style="text-align: center; font-size: 2rem; margin-bottom: 4px;" aria-hidden="true">🛡️</div>
+      <h3 id="modalPortalSecurityTitle" tabindex="-1" style="font-size: 0.95rem; font-weight: 700; color: #1a365d; text-align: center; margin-bottom: 10px;">
         Portal Connection: Privacy & Security Transparency
       </h3>
 
-      <div style="display: flex; flex-direction: column; gap: 8px; font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 12px;">
+      <div id="boxPortalSecurityNotice" style="display: flex; flex-direction: column; gap: 8px; font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 12px;">
         <div style="background: #fef2f2; border-left: 3px solid #ef4444; padding: 6px 8px; border-radius: 4px;">
           <strong style="color: #991b1b;">🚫 What We NEVER Capture:</strong>
           <div style="color: #7f1d1d; margin-top: 2px;">Your school login passwords, payment cards, banking info, or browsing history outside school portals.</div>
@@ -130,8 +130,8 @@
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnCancelPortalSecurityModal" class="btn btn-secondary" style="flex: 1; font-size: 0.76rem;">Cancel</button>
-        <button id="btnProceedPortalSecurityModal" class="btn btn-primary" style="flex: 1.6; font-size: 0.76rem; font-weight: 700;">Proceed & Verify Portal ➔</button>
+        <button id="btnCancelPortalSecurityModal" class="btn btn-secondary" style="flex: 1; font-size: 0.76rem;" aria-label="Cancel portal verification">Cancel</button>
+        <button id="btnProceedPortalSecurityModal" class="btn btn-primary" style="flex: 1.6; font-size: 0.76rem; font-weight: 700;" aria-label="Proceed and verify active portal session">Proceed & Verify Portal ➔</button>
       </div>
     </div>
   </div>
@@ -162,10 +162,10 @@
       <!-- ========================================== -->
       <!-- VIEW A: FAMILY DASHBOARD (Configured View) -->
       <!-- ========================================== -->
-      <section id="familyDashboardCard" class="card hidden" aria-hidden="true" hidden>
+      <section id="familyDashboardCard" class="card hidden" aria-hidden="true" hidden role="region" aria-labelledby="headingFamilyDashboard">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Family Profiles & Cloud Vault</h2>
-          <button id="btnAddAnotherKid" class="btn btn-primary btn-sm" style="background: var(--brand-navy);">
+          <h2 id="headingFamilyDashboard" tabindex="-1">Family Profiles & Cloud Vault</h2>
+          <button id="btnAddAnotherKid" class="btn btn-primary btn-sm" style="background: var(--brand-navy);" aria-label="Add Another Child Profile">
             <span aria-hidden="true">➕</span> Add Another Kid
           </button>
         </div>
@@ -173,21 +173,21 @@
         <p class="subtitle">Autonomous Google Drive cloud ingestion status across all children.</p>
 
         <!-- Live Google Drive Storage Meter Box -->
-        <div id="familyStorageQuotaBox" class="status-box mb-2" style="background: #f8fafc; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 4px;">
+        <div id="familyStorageQuotaBox" class="status-box mb-2" style="background: #f8fafc; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 4px;" role="region" aria-label="Google Drive Storage Usage">
           <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
             <span style="font-size: 0.76rem; font-weight: 700; color: var(--brand-navy);"><span aria-hidden="true">💾</span> Google Drive Storage:</span>
-            <span id="lblStorageQuotaUsed" style="font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);">Calculating...</span>
+            <span id="lblStorageQuotaUsed" style="font-size: 0.74rem; font-weight: 600; color: var(--text-secondary);" aria-live="polite">Calculating...</span>
           </div>
-          <div style="width: 100%; background: #e2e8f0; height: 6px; border-radius: 999px; overflow: hidden;">
+          <div style="width: 100%; background: #e2e8f0; height: 6px; border-radius: 999px; overflow: hidden;" aria-hidden="true">
             <div id="storageQuotaProgressBar" style="width: 2%; height: 100%; background: #10b981; border-radius: 999px; transition: width 0.35s ease;"></div>
           </div>
-          <div id="lblKidsDataUsageText" style="font-size: 0.7rem; color: var(--text-muted);">K.I.D.S. Data: 0 B</div>
+          <div id="lblKidsDataUsageText" style="font-size: 0.7rem; color: var(--text-muted);" aria-live="polite">K.I.D.S. Data: 0 B</div>
         </div>
 
         <!-- Dynamic List of Configured Kid Cards -->
-        <div id="familyProfilesList" style="display: flex; flex-direction: column; gap: 8px;"></div>
+        <div id="familyProfilesList" style="display: flex; flex-direction: column; gap: 8px;" role="list" aria-label="Configured Children Profiles"></div>
 
-        <button id="btnDownloadFamilySkill" class="btn btn-secondary btn-sm mt-2" style="font-size: 0.76rem; width: 100%; font-weight: 600;">
+        <button id="btnDownloadFamilySkill" class="btn btn-secondary btn-sm mt-2" style="font-size: 0.76rem; width: 100%; font-weight: 600;" aria-label="Download personalized AI skill markdown specification">
           📥 Download K.I.D.S._SKILL.md
         </button>
       </section>
@@ -197,80 +197,80 @@
       <!-- ========================================== -->
 
       <!-- Step 1: Fixed Parent Account, Kid Name, Academic Year & Reference Photo -->
-      <section id="step1Card" class="card" aria-hidden="false">
-        <h2>Step 1: Parent Account & Kid Profile</h2>
+      <section id="step1Card" class="card" aria-hidden="false" role="region" aria-labelledby="headingStep1">
+        <h2 id="headingStep1" tabindex="-1">Step 1: Parent Account & Kid Profile</h2>
         <p class="subtitle">
           Connect your <strong>Personal Google Account</strong>. All child data and attachments will be vaulted securely in your private <code>K.I.D.S. Data/</code> Google Drive.
         </p>
 
-        <div class="status-box mb-1">
+        <div class="status-box mb-1" role="region" aria-label="Parent Account Information">
           <span aria-hidden="true">🔒</span>
           <div>
             <strong>Parent Account (Subscription Owner):</strong>
-            <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;">Not connected</span>
+            <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;" aria-live="polite">Not connected</span>
           </div>
         </div>
 
-        <button id="btnStep1ConnectPersonal" class="btn btn-primary btn-hero mb-2">
+        <button id="btnStep1ConnectPersonal" class="btn btn-primary btn-hero mb-2" aria-label="Sign in with Personal Google Account to connect Drive storage">
           🔐 Sign in with Personal Google Account
         </button>
 
         <!-- Kid Setup Box -->
-        <div id="step1ChildSetupBox" class="hidden mb-2" aria-hidden="true" hidden style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;">
+        <div id="step1ChildSetupBox" class="hidden mb-2" aria-hidden="true" hidden style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;" role="form" aria-label="Child Profile Information">
           <div class="form-group">
-            <label for="txtStep1ChildName">Kid's First Name (letters, spaces, hyphens):</label>
-            <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" />
-            <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600;"></span>
+            <label for="txtStep1ChildName" id="lblChildNamePrompt">Kid's First Name (letters, spaces, hyphens):</label>
+            <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" aria-labelledby="lblChildNamePrompt" aria-required="true" autocomplete="off" />
+            <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600;" role="alert"></span>
           </div>
 
           <div class="form-group">
-            <label for="selStep1AcademicYear">Academic Year:</label>
-            <select id="selStep1AcademicYear"></select>
+            <label for="selStep1AcademicYear" id="lblAcademicYearPrompt">Academic Year:</label>
+            <select id="selStep1AcademicYear" aria-labelledby="lblAcademicYearPrompt"></select>
           </div>
 
           <!-- Child Photo Upload Field -->
           <div class="form-group" style="margin-top: 4px;">
-            <label style="display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">
+            <label id="lblPhotoUploadPrompt" style="display: block; font-size: 0.75rem; font-weight: 600; color: var(--text-secondary); margin-bottom: 4px;">
               📸 Child Reference Photo (Optional - for Event/Activity Identification):
             </label>
             <div style="display: flex; align-items: center; gap: 10px;">
-              <div id="photoPreviewContainer" style="width: 48px; height: 48px; border-radius: 50%; background: #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--brand-navy); flex-shrink: 0;">
+              <div id="photoPreviewContainer" style="width: 48px; height: 48px; border-radius: 50%; background: #e2e8f0; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 2px solid var(--brand-navy); flex-shrink: 0;" aria-hidden="true">
                 <img id="imgChildPhotoPreview" src="" alt="Child avatar preview" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
                 <span id="lblPhotoPlaceholder" aria-hidden="true" style="font-size: 1.4rem;">👶</span>
               </div>
               <div style="flex: 1;">
-                <input type="file" id="fileChildPhoto" accept="image/jpeg,image/png,image/webp" style="display: none;" />
-                <button type="button" id="btnUploadPhotoTrigger" class="btn btn-secondary btn-sm" style="font-size: 0.72rem; padding: 4px 8px;">
+                <input type="file" id="fileChildPhoto" accept="image/jpeg,image/png,image/webp" style="display: none;" aria-hidden="true" tabindex="-1" />
+                <button type="button" id="btnUploadPhotoTrigger" class="btn btn-secondary btn-sm" style="font-size: 0.72rem; padding: 4px 8px;" aria-labelledby="lblPhotoUploadPrompt">
                   📁 Choose Photo
                 </button>
-                <span id="lblPhotoFileName" style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;">No file chosen</span>
+                <span id="lblPhotoFileName" style="font-size: 0.7rem; color: var(--text-muted); display: block; margin-top: 2px;" aria-live="polite">No file chosen</span>
               </div>
             </div>
           </div>
 
-          <button id="btnStep1SaveChild" class="btn btn-primary btn-hero" style="width: 100%; font-weight: 700; margin-top: 6px;">
+          <button id="btnStep1SaveChild" class="btn btn-primary btn-hero" style="width: 100%; font-weight: 700; margin-top: 6px;" aria-label="Confirm details and continue to Step 2">
             ➡️ Confirm & Continue to Step 2
           </button>
         </div>
 
         <!-- Confirmed Kid Profile Status -->
-        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); display: flex; align-items: center; gap: 10px;">
-          <div id="confirmedAvatarWrapper" style="width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--success-color); display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+        <div id="step1ChildConfirmedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); display: flex; align-items: center; gap: 10px;" role="status">
+          <div id="confirmedAvatarWrapper" style="width: 36px; height: 36px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--success-color); display: flex; align-items: center; justify-content: center; flex-shrink: 0;" aria-hidden="true">
             <img id="imgConfirmedAvatar" src="" alt="Child avatar" class="hidden" style="width: 100%; height: 100%; object-fit: cover;" />
             <span id="lblConfirmedPlaceholder" aria-hidden="true" style="font-size: 1.1rem;">👶</span>
           </div>
           <div>
             <strong>Configuring Profile:</strong>
-            <span id="lblStep1ActiveChild" style="color: var(--success-color); font-weight: 700; display: block;"></span>
+            <span id="lblStep1ActiveChild" style="color: var(--success-color); font-weight: 700; display: block;" aria-live="polite"></span>
           </div>
         </div>
       </section>
 
       <!-- Step 2: Student School Google Account (Classroom & School Gmail) -->
-      <section id="step2Card" class="card hidden" aria-hidden="true" hidden>
+      <section id="step2Card" class="card hidden" aria-hidden="true" hidden role="region" aria-labelledby="headingStep2">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
-          <h2>Step 2: Student School Google Account</h2>
-          <button id="btnSkipStep2Top" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;">
+          <h2 id="headingStep2" tabindex="-1">Step 2: Student School Google Account</h2>
+          <button id="btnSkipStep2Top" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;" aria-label="Skip School Google Account setup">
             ⏭️ Skip School Google Account
           </button>
         </div>
@@ -280,50 +280,75 @@
         </p>
 
         <!-- School Account Connection Box -->
-        <div class="guidance-box mb-2">
+        <div class="guidance-box mb-2" role="region" aria-label="School Account Details">
           <p class="guidance-title">🎓 Student Account Setup & 1-Min Cloud Worker:</p>
           <div style="font-size: 0.74rem; line-height: 1.4; color: #334155;">
             Deploys an autonomous background worker in the student's Google account that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.
           </div>
         </div>
 
-        <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-1">
+        <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-1" aria-label="Open Google Classroom in new tab">
           🌐 1. Sign In with Student School Google Account
         </button>
-        <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1">
+        <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1" aria-label="Open Google Apps Script User Settings in new tab">
           🔗 2. Enable Google Apps Script API
         </button>
-        <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2">
+        <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2" aria-label="Deploy School Cloud Worker and 1-minute cron trigger">
           ⚡ 3. Deploy School Cloud Worker & 1-Min Trigger
         </button>
 
+        <!-- Step 2 In-Card Live Progress Bar & Status -->
+        <div id="step2InlineProgressBar" class="status-box mb-2 hidden" aria-hidden="true" hidden style="flex-direction: column; align-items: stretch; background: #eff6ff; border-left: 3px solid #2563eb; padding: 10px 12px;" role="status" aria-live="polite">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+            <strong id="lblStep2ProgressTitle" style="color: #1e40af; font-size: 0.78rem;">🚀 Deploying & Syncing Data...</strong>
+            <span id="lblStep2ProgressPercent" style="font-size: 0.72rem; font-weight: 700; color: #2563eb;">15%</span>
+          </div>
+          <div style="width: 100%; background: #dbeafe; border-radius: 999px; height: 8px; overflow: hidden; margin-bottom: 6px; border: 1px solid #bfdbfe;">
+            <div id="step2ProgressFill" style="width: 15%; height: 100%; background: linear-gradient(90deg, #2563eb, #10b981); border-radius: 999px; transition: width 0.35s ease;"></div>
+          </div>
+          <div id="lblStep2ProgressSubtext" style="font-size: 0.72rem; color: #1e3a8a;">
+            Authenticating Student School Account & Google Apps Script API...
+          </div>
+        </div>
+
         <!-- Connected School Account Badge -->
-        <div id="step2ConnectedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color);">
-          <span>🟢</span>
+        <div id="step2ConnectedBadge" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color);" role="status">
+          <span aria-hidden="true">🟢</span>
           <div style="flex: 1;">
             <strong>Connected School Account:</strong>
-            <span id="lblStep2StudentEmail" style="color: var(--success-color); font-weight: 700; display: block;"></span>
+            <span id="lblStep2StudentEmail" style="color: var(--success-color); font-weight: 700; display: block;" aria-live="polite"></span>
             <span style="font-size: 0.7rem; color: var(--text-muted);">⏱️ 1-Minute Cloud Sync Active</span>
           </div>
-          <button id="btnTriggerSwitchStudentAccount" class="btn btn-secondary btn-sm" style="font-size: 0.7rem; padding: 2px 6px;">
+          <button id="btnTriggerSwitchStudentAccount" class="btn btn-secondary btn-sm" style="font-size: 0.7rem; padding: 2px 6px;" aria-label="Switch Student Account">
             🔄 Switch
           </button>
         </div>
 
+        <!-- 1-Time Initial Cloud Ingestion Results Card -->
+        <div id="step2InitialSyncResults" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); background: #f0fdf4;" role="status" aria-live="polite">
+          <span aria-hidden="true">🎉</span>
+          <div style="flex: 1;">
+            <strong style="color: #166534;">1-Time Initial Cloud Ingestion Complete!</strong>
+            <div id="lblStep2InitialSyncSummary" style="font-size: 0.74rem; color: #166534; margin-top: 2px;">
+              Classroom assignments, study materials, and school circulars have been synced into your private Google Drive (<code>K.I.D.S. Data/</code>).
+            </div>
+          </div>
+        </div>
+
         <div style="display: flex; gap: 6px; margin-top: 6px;">
-          <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back</button>
-          <button id="btnSkipStep2Bottom" class="btn btn-outline btn-sm" style="flex: 1.2; font-size: 0.72rem;">⏭️ Skip School Account</button>
-          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;">➡️ Continue to Step 3</button>
+          <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;" aria-label="Back to Step 1">⬅️ Back</button>
+          <button id="btnSkipStep2Bottom" class="btn btn-outline btn-sm" style="flex: 1.2; font-size: 0.72rem;" aria-label="Skip School Account and go to Step 3">⏭️ Skip School Account</button>
+          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;" aria-label="Continue to Step 3">➡️ Continue to Step 3</button>
         </div>
       </section>
 
       <!-- Step 3: Tracked School Portals (Autonomous 6-Hour Cloud Scraper) -->
-      <section id="step3Card" class="card hidden" aria-hidden="true" hidden>
+      <section id="step3Card" class="card hidden" aria-hidden="true" hidden role="region" aria-labelledby="headingStep3">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-          <h2>Step 3: Tracked School Portals</h2>
+          <h2 id="headingStep3" tabindex="-1">Step 3: Tracked School Portals</h2>
           <div style="display: flex; gap: 6px;">
-            <button id="btnSkipStep3" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;">⏭️ Skip Portals</button>
-            <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;">⬅️ Back</button>
+            <button id="btnSkipStep3" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 2px 8px;" aria-label="Skip Step 3 Portals">⏭️ Skip Portals</button>
+            <button id="btnNavStep3ToStep2" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.72rem;" aria-label="Back to Step 2">⬅️ Back</button>
           </div>
         </div>
 
@@ -338,7 +363,7 @@
           </button>
 
           <div id="connectionStatusBox" class="status-box hidden" aria-hidden="true" hidden aria-live="polite" aria-atomic="true">
-            <span class="status-icon" id="connectionStatusIcon">⏳</span>
+            <span class="status-icon" id="connectionStatusIcon" aria-hidden="true">⏳</span>
             <span id="connectionStatusText">Verifying portal connection...</span>
           </div>
         </div>
@@ -346,7 +371,7 @@
         <!-- Phase 2: Feature Tool Registration -->
         <div id="featureSection" class="hidden mt-2" aria-hidden="true" hidden aria-live="polite">
           <div class="status-box mb-2">
-            <span class="status-icon">✅</span>
+            <span class="status-icon" aria-hidden="true">✅</span>
             <span><strong>Portal Connected!</strong> Open any feature page (e.g. Homework, Attendance) on your portal, then click below.</span>
           </div>
 
@@ -355,49 +380,49 @@
           </button>
 
           <!-- Active Registered Features Box -->
-          <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden>
+          <div id="activeFeaturesBox" class="registered-features-box mb-2 hidden" aria-hidden="true" hidden role="region" aria-label="Active Tracked Features List">
             <h4 style="font-size: 0.8rem; margin-bottom: 6px; color: var(--brand-navy);">✨ Active Tracked Features:</h4>
             <ul id="step3RegisteredToolsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
           </div>
         </div>
 
         <div style="margin-top: 8px;">
-          <button id="btnNavStep3ToStep4" class="btn btn-primary btn-hero" style="width: 100%; font-weight: 700;">
+          <button id="btnNavStep3ToStep4" class="btn btn-primary btn-hero" style="width: 100%; font-weight: 700;" aria-label="Continue to Step 4 School Chat Groups">
             ➡️ Continue to Step 4 (School Chat Groups)
           </button>
         </div>
       </section>
 
       <!-- Step 4: School Chat Groups & Communities -->
-      <section id="step4Card" class="card hidden" aria-hidden="true" hidden>
+      <section id="step4Card" class="card hidden" aria-hidden="true" hidden role="region" aria-labelledby="headingStep4">
         <div style="display: flex; justify-content: space-between; align-items: center;">
-          <h2>Step 4: School Chat Groups</h2>
-          <button id="btnFinishChildSetup" class="btn btn-success btn-sm" style="font-weight: 700;">🎉 Finish Setup</button>
+          <h2 id="headingStep4" tabindex="-1">Step 4: School Chat Groups</h2>
+          <button id="btnFinishChildSetup" class="btn btn-success btn-sm" style="font-weight: 700;" aria-label="Finish child setup and open dashboard">🎉 Finish Setup</button>
         </div>
 
         <div class="status-box mb-1" style="border-left: 3px solid var(--accent-color); background: #fffbeb;">
-          <span>⚠️</span>
+          <span aria-hidden="true">⚠️</span>
           <div style="font-size: 0.73rem; color: #92400e; line-height: 1.35;">
             <strong>Child Scoping:</strong> Track groups belonging directly to <span id="lblStep4KidName" style="font-weight: 700;">this kid</span>.
           </div>
         </div>
 
         <!-- DUAL-PATH GUIDANCE BOX -->
-        <div style="background: var(--card-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-bottom: 8px;">
+        <div style="background: var(--card-surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-bottom: 8px;" role="region" aria-label="Chat Ingestion Options">
           <!-- PATH A: Mobile Export with Media -->
           <div style="margin-bottom: 8px;">
             <div style="font-size: 0.78rem; font-weight: 700; color: var(--brand-navy); margin-bottom: 4px;">
               📥 Path A: Existing / Older Groups (Full Year Export with Media)
             </div>
-            <button id="btnScanDriveExports" class="btn btn-secondary btn-sm mt-1" style="width: 100%;">
+            <button id="btnScanDriveExports" class="btn btn-secondary btn-sm mt-1" style="width: 100%;" aria-label="Show Recent Uploads from Google Drive">
               🔍 Show Recent Uploads from Google Drive
             </button>
             <div id="driveExportsContainer" class="hidden mt-1" aria-hidden="true" hidden style="display: flex; flex-direction: column; gap: 4px;">
-              <div id="driveExportsList" style="display: flex; flex-direction: column; gap: 4px;"></div>
+              <div id="driveExportsList" style="display: flex; flex-direction: column; gap: 4px;" role="list" aria-label="Google Drive Export Files"></div>
             </div>
           </div>
 
-          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 8px 0;">
+          <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 8px 0;" aria-hidden="true">
 
           <!-- PATH B: 1-Click Track Active Chat -->
           <div>
@@ -405,10 +430,10 @@
               📸 Path B: New Groups & Daily Auto-Sync (WhatsApp / Telegram)
             </div>
             <div style="display: flex; gap: 6px;">
-              <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm" style="flex: 1; background: var(--brand-navy);">
+              <button id="btnCaptureActiveChat" class="btn btn-primary btn-sm" style="flex: 1; background: var(--brand-navy);" aria-label="Track active chat group in open browser tab">
                 📸 1-Click Track Active Chat
               </button>
-              <button id="btnStopActiveSync" class="btn btn-danger btn-sm hidden" aria-hidden="true" hidden>
+              <button id="btnStopActiveSync" class="btn btn-danger btn-sm hidden" aria-hidden="true" hidden aria-label="Stop active synchronization">
                 ⏹️ Stop Sync
               </button>
             </div>
@@ -416,19 +441,19 @@
         </div>
 
         <!-- Tracked Chats List -->
-        <div id="trackedChatsContainer" class="mb-2" style="background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;">
+        <div id="trackedChatsContainer" class="mb-2" style="background: #ffffff; border: 1px solid var(--border-color); border-radius: 6px; padding: 8px;" role="region" aria-label="Tracked School Chats List">
           <label style="font-size: 0.75rem; font-weight: 700; color: var(--brand-navy); display: block; margin-bottom: 4px;">
             🎯 Tracked Chat Groups:
           </label>
           <div id="trackedChatsEmpty" style="font-size: 0.73rem; color: var(--text-muted); font-style: italic;">
             No groups tracked yet. Use Path A or Path B above.
           </div>
-          <ul id="trackedChatsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;"></ul>
+          <ul id="trackedChatsList" style="list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px;" role="list"></ul>
         </div>
 
         <div style="display: flex; gap: 6px;">
-          <button id="btnNavStep4ToStep3" class="btn btn-secondary btn-sm" style="flex: 1;">⬅️ Back to Step 3</button>
-          <button id="btnFinishSetupBottom" class="btn btn-success btn-sm" style="flex: 1.5; font-weight: 700;">🎉 Complete Setup</button>
+          <button id="btnNavStep4ToStep3" class="btn btn-secondary btn-sm" style="flex: 1;" aria-label="Back to Step 3">⬅️ Back to Step 3</button>
+          <button id="btnFinishSetupBottom" class="btn btn-success btn-sm" style="flex: 1.5; font-weight: 700;" aria-label="Complete child setup">🎉 Complete Setup</button>
         </div>
       </section>
     </main>

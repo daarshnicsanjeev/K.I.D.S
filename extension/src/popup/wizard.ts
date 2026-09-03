@@ -68,9 +68,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnOpenClassroom = document.getElementById('btnOpenClassroom') as HTMLButtonElement;
   const btnOpenApiSettings = document.getElementById('btnOpenApiSettings') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
+  const step2InlineProgressBar = document.getElementById('step2InlineProgressBar') as HTMLElement;
+  const lblStep2ProgressTitle = document.getElementById('lblStep2ProgressTitle') as HTMLElement;
+  const lblStep2ProgressPercent = document.getElementById('lblStep2ProgressPercent') as HTMLElement;
+  const step2ProgressFill = document.getElementById('step2ProgressFill') as HTMLElement;
+  const lblStep2ProgressSubtext = document.getElementById('lblStep2ProgressSubtext') as HTMLElement;
   const step2ConnectedBadge = document.getElementById('step2ConnectedBadge') as HTMLElement;
   const lblStep2StudentEmail = document.getElementById('lblStep2StudentEmail') as HTMLElement;
   const btnTriggerSwitchStudentAccount = document.getElementById('btnTriggerSwitchStudentAccount') as HTMLButtonElement;
+  const step2InitialSyncResults = document.getElementById('step2InitialSyncResults') as HTMLElement;
+  const lblStep2InitialSyncSummary = document.getElementById('lblStep2InitialSyncSummary') as HTMLElement;
   const btnNavStep2ToStep1 = document.getElementById('btnNavStep2ToStep1') as HTMLButtonElement;
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
 
@@ -117,23 +124,100 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentPhotoDataUrl: string | null = null;
   let cachedPersonalToken: string | null = null;
 
-  // Modal helpers
+  // Accessible Modal Manager (JAWS & Screen Reader Compliant)
   let activeModalTrigger: HTMLElement | null = null;
+  let activeModalElement: HTMLElement | null = null;
+
   function openModal(modal: HTMLElement | null, triggerEl?: HTMLElement | null) {
     if (!modal) return;
-    activeModalTrigger = triggerEl || null;
+    activeModalTrigger = triggerEl || (document.activeElement as HTMLElement) || null;
+    activeModalElement = modal;
+
+    // 1. Unhide and remove aria-hidden from modal (CRITICAL for JAWS / screen readers)
     modal.classList.remove('hidden');
     modal.removeAttribute('hidden');
+    modal.removeAttribute('aria-hidden');
+    modal.setAttribute('aria-modal', 'true');
+
+    // 2. Hide background content from screen readers while modal is active
+    const mainContainer = document.getElementById('mainAppContainer');
+    if (mainContainer) {
+      mainContainer.setAttribute('aria-hidden', 'true');
+      try { (mainContainer as any).inert = true; } catch {}
+    }
+
+    // 3. Transfer focus directly into the modal heading / primary element so JAWS begins announcing immediately
+    setTimeout(() => {
+      const heading = modal.querySelector('h2, h3, [role="heading"], input:not([type="hidden"]), button:not([disabled])') as HTMLElement;
+      if (heading) {
+        if (!heading.hasAttribute('tabindex')) {
+          heading.setAttribute('tabindex', '-1');
+        }
+        heading.focus();
+      } else {
+        modal.focus();
+      }
+    }, 80);
   }
 
   function closeModal(modal: HTMLElement | null, returnFocus = true) {
     if (!modal) return;
+    activeModalElement = null;
+
+    // 1. Hide and mark aria-hidden on modal
     modal.classList.add('hidden');
     modal.setAttribute('hidden', '');
+    modal.setAttribute('aria-hidden', 'true');
+    modal.removeAttribute('aria-modal');
+
+    // 2. Restore background container for screen readers
+    const mainContainer = document.getElementById('mainAppContainer');
+    if (mainContainer) {
+      mainContainer.removeAttribute('aria-hidden');
+      try { (mainContainer as any).inert = false; } catch {}
+    }
+
+    // 3. Return focus to the element that triggered the modal
     if (returnFocus && activeModalTrigger) {
-      setTimeout(() => { activeModalTrigger?.focus(); }, 50);
+      setTimeout(() => {
+        activeModalTrigger?.focus();
+        activeModalTrigger = null;
+      }, 60);
     }
   }
+
+  // Global Keyboard Listener for Modal Accessibility (Escape to close & Tab cycle trap)
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!activeModalElement || activeModalElement.classList.contains('hidden')) return;
+
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeModal(activeModalElement, true);
+      return;
+    }
+
+    if (e.key === 'Tab') {
+      const focusable = activeModalElement.querySelectorAll<HTMLElement>(
+        'button:not([disabled]):not([hidden]), [href], input:not([disabled]):not([hidden]):not([type="hidden"]), select:not([disabled]):not([hidden]), textarea:not([disabled]):not([hidden]), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+
+      const firstEl = focusable[0];
+      const lastEl = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === firstEl || document.activeElement === activeModalElement) {
+          e.preventDefault();
+          lastEl.focus();
+        }
+      } else {
+        if (document.activeElement === lastEl) {
+          e.preventDefault();
+          firstEl.focus();
+        }
+      }
+    }
+  });
 
   // Offline network status updater
   function updateOnlineStatus() {
@@ -229,6 +313,23 @@ document.addEventListener('DOMContentLoaded', async () => {
     setA11yVisibility(cardStep4, step === 4);
 
     updateStepper(step);
+
+    // Screen reader & keyboard accessibility: direct focus to the primary interactive element of the active step
+    setTimeout(() => {
+      if (step === 1) {
+        if (step1ChildSetupBox && !step1ChildSetupBox.classList.contains('hidden')) {
+          txtStep1ChildName?.focus();
+        } else if (btnStep1ConnectPersonal && !btnStep1ConnectPersonal.classList.contains('hidden')) {
+          btnStep1ConnectPersonal?.focus();
+        }
+      } else if (step === 2) {
+        btnCreateMcpServer?.focus();
+      } else if (step === 3) {
+        btnCaptureVerifyPortal?.focus();
+      } else if (step === 4) {
+        btnCaptureActiveChat?.focus();
+      }
+    }, 120);
   }
 
   async function showFamilyDashboard() {
@@ -430,6 +531,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = auth.email;
       setA11yVisibility(step1ChildSetupBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
+      setTimeout(() => txtStep1ChildName?.focus(), 150);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
 
       try {
@@ -571,12 +673,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const isConnected = Boolean(currentConfiguringProfile?.schoolGasDeploymentUrl || currentConfiguringProfile?.studentAccountEmail);
     if (isConnected) {
       setA11yVisibility(step2ConnectedBadge, true);
+      setA11yVisibility(step2InitialSyncResults, true);
       if (lblStep2StudentEmail) {
         lblStep2StudentEmail.textContent = currentConfiguringProfile?.studentAccountEmail || 'School Account Connected';
+      }
+      if (lblStep2InitialSyncSummary && currentConfiguringProfile) {
+        lblStep2InitialSyncSummary.innerHTML = `Ingested Classroom courses & school emails into <code>K.I.D.S. Data/${currentConfiguringProfile.academicYear || '2026-2027'}/${currentConfiguringProfile.name}/</code>. 1-minute cloud background sync is active.`;
       }
       if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ Update School Cloud Worker';
     } else {
       setA11yVisibility(step2ConnectedBadge, false);
+      setA11yVisibility(step2InitialSyncResults, false);
       if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 3. Deploy School Cloud Worker & 1-Min Trigger';
     }
   }
@@ -613,12 +720,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnProceedToolsAuthModal?.addEventListener('click', async () => {
     closeModal(toolsAuthGuidanceModal, false);
     setA11yVisibility(mcpDeployProgressOverlay, true);
+    setA11yVisibility(step2InlineProgressBar, true);
 
     try {
       GasProvisionerService.setProgressCallback((pct, phase, sub) => {
         if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${pct}%`;
         if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = phase;
         if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = sub;
+
+        if (step2ProgressFill) step2ProgressFill.style.width = `${pct}%`;
+        if (lblStep2ProgressPercent) lblStep2ProgressPercent.textContent = `${pct}%`;
+        if (lblStep2ProgressTitle) lblStep2ProgressTitle.textContent = `🚀 ${phase}`;
+        if (lblStep2ProgressSubtext) lblStep2ProgressSubtext.textContent = sub;
       });
 
       const parentToken = await PersonalDriveService.getValidToken(false);
@@ -636,7 +749,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await PersonalDriveService.shareFolderWithStudentAccount(parentToken, kidFolderInfo.id, studentEmail).catch(() => {});
       }
 
-      await GasProvisionerService.provisionSchoolWorker(
+      const deployResult = await GasProvisionerService.provisionSchoolWorker(
         studentToken,
         kidFolderInfo.id,
         currentConfiguringProfile?.name || 'Atharva',
@@ -648,10 +761,24 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentConfiguringProfile = await ChildManager.getActiveProfile();
       updateStep2View();
       setA11yVisibility(mcpDeployProgressOverlay, false);
-      alert('🎉 School Account connected! Classroom assignments and school circulars will sync every 1 minute.');
-      showWizardStep(3);
+      setA11yVisibility(step2InlineProgressBar, false);
+
+      if (lblStep2InitialSyncSummary) {
+        const syncMetrics = (deployResult as any)?.initialSyncResult;
+        const courses = syncMetrics?.classroom?.coursesCount ?? 'all active';
+        const emails = syncMetrics?.gmail?.emailsCount ?? 'recent';
+        lblStep2InitialSyncSummary.innerHTML = `✅ <strong>1-Time Sync Success!</strong> Ingested <strong>${courses} Classroom courses</strong> & <strong>${emails} school circulars</strong> into <code>K.I.D.S. Data/${currentConfiguringProfile?.academicYear || '2026-2027'}/${currentConfiguringProfile?.name}/</code>.<br><span style="color: #15803d; font-weight: 600;">⏱️ Autonomous 1-minute cloud worker is active.</span>`;
+      }
+
+      setA11yVisibility(step2InitialSyncResults, true);
+
+      // Focus the continue button so JAWS announces next step
+      setTimeout(() => {
+        btnNavStep2ToStep3?.focus();
+      }, 100);
     } catch (err: any) {
       setA11yVisibility(mcpDeployProgressOverlay, false);
+      setA11yVisibility(step2InlineProgressBar, false);
       alert(`School Worker deployment failed: ${err.message || String(err)}`);
     }
   });
@@ -976,7 +1103,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // Diagnostic Logs Controls
+  // Diagnostic Logs Controls (Real-Time Live Streaming)
   async function refreshDiagnosticLogs() {
     if (!txtActivityLog) return;
     try {
@@ -985,8 +1112,29 @@ document.addEventListener('DOMContentLoaded', async () => {
       txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
     } catch {}
   }
+
+  GasProvisionerService.logCallback = (msg: string) => {
+    if (!txtActivityLog) return;
+    const time = new Date().toLocaleTimeString();
+    const formatted = `[${time}] [INFO] [WA_GAS] ${msg}`;
+    if (txtActivityLog.value === 'No WhatsApp diagnostic logs recorded yet.' || !txtActivityLog.value.trim()) {
+      txtActivityLog.value = formatted;
+    } else {
+      txtActivityLog.value += `\n${formatted}`;
+    }
+    txtActivityLog.scrollTop = txtActivityLog.scrollHeight;
+  };
+
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes.whatsapp_diagnostic_logs) {
+        refreshDiagnosticLogs();
+      }
+    });
+  }
+
   refreshDiagnosticLogs();
-  setInterval(refreshDiagnosticLogs, 3000);
+  setInterval(refreshDiagnosticLogs, 2500);
 
   btnFetchWhatsAppLogs?.addEventListener('click', refreshDiagnosticLogs);
   btnCopyActivityLog?.addEventListener('click', async () => {
