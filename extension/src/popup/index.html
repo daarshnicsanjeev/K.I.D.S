@@ -21,22 +21,22 @@
   </div>
 
   <!-- Cloud Deployment Progress Overlay -->
-  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="dialog" aria-modal="true" aria-live="polite" aria-hidden="true" hidden style="padding: 20px; text-align: center;">
-    <div class="restoring-spinner" style="border-top-color: #2563eb; width: 36px; height: 36px;"></div>
-    <div style="font-size: 0.95rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 6px;" id="lblMcpDeployTitle">
-      Connecting Cloud Ingestion Engine...
+  <div id="mcpDeployProgressOverlay" class="restoring-overlay hidden" role="status" aria-live="assertive" aria-modal="true" aria-hidden="true" hidden style="padding: 24px; text-align: center; background: #ffffff;">
+    <div class="restoring-spinner" style="border-top-color: #2563eb; width: 40px; height: 40px; border-width: 4px;"></div>
+    <div style="font-size: 1rem; font-weight: 700; color: var(--brand-navy); font-family: 'Kanit', sans-serif; margin-top: 10px;" id="lblMcpDeployTitle">
+      Phase 1 of 5 (15%)
     </div>
     
-    <!-- Visual Progress Bar -->
-    <div style="width: 85%; background: #e2e8f0; border-radius: 999px; height: 8px; margin: 12px auto 6px auto; overflow: hidden; border: 1px solid var(--border-color);">
+    <!-- ARIA-Compliant Visual Progress Bar (Read by JAWS) -->
+    <div style="width: 90%; background: #e2e8f0; border-radius: 999px; height: 12px; margin: 14px auto 8px auto; overflow: hidden; border: 1.5px solid #cbd5e1;" role="progressbar" id="mcpDeployProgressContainer" aria-valuemin="0" aria-valuemax="100" aria-valuenow="15" aria-label="Deployment and Data Ingestion Progress">
       <div id="mcpDeployProgressBar" style="width: 15%; height: 100%; background: linear-gradient(90deg, #2563eb, #10b981); border-radius: 999px; transition: width 0.35s ease;"></div>
     </div>
     
-    <div style="font-size: 0.76rem; color: var(--text-primary); font-weight: 600;" id="lblMcpDeploySubtext">
-      Authenticating with Google Apps Script API...
+    <div style="font-size: 0.8rem; color: #1e3a8a; font-weight: 600; margin-top: 4px;" id="lblMcpDeploySubtext">
+      Authenticating Student School Account & Google Apps Script API...
     </div>
-    <div style="font-size: 0.7rem; color: var(--text-muted); margin-top: 2px;" id="lblMcpDeployPhase">
-      Phase 1 of 5 (15%)
+    <div style="font-size: 0.74rem; color: var(--text-muted); margin-top: 4px;" id="lblMcpDeployPhase">
+      Please wait while Classroom & Gmail are synced into Google Drive...
     </div>
   </div>
 

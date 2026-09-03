@@ -21,7 +21,9 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // Progress & Deployment Overlays
   const mcpDeployProgressOverlay = document.getElementById('mcpDeployProgressOverlay') as HTMLElement;
+  const mcpDeployProgressContainer = document.getElementById('mcpDeployProgressContainer') as HTMLElement;
   const mcpDeployProgressBar = document.getElementById('mcpDeployProgressBar') as HTMLElement;
+  const lblMcpDeployTitle = document.getElementById('lblMcpDeployTitle') as HTMLElement;
   const lblMcpDeploySubtext = document.getElementById('lblMcpDeploySubtext') as HTMLElement;
   const lblMcpDeployPhase = document.getElementById('lblMcpDeployPhase') as HTMLElement;
 
@@ -725,8 +727,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
       GasProvisionerService.setProgressCallback((pct, phase, sub) => {
         if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${pct}%`;
-        if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = phase;
+        if (mcpDeployProgressContainer) {
+          mcpDeployProgressContainer.setAttribute('aria-valuenow', String(pct));
+          mcpDeployProgressContainer.setAttribute('aria-valuetext', `${phase}: ${sub}`);
+        }
+        if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `🚀 ${phase}`;
         if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = sub;
+        if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = `Phase Progress: ${pct}% complete`;
 
         if (step2ProgressFill) step2ProgressFill.style.width = `${pct}%`;
         if (lblStep2ProgressPercent) lblStep2ProgressPercent.textContent = `${pct}%`;
