@@ -79,6 +79,22 @@ var GmailIngester = {
             }
           }
 
+          // Scan email body for embedded Google Drive links
+          var emailBody = msg.getPlainBody();
+          if (emailBody) {
+            var linkedDocs = this.scanTextForDriveFiles(emailBody, attachFolder, 'EmailNotice', subject);
+            for (var ld = 0; ld < linkedDocs.length; ld++) {
+              item.attachments.push({
+                name: linkedDocs[ld].title || 'Linked Circular',
+                fileId: linkedDocs[ld].fileId,
+                driveUrl: linkedDocs[ld].driveUrl,
+                mimeType: 'application/pdf',
+                size: 0
+              });
+              totalAttachments++;
+            }
+          }
+
           emailList.push(item);
         }
       }
@@ -102,6 +118,59 @@ var GmailIngester = {
       McpLogger.log('ERROR', 'GMAIL_SYNC_ERROR', 'Gmail sync failed: ' + err.toString());
       throw err;
     }
+  },
+
+  extractDriveFileIdFromUrl: function(url) {
+    if (!url) return null;
+    var match = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    if (match) return match[1];
+    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    if (idMatch) return idMatch[1];
+    var openMatch = url.match(/\/open\?id=([a-zA-Z0-9_-]{20,})/);
+    if (openMatch) return openMatch[1];
+    return null;
+  },
+
+  scanTextForDriveFiles: function(text, attachFolder, prefix, subject) {
+    if (!text) return [];
+    var results = [];
+    var urlRegex = /(https?:\/\/(?:drive|docs)\.google\.com\/[^\s"')<>]+)/gi;
+    var matches = text.match(urlRegex);
+    if (matches) {
+      for (var i = 0; i < matches.length; i++) {
+        var u = matches[i];
+        var fId = this.extractDriveFileIdFromUrl(u);
+        if (fId) {
+          var cleanSubj = (subject || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+          var targetName = (prefix || 'Email') + '_' + cleanSubj + '_' + fId.substring(0, 8);
+          var existing = attachFolder.getFilesByName(targetName);
+          if (existing.hasNext()) {
+            var ex = existing.next();
+            results.push({ title: targetName, fileId: ex.getId(), driveUrl: ex.getUrl() });
+            continue;
+          }
+          try {
+            var srcFile = DriveApp.getFileById(fId);
+            var mime = srcFile.getMimeType();
+            if (mime.indexOf('google-apps') !== -1) {
+              var token = ScriptApp.getOAuthToken();
+              var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fId + '/export?mimeType=application/pdf', {
+                headers: { 'Authorization': 'Bearer ' + token },
+                muteHttpExceptions: true
+              });
+              if (exportRes.getResponseCode() === 200) {
+                var createdPdf = attachFolder.createFile(exportRes.getBlob().setName(targetName + '.pdf'));
+                results.push({ title: targetName + ' (PDF)', fileId: createdPdf.getId(), driveUrl: createdPdf.getUrl() });
+              }
+            } else {
+              var copied = srcFile.makeCopy(targetName, attachFolder);
+              results.push({ title: targetName, fileId: copied.getId(), driveUrl: copied.getUrl() });
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    return results;
   },
 
   getOrCreateSubfolder: function(parentFolder, name) {

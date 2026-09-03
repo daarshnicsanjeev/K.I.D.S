@@ -2340,26 +2340,49 @@ var ClassroomIngester = {
           materials: []
         };
 
-        // Announcements
+        // Announcements (with full attachment downloads & Drive link scanning)
         try {
           var annRes = Classroom.Courses.Announcements.list(course.id, { pageSize: 30 });
           if (annRes && annRes.announcements) {
-            courseData.announcements = annRes.announcements.map(function(a) {
-              return {
+            for (var aIdx = 0; aIdx < annRes.announcements.length; aIdx++) {
+              var a = annRes.announcements[aIdx];
+              var annItem = {
                 id: a.id,
                 text: a.text || '',
                 alternateLink: a.alternateLink || '',
                 creationTime: a.creationTime,
                 updateTime: a.updateTime,
-                materials: a.materials || []
+                materials: a.materials || [],
+                attachments: []
               };
-            });
+
+              if (a.materials && a.materials.length > 0) {
+                for (var am = 0; am < a.materials.length; am++) {
+                  var aMat = a.materials[am];
+                  var aDownloaded = this.downloadMaterialAttachment(aMat, attachFolder, course.name, 'Ann_' + (a.text ? a.text.substring(0, 15) : a.id));
+                  if (aDownloaded) {
+                    annItem.attachments.push(aDownloaded);
+                    totalAttachments++;
+                  }
+                }
+              }
+
+              if (a.text) {
+                var textDocs = this.scanTextForDriveFiles(a.text, attachFolder, course.name, 'AnnText_' + a.id);
+                for (var td = 0; td < textDocs.length; td++) {
+                  annItem.attachments.push(textDocs[td]);
+                  totalAttachments++;
+                }
+              }
+
+              courseData.announcements.push(annItem);
+            }
           }
         } catch (annErr) {
           McpLogger.log('WARN', 'CLASSROOM_ANN_WARN', 'Could not fetch announcements for ' + course.name + ': ' + annErr);
         }
 
-        // CourseWork
+        // CourseWork (Assignments & Worksheets)
         try {
           var cwRes = Classroom.Courses.CourseWork.list(course.id, { pageSize: 50 });
           if (cwRes && cwRes.courseWork) {
@@ -2408,6 +2431,14 @@ var ClassroomIngester = {
                 }
               }
 
+              if (cw.description) {
+                var descDocs = this.scanTextForDriveFiles(cw.description, attachFolder, course.name, cw.title);
+                for (var dd = 0; dd < descDocs.length; dd++) {
+                  cwItem.attachments.push(descDocs[dd]);
+                  totalAttachments++;
+                }
+              }
+
               courseData.courseWork.push(cwItem);
             }
           }
@@ -2415,7 +2446,7 @@ var ClassroomIngester = {
           McpLogger.log('WARN', 'CLASSROOM_CW_WARN', 'Could not fetch coursework for ' + course.name + ': ' + cwErr);
         }
 
-        // Materials
+        // Materials (Reference Resources)
         try {
           var matRes = Classroom.Courses.CourseWorkMaterials.list(course.id, { pageSize: 30 });
           if (matRes && matRes.courseWorkMaterial) {
@@ -2440,6 +2471,15 @@ var ClassroomIngester = {
                   }
                 }
               }
+
+              if (cwm.description) {
+                var cwmDocs = this.scanTextForDriveFiles(cwm.description, attachFolder, course.name, cwm.title);
+                for (var cd = 0; cd < cwmDocs.length; cd++) {
+                  matItem.attachments.push(cwmDocs[cd]);
+                  totalAttachments++;
+                }
+              }
+
               courseData.materials.push(matItem);
             }
           }
@@ -2470,7 +2510,6 @@ var ClassroomIngester = {
   fetchAllCourses: function(academicYear) {
     var courses = [];
     try {
-      // Strictly query ACTIVE courses only (exclude ARCHIVED, PROVISIONED, or DECLINED)
       var res = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] });
       if (res && res.courses) courses = res.courses;
     } catch (e) {
@@ -2501,7 +2540,6 @@ var ClassroomIngester = {
         var startYear = parseInt(yearMatch[1], 10);
         var endYear = parseInt(yearMatch[2], 10);
 
-        // Check for explicit prior school years (e.g. 2023-2024, 2024-2025, 2025-2026, 24-25, 25-26)
         for (var y = startYear - 4; y < startYear; y++) {
           var yNext = y + 1;
           var fullPastPattern = y + '-' + yNext;
@@ -2519,70 +2557,130 @@ var ClassroomIngester = {
     return true;
   },
 
+  extractDriveFileIdFromUrl: function(url) {
+    if (!url) return null;
+    var match = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    if (match) return match[1];
+    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    if (idMatch) return idMatch[1];
+    var openMatch = url.match(/\/open\?id=([a-zA-Z0-9_-]{20,})/);
+    if (openMatch) return openMatch[1];
+    return null;
+  },
+
+  scanTextForDriveFiles: function(text, attachFolder, courseName, itemTitle) {
+    if (!text) return [];
+    var results = [];
+    var urlRegex = /(https?:\/\/(?:drive|docs)\.google\.com\/[^\s"')<>]+)/gi;
+    var matches = text.match(urlRegex);
+    if (matches) {
+      for (var i = 0; i < matches.length; i++) {
+        var u = matches[i];
+        var fId = this.extractDriveFileIdFromUrl(u);
+        if (fId) {
+          var downloaded = this.downloadDriveFileById(fId, 'Doc_' + fId.substring(0, 8), attachFolder, courseName, itemTitle);
+          if (downloaded) results.push(downloaded);
+        }
+      }
+    }
+    return results;
+  },
+
+  downloadDriveFileById: function(fileId, title, attachFolder, courseName, itemTitle) {
+    try {
+      var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
+      var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+      var targetName = cleanCourse + '_' + cleanTitle + '_' + (title || fileId);
+
+      var existing = attachFolder.getFilesByName(targetName);
+      if (existing.hasNext()) {
+        var exFile = existing.next();
+        return {
+          title: title || targetName,
+          fileId: exFile.getId(),
+          driveUrl: exFile.getUrl()
+        };
+      }
+
+      var srcFile = null;
+      try {
+        srcFile = DriveApp.getFileById(fileId);
+      } catch (fErr) {}
+
+      if (srcFile) {
+        var mime = srcFile.getMimeType();
+        if (mime.indexOf('google-apps') !== -1) {
+          var token = ScriptApp.getOAuthToken();
+          var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=application/pdf', {
+            headers: { 'Authorization': 'Bearer ' + token },
+            muteHttpExceptions: true
+          });
+          if (exportRes.getResponseCode() === 200) {
+            var pdfBlob = exportRes.getBlob().setName(targetName + '.pdf');
+            var createdPdf = attachFolder.createFile(pdfBlob);
+            return {
+              title: (title || targetName) + ' (PDF)',
+              fileId: createdPdf.getId(),
+              driveUrl: createdPdf.getUrl()
+            };
+          }
+        } else {
+          var copied = srcFile.makeCopy(targetName, attachFolder);
+          return {
+            title: title || targetName,
+            fileId: copied.getId(),
+            driveUrl: copied.getUrl()
+          };
+        }
+      } else {
+        var token2 = ScriptApp.getOAuthToken();
+        var dlRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
+          headers: { 'Authorization': 'Bearer ' + token2 },
+          muteHttpExceptions: true
+        });
+        if (dlRes.getResponseCode() === 200) {
+          var blob = dlRes.getBlob().setName(targetName);
+          var fileObj = attachFolder.createFile(blob);
+          return {
+            title: title || targetName,
+            fileId: fileObj.getId(),
+            driveUrl: fileObj.getUrl()
+          };
+        }
+      }
+    } catch (e) {}
+    return null;
+  },
+
   downloadMaterialAttachment: function(mat, attachFolder, courseName, itemTitle) {
     try {
       if (mat.driveFile && mat.driveFile.driveFile) {
         var df = mat.driveFile.driveFile;
         var fileId = df.id;
         var title = df.title || 'attachment';
-
-        var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
-        var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-        var targetName = cleanCourse + '_' + cleanTitle + '_' + title;
-
-        var existing = attachFolder.getFilesByName(targetName);
-        if (existing.hasNext()) {
-          var exFile = existing.next();
-          return {
-            title: title,
-            fileId: exFile.getId(),
-            driveUrl: exFile.getUrl(),
-            alternateLink: df.alternateLink || '',
-            thumbnailUrl: df.thumbnailUrl || ''
-          };
+        var dObj = this.downloadDriveFileById(fileId, title, attachFolder, courseName, itemTitle);
+        if (dObj) {
+          dObj.alternateLink = df.alternateLink || '';
+          dObj.thumbnailUrl = df.thumbnailUrl || '';
+          return dObj;
         }
-
-        try {
-          var srcFile = DriveApp.getFileById(fileId);
-          var copied = srcFile.makeCopy(targetName, attachFolder);
-          return {
-            title: title,
-            fileId: copied.getId(),
-            driveUrl: copied.getUrl(),
-            alternateLink: df.alternateLink || '',
-            thumbnailUrl: df.thumbnailUrl || ''
-          };
-        } catch (copyErr) {
-          try {
-            var token = ScriptApp.getOAuthToken();
-            var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=application/pdf', {
-              headers: { 'Authorization': 'Bearer ' + token },
-              muteHttpExceptions: true
-            });
-            if (exportRes.getResponseCode() === 200) {
-              var pdfBlob = exportRes.getBlob().setName(targetName + '.pdf');
-              var createdPdf = attachFolder.createFile(pdfBlob);
-              return {
-                title: title + ' (PDF)',
-                fileId: createdPdf.getId(),
-                driveUrl: createdPdf.getUrl(),
-                alternateLink: df.alternateLink || '',
-                thumbnailUrl: df.thumbnailUrl || ''
-              };
-            }
-          } catch (expErr) {}
+      } else if (mat.link) {
+        var linkUrl = mat.link.url || '';
+        var embeddedId = this.extractDriveFileIdFromUrl(linkUrl);
+        if (embeddedId) {
+          var linkDownloaded = this.downloadDriveFileById(embeddedId, mat.link.title || 'DriveLink', attachFolder, courseName, itemTitle);
+          if (linkDownloaded) return linkDownloaded;
         }
+        return {
+          title: mat.link.title || 'Web Link',
+          url: linkUrl,
+          thumbnailUrl: mat.link.thumbnailUrl || ''
+        };
       } else if (mat.youtubeVideo) {
         return {
           title: mat.youtubeVideo.title || 'YouTube Video',
           youtubeUrl: mat.youtubeVideo.alternateLink || '',
           thumbnailUrl: mat.youtubeVideo.thumbnailUrl || ''
-        };
-      } else if (mat.link) {
-        return {
-          title: mat.link.title || 'Web Link',
-          url: mat.link.url || '',
-          thumbnailUrl: mat.link.thumbnailUrl || ''
         };
       } else if (mat.form) {
         return {
@@ -2666,7 +2764,8 @@ var GmailIngester = {
           var atts = msg.getAttachments();
           for (var a = 0; a < atts.length; a++) {
             var att = atts[a];
-            var attName = (subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25)) + '_' + att.getName();
+            var cleanSubj = subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+            var attName = cleanSubj + '_' + att.getName();
             try {
               var existing = attachFolder.getFilesByName(attName);
               var fileObj;
@@ -2686,6 +2785,21 @@ var GmailIngester = {
             } catch (attErr) {}
           }
 
+          var emailBody = msg.getPlainBody();
+          if (emailBody) {
+            var linkedDocs = this.scanTextForDriveFiles(emailBody, attachFolder, 'EmailNotice', subject);
+            for (var ld = 0; ld < linkedDocs.length; ld++) {
+              item.attachments.push({
+                name: linkedDocs[ld].title || 'Linked Circular',
+                fileId: linkedDocs[ld].fileId,
+                driveUrl: linkedDocs[ld].driveUrl,
+                mimeType: 'application/pdf',
+                size: 0
+              });
+              totalAttachments++;
+            }
+          }
+
           emailList.push(item);
         }
       }
@@ -2693,6 +2807,7 @@ var GmailIngester = {
       var resultPayload = {
         kidName: childName,
         academicYear: academicYear,
+        schoolDomain: schoolDomain || '',
         lastSyncedAt: new Date().toISOString(),
         totalEmails: emailList.length,
         totalAttachments: totalAttachments,
@@ -2708,6 +2823,59 @@ var GmailIngester = {
       McpLogger.log('ERROR', 'GMAIL_SYNC_ERROR', 'Gmail sync failed: ' + err.toString());
       throw err;
     }
+  },
+
+  extractDriveFileIdFromUrl: function(url) {
+    if (!url) return null;
+    var match = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    if (match) return match[1];
+    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    if (idMatch) return idMatch[1];
+    var openMatch = url.match(/\/open\?id=([a-zA-Z0-9_-]{20,})/);
+    if (openMatch) return openMatch[1];
+    return null;
+  },
+
+  scanTextForDriveFiles: function(text, attachFolder, prefix, subject) {
+    if (!text) return [];
+    var results = [];
+    var urlRegex = /(https?:\/\/(?:drive|docs)\.google\.com\/[^\s"')<>]+)/gi;
+    var matches = text.match(urlRegex);
+    if (matches) {
+      for (var i = 0; i < matches.length; i++) {
+        var u = matches[i];
+        var fId = this.extractDriveFileIdFromUrl(u);
+        if (fId) {
+          var cleanSubj = (subject || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+          var targetName = (prefix || 'Email') + '_' + cleanSubj + '_' + fId.substring(0, 8);
+          var existing = attachFolder.getFilesByName(targetName);
+          if (existing.hasNext()) {
+            var ex = existing.next();
+            results.push({ title: targetName, fileId: ex.getId(), driveUrl: ex.getUrl() });
+            continue;
+          }
+          try {
+            var srcFile = DriveApp.getFileById(fId);
+            var mime = srcFile.getMimeType();
+            if (mime.indexOf('google-apps') !== -1) {
+              var token = ScriptApp.getOAuthToken();
+              var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fId + '/export?mimeType=application/pdf', {
+                headers: { 'Authorization': 'Bearer ' + token },
+                muteHttpExceptions: true
+              });
+              if (exportRes.getResponseCode() === 200) {
+                var createdPdf = attachFolder.createFile(exportRes.getBlob().setName(targetName + '.pdf'));
+                results.push({ title: targetName + ' (PDF)', fileId: createdPdf.getId(), driveUrl: createdPdf.getUrl() });
+              }
+            } else {
+              var copied = srcFile.makeCopy(targetName, attachFolder);
+              results.push({ title: targetName, fileId: copied.getId(), driveUrl: copied.getUrl() });
+            }
+          } catch (e) {}
+        }
+      }
+    }
+    return results;
   },
 
   getOrCreateSubfolder: function(parentFolder, name) {
