@@ -287,43 +287,98 @@ export class PersonalDriveService {
     };
   }
 
+  private static rootFolderPromise: Promise<{ id: string; webViewLink?: string }> | null = null;
+
   /**
-   * Gets or creates the root folder on Personal Google Drive.
+   * Gets or creates the root folder on Personal Google Drive with strict concurrency mutex and deduplication.
    */
   public static async getOrCreateRootFolder(token?: string): Promise<{ id: string; webViewLink?: string }> {
-    const validToken = token || await this.getValidToken(false);
-    const existing = await this.getPersonalFolderInfo(validToken);
-    if (existing.isCreated && existing.folderId) {
-      return { id: existing.folderId, webViewLink: existing.folderUrl };
+    if (this.rootFolderPromise) {
+      return this.rootFolderPromise;
     }
 
-    await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_ROOT_CREATE] Creating root folder "${this.FOLDER_NAME}" on Google Drive...`);
+    this.rootFolderPromise = (async () => {
+      try {
+        const validToken = token || await this.getValidToken(false);
 
-    // Create root folder on Personal Drive
-    const res = await this.fetchWithAuth(
-      'https://www.googleapis.com/drive/v3/files',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: this.FOLDER_NAME,
-          mimeType: 'application/vnd.google-apps.folder',
-          description: 'Personal Google Drive School Intelligence Archive (Private Parent Storage)'
-        })
-      },
-      validToken
-    );
+        // 1. Check storage first
+        const state = await chrome.storage.local.get(['personal_drive_folder_id']);
+        if (state.personal_drive_folder_id) {
+          try {
+            const checkRes = await this.fetchWithAuth(
+              `https://www.googleapis.com/drive/v3/files/${state.personal_drive_folder_id}?fields=id,name,webViewLink,trashed`,
+              {},
+              validToken
+            );
+            if (checkRes.ok) {
+              const checkData = await checkRes.json();
+              if (!checkData.trashed && checkData.name === this.FOLDER_NAME) {
+                return { id: checkData.id, webViewLink: checkData.webViewLink };
+              }
+            }
+          } catch (e) {}
+        }
 
-    if (!res.ok) {
-      const err = await res.text();
-      await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_ROOT_ERROR] Failed to create root folder: HTTP ${res.status} | ${err}`);
-      throw new Error(`Failed to create personal Drive root folder: HTTP ${res.status}`);
-    }
+        // 2. Search Google Drive for any existing folders with name 'K.I.D.S. Data'
+        const q = encodeURIComponent(`name = '${this.FOLDER_NAME}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+        const searchRes = await this.fetchWithAuth(
+          `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink,createdTime)&orderBy=createdTime`,
+          {},
+          validToken
+        );
 
-    const created = await res.json();
-    await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[DRIVE_ROOT_SUCCESS] Created root folder "${this.FOLDER_NAME}" (ID: ${created.id})`);
-    await chrome.storage.local.set({ personal_drive_folder_id: created.id });
-    return { id: created.id, webViewLink: created.webViewLink };
+        if (searchRes.ok) {
+          const searchData = await searchRes.json();
+          if (searchData.files && searchData.files.length > 0) {
+            const primary = searchData.files[0];
+            await chrome.storage.local.set({ personal_drive_folder_id: primary.id });
+
+            // Auto-clean any secondary duplicate folders created by race conditions
+            if (searchData.files.length > 1) {
+              for (let i = 1; i < searchData.files.length; i++) {
+                const dup = searchData.files[i];
+                await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removing duplicate folder "${this.FOLDER_NAME}" (ID: ${dup.id})`);
+                this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, validToken).catch(() => {});
+              }
+            }
+
+            return { id: primary.id, webViewLink: primary.webViewLink };
+          }
+        }
+
+        await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_ROOT_CREATE] Creating root folder "${this.FOLDER_NAME}" on Google Drive...`);
+
+        // 3. Create single authoritative root folder on Personal Drive
+        const res = await this.fetchWithAuth(
+          'https://www.googleapis.com/drive/v3/files',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: this.FOLDER_NAME,
+              mimeType: 'application/vnd.google-apps.folder',
+              description: 'Personal Google Drive School Intelligence Archive (Private Parent Storage)'
+            })
+          },
+          validToken
+        );
+
+        if (!res.ok) {
+          const err = await res.text();
+          await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_ROOT_ERROR] Failed to create root folder: HTTP ${res.status} | ${err}`);
+          throw new Error(`Failed to create personal Drive root folder: HTTP ${res.status}`);
+        }
+
+        const created = await res.json();
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `[DRIVE_ROOT_SUCCESS] Created root folder "${this.FOLDER_NAME}" (ID: ${created.id})`);
+        await chrome.storage.local.set({ personal_drive_folder_id: created.id });
+        return { id: created.id, webViewLink: created.webViewLink };
+      } finally {
+        this.rootFolderPromise = null;
+      }
+    })();
+
+    return this.rootFolderPromise;
   }
 
   /**
