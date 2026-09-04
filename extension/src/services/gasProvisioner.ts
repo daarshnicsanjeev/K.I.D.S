@@ -1954,15 +1954,18 @@ var PortalApiFetcher = {
       return json;
     } catch (e) {
       var clean = contentText;
-      clean = clean.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, ' ');
-      clean = clean.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, ' ');
-      clean = clean.replace(/<noscript[^>]*>([\s\S]*?)<\/noscript>/gi, ' ');
-      clean = clean.replace(/<br[^>]*>/gi, '\\n');
-      clean = clean.replace(/<\/p>/gi, '\\n');
-      clean = clean.replace(/<\/tr>/gi, '\\n');
-      clean = clean.replace(/<td[^>]*>/gi, ' | ');
-      clean = clean.replace(/<th[^>]*>/gi, ' | ');
-      clean = clean.replace(/<[^>]+>/g, ' ');
+      var reScript = new RegExp('<' + 'script[^>]*>[\\s\\S]*?<' + '/script>', 'gi');
+      var reStyle = new RegExp('<' + 'style[^>]*>[\\s\\S]*?<' + '/style>', 'gi');
+      var reNoScript = new RegExp('<' + 'noscript[^>]*>[\\s\\S]*?<' + '/noscript>', 'gi');
+      clean = clean.replace(reScript, ' ');
+      clean = clean.replace(reStyle, ' ');
+      clean = clean.replace(reNoScript, ' ');
+      clean = clean.replace(new RegExp('<br[^>]*>', 'gi'), '\\n');
+      clean = clean.replace(new RegExp('</p>', 'gi'), '\\n');
+      clean = clean.replace(new RegExp('</tr>', 'gi'), '\\n');
+      clean = clean.replace(new RegExp('<td[^>]*>', 'gi'), ' | ');
+      clean = clean.replace(new RegExp('<th[^>]*>', 'gi'), ' | ');
+      clean = clean.replace(new RegExp('<[^>]+>', 'g'), ' ');
       clean = clean.replace(/&nbsp;/gi, ' ');
       clean = clean.replace(/&amp;/gi, '&');
       clean = clean.replace(/&lt;/gi, '<');
