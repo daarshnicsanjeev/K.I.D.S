@@ -1954,12 +1954,12 @@ var PortalApiFetcher = {
       return json;
     } catch (e) {
       var clean = contentText;
-      clean = clean.replace(new RegExp('<script[^>]*>([\\s\\S]*?)<\\/script>', 'gi'), ' ');
-      clean = clean.replace(new RegExp('<style[^>]*>([\\s\\S]*?)<\\/style>', 'gi'), ' ');
-      clean = clean.replace(new RegExp('<noscript[^>]*>([\\s\\S]*?)<\\/noscript>', 'gi'), ' ');
-      clean = clean.replace(/<br[^>]*>/gi, '\n');
-      clean = clean.replace(/<\/p>/gi, '\n');
-      clean = clean.replace(/<\/tr>/gi, '\n');
+      clean = clean.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, ' ');
+      clean = clean.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, ' ');
+      clean = clean.replace(/<noscript[^>]*>([\s\S]*?)<\/noscript>/gi, ' ');
+      clean = clean.replace(/<br[^>]*>/gi, '\\n');
+      clean = clean.replace(/<\/p>/gi, '\\n');
+      clean = clean.replace(/<\/tr>/gi, '\\n');
       clean = clean.replace(/<td[^>]*>/gi, ' | ');
       clean = clean.replace(/<th[^>]*>/gi, ' | ');
       clean = clean.replace(/<[^>]+>/g, ' ');
