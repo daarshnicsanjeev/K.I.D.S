@@ -2669,11 +2669,11 @@ var ClassroomIngester = {
 
   extractDriveFileIdFromUrl: function(url) {
     if (!url) return null;
-    var match = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    var match = url.match(new RegExp('/d/([a-zA-Z0-9_-]{20,})'));
     if (match) return match[1];
-    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    var idMatch = url.match(new RegExp('[?&]id=([a-zA-Z0-9_-]{20,})'));
     if (idMatch) return idMatch[1];
-    var openMatch = url.match(/\/open\?id=([a-zA-Z0-9_-]{20,})/);
+    var openMatch = url.match(new RegExp('/open[?]id=([a-zA-Z0-9_-]{20,})'));
     if (openMatch) return openMatch[1];
     return null;
   },
@@ -2681,7 +2681,7 @@ var ClassroomIngester = {
   scanTextForDriveFiles: function(text, attachFolder, courseName, itemTitle) {
     if (!text) return [];
     var results = [];
-    var urlRegex = /(https?:\/\/(?:drive|docs)\.google\.com\/[^\s"')<>]+)/gi;
+    var urlRegex = new RegExp('https?://(?:drive|docs)\\.google\\.com/[^\\s"\'\\)<>]+', 'gi');
     var matches = text.match(urlRegex);
     if (matches) {
       for (var i = 0; i < matches.length; i++) {
@@ -2937,11 +2937,11 @@ var GmailIngester = {
 
   extractDriveFileIdFromUrl: function(url) {
     if (!url) return null;
-    var match = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/);
+    var match = url.match(new RegExp('/d/([a-zA-Z0-9_-]{20,})'));
     if (match) return match[1];
-    var idMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/);
+    var idMatch = url.match(new RegExp('[?&]id=([a-zA-Z0-9_-]{20,})'));
     if (idMatch) return idMatch[1];
-    var openMatch = url.match(/\/open\?id=([a-zA-Z0-9_-]{20,})/);
+    var openMatch = url.match(new RegExp('/open[?]id=([a-zA-Z0-9_-]{20,})'));
     if (openMatch) return openMatch[1];
     return null;
   },
@@ -2949,7 +2949,7 @@ var GmailIngester = {
   scanTextForDriveFiles: function(text, attachFolder, prefix, subject) {
     if (!text) return [];
     var results = [];
-    var urlRegex = /(https?:\/\/(?:drive|docs)\.google\.com\/[^\s"')<>]+)/gi;
+    var urlRegex = new RegExp('https?://(?:drive|docs)\\.google\\.com/[^\\s"\'\\)<>]+', 'gi');
     var matches = text.match(urlRegex);
     if (matches) {
       for (var i = 0; i < matches.length; i++) {
