@@ -566,10 +566,23 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (jawsLiveAnnouncer) jawsLiveAnnouncer.textContent = `Personal Master Worker deployment ${pct} percent. ${phase}. ${sub}`;
       });
 
-      const parentToken = await PersonalDriveService.getValidToken(false);
-      const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
+      let parentToken = await PersonalDriveService.getValidToken(false);
+      let res;
+      try {
+        const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
+        res = await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolder.id);
+      } catch (firstErr: any) {
+        if (firstErr.message && (firstErr.message.includes('403') || firstErr.message.includes('insufficient') || firstErr.message.includes('SCOPE') || firstErr.message.includes('PERMISSION_DENIED'))) {
+          GasProvisionerService.log('🔄 Requesting updated Google Apps Script permissions for Parent Account...');
+          const auth = await PersonalDriveService.authenticatePersonalAccount();
+          parentToken = auth.token;
+          const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
+          res = await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolder.id);
+        } else {
+          throw firstErr;
+        }
+      }
 
-      const res = await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolder.id);
       setA11yVisibility(step1MasterWorkerBadge, true);
       btnStep1DeployMasterWorker.textContent = '⚡ Update Personal Master Cloud Worker';
       setA11yVisibility(step1ChildSetupBox, true);
