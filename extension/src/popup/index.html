@@ -228,28 +228,31 @@
         </button>
 
         <!-- Personal Master Worker Deployment Box (Parent Google Account) -->
-        <div id="step1MasterWorkerBox" class="guidance-box mb-2 hidden" aria-hidden="true" hidden role="region" aria-label="Personal Master Worker Deployment">
-          <p class="guidance-title">🌐 1. Personal Master Cloud Worker Setup:</p>
-          <div style="font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 8px;">
-            Deploys your 24/7 Personal Master Cloud Worker in Google Apps Script. Runs cloud syncs, scrapes portals every 6 hours, and builds daily digests directly inside your personal <code>K.I.D.S. Data/</code> Google Drive.
+        <div id="step1MasterWorkerBox" class="mb-2 hidden" aria-hidden="true" hidden role="region" aria-label="Personal Master Worker Deployment">
+          <!-- Setup Actions Container (Visible only when Worker is NOT yet deployed) -->
+          <div id="step1MasterWorkerActionsContainer" class="guidance-box mb-1">
+            <p class="guidance-title">🌐 1. Personal Master Cloud Worker Setup:</p>
+            <div style="font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 8px;">
+              Deploys your 24/7 Personal Master Cloud Worker in Google Apps Script. Runs cloud syncs, scrapes portals every 6 hours, and builds daily digests directly inside your personal <code>K.I.D.S. Data/</code> Google Drive.
+            </div>
+
+            <div style="display: flex; flex-direction: column; gap: 6px;">
+              <button id="btnStep1OpenApiSettings" class="btn btn-secondary btn-hero" aria-label="Verify Google Apps Script API Enabled for Personal Account">
+                🔗 1. Verify Google Apps Script API Enabled
+              </button>
+              <button id="btnStep1DeployMasterWorker" class="btn btn-success btn-hero" aria-label="Deploy Personal Master Cloud Worker">
+                ⚡ 2. Deploy Personal Master Cloud Worker
+              </button>
+            </div>
           </div>
 
-          <div style="display: flex; flex-direction: column; gap: 6px;">
-            <button id="btnStep1OpenApiSettings" class="btn btn-secondary btn-hero" aria-label="Verify Google Apps Script API Enabled for Personal Account">
-              🔗 1. Verify Google Apps Script API Enabled
-            </button>
-            <button id="btnStep1DeployMasterWorker" class="btn btn-success btn-hero" aria-label="Deploy Personal Master Cloud Worker">
-              ⚡ 2. Deploy Personal Master Cloud Worker
-            </button>
-          </div>
-
-          <!-- Master Worker Status Badge -->
-          <div id="step1MasterWorkerBadge" class="status-box mt-1 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); background: #f0fdf4;" role="status" aria-live="polite">
+          <!-- Master Worker Status Badge (Visible when Worker IS deployed) -->
+          <div id="step1MasterWorkerBadge" class="status-box hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); background: #f0fdf4;" role="status" aria-live="polite">
             <span aria-hidden="true">🟢</span>
             <div style="flex: 1;">
               <strong style="color: #166534;">Personal Master Worker Active</strong>
               <div id="lblStep1MasterWorkerDetails" style="font-size: 0.7rem; color: #166534;">
-                Master Cloud Collector & Portal Engine Ready
+                Autonomous 24/7 Cloud Collector & Portal Engine Ready
               </div>
             </div>
           </div>
