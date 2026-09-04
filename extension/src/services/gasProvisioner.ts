@@ -1615,13 +1615,13 @@ var WhatsAppStorage = {
 
       var y = 2026, mNum = 1, d = 1, hour = 12, min = 0;
 
-      var slashMatch = combined.match(/\\b(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})\\b/);
+      var slashMatch = combined.match(new RegExp('\\b(\\d{1,2})/(\\d{1,2})/(\\d{4})\\b'));
       if (slashMatch) {
         mNum = parseInt(slashMatch[1], 10);
         d = parseInt(slashMatch[2], 10);
         y = parseInt(slashMatch[3], 10);
       } else {
-        var isoMatch = combined.match(/\\b(\\d{4})-(\\d{1,2})-(\\d{1,2})\\b/);
+        var isoMatch = combined.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
         if (isoMatch) {
           y = parseInt(isoMatch[1], 10);
           mNum = parseInt(isoMatch[2], 10);
@@ -1954,12 +1954,12 @@ var PortalApiFetcher = {
       return json;
     } catch (e) {
       var clean = contentText;
-      clean = clean.replace(/<script[^>]*>([\\s\\S]*?)<\\/script>/gi, ' ');
-      clean = clean.replace(/<style[^>]*>([\\s\\S]*?)<\\/style>/gi, ' ');
-      clean = clean.replace(/<noscript[^>]*>([\\s\\S]*?)<\\/noscript>/gi, ' ');
-      clean = clean.replace(/<br[^>]*>/gi, '\\n');
-      clean = clean.replace(/<\\/p>/gi, '\\n');
-      clean = clean.replace(/<\\/tr>/gi, '\\n');
+      clean = clean.replace(new RegExp('<script[^>]*>([\\s\\S]*?)<\\/script>', 'gi'), ' ');
+      clean = clean.replace(new RegExp('<style[^>]*>([\\s\\S]*?)<\\/style>', 'gi'), ' ');
+      clean = clean.replace(new RegExp('<noscript[^>]*>([\\s\\S]*?)<\\/noscript>', 'gi'), ' ');
+      clean = clean.replace(/<br[^>]*>/gi, '\n');
+      clean = clean.replace(/<\/p>/gi, '\n');
+      clean = clean.replace(/<\/tr>/gi, '\n');
       clean = clean.replace(/<td[^>]*>/gi, ' | ');
       clean = clean.replace(/<th[^>]*>/gi, ' | ');
       clean = clean.replace(/<[^>]+>/g, ' ');
