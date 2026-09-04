@@ -81,6 +81,113 @@ export class GasProvisionerService {
   }
 
   /**
+   * Retrieves the current Master Personal Worker status and credentials from Drive / storage.
+   */
+  public static async getMasterWorkerStatus(token?: string): Promise<{ isDeployed: boolean; scriptId?: string; webAppUrl?: string }> {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        const stored = await chrome.storage.local.get(['master_worker_script_id', 'master_worker_deployment_url']);
+        if (stored.master_worker_script_id) {
+          return { isDeployed: true, scriptId: stored.master_worker_script_id, webAppUrl: stored.master_worker_deployment_url };
+        }
+      }
+      const parentToken = token || (await PersonalDriveService.getValidToken(false).catch(() => ''));
+      if (parentToken) {
+        const root = await PersonalDriveService.getOrCreateRootFolder(parentToken).catch(() => null);
+        if (root) {
+          const rootConfig = await PersonalDriveService.readJsonFileInFolder(parentToken, root.id, 'K.I.D.S._Data_config.json').catch(() => null);
+          if (rootConfig && rootConfig.masterWorkerScriptId) {
+            return { isDeployed: true, scriptId: rootConfig.masterWorkerScriptId, webAppUrl: rootConfig.masterWorkerDeploymentUrl };
+          }
+        }
+      }
+    } catch (e) {}
+    return { isDeployed: false };
+  }
+
+  /**
+   * Provisions the Master Personal Worker in the parent's personal Google account (daarshnicsanjeev@gmail.com).
+   */
+  public static async provisionPersonalMasterWorker(parentToken: string, rootFolderId: string): Promise<ProvisionResult> {
+    this.reportProgress(15, 'Phase 1 of 4 (15%)', 'Authenticating Parent Personal Google Account & Google Drive...');
+    this.log('🔐 Provisioning Master Personal Worker in Parent Account (daarshnicsanjeev@gmail.com)...');
+
+    let scriptId = '';
+    let deploymentId = '';
+    let webAppUrl = '';
+
+    const rootConfig = await PersonalDriveService.readJsonFileInFolder(parentToken, rootFolderId, 'K.I.D.S._Data_config.json').catch(() => null);
+    let existingScriptId = (rootConfig && rootConfig.masterWorkerScriptId) ? rootConfig.masterWorkerScriptId : '';
+
+    if (existingScriptId) {
+      const isAlive = await this.verifyScriptAlive(existingScriptId, parentToken);
+      if (isAlive) {
+        this.log(`📦 Matched existing Master Personal Worker in Parent Account (${existingScriptId}). Reusing...`);
+        scriptId = existingScriptId;
+        deploymentId = rootConfig.masterWorkerDeploymentId || '';
+        webAppUrl = rootConfig.masterWorkerDeploymentUrl || '';
+      }
+    }
+
+    if (!scriptId) {
+      this.reportProgress(35, 'Phase 2 of 4 (35%)', 'Creating Master Apps Script Project in Parent Account...');
+      this.log('📁 Creating Master Worker Project (POST /v1/projects)...');
+      const project = await this.createProject(parentToken);
+      scriptId = project.scriptId;
+      this.log(`✅ Created Master Worker Project: ${scriptId}`);
+    }
+
+    const masterAccessKey = 'MasterKey_' + Math.random().toString(36).substring(2, 10);
+
+    this.reportProgress(60, 'Phase 3 of 4 (60%)', 'Uploading Master Sync, Portal Scraper & Multi-Child Registry...');
+    this.log('📤 Uploading Master Personal Worker modules to script project...');
+    await this.updateProjectContent(scriptId, masterAccessKey, parentToken, 'Master', 'Family');
+
+    this.reportProgress(80, 'Phase 4 of 4 (80%)', 'Deploying Master Web App & Creating 24/7 Cloud Triggers...');
+    this.log('🏷️ Publishing Master Web App deployment...');
+    const version = await this.createVersion(scriptId, parentToken, 'Master', 'Family');
+    const versionNumber = version.versionNumber || 1;
+
+    if (deploymentId) {
+      await this.updateDeployment(scriptId, deploymentId, versionNumber, parentToken, 'Master', 'Family');
+      if (!webAppUrl) webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
+    } else {
+      const deployment = await this.createDeployment(scriptId, versionNumber, parentToken, 'Master', 'Family');
+      deploymentId = deployment.deploymentId;
+      const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
+      webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
+    }
+
+    // Strip multi-account prefix
+    webAppUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//, '/macros/s/');
+    if (!webAppUrl.includes('accessKey=')) {
+      webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${masterAccessKey}` : `${webAppUrl}?accessKey=${masterAccessKey}`;
+    }
+
+    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId);
+
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      await chrome.storage.local.set({
+        master_worker_script_id: scriptId,
+        master_worker_deployment_url: webAppUrl
+      }).catch(() => {});
+    }
+
+    await PersonalDriveService.saveRootConfig(parentToken);
+
+    this.reportProgress(100, 'Phase 4 of 4 (100%)', 'Personal Master Worker Deployed & Active!');
+    this.log('✅ Personal Master Worker provisioned and active in Parent Google Account.');
+
+    return {
+      success: true,
+      scriptId,
+      deploymentId,
+      webAppUrl,
+      verifiedTools: []
+    };
+  }
+
+  /**
    * Main provisioning pipeline: Auth -> Reuse or Create Project -> Update Content -> Deploy -> Verify.
    */
   public static async provision(forceNew: boolean = false): Promise<ProvisionResult> {

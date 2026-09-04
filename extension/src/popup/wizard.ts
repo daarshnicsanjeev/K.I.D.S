@@ -52,6 +52,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Step 1 UI Elements
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
+  const step1MasterWorkerBox = document.getElementById('step1MasterWorkerBox') as HTMLElement;
+  const btnStep1OpenApiSettings = document.getElementById('btnStep1OpenApiSettings') as HTMLButtonElement;
+  const btnStep1DeployMasterWorker = document.getElementById('btnStep1DeployMasterWorker') as HTMLButtonElement;
+  const step1MasterWorkerBadge = document.getElementById('step1MasterWorkerBadge') as HTMLElement;
+  const lblStep1MasterWorkerDetails = document.getElementById('lblStep1MasterWorkerDetails') as HTMLElement;
   const step1ChildSetupBox = document.getElementById('step1ChildSetupBox') as HTMLElement;
   const txtStep1ChildName = document.getElementById('txtStep1ChildName') as HTMLInputElement;
   const lblStep1NameError = document.getElementById('lblStep1NameError') as HTMLElement;
@@ -518,10 +523,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.personal_drive_account_email) {
       cachedPersonalToken = state.personal_drive_auth_token || null;
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = state.personal_drive_account_email;
+      setA11yVisibility(step1MasterWorkerBox, true);
       setA11yVisibility(step1ChildSetupBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
+
+      GasProvisionerService.getMasterWorkerStatus().then(status => {
+        if (status.isDeployed) {
+          setA11yVisibility(step1MasterWorkerBadge, true);
+          if (btnStep1DeployMasterWorker) btnStep1DeployMasterWorker.textContent = '⚡ Update Personal Master Cloud Worker';
+        }
+      }).catch(() => {});
     } else {
       setA11yVisibility(btnStep1ConnectPersonal, true);
+      setA11yVisibility(step1MasterWorkerBox, false);
       setA11yVisibility(step1ChildSetupBox, false);
     }
   } catch {}
@@ -530,16 +544,68 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   // STEP 1 HANDLERS
   // ==========================================
+  btnStep1OpenApiSettings?.addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://script.google.com/home/usersettings' });
+  });
+
+  btnStep1DeployMasterWorker?.addEventListener('click', async () => {
+    btnStep1DeployMasterWorker.disabled = true;
+    btnStep1DeployMasterWorker.textContent = '⏳ Deploying Master Worker...';
+    setA11yVisibility(mcpDeployProgressOverlay, true);
+
+    try {
+      GasProvisionerService.setProgressCallback((pct, phase, sub) => {
+        if (mcpDeployProgressBar) mcpDeployProgressBar.style.width = `${pct}%`;
+        if (mcpDeployProgressContainer) {
+          mcpDeployProgressContainer.setAttribute('aria-valuenow', String(pct));
+          mcpDeployProgressContainer.setAttribute('aria-valuetext', `Master Worker: ${pct} percent. ${phase}: ${sub}`);
+        }
+        if (lblMcpDeployTitle) lblMcpDeployTitle.textContent = `🚀 ${phase}`;
+        if (lblMcpDeploySubtext) lblMcpDeploySubtext.textContent = sub;
+        if (lblMcpDeployPhase) lblMcpDeployPhase.textContent = `Master Worker Progress: ${pct}% complete`;
+        if (jawsLiveAnnouncer) jawsLiveAnnouncer.textContent = `Personal Master Worker deployment ${pct} percent. ${phase}. ${sub}`;
+      });
+
+      const parentToken = await PersonalDriveService.getValidToken(false);
+      const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
+
+      const res = await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolder.id);
+      setA11yVisibility(step1MasterWorkerBadge, true);
+      btnStep1DeployMasterWorker.textContent = '⚡ Update Personal Master Cloud Worker';
+      setA11yVisibility(step1ChildSetupBox, true);
+      if (lblStep1MasterWorkerDetails) {
+        lblStep1MasterWorkerDetails.textContent = `Master Worker active (Script ID: ${res.scriptId.substring(0, 12)}...)`;
+      }
+      alert('✅ Personal Master Cloud Worker deployed successfully! Your 24/7 cloud sync & portal engine is active.');
+    } catch (e: any) {
+      alert(`Master Worker deployment failed: ${e.message || String(e)}`);
+    } finally {
+      setA11yVisibility(mcpDeployProgressOverlay, false);
+      btnStep1DeployMasterWorker.disabled = false;
+      if (btnStep1DeployMasterWorker.textContent?.includes('Deploying')) {
+        btnStep1DeployMasterWorker.textContent = '⚡ 2. Deploy Personal Master Cloud Worker';
+      }
+    }
+  });
+
   btnStep1ConnectPersonal?.addEventListener('click', async () => {
     btnStep1ConnectPersonal.disabled = true;
     btnStep1ConnectPersonal.textContent = '🔐 Signing in...';
     try {
       const auth = await PersonalDriveService.authenticatePersonalAccount();
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = auth.email;
+      setA11yVisibility(step1MasterWorkerBox, true);
       setA11yVisibility(step1ChildSetupBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
       setTimeout(() => txtStep1ChildName?.focus(), 150);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
+
+      GasProvisionerService.getMasterWorkerStatus(auth.token).then(status => {
+        if (status.isDeployed) {
+          setA11yVisibility(step1MasterWorkerBadge, true);
+          if (btnStep1DeployMasterWorker) btnStep1DeployMasterWorker.textContent = '⚡ Update Personal Master Cloud Worker';
+        }
+      }).catch(() => {});
 
       try {
         const restored = await PersonalDriveService.restoreAllProfilesFromDrive(auth.token);
