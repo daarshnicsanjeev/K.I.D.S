@@ -9,25 +9,45 @@ var PortalIngester = {
     if (!lock.tryLock(30000)) return { status: 'locked' };
 
     try {
-      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing 6-hour autonomous portal sync for all children');
       var props = PropertiesService.getScriptProperties();
       var rawRegistry = props.getProperty('multi_child_portal_registry');
       if (!rawRegistry) {
-        McpLogger.log('INFO', 'PORTAL_CRON_EMPTY', 'No registered school portals found in registry.');
-        return { status: 'empty' };
+        return { status: 'empty', reason: 'No registered school portals found in registry.' };
       }
 
-      var registry = JSON.parse(rawRegistry);
+      var registry;
+      try {
+        registry = JSON.parse(rawRegistry);
+      } catch (parseErr) {
+        return { status: 'error', reason: 'Invalid portal registry JSON' };
+      }
+
       var children = registry.children || [];
+      if (!children || children.length === 0) {
+        return { status: 'empty', reason: 'No children configured with portals yet.' };
+      }
+
+      var hasAnyActiveDomains = false;
+      for (var i = 0; i < children.length; i++) {
+        if (children[i].domains && Object.keys(children[i].domains).length > 0) {
+          hasAnyActiveDomains = true;
+          break;
+        }
+      }
+      if (!hasAnyActiveDomains) {
+        return { status: 'empty', reason: 'No active portal domains registered yet.' };
+      }
+
+      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing 6-hour autonomous portal sync for all children');
       var results = [];
 
       for (var c = 0; c < children.length; c++) {
         var child = children[c];
         try {
           var childRes = this.syncChild(child);
-          results.push(childRes);
+          if (childRes) results.push(childRes);
         } catch (childErr) {
-          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal sync error for ' + child.kidName + ': ' + childErr);
+          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal sync error for ' + (child.kidName || 'Child') + ': ' + childErr);
         }
       }
 
@@ -38,10 +58,19 @@ var PortalIngester = {
   },
 
   syncChild: function(child) {
-    var childFolder = DriveApp.getFolderById(child.portalFolderId);
+    if (!child || !child.portalFolderId) return null;
+    var childFolder;
+    try {
+      childFolder = DriveApp.getFolderById(child.portalFolderId);
+      if (!childFolder || childFolder.isTrashed()) return null;
+    } catch (fErr) {
+      return null;
+    }
+
     var portalsFolder = this.getOrCreateSubfolder(childFolder, 'portals');
     var domains = child.domains || {};
     var domainKeys = Object.keys(domains);
+    if (domainKeys.length === 0) return null;
 
     var statuses = [];
 

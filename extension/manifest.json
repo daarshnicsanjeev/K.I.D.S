@@ -12,10 +12,17 @@
     "storage",
     "cookies",
     "identity",
-    "downloads"
+    "downloads",
+    "notifications"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://script.google.com/*",
+    "https://*.google.com/*",
+    "https://web.whatsapp.com/*"
+  ],
+  "optional_host_permissions": [
+    "https://*/*",
+    "http://*/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -23,23 +30,22 @@
   },
   "action": {
     "default_popup": "src/popup/index.html",
-    "default_title": "Kids Intelligent Dashboard System (K.I.D.S.)"
+    "default_title": "Kids Intelligent Dashboard System (K.I.D.S.)",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "content_scripts": [
     {
-      "matches": ["https://script.google.com/create*", "https://script.google.com/home/projects/*"],
-      "js": ["autoDeployScript.js"]
-    },
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["injected.js"],
-      "world": "MAIN",
-      "run_at": "document_start"
-    },
-    {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
-      "run_at": "document_start"
+      "matches": [
+        "https://web.whatsapp.com/*"
+      ],
+      "js": [
+        "whatsappExtractor.js"
+      ],
+      "run_at": "document_idle"
     }
   ],
   "oauth2": {
@@ -48,12 +54,14 @@
       "https://www.googleapis.com/auth/script.projects",
       "https://www.googleapis.com/auth/script.deployments",
       "https://www.googleapis.com/auth/drive.file",
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/drive.metadata.readonly",
       "https://www.googleapis.com/auth/classroom.courses.readonly",
       "https://www.googleapis.com/auth/classroom.coursework.me.readonly",
-      "https://www.googleapis.com/auth/calendar.events.readonly",
-      "https://www.googleapis.com/auth/gmail.readonly"
+      "https://www.googleapis.com/auth/calendar.events.readonly"
     ]
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
   }
 }

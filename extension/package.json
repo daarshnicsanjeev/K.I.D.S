@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && node -e \"require('fs').copyFileSync('manifest.json', 'dist/manifest.json')\"",
+    "build": "vitest run && tsc && vite build && node scripts/copy-assets.cjs",
     "test": "vitest run"
   },
   "dependencies": {},

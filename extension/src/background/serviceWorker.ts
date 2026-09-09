@@ -2041,13 +2041,18 @@ async function handleMessage(message: { type: string; payload?: any }) {
       }
 
       const activeChild = await ChildManager.getActiveProfile();
-      const childName = activeChild ? activeChild.name : 'Child_1';
+      if (!activeChild || !activeChild.trackedChats || activeChild.trackedChats.length === 0) {
+        return { success: false, reason: 'No active tracked chats configured for child (WhatsApp setup not active)' };
+      }
+
+      const childName = activeChild.name || 'Child_1';
+      const targetGroup = activeChild.trackedChats[0]?.name || 'School Group';
       const cleanDocName = (stream.fileName || 'School_Document.pdf').replace(/^View\s*["']?|["']$/gi, '').trim();
       const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, {
         name: cleanDocName,
         mimeType: stream.mimeType || 'application/pdf',
         base64Content: stream.base64Data
-      }, childName);
+      }, childName, targetGroup);
 
       if (uploadRes) {
         await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Auto-captured live PDF stream "${uploadRes.name}" (${Math.round((stream.size || 0) / 1024)} KB) and uploaded to Personal Drive for ${childName}`, {
@@ -2058,7 +2063,7 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
         // Also backfill this attachment into existing archive
         await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, [{
-          chatName: 'School Group',
+          chatName: targetGroup,
           sender: 'Teacher/Parent',
           timestamp: new Date().toLocaleTimeString(),
           body: `[Document: ${uploadRes.name}]`,
@@ -2178,8 +2183,9 @@ async function handleMessage(message: { type: string; payload?: any }) {
 
       if (state.personal_drive_connected && state.personal_drive_auth_token) {
         try {
-          const folder = await PersonalDriveService.getOrCreatePersonalFolder(state.personal_drive_auth_token, childName);
-          const q = encodeURIComponent(`name = '${fileName}' and '${folder.id}' in parents and trashed = false`);
+          const msgFolder = await PersonalDriveService.getOrCreateMessagingToolsFolder(state.personal_drive_auth_token, childName);
+          const archiveName = `K.I.D.S._${childName}_archive.json`;
+          const q = encodeURIComponent(`(name = '${archiveName}' or name = '${fileName}') and '${msgFolder.id}' in parents and trashed = false`);
           const searchRes = await PersonalDriveService.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, state.personal_drive_auth_token);
           if (searchRes.ok) {
             const data = await searchRes.json();
@@ -2210,16 +2216,135 @@ async function handleMessage(message: { type: string; payload?: any }) {
       return { success: true };
     }
 
+    case 'CLAIM_PARENT_VAULT_OWNERSHIP': {
+      const parentToken = message.payload?.parentToken;
+      const studentToken = message.payload?.studentToken;
+      const claimRes = await PersonalDriveService.claimFullParentVaultOwnership(parentToken, studentToken);
+      return { success: true, ...claimRes };
+    }
+
+    case 'SYNC_CLASSROOM_ATTACHMENTS': {
+      return { success: true, skipped: true, reason: 'managed_by_gas_master_worker' };
+    }
+
+    case 'SYNC_EMAIL_ATTACHMENTS': {
+      return { success: true, skipped: true, reason: 'managed_by_gas_master_worker' };
+    }
+
+    case 'GET_CLASSROOM_DEEP_LOG': {
+      const state = await chrome.storage.local.get(['classroom_sync_deep_log_text', 'classroom_sync_deep_log_json', 'personal_drive_auth_token']);
+      if (state.classroom_sync_deep_log_text) {
+        return {
+          success: true,
+          deepLogText: state.classroom_sync_deep_log_text,
+          deepLogJson: state.classroom_sync_deep_log_json || null
+        };
+      }
+      // If not in storage, try loading from Personal Drive
+      if (state.personal_drive_auth_token) {
+        try {
+          const activeChild = await ChildManager.getActiveProfile();
+          const childName = activeChild?.name || 'Atharva';
+          const academicYear = activeChild?.academicYear || '2026-2027';
+          const classInfo = await PersonalDriveService.getOrCreateClassroomFolder(state.personal_drive_auth_token, childName, academicYear);
+          const q = encodeURIComponent(`name = 'classroom_sync_deep_log.txt' and '${classInfo.id}' in parents and trashed = false`);
+          const searchRes = await PersonalDriveService.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id)`, {}, state.personal_drive_auth_token);
+          if (searchRes.ok) {
+            const data = await searchRes.json();
+            if (data.files && data.files.length > 0) {
+              const dlRes = await PersonalDriveService.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${data.files[0].id}?alt=media`, {}, state.personal_drive_auth_token);
+              if (dlRes.ok) {
+                const text = await dlRes.text();
+                await chrome.storage.local.set({ classroom_sync_deep_log_text: text });
+                return { success: true, deepLogText: text };
+              }
+            }
+          }
+        } catch (e: any) {}
+      }
+      return { success: false, error: 'No deep sync log found. Run a Classroom sync first.' };
+    }
+
+    case 'DEPLOY_SCHOOL_WORKER': {
+      let { studentToken, parentFolderId, childName, academicYear, studentEmail, schoolDomain } = message.payload || {};
+      
+      if (!studentToken) {
+        studentToken = await GasProvisionerService.getAuthToken(true);
+      }
+      if (!childName || !academicYear) {
+        const activeProfile = await ChildManager.getActiveProfile();
+        if (!childName) childName = activeProfile?.name || 'Atharva';
+        if (!academicYear) academicYear = activeProfile?.academicYear || '2026-2027';
+      }
+      if (!studentEmail) {
+        studentEmail = (await GasProvisionerService.getAuthenticatedUserEmail(studentToken)) || '';
+      }
+      if (!schoolDomain) {
+        schoolDomain = studentEmail.includes('@') ? studentEmail.split('@')[1] : '';
+      }
+      if (!parentFolderId) {
+        const parentToken = await PersonalDriveService.getValidToken(false);
+        const kidFolderInfo = await PersonalDriveService.getOrCreateKidFolder(parentToken, childName, academicYear);
+        parentFolderId = kidFolderInfo.id;
+      }
+
+      return await GasProvisionerService.provisionSchoolWorker(
+        studentToken,
+        parentFolderId,
+        childName,
+        academicYear,
+        studentEmail,
+        schoolDomain
+      );
+    }
+
+    case 'DEPLOY_MASTER_WORKER': {
+      let { parentToken, rootFolderId } = message.payload || {};
+      if (!parentToken) {
+        parentToken = await PersonalDriveService.getValidToken(false);
+      }
+      if (!rootFolderId) {
+        const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
+        rootFolderId = rootFolder.id;
+      }
+      return await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolderId);
+    }
+
+    case 'GET_DEPLOY_PROGRESS': {
+      return await GasProvisionerService.getActiveDeployProgress();
+    }
+
+    case 'CLEAR_DEPLOY_PROGRESS': {
+      await GasProvisionerService.clearActiveDeployProgress();
+      return { success: true };
+    }
+
+    case 'RUN_INITIAL_SCHOOL_DATA_SYNC': {
+      const { childName, academicYear } = message.payload || {};
+      return await GasProvisionerService.runInitialSchoolDataSync(childName, academicYear);
+    }
+
     default:
       throw new Error(`Unknown message type: ${message.type}`);
   }
 }
 
-// Background Passive Auto-Scanner Alarm
+// Background Passive Auto-Scanner & Download Supervisor Alarm
 if (typeof chrome !== 'undefined' && chrome.alarms) {
   try {
     chrome.alarms.create('BACKGROUND_PASSIVE_SCANNER', { periodInMinutes: 5 });
     chrome.alarms.onAlarm.addListener(async (alarm) => {
+      if (alarm.name === 'KEEP_ALIVE_DOWNLOAD_SUPERVISOR') {
+        try {
+          chrome.alarms.clear('KEEP_ALIVE_DOWNLOAD_SUPERVISOR').catch(() => {});
+        } catch (err) {}
+        return;
+      }
+
+      if (alarm.name === 'INITIAL_SCHOOL_SYNC_SUPERVISOR') {
+        return; // Keep-alive ping for initial school data sync
+      }
+
       if (alarm.name === 'BACKGROUND_PASSIVE_SCANNER') {
         try {
           // Pre-flight check: exit immediately if ingestion is active, another sync is running, or 0 groups tracked
@@ -2235,16 +2360,63 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
             }
           }
 
-          const state = await chrome.storage.local.get(['tracked_whatsapp_chats', 'target_whatsapp_chats']);
-          const tracked = state.tracked_whatsapp_chats || [];
-          const filterStr = state.target_whatsapp_chats || '';
-          if (waTabs.length > 0 && (tracked.length > 0 || filterStr.length > 0)) {
+          const activeChild = await ChildManager.getActiveProfile();
+          const hasTrackedChats = Boolean(activeChild?.trackedChats && activeChild.trackedChats.length > 0);
+          if (waTabs.length > 0 && hasTrackedChats) {
             await handleMessage({ type: 'SYNC_WHATSAPP_CHATS' });
           }
+
+          // Initial School Setup Resumer: If initial 1-time setup was interrupted, delegate to Master Cloud Worker
+          try {
+            const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress', 'master_worker_deployment_url']);
+            if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
+              const activeProfile = await ChildManager.getActiveProfile();
+              if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
+                if (syncState.master_worker_deployment_url) {
+                  PersonalDriveService.callGasWorkerRpc(syncState.master_worker_deployment_url, 'sync_master_cloud_school', {
+                    childName: activeProfile.name,
+                    academicYear: activeProfile.academicYear,
+                    isInitialPass: true,
+                    force: true
+                  }).catch(() => {});
+                } else {
+                  GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
+                    console.warn('[ServiceWorker] Background initial school sync resume notice:', err);
+                  });
+                }
+              }
+            }
+          } catch (attErr) {}
         } catch (err) {}
       }
     });
   } catch (e) {}
+}
+
+// Background Initial School Setup Resumer: Auto-check on worker boot if initial setup was pending
+if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+  setTimeout(async () => {
+    try {
+      const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress', 'master_worker_deployment_url']);
+      if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
+        const activeProfile = await ChildManager.getActiveProfile();
+        if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
+          if (syncState.master_worker_deployment_url) {
+            PersonalDriveService.callGasWorkerRpc(syncState.master_worker_deployment_url, 'sync_master_cloud_school', {
+              childName: activeProfile.name,
+              academicYear: activeProfile.academicYear,
+              isInitialPass: true,
+              force: true
+            }).catch(() => {});
+          } else {
+            GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
+              console.warn('[ServiceWorker] Startup initial school sync notice:', err);
+            });
+          }
+        }
+      }
+    } catch (e) {}
+  }, 2000);
 }
 
 // Auto-intercept browser downloads triggered by WhatsApp Web / Telegram Web and upload directly to Personal Google Drive
@@ -2258,6 +2430,11 @@ if (typeof chrome !== 'undefined' && chrome.downloads) {
       const state = await chrome.storage.local.get(['personal_drive_connected', 'personal_drive_auth_token']);
       if (!state.personal_drive_connected || !state.personal_drive_auth_token) return;
 
+      const activeChild = await ChildManager.getActiveProfile();
+      if (!activeChild || !activeChild.trackedChats || activeChild.trackedChats.length === 0) {
+        return; // Step 4 WhatsApp tracking not configured
+      }
+
       const url = downloadItem.url || '';
       const referrer = (downloadItem.referrer || '').toLowerCase();
       
@@ -2265,8 +2442,7 @@ if (typeof chrome !== 'undefined' && chrome.downloads) {
       const isChatDownload = url.startsWith('blob:https://web.whatsapp.com') ||
                              url.startsWith('blob:https://web.telegram.org') ||
                              referrer.includes('web.whatsapp.com') ||
-                             referrer.includes('web.telegram.org') ||
-                             (downloadItem.byExtensionId === chrome.runtime.id);
+                             referrer.includes('web.telegram.org');
       
       if (!isChatDownload) return; // Immediately ignore all other browser downloads
 
@@ -2309,7 +2485,9 @@ if (typeof chrome !== 'undefined' && chrome.downloads) {
 
       const fileData = fetchResults && fetchResults[0]?.result;
       if (fileData && fileData.base64Content) {
-        const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, fileData);
+        const childName = activeChild.name || 'Child_1';
+        const targetGroup = activeChild.trackedChats[0]?.name || 'Chat Attachments';
+        const uploadRes = await PersonalDriveService.uploadAttachmentFile(state.personal_drive_auth_token, fileData, childName, targetGroup);
         if (uploadRes) {
           await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `Captured browser download "${uploadRes.name}" and uploaded to Personal Drive`, {
             fileName: uploadRes.name,
@@ -2318,13 +2496,13 @@ if (typeof chrome !== 'undefined' && chrome.downloads) {
 
           // Also backfill this attachment into existing archive
           await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, [{
-            chatName: '3B Cambridge 2026 - 27',
+            chatName: targetGroup,
             sender: 'Teacher/Parent',
             timestamp: new Date().toLocaleTimeString(),
             body: `[Document: ${uploadRes.name}]`,
             driveAttachmentUrl: uploadRes.webViewLink,
             driveFileName: uploadRes.name
-          }]);
+          }], childName);
         }
       }
     } catch (err: any) {

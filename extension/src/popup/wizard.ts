@@ -60,8 +60,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblStep1MasterWorkerDetails = document.getElementById('lblStep1MasterWorkerDetails') as HTMLElement;
   const step1ChildSetupBox = document.getElementById('step1ChildSetupBox') as HTMLElement;
   const txtStep1ChildName = document.getElementById('txtStep1ChildName') as HTMLInputElement;
+  const lblStep1ChildNameLockBadge = document.getElementById('lblStep1ChildNameLockBadge') as HTMLElement;
+  const btnStep1EditChildName = document.getElementById('btnStep1EditChildName') as HTMLButtonElement;
+  const btnStep1SaveChildName = document.getElementById('btnStep1SaveChildName') as HTMLButtonElement;
+  const btnStep1CancelChildName = document.getElementById('btnStep1CancelChildName') as HTMLButtonElement;
   const lblStep1NameError = document.getElementById('lblStep1NameError') as HTMLElement;
   const selStep1AcademicYear = document.getElementById('selStep1AcademicYear') as HTMLSelectElement;
+  const lblStep1AcademicYearLockBadge = document.getElementById('lblStep1AcademicYearLockBadge') as HTMLElement;
+  const btnStep1EditAcademicYear = document.getElementById('btnStep1EditAcademicYear') as HTMLButtonElement;
+  const btnStep1SaveAcademicYear = document.getElementById('btnStep1SaveAcademicYear') as HTMLButtonElement;
+  const btnStep1CancelAcademicYear = document.getElementById('btnStep1CancelAcademicYear') as HTMLButtonElement;
+  const lblStep1YearError = document.getElementById('lblStep1YearError') as HTMLElement;
+  const lblStep1RenameStatus = document.getElementById('lblStep1RenameStatus') as HTMLElement;
   const fileChildPhoto = document.getElementById('fileChildPhoto') as HTMLInputElement;
   const btnUploadPhotoTrigger = document.getElementById('btnUploadPhotoTrigger') as HTMLButtonElement;
   const imgChildPhotoPreview = document.getElementById('imgChildPhotoPreview') as HTMLImageElement;
@@ -80,10 +90,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnOpenApiSettings = document.getElementById('btnOpenApiSettings') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
   const step2InlineProgressBar = document.getElementById('step2InlineProgressBar') as HTMLElement;
-  const lblStep2ProgressTitle = document.getElementById('lblStep2ProgressTitle') as HTMLElement;
-  const lblStep2ProgressPercent = document.getElementById('lblStep2ProgressPercent') as HTMLElement;
-  const step2ProgressFill = document.getElementById('step2ProgressFill') as HTMLElement;
-  const lblStep2ProgressSubtext = document.getElementById('lblStep2ProgressSubtext') as HTMLElement;
+  const iconStep2ScriptStatus = document.getElementById('iconStep2ScriptStatus') as HTMLElement;
+  const lblStep2ScriptTitle = document.getElementById('lblStep2ScriptTitle') as HTMLElement;
+  const lblStep2ScriptPercent = document.getElementById('lblStep2ScriptPercent') as HTMLElement;
+  const step2ScriptProgressFill = document.getElementById('step2ScriptProgressFill') as HTMLElement;
+  const lblStep2ScriptSubtext = document.getElementById('lblStep2ScriptSubtext') as HTMLElement;
+  const iconStep2DataStatus = document.getElementById('iconStep2DataStatus') as HTMLElement;
+  const lblStep2DataTitle = document.getElementById('lblStep2DataTitle') as HTMLElement;
+  const lblStep2DataPercent = document.getElementById('lblStep2DataPercent') as HTMLElement;
+  const step2DataProgressFill = document.getElementById('step2DataProgressFill') as HTMLElement;
+  const lblStep2DataSubtext = document.getElementById('lblStep2DataSubtext') as HTMLElement;
   const step2ConnectedBadge = document.getElementById('step2ConnectedBadge') as HTMLElement;
   const lblStep2StudentEmail = document.getElementById('lblStep2StudentEmail') as HTMLElement;
   const btnTriggerSwitchStudentAccount = document.getElementById('btnTriggerSwitchStudentAccount') as HTMLButtonElement;
@@ -265,6 +281,186 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
+  let renameStatusTimeout: any = null;
+  function showRenameStatus(message: string, isError: boolean = false, autoDismissMs: number = 4000) {
+    if (!lblStep1RenameStatus) return;
+    if (renameStatusTimeout) {
+      clearTimeout(renameStatusTimeout);
+      renameStatusTimeout = null;
+    }
+    lblStep1RenameStatus.textContent = message;
+    if (isError) {
+      lblStep1RenameStatus.style.background = '#fef2f2';
+      lblStep1RenameStatus.style.color = '#b91c1c';
+      lblStep1RenameStatus.style.borderColor = '#fecaca';
+    } else {
+      lblStep1RenameStatus.style.background = '#f0fdf4';
+      lblStep1RenameStatus.style.color = '#166534';
+      lblStep1RenameStatus.style.borderColor = '#bbf7d0';
+    }
+    setA11yVisibility(lblStep1RenameStatus, true);
+    if (autoDismissMs > 0) {
+      renameStatusTimeout = setTimeout(() => {
+        setA11yVisibility(lblStep1RenameStatus, false);
+        renameStatusTimeout = null;
+      }, autoDismissMs);
+    }
+  }
+
+  type Step1Mode = 'initial' | 'locked' | 'editing_name' | 'editing_year';
+  let currentStep1Mode: Step1Mode = 'initial';
+
+  function setStep1Mode(mode: Step1Mode) {
+    currentStep1Mode = mode;
+
+    switch (mode) {
+      case 'initial':
+        // Initial setup for a new / unconfirmed child:
+        // Clean editbox, clean dropdown, photo upload, confirm button
+        // NO edit buttons, NO save buttons, NO cancel buttons, NO lock badges
+        if (txtStep1ChildName) {
+          txtStep1ChildName.readOnly = false;
+          txtStep1ChildName.style.backgroundColor = '';
+          txtStep1ChildName.style.color = '';
+          txtStep1ChildName.style.borderColor = '';
+        }
+        setA11yVisibility(lblStep1ChildNameLockBadge, false);
+        setA11yVisibility(btnStep1EditChildName, false);
+        setA11yVisibility(btnStep1SaveChildName, false);
+        setA11yVisibility(btnStep1CancelChildName, false);
+        if (lblStep1NameError) setA11yVisibility(lblStep1NameError, false);
+
+        if (selStep1AcademicYear) {
+          selStep1AcademicYear.disabled = false;
+          selStep1AcademicYear.style.backgroundColor = '';
+          selStep1AcademicYear.style.color = '';
+          selStep1AcademicYear.style.borderColor = '';
+        }
+        setA11yVisibility(lblStep1AcademicYearLockBadge, false);
+        setA11yVisibility(btnStep1EditAcademicYear, false);
+        setA11yVisibility(btnStep1SaveAcademicYear, false);
+        setA11yVisibility(btnStep1CancelAcademicYear, false);
+        if (lblStep1YearError) setA11yVisibility(lblStep1YearError, false);
+
+        setA11yVisibility(step1ChildConfirmedBadge, false);
+        setA11yVisibility(lblStep1RenameStatus, false);
+        break;
+
+      case 'locked':
+        // Confirmed profile: fields are locked by default
+        // Shows Locked badge and Edit button next to each field
+        // Save and Cancel buttons are strictly HIDDEN
+        if (txtStep1ChildName) {
+          txtStep1ChildName.readOnly = true;
+          txtStep1ChildName.style.backgroundColor = 'var(--surface-muted, #f8fafc)';
+          txtStep1ChildName.style.color = 'var(--text-secondary, #475569)';
+          txtStep1ChildName.style.borderColor = 'var(--border-color, #cbd5e1)';
+        }
+        setA11yVisibility(lblStep1ChildNameLockBadge, true);
+        setA11yVisibility(btnStep1EditChildName, true);
+        if (btnStep1EditChildName) btnStep1EditChildName.disabled = false;
+        setA11yVisibility(btnStep1SaveChildName, false);
+        setA11yVisibility(btnStep1CancelChildName, false);
+        if (lblStep1NameError) setA11yVisibility(lblStep1NameError, false);
+
+        if (selStep1AcademicYear) {
+          selStep1AcademicYear.disabled = true;
+          selStep1AcademicYear.style.backgroundColor = 'var(--surface-muted, #f8fafc)';
+          selStep1AcademicYear.style.color = 'var(--text-secondary, #475569)';
+          selStep1AcademicYear.style.borderColor = 'var(--border-color, #cbd5e1)';
+        }
+        setA11yVisibility(lblStep1AcademicYearLockBadge, true);
+        setA11yVisibility(btnStep1EditAcademicYear, true);
+        if (btnStep1EditAcademicYear) btnStep1EditAcademicYear.disabled = false;
+        setA11yVisibility(btnStep1SaveAcademicYear, false);
+        setA11yVisibility(btnStep1CancelAcademicYear, false);
+        if (lblStep1YearError) setA11yVisibility(lblStep1YearError, false);
+
+        setA11yVisibility(step1ChildConfirmedBadge, true);
+        break;
+
+      case 'editing_name':
+        // User clicked "✏️ Edit Name":
+        // Name input is editable, Save & Cancel buttons visible
+        // Academic Year remains locked and cannot be edited concurrently
+        if (txtStep1ChildName) {
+          txtStep1ChildName.readOnly = false;
+          txtStep1ChildName.style.backgroundColor = '';
+          txtStep1ChildName.style.color = '';
+          txtStep1ChildName.style.borderColor = '';
+        }
+        setA11yVisibility(lblStep1ChildNameLockBadge, false);
+        setA11yVisibility(btnStep1EditChildName, false);
+        setA11yVisibility(btnStep1SaveChildName, true);
+        if (btnStep1SaveChildName) btnStep1SaveChildName.disabled = false;
+        setA11yVisibility(btnStep1CancelChildName, true);
+        if (btnStep1CancelChildName) btnStep1CancelChildName.disabled = false;
+
+        if (selStep1AcademicYear) {
+          selStep1AcademicYear.disabled = true;
+          selStep1AcademicYear.style.backgroundColor = 'var(--surface-muted, #f8fafc)';
+        }
+        setA11yVisibility(lblStep1AcademicYearLockBadge, true);
+        setA11yVisibility(btnStep1EditAcademicYear, true);
+        if (btnStep1EditAcademicYear) btnStep1EditAcademicYear.disabled = true;
+        setA11yVisibility(btnStep1SaveAcademicYear, false);
+        setA11yVisibility(btnStep1CancelAcademicYear, false);
+        break;
+
+      case 'editing_year':
+        // User clicked "✏️ Edit Year":
+        // Academic Year dropdown is enabled, Save & Cancel buttons visible
+        // Name remains locked and cannot be edited concurrently
+        if (selStep1AcademicYear) {
+          selStep1AcademicYear.disabled = false;
+          selStep1AcademicYear.style.backgroundColor = '';
+          selStep1AcademicYear.style.color = '';
+          selStep1AcademicYear.style.borderColor = '';
+        }
+        setA11yVisibility(lblStep1AcademicYearLockBadge, false);
+        setA11yVisibility(btnStep1EditAcademicYear, false);
+        setA11yVisibility(btnStep1SaveAcademicYear, true);
+        if (btnStep1SaveAcademicYear) btnStep1SaveAcademicYear.disabled = false;
+        setA11yVisibility(btnStep1CancelAcademicYear, true);
+        if (btnStep1CancelAcademicYear) btnStep1CancelAcademicYear.disabled = false;
+
+        if (txtStep1ChildName) {
+          txtStep1ChildName.readOnly = true;
+          txtStep1ChildName.style.backgroundColor = 'var(--surface-muted, #f8fafc)';
+        }
+        setA11yVisibility(lblStep1ChildNameLockBadge, true);
+        setA11yVisibility(btnStep1EditChildName, true);
+        if (btnStep1EditChildName) btnStep1EditChildName.disabled = true;
+        setA11yVisibility(btnStep1SaveChildName, false);
+        setA11yVisibility(btnStep1CancelChildName, false);
+        break;
+    }
+  }
+
+  function setStep1ChildNameLocked(locked: boolean) {
+    if (locked) {
+      setStep1Mode('locked');
+    } else {
+      if (currentConfiguringProfile?.step1Confirmed || currentConfiguringProfile?.folderId) {
+        setStep1Mode('editing_name');
+      } else {
+        setStep1Mode('initial');
+      }
+    }
+  }
+
+  function setStep1AcademicYearLocked(locked: boolean) {
+    if (locked) {
+      setStep1Mode('locked');
+    } else {
+      if (currentConfiguringProfile?.step1Confirmed || currentConfiguringProfile?.folderId) {
+        setStep1Mode('editing_year');
+      } else {
+        setStep1Mode('initial');
+      }
+    }
+  }
+
   // Stepper Visuals & Click Handlers
   function updateStepper(step: number) {
     currentWizardStep = step;
@@ -324,6 +520,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     setA11yVisibility(cardStep2, step === 2);
     setA11yVisibility(cardStep3, step === 3);
     setA11yVisibility(cardStep4, step === 4);
+    if (step === 1) {
+      const isConfirmed = Boolean(
+        currentConfiguringProfile?.step1Confirmed ||
+        currentConfiguringProfile?.folderId ||
+        (currentConfiguringProfile?.name && !currentConfiguringProfile.name.toLowerCase().startsWith('child 1') && (savedStep > 1 || isFullyConfigured || currentStep1Mode === 'locked'))
+      );
+      if (isConfirmed && currentConfiguringProfile && currentConfiguringProfile.name && !currentConfiguringProfile.name.toLowerCase().startsWith('child 1')) {
+        populateStep1ForEditing(currentConfiguringProfile);
+      } else {
+        setStep1Mode('initial');
+      }
+    }
+
+    if (step === 2) {
+      updateStep2View();
+    }
 
     updateStepper(step);
 
@@ -462,8 +674,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (lblConfirmedPlaceholder) lblConfirmedPlaceholder.classList.add('hidden');
     }
 
-    step1ChildSetupBox?.classList.remove('hidden');
-    step1ChildConfirmedBadge?.classList.remove('hidden');
+    setA11yVisibility(step1ChildSetupBox, true);
+    setA11yVisibility(step1ChildConfirmedBadge, true);
+    setStep1Mode('locked');
   }
 
   // ==========================================
@@ -491,9 +704,18 @@ document.addEventListener('DOMContentLoaded', async () => {
   if (targetProfile) {
     currentConfiguringProfile = targetProfile;
     await ChildManager.setActiveProfileId(targetProfile.id);
-    if (targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1')) {
+    const isProfileConfirmed = Boolean(
+      targetProfile.step1Confirmed ||
+      targetProfile.folderId ||
+      (targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1') && (savedStep > 1 || isFullyConfigured))
+    );
+    if (isProfileConfirmed && targetProfile.name && !targetProfile.name.toLowerCase().startsWith('child 1')) {
       populateStep1ForEditing(targetProfile);
+    } else {
+      setStep1Mode('initial');
     }
+  } else {
+    setStep1Mode('initial');
   }
 
   function dismissRestoringOverlay() {
@@ -717,16 +939,189 @@ document.addEventListener('DOMContentLoaded', async () => {
   });
 
   txtStep1ChildName?.addEventListener('input', () => {
-    if (lblStep1NameError) lblStep1NameError.classList.add('hidden');
+    if (lblStep1NameError) setA11yVisibility(lblStep1NameError, false);
   });
 
-  btnStep1SaveChild?.addEventListener('click', async () => {
+  selStep1AcademicYear?.addEventListener('change', () => {
+    if (lblStep1YearError) setA11yVisibility(lblStep1YearError, false);
+  });
+
+  txtStep1ChildName?.addEventListener('keydown', (e) => {
+    if (!txtStep1ChildName.readOnly) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (currentStep1Mode === 'editing_name') {
+          btnStep1SaveChildName?.click();
+        } else {
+          btnStep1SaveChild?.click();
+        }
+      } else if (e.key === 'Escape') {
+        if (currentStep1Mode === 'editing_name') {
+          e.preventDefault();
+          btnStep1CancelChildName?.click();
+        }
+      }
+    }
+  });
+
+  // Dedicated Child Name Edit Handlers
+  btnStep1EditChildName?.addEventListener('click', () => {
+    setStep1Mode('editing_name');
+    txtStep1ChildName?.focus();
+    if (txtStep1ChildName) {
+      const len = txtStep1ChildName.value.length;
+      txtStep1ChildName.setSelectionRange(len, len);
+    }
+  });
+
+  btnStep1CancelChildName?.addEventListener('click', () => {
+    if (txtStep1ChildName && currentConfiguringProfile) {
+      txtStep1ChildName.value = currentConfiguringProfile.name;
+    }
+    setStep1Mode('locked');
+    if (lblStep1NameError) setA11yVisibility(lblStep1NameError, false);
+  });
+
+  btnStep1SaveChildName?.addEventListener('click', async () => {
     const rawName = txtStep1ChildName?.value || '';
     const validation = ChildManager.validateFirstName(rawName);
     if (!validation.valid) {
       if (lblStep1NameError) {
         lblStep1NameError.textContent = validation.error || 'Invalid name';
-        lblStep1NameError.classList.remove('hidden');
+        setA11yVisibility(lblStep1NameError, true);
+      }
+      return;
+    }
+
+    const cleanNew = validation.cleanName;
+    const currentName = currentConfiguringProfile?.name || '';
+
+    // No-Op check: Value unchanged
+    if (cleanNew.toLowerCase() === currentName.toLowerCase()) {
+      if (txtStep1ChildName) txtStep1ChildName.value = currentName;
+      setStep1Mode('locked');
+      showRenameStatus('No changes detected. Profile name remains locked.');
+      return;
+    }
+
+    // Name changed: execute atomic in-place Drive rename
+    btnStep1SaveChildName.disabled = true;
+    btnStep1CancelChildName.disabled = true;
+    showRenameStatus(`🔄 Renaming "${currentName}" to "${cleanNew}" in Google Drive...`, false, 0);
+
+    try {
+      const token = await PersonalDriveService.getValidToken(false);
+      await PersonalDriveService.renameChildNameInPlace(
+        token,
+        currentName,
+        cleanNew,
+        currentConfiguringProfile?.academicYear,
+        currentConfiguringProfile?.folderId
+      );
+
+      if (currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
+          name: cleanNew,
+          step1Confirmed: true
+        });
+      }
+
+      if (txtStep1ChildName) txtStep1ChildName.value = cleanNew;
+      if (lblStep1ActiveChild) {
+        lblStep1ActiveChild.textContent = `${cleanNew} (${currentConfiguringProfile?.academicYear || '2026-2027'})`;
+      }
+      showRenameStatus(`✅ Profile renamed to "${cleanNew}" successfully!`, false, 4000);
+    } catch (err: any) {
+      showRenameStatus(`⚠️ Rename failed: ${err.message || String(err)}`, true, 6000);
+    } finally {
+      btnStep1SaveChildName.disabled = false;
+      btnStep1CancelChildName.disabled = false;
+      setStep1Mode('locked');
+    }
+  });
+
+  // Dedicated Academic Year Edit Handlers
+  btnStep1EditAcademicYear?.addEventListener('click', () => {
+    setStep1Mode('editing_year');
+    selStep1AcademicYear?.focus();
+  });
+
+  btnStep1CancelAcademicYear?.addEventListener('click', () => {
+    if (selStep1AcademicYear && currentConfiguringProfile) {
+      selStep1AcademicYear.value = currentConfiguringProfile.academicYear || '2026-2027';
+    }
+    setStep1Mode('locked');
+    if (lblStep1YearError) setA11yVisibility(lblStep1YearError, false);
+  });
+
+  btnStep1SaveAcademicYear?.addEventListener('click', async () => {
+    const selectedYear = selStep1AcademicYear?.value || '2026-2027';
+    const currentYear = currentConfiguringProfile?.academicYear || '';
+
+    // No-Op check: Value unchanged
+    if (selectedYear === currentYear) {
+      setStep1Mode('locked');
+      showRenameStatus('No changes detected. Academic year remains locked.');
+      return;
+    }
+
+    // Year changed: execute in-place Academic Year move
+    btnStep1SaveAcademicYear.disabled = true;
+    btnStep1CancelAcademicYear.disabled = true;
+    showRenameStatus(`🔄 Moving child folder to academic year "${selectedYear}" in Google Drive...`, false, 0);
+
+    try {
+      const token = await PersonalDriveService.getValidToken(false);
+      await PersonalDriveService.moveChildToNewAcademicYear(
+        token,
+        currentConfiguringProfile?.name || 'Child',
+        currentYear,
+        selectedYear,
+        currentConfiguringProfile?.folderId
+      );
+
+      if (currentConfiguringProfile) {
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
+          academicYear: selectedYear,
+          step1Confirmed: true
+        });
+      }
+
+      if (lblStep1ActiveChild) {
+        lblStep1ActiveChild.textContent = `${currentConfiguringProfile?.name} (${selectedYear})`;
+      }
+      showRenameStatus(`✅ Academic year updated to "${selectedYear}" successfully!`, false, 4000);
+    } catch (err: any) {
+      showRenameStatus(`⚠️ Academic year update failed: ${err.message || String(err)}`, true, 6000);
+    } finally {
+      btnStep1SaveAcademicYear.disabled = false;
+      btnStep1CancelAcademicYear.disabled = false;
+      setStep1Mode('locked');
+    }
+  });
+
+  btnStep1SaveChild?.addEventListener('click', async () => {
+    // If child is already configured and locked, clicking continue simply moves to Step 2
+    if (currentStep1Mode === 'locked' && currentConfiguringProfile) {
+      showWizardStep(2);
+      return;
+    }
+
+    if (currentStep1Mode === 'editing_name') {
+      btnStep1SaveChildName?.click();
+      return;
+    }
+    if (currentStep1Mode === 'editing_year') {
+      btnStep1SaveAcademicYear?.click();
+      return;
+    }
+
+    const rawName = txtStep1ChildName?.value || '';
+    const validation = ChildManager.validateFirstName(rawName);
+    if (!validation.valid) {
+      if (lblStep1NameError) {
+        lblStep1NameError.textContent = validation.error || 'Invalid name';
+        setA11yVisibility(lblStep1NameError, true);
       }
       return;
     }
@@ -737,13 +1132,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
         name: validation.cleanName,
         academicYear: selectedYear,
-        photoDataUrl: currentPhotoDataUrl || currentConfiguringProfile.photoDataUrl
+        photoDataUrl: currentPhotoDataUrl || currentConfiguringProfile.photoDataUrl,
+        step1Confirmed: true
       });
     } else {
       currentConfiguringProfile = await ChildManager.createProfile(validation.cleanName, selectedYear);
       if (currentPhotoDataUrl) {
         currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
-          photoDataUrl: currentPhotoDataUrl
+          photoDataUrl: currentPhotoDataUrl,
+          step1Confirmed: true
+        });
+      } else {
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
+          step1Confirmed: true
         });
       }
     }
@@ -768,15 +1169,40 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (lblStep1ActiveChild) {
       lblStep1ActiveChild.textContent = `${validation.cleanName} (${selectedYear})`;
     }
-    step1ChildConfirmedBadge?.classList.remove('hidden');
+    setA11yVisibility(step1ChildConfirmedBadge, true);
+    setStep1Mode('locked');
     showWizardStep(2);
   });
 
   // ==========================================
   // STEP 2 HANDLERS
   // ==========================================
-  function updateStep2View() {
-    const isConnected = Boolean(currentConfiguringProfile?.schoolGasDeploymentUrl || currentConfiguringProfile?.studentAccountEmail);
+  async function updateStep2View() {
+    if (!currentConfiguringProfile) {
+      try {
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+      } catch (e) {}
+    }
+
+    const isScriptCreated = Boolean(
+      currentConfiguringProfile?.schoolGasDeploymentUrl ||
+      currentConfiguringProfile?.schoolGasScriptId
+    );
+
+    // Gated Button Visibility:
+    // Before script creation: only "Skip" is visible, "Continue" is hidden.
+    // After script creation: only "Continue" is visible, "Skip" is hidden.
+    if (isScriptCreated) {
+      setA11yVisibility(btnNavStep2ToStep3, true);
+      setA11yVisibility(btnSkipStep2Top, false);
+      setA11yVisibility(btnSkipStep2Bottom, false);
+    } else {
+      setA11yVisibility(btnNavStep2ToStep3, false);
+      setA11yVisibility(btnSkipStep2Top, true);
+      setA11yVisibility(btnSkipStep2Bottom, true);
+    }
+
+    const isConnected = Boolean(isScriptCreated || currentConfiguringProfile?.studentAccountEmail);
     if (isConnected) {
       setA11yVisibility(step2ConnectedBadge, true);
       setA11yVisibility(step2InitialSyncResults, true);
@@ -847,10 +1273,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           jawsLiveAnnouncer.textContent = `Progress ${pct} percent. ${phase}. ${sub}`;
         }
 
-        if (step2ProgressFill) step2ProgressFill.style.width = `${pct}%`;
-        if (lblStep2ProgressPercent) lblStep2ProgressPercent.textContent = `${pct}%`;
-        if (lblStep2ProgressTitle) lblStep2ProgressTitle.textContent = `🚀 ${phase}`;
-        if (lblStep2ProgressSubtext) lblStep2ProgressSubtext.textContent = sub;
+        if (step2ScriptProgressFill) step2ScriptProgressFill.style.width = `${pct}%`;
+        if (lblStep2ScriptPercent) lblStep2ScriptPercent.textContent = `${pct}%`;
+        if (lblStep2ScriptTitle) lblStep2ScriptTitle.textContent = `⚙️ ${phase}`;
+        if (lblStep2ScriptSubtext) lblStep2ScriptSubtext.textContent = sub;
       });
 
       const parentToken = await PersonalDriveService.getValidToken(false);
@@ -945,6 +1371,17 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       const urlObj = new URL(tab.url);
       const domain = urlObj.hostname;
+      const originPattern = `${urlObj.protocol}//${urlObj.hostname}/*`;
+
+      if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.request) {
+        const hasPerm = await chrome.permissions.contains({ origins: [originPattern] }).catch(() => false);
+        if (!hasPerm) {
+          const granted = await chrome.permissions.request({ origins: [originPattern] }).catch(() => false);
+          if (!granted) {
+            throw new Error(`Permission to connect school portal (${domain}) was declined.`);
+          }
+        }
+      }
 
       const cookies = await chrome.cookies.getAll({ domain });
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
@@ -998,6 +1435,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       const urlObj = new URL(tab.url);
       const domain = urlObj.hostname;
       const featureName = tab.title ? tab.title.split('-')[0].trim().substring(0, 30) : 'Homework';
+      const originPattern = `${urlObj.protocol}//${urlObj.hostname}/*`;
+
+      if (typeof chrome !== 'undefined' && chrome.permissions && chrome.permissions.request) {
+        const hasPerm = await chrome.permissions.contains({ origins: [originPattern] }).catch(() => false);
+        if (!hasPerm) {
+          const granted = await chrome.permissions.request({ origins: [originPattern] }).catch(() => false);
+          if (!granted) {
+            throw new Error(`Permission to connect school portal (${domain}) was declined.`);
+          }
+        }
+      }
 
       const cookies = await chrome.cookies.getAll({ domain });
       const cookieStr = cookies.map(c => `${c.name}=${c.value}`).join('; ');
@@ -1097,6 +1545,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     currentConfiguringProfile = null;
     currentPhotoDataUrl = null;
     if (txtStep1ChildName) txtStep1ChildName.value = '';
+    setStep1Mode('initial');
     if (imgChildPhotoPreview) {
       imgChildPhotoPreview.src = '';
       imgChildPhotoPreview.classList.add('hidden');

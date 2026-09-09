@@ -40,12 +40,85 @@ export class AuthService {
       }
     }
 
-    // 2. Token is missing or expired -> Prompt the user directly via launchWebAuthFlow
+    // 2. Token is missing or expired
+    if (!forceInteractive) {
+      // Attempt 100% silent refresh without any UI popup
+      try {
+        return await this.launchSilentAuth();
+      } catch (silentErr) {
+        throw new Error('OAuth token expired. Interactive login required.');
+      }
+    }
+
+    // 3. User explicitly triggered interactive login
     return this.launchInteractiveAuth();
   }
 
   /**
-   * Triggers the Google OAuth authorization flow.
+   * Attempts silent background OAuth authorization without popping up a window.
+   */
+  private static launchSilentAuth(): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const manifest = chrome.runtime.getManifest();
+      const clientId = manifest.oauth2?.client_id;
+      if (!clientId || clientId.includes('YOUR_GOOGLE_CLIENT_ID')) {
+        return reject(new Error("Please configure a valid OAuth Client ID in manifest.json."));
+      }
+
+      const redirectUri = chrome.identity.getRedirectURL();
+      const scopes = (manifest.oauth2?.scopes && manifest.oauth2.scopes.length > 0)
+        ? manifest.oauth2.scopes.join(' ')
+        : [
+            'https://www.googleapis.com/auth/script.projects',
+            'https://www.googleapis.com/auth/script.deployments',
+            'https://www.googleapis.com/auth/drive.file',
+            'https://www.googleapis.com/auth/classroom.courses.readonly',
+            'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+            'https://www.googleapis.com/auth/calendar.events.readonly'
+          ].join(' ');
+
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', clientId);
+      authUrl.searchParams.set('response_type', 'token');
+      authUrl.searchParams.set('redirect_uri', redirectUri);
+      authUrl.searchParams.set('scope', scopes);
+
+      chrome.identity.launchWebAuthFlow(
+        { url: authUrl.toString(), interactive: false },
+        async (redirectUrl) => {
+          if (chrome.runtime.lastError || !redirectUrl) {
+            return reject(new Error('Silent auth failed.'));
+          }
+
+          try {
+            const parsedUrl = new URL(redirectUrl);
+            const hash = parsedUrl.hash.startsWith('#') ? parsedUrl.hash.substring(1) : parsedUrl.hash;
+            const hashParams = new URLSearchParams(hash);
+            const accessToken = hashParams.get('access_token');
+            const expiresInSec = parseInt(hashParams.get('expires_in') || '3600', 10);
+            const error = hashParams.get('error');
+
+            if (error || !accessToken) {
+              return reject(new Error(error || 'No token returned'));
+            }
+
+            const expiryTimestamp = Date.now() + expiresInSec * 1000;
+            await chrome.storage.local.set({
+              [AuthService.STORAGE_KEY_TOKEN]: accessToken,
+              [AuthService.STORAGE_KEY_EXPIRY]: expiryTimestamp
+            });
+
+            resolve(accessToken);
+          } catch (e: any) {
+            reject(e);
+          }
+        }
+      );
+    });
+  }
+
+  /**
+   * Triggers the Google OAuth authorization flow interactively.
    */
   private static launchInteractiveAuth(): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -63,12 +136,9 @@ export class AuthService {
             'https://www.googleapis.com/auth/script.projects',
             'https://www.googleapis.com/auth/script.deployments',
             'https://www.googleapis.com/auth/drive.file',
-            'https://www.googleapis.com/auth/drive.readonly',
-            'https://www.googleapis.com/auth/drive.metadata.readonly',
             'https://www.googleapis.com/auth/classroom.courses.readonly',
             'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly',
-            'https://www.googleapis.com/auth/gmail.readonly'
+            'https://www.googleapis.com/auth/calendar.events.readonly'
           ].join(' ');
 
       const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');

@@ -46,12 +46,15 @@ describe('5-Tier Modular Cloud Architecture', () => {
         const urlParams = new URL(urlStr).searchParams;
         const q = decodeURIComponent(urlParams.get('q') || '');
         const matched = mockDriveFiles.filter(f => {
-          if (q.includes(`name = '${f.name}'`)) {
-            if (f.parents && f.parents.length > 0) {
-              return q.includes(`'${f.parents[0]}' in parents`);
-            }
-            return true;
+          if ((f as any).trashed) return false;
+          if (f.parents && f.parents.length > 0 && !q.includes(`'${f.parents[0]}' in parents`)) {
+            return false;
           }
+          if (q.includes(`name = '${f.name}'`)) return true;
+          if (q.includes(`name = 'attachments' or name = 'Attachments'`) && f.name.toLowerCase() === 'attachments') return true;
+          if (q.includes(`groups_manifest.json`) && f.name.includes('groups_manifest.json')) return true;
+          if (q.includes(`_archive.json`) && f.name.includes('_archive.json')) return true;
+          if (!q.includes('name =') && !q.includes('name contains')) return true;
           return false;
         });
 
@@ -98,7 +101,7 @@ describe('5-Tier Modular Cloud Architecture', () => {
         }
 
         const newId = `file_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-        mockDriveFiles.push({ id: newId, name, parents, content });
+        mockDriveFiles.push({ id: newId, name, parents, content, mimeType: name.endsWith('.json') ? 'application/json' : 'application/vnd.google-apps.folder' });
         return {
           ok: true,
           status: 200,
@@ -110,8 +113,20 @@ describe('5-Tier Modular Cloud Architecture', () => {
         const match = urlStr.match(/\/files\/([^\/\?]+)/);
         const fileId = match ? match[1] : '';
         const found = mockDriveFiles.find(f => f.id === fileId);
-        if (found && opts.body) {
-          found.content = opts.body;
+        if (found) {
+          if (opts.body) {
+            try {
+              const bodyJson = JSON.parse(opts.body);
+              if (bodyJson.trashed) (found as any).trashed = true;
+              else found.content = opts.body;
+            } catch (e) {
+              found.content = opts.body;
+            }
+          }
+          if (urlStr.includes('addParents=')) {
+            const addP = new URL(urlStr).searchParams.get('addParents');
+            if (addP) found.parents = [addP];
+          }
         }
         return {
           ok: true,
@@ -196,4 +211,255 @@ describe('5-Tier Modular Cloud Architecture', () => {
     expect(restoreRes.profiles[0].registeredTools[0].name).toBe('get_canvas_assignments');
     expect(restoreRes.profiles[0].trackedChats[0].name).toBe('Grade 3 Parents');
   });
+
+  it('should NEVER create attachments folder directly in child root (places it under messaging_tools)', async () => {
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_msg', name: 'messaging_tools', parents: ['folder_atharva'] }
+    ];
+
+    const result = await PersonalDriveService.getOrCreateAttachmentsFolder('mock_token', 'Atharva');
+    expect(result.id).toBeDefined();
+
+    // Verify created folder has parent folder_msg (messaging_tools), NOT folder_atharva
+    const createdFolder = mockDriveFiles.find(f => f.id === result.id);
+    expect(createdFolder).toBeDefined();
+    expect(createdFolder?.parents).toContain('folder_msg');
+    expect(createdFolder?.parents).not.toContain('folder_atharva');
+  });
+
+  it('should store K.I.D.S._groups_manifest.json inside messaging_tools, NOT in child root', async () => {
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_msg', name: 'messaging_tools', parents: ['folder_atharva'] }
+    ];
+
+    await PersonalDriveService.updateGroupsManifest('mock_token', 'Atharva', [
+      { chatName: '3B Cambridge 2026 - 27', sender: 'Teacher', body: 'Homework assigned', timestamp: '10:00 AM' }
+    ]);
+
+    const manifestFile = mockDriveFiles.find(f => f.name === 'K.I.D.S._groups_manifest.json');
+    expect(manifestFile).toBeDefined();
+    expect(manifestFile?.parents).toContain('folder_msg');
+    expect(manifestFile?.parents).not.toContain('folder_atharva');
+  });
+
+  it('should sanitize child directory: relocate errant attachments and purge rogue files from child root', async () => {
+    // Setup initial tree with errant folders & rogue files directly under Atharva root
+    const errantFolder = {
+      id: 'errant_attachments_id',
+      name: 'Attachments',
+      parents: ['folder_atharva'],
+      mimeType: 'application/vnd.google-apps.folder',
+      trashed: false
+    };
+    const errantFile = {
+      id: 'file_in_errant_folder',
+      name: 'Atharva_Circular.pdf',
+      parents: ['errant_attachments_id'],
+      mimeType: 'application/pdf',
+      trashed: false
+    };
+    const rogueManifest1 = {
+      id: 'rogue_manifest_1',
+      name: 'K.I.D.S._groups_manifest.json',
+      parents: ['folder_atharva'],
+      mimeType: 'application/json',
+      trashed: false
+    };
+    const rogueManifest2 = {
+      id: 'rogue_manifest_2',
+      name: 'K (1).I.D.S._groups_manifest.json',
+      parents: ['folder_atharva'],
+      mimeType: 'application/json',
+      trashed: false
+    };
+
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_msg', name: 'messaging_tools', parents: ['folder_atharva'] },
+      errantFolder,
+      errantFile,
+      rogueManifest1,
+      rogueManifest2
+    ];
+
+    const cleanupRes = await PersonalDriveService.sanitizeChildDirectoryStructure('mock_token', 'Atharva', '2026-2027');
+
+    expect(cleanupRes.cleanedFolders).toBeGreaterThanOrEqual(1);
+    expect(cleanupRes.movedFiles).toBeGreaterThanOrEqual(1);
+    expect(cleanupRes.cleanedFiles).toBeGreaterThanOrEqual(1);
+
+    // Errant folder should be marked as trashed
+    expect((errantFolder as any).trashed).toBe(true);
+
+    // File in errant folder should have been relocated out of the errant folder
+    expect(errantFile.parents).not.toContain('errant_attachments_id');
+    expect(errantFile.parents[0]).not.toBe('folder_atharva');
+
+    // Rogue duplicate manifest in child root should be trashed
+    expect((rogueManifest2 as any).trashed).toBe(true);
+  });
+
+  it('deduplicates and skips classroom attachments when filename has special characters sanitized on Drive', async () => {
+    // Setup folder hierarchy
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_classroom', name: 'classroom', parents: ['folder_atharva'] },
+      { id: 'folder_attachments', name: 'attachments', parents: ['folder_classroom'] },
+      {
+        id: 'file_classroom_data',
+        name: 'classroom_data.json',
+        parents: ['folder_classroom'],
+        content: JSON.stringify({
+          courses: [
+            {
+              name: 'Grade 3B CAIE',
+              announcements: [
+                {
+                  id: 'ann_1',
+                  attachments: [
+                    {
+                      fileId: 'att_123',
+                      title: 'Jul 5, 2026 at 11:39 AM.jpg',
+                      targetName: 'Grade_3B_CAIE_Ann_Dear_Parents____Jul 5, 2026 at 11:39 AM.jpg'
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        })
+      },
+      // Already downloaded file on Google Drive (colon sanitized to underscore)
+      {
+        id: 'file_jul_5_jpg',
+        name: 'Grade_3B_CAIE_Ann_Dear_Parents____Jul 5, 2026 at 11_39 AM.jpg',
+        parents: ['folder_attachments'],
+        mimeType: 'image/jpeg'
+      }
+    ];
+
+    const res = await PersonalDriveService.syncClassroomAttachments('mock_token', undefined, 'Atharva', '2026-2027');
+
+    expect(res.total).toBe(1);
+    expect(res.skipped).toBe(1);
+    expect(res.downloaded).toBe(0);
+    expect(res.failed).toBe(0);
+  });
+
+  it('creates root folder and root json file on login, but never creates year or child folders before selection', async () => {
+    mockDriveFiles = [];
+
+    // Simulate login: saveRootConfig is invoked
+    await PersonalDriveService.saveRootConfig('mock_token');
+
+    // Verify root folder 'K.I.D.S. Data' was created
+    const rootFolder = mockDriveFiles.find(f => f.name === 'K.I.D.S. Data');
+    expect(rootFolder).toBeDefined();
+
+    // Verify root config 'K.I.D.S._Data_config.json' was created in root
+    const rootConfig = mockDriveFiles.find(f => f.name === 'K.I.D.S._Data_config.json');
+    expect(rootConfig).toBeDefined();
+    expect(rootConfig?.parents).toContain(rootFolder?.id);
+
+    // Verify that NO year folders (e.g. 2026-2027) or child folders were created
+    const yearFolders = mockDriveFiles.filter(f => f.name.includes('2026') || f.name.includes('2025'));
+    expect(yearFolders.length).toBe(0);
+
+    // Recovery check returns 0 and creates no additional folders
+    const restoreRes = await PersonalDriveService.restoreAllProfilesFromDrive('mock_token');
+    expect(restoreRes.restoredCount).toBe(0);
+    expect(restoreRes.profiles).toEqual([]);
+    expect(mockDriveFiles.filter(f => f.name.includes('2026') || f.name.includes('2025')).length).toBe(0);
+  });
+
+  it('does NOT create messaging_tools or messaging_tools_config.json when child has 0 tracked chats (Step 2 quarantine)', async () => {
+    mockDriveFiles = [];
+    mockStorage['personal_drive_account_email'] = 'parent@test.com';
+
+    // Step 2 profile: has school/portal data, but ZERO tracked chats
+    const profile = await ChildManager.createProfile('Atharva', '2026-2027');
+    await ChildManager.updateProfile(profile.id, {
+      gasScriptId: 'script_123',
+      gasDeploymentUrl: 'https://script.google.com/macros/s/AK_TEST/exec?accessKey=Key_ABC',
+      portalDomains: ['edusprint.in'],
+      registeredTools: [],
+      trackedChats: [] // No WhatsApp chats configured yet (still in Step 2)
+    });
+
+    await PersonalDriveService.syncFullModularHierarchy('mock_token');
+
+    // Kid config and portal config should be created
+    expect(mockDriveFiles.find(f => f.name === 'Atharva_config.json')).toBeDefined();
+    expect(mockDriveFiles.find(f => f.name === 'portal_tools_config.json')).toBeDefined();
+
+    // messaging_tools folder and messaging_tools_config.json MUST NOT be created
+    const msgFolder = mockDriveFiles.find(f => f.name === 'messaging_tools');
+    expect(msgFolder).toBeUndefined();
+    const msgConfig = mockDriveFiles.find(f => f.name === 'messaging_tools_config.json');
+    expect(msgConfig).toBeUndefined();
+  });
+
+  it('sanitizeChildDirectoryStructure does not create messaging_tools when child directory has no errant files', async () => {
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_classroom', name: 'classroom', parents: ['folder_atharva'] },
+      { id: 'folder_emails', name: 'emails', parents: ['folder_atharva'] }
+    ];
+
+    const cleanupRes = await PersonalDriveService.sanitizeChildDirectoryStructure('mock_token', 'Atharva', '2026-2027');
+
+    expect(cleanupRes.cleanedFolders).toBe(0);
+    expect(cleanupRes.movedFiles).toBe(0);
+    expect(cleanupRes.cleanedFiles).toBe(0);
+
+    // messaging_tools must NOT have been created
+    const msgFolder = mockDriveFiles.find(f => f.name === 'messaging_tools');
+    expect(msgFolder).toBeUndefined();
+  });
+
+  it('sanitizeChildDirectoryStructure cleans up duplicate archives with (1) in messaging_tools', async () => {
+    const canonicalArchive = {
+      id: 'archive_canonical',
+      name: 'K.I.D.S._Atharva_archive.json',
+      parents: ['folder_msg'],
+      modifiedTime: new Date(Date.now()).toISOString(),
+      content: '[]'
+    };
+    const duplicateArchive = {
+      id: 'archive_dup_1',
+      name: 'K (1).I.D.S._Atharva_archive.json',
+      parents: ['folder_msg'],
+      modifiedTime: new Date(Date.now() - 60000).toISOString(),
+      content: '[]'
+    };
+
+    mockDriveFiles = [
+      { id: 'folder_root', name: 'K.I.D.S. Data', parents: [] },
+      { id: 'folder_2026_2027', name: '2026-2027', parents: ['folder_root'] },
+      { id: 'folder_atharva', name: 'Atharva', parents: ['folder_2026_2027'] },
+      { id: 'folder_msg', name: 'messaging_tools', parents: ['folder_atharva'] },
+      canonicalArchive,
+      duplicateArchive
+    ];
+
+    const cleanupRes = await PersonalDriveService.sanitizeChildDirectoryStructure('mock_token', 'Atharva', '2026-2027');
+
+    expect(cleanupRes.cleanedFiles).toBeGreaterThanOrEqual(1);
+    expect((duplicateArchive as any).trashed).toBe(true);
+    expect((canonicalArchive as any).trashed).toBeFalsy();
+  });
 });
+
+

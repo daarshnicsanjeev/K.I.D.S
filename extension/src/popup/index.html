@@ -148,6 +148,28 @@
     </div>
   </div>
 
+  <!-- Classroom Deep Diagnostic Log Modal -->
+  <div id="modalClassroomDeepLog" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalDeepLogTitle" aria-hidden="true" hidden>
+    <div class="modal-content" role="document" style="max-width: 480px; width: 95%; max-height: 85vh; display: flex; flex-direction: column; text-align: left; padding: 14px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h3 id="modalDeepLogTitle" tabindex="-1" style="font-size: 0.95rem; font-weight: 700; color: #1a365d; margin: 0;">
+          📜 Classroom Deep Diagnostic Log
+        </h3>
+        <button id="btnCloseDeepLogModal" class="btn btn-secondary btn-sm" style="padding: 2px 8px; font-size: 0.75rem;" aria-label="Close modal">✕ Close</button>
+      </div>
+      <div style="font-size: 0.72rem; color: #64748b; margin-bottom: 6px;">
+        Multi-page Classroom crawl telemetry, itemized attachment inventory, and Drive export status.
+      </div>
+      <div style="flex: 1; overflow-y: auto; background: #0f172a; color: #38bdf8; font-family: monospace; font-size: 0.68rem; padding: 10px; border-radius: 6px; white-space: pre-wrap; line-height: 1.35; max-height: 380px; border: 1px solid #1e293b;" id="boxDeepLogContent">
+Loading log...
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 10px;">
+        <span style="font-size: 0.7rem; color: #64748b;">Saved in <code>classroom/classroom_sync_deep_log.txt</code></span>
+        <button id="btnCopyDeepLog" class="btn btn-primary btn-sm" style="font-size: 0.75rem; padding: 3px 10px;">📋 Copy Log</button>
+      </div>
+    </div>
+  </div>
+
   <div class="container" id="mainAppContainer">
     <header class="header">
       <div class="logo-title">
@@ -260,16 +282,39 @@
 
         <!-- Kid Setup Box -->
         <div id="step1ChildSetupBox" class="hidden mb-2" aria-hidden="true" hidden style="background: var(--card-surface); padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border-color); display: flex; flex-direction: column; gap: 8px;" role="form" aria-label="Child Profile Information">
+          
+          <!-- Child Name Field with Lock and Dedicated Edit Control -->
           <div class="form-group">
-            <label for="txtStep1ChildName" id="lblChildNamePrompt">Kid's First Name (letters, spaces, hyphens):</label>
-            <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" aria-labelledby="lblChildNamePrompt" aria-required="true" autocomplete="off" />
-            <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600;" role="alert"></span>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+              <label for="txtStep1ChildName" id="lblChildNamePrompt" style="margin: 0; font-weight: 600;">Kid's First Name:</label>
+              <span id="lblStep1ChildNameLockBadge" class="hidden" aria-hidden="true" hidden style="font-size: 0.65rem; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; padding: 1px 6px; border-radius: 4px; font-weight: 600;">🔒 Locked</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <input type="text" id="txtStep1ChildName" placeholder="e.g. Atharva" maxlength="30" aria-labelledby="lblChildNamePrompt" aria-required="true" autocomplete="off" style="flex: 1;" />
+              <button type="button" id="btnStep1EditChildName" class="btn btn-secondary btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 8px; white-space: nowrap;" aria-label="Edit child name">✏️ Edit Name</button>
+              <button type="button" id="btnStep1SaveChildName" class="btn btn-primary btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 8px; white-space: nowrap;" aria-label="Save child name">💾 Save</button>
+              <button type="button" id="btnStep1CancelChildName" class="btn btn-outline btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 6px; white-space: nowrap;" aria-label="Cancel child name edit">✕</button>
+            </div>
+            <span id="lblStep1NameError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600; margin-top: 2px;" role="alert"></span>
           </div>
 
+          <!-- Academic Year Field with Lock and Dedicated Edit Control -->
           <div class="form-group">
-            <label for="selStep1AcademicYear" id="lblAcademicYearPrompt">Academic Year:</label>
-            <select id="selStep1AcademicYear" aria-labelledby="lblAcademicYearPrompt"></select>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+              <label for="selStep1AcademicYear" id="lblAcademicYearPrompt" style="margin: 0; font-weight: 600;">Academic Year:</label>
+              <span id="lblStep1AcademicYearLockBadge" class="hidden" aria-hidden="true" hidden style="font-size: 0.65rem; background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; padding: 1px 6px; border-radius: 4px; font-weight: 600;">🔒 Locked</span>
+            </div>
+            <div style="display: flex; gap: 6px; align-items: center;">
+              <select id="selStep1AcademicYear" aria-labelledby="lblAcademicYearPrompt" style="flex: 1;"></select>
+              <button type="button" id="btnStep1EditAcademicYear" class="btn btn-secondary btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 8px; white-space: nowrap;" aria-label="Edit academic year">✏️ Edit Year</button>
+              <button type="button" id="btnStep1SaveAcademicYear" class="btn btn-primary btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 8px; white-space: nowrap;" aria-label="Save academic year">💾 Save</button>
+              <button type="button" id="btnStep1CancelAcademicYear" class="btn btn-outline btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.7rem; padding: 4px 6px; white-space: nowrap;" aria-label="Cancel academic year edit">✕</button>
+            </div>
+            <span id="lblStep1YearError" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; color: #ef4444; font-weight: 600; margin-top: 2px;" role="alert"></span>
           </div>
+
+          <!-- Rename / Status Feedback Banner -->
+          <div id="lblStep1RenameStatus" class="hidden" aria-hidden="true" hidden style="font-size: 0.72rem; padding: 5px 8px; border-radius: 4px; background: #f0fdf4; color: #166534; border: 1px solid #bbf7d0; font-weight: 600;" role="status" aria-live="polite"></div>
 
           <!-- Child Photo Upload Field -->
           <div class="form-group" style="margin-top: 4px;">
@@ -340,18 +385,43 @@
           ⚡ 3. Deploy School Cloud Worker & 1-Min Trigger
         </button>
 
-        <!-- Step 2 In-Card Live Progress Bar & Status -->
-        <div id="step2InlineProgressBar" class="status-box mb-2 hidden" aria-hidden="true" hidden style="flex-direction: column; align-items: stretch; background: #eff6ff; border-left: 3px solid #2563eb; padding: 10px 12px;" role="status" aria-live="polite">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <strong id="lblStep2ProgressTitle" style="color: #1e40af; font-size: 0.78rem;">🚀 Deploying & Syncing Data...</strong>
-            <span id="lblStep2ProgressPercent" style="font-size: 0.72rem; font-weight: 700; color: #2563eb;">15%</span>
+        <!-- Step 2 In-Card Dual Progress Bar (1. Script Creation, 2. Data Ingestion) -->
+        <div id="step2InlineProgressBar" class="status-box mb-2 hidden" aria-hidden="true" hidden style="flex-direction: column; align-items: stretch; background: #eff6ff; border-left: 3px solid #2563eb; padding: 8px 10px; gap: 8px;" role="status" aria-live="polite">
+          
+          <!-- Part 1: Script Creation & Deployment -->
+          <div style="background: #ffffff; padding: 7px 9px; border-radius: 6px; border: 1px solid #dbeafe;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+              <div style="display: flex; align-items: center; gap: 5px;">
+                <span id="iconStep2ScriptStatus" style="font-size: 0.78rem;">⚙️</span>
+                <strong id="lblStep2ScriptTitle" style="color: #1e40af; font-size: 0.75rem;">1. Script Creation & Web App</strong>
+              </div>
+              <span id="lblStep2ScriptPercent" style="font-size: 0.72rem; font-weight: 700; color: #2563eb;">0%</span>
+            </div>
+            <div style="width: 100%; background: #dbeafe; border-radius: 999px; height: 6px; overflow: hidden; margin-bottom: 4px; border: 1px solid #bfdbfe;">
+              <div id="step2ScriptProgressFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #2563eb, #3b82f6); border-radius: 999px; transition: width 0.35s ease;"></div>
+            </div>
+            <div id="lblStep2ScriptSubtext" style="font-size: 0.69rem; color: #1e3a8a;">
+              Waiting to initialize script creation...
+            </div>
           </div>
-          <div style="width: 100%; background: #dbeafe; border-radius: 999px; height: 8px; overflow: hidden; margin-bottom: 6px; border: 1px solid #bfdbfe;">
-            <div id="step2ProgressFill" style="width: 15%; height: 100%; background: linear-gradient(90deg, #2563eb, #10b981); border-radius: 999px; transition: width 0.35s ease;"></div>
+
+          <!-- Part 2: Data Extraction & Vault Ingestion -->
+          <div style="background: #ffffff; padding: 7px 9px; border-radius: 6px; border: 1px solid #dbeafe;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+              <div style="display: flex; align-items: center; gap: 5px;">
+                <span id="iconStep2DataStatus" style="font-size: 0.78rem;">⏳</span>
+                <strong id="lblStep2DataTitle" style="color: #1e40af; font-size: 0.75rem;">2. Classroom & Gmail Data</strong>
+              </div>
+              <span id="lblStep2DataPercent" style="font-size: 0.72rem; font-weight: 700; color: #10b981;">0%</span>
+            </div>
+            <div style="width: 100%; background: #dbeafe; border-radius: 999px; height: 6px; overflow: hidden; margin-bottom: 4px; border: 1px solid #bfdbfe;">
+              <div id="step2DataProgressFill" style="width: 0%; height: 100%; background: linear-gradient(90deg, #10b981, #059669); border-radius: 999px; transition: width 0.35s ease;"></div>
+            </div>
+            <div id="lblStep2DataSubtext" style="font-size: 0.69rem; color: #1e3a8a;">
+              Pending script deployment completion...
+            </div>
           </div>
-          <div id="lblStep2ProgressSubtext" style="font-size: 0.72rem; color: #1e3a8a;">
-            Authenticating Student School Account & Google Apps Script API...
-          </div>
+
         </div>
 
         <!-- Connected School Account Badge -->
@@ -369,19 +439,24 @@
 
         <!-- 1-Time Initial Cloud Ingestion Results Card -->
         <div id="step2InitialSyncResults" class="status-box mb-2 hidden" aria-hidden="true" hidden style="border-left: 3px solid var(--success-color); background: #f0fdf4;" role="status" aria-live="polite">
-          <span aria-hidden="true">🎉</span>
+          <span id="iconStep2SyncStatus" aria-hidden="true">🎉</span>
           <div style="flex: 1;">
-            <strong style="color: #166534;">1-Time Initial Cloud Ingestion Complete!</strong>
+            <strong id="lblStep2SyncTitle" style="color: #166534;">1-Time Initial Cloud Ingestion Complete!</strong>
             <div id="lblStep2InitialSyncSummary" style="font-size: 0.74rem; color: #166534; margin-top: 2px;">
               Classroom assignments, study materials, and school circulars have been synced into your private Google Drive (<code>K.I.D.S. Data/</code>).
             </div>
+            <div style="display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;">
+              <button id="btnViewClassroomDeepLog" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 3px 8px; background: white; border-color: #16a34a; color: #166534; font-weight: 600;" aria-label="View Classroom Deep Diagnostic Crawl Log">
+                📜 View Deep Sync Log
+              </button>
+</div>
           </div>
         </div>
 
         <div style="display: flex; gap: 6px; margin-top: 6px;">
           <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;" aria-label="Back to Step 1">⬅️ Back</button>
           <button id="btnSkipStep2Bottom" class="btn btn-outline btn-sm" style="flex: 1.2; font-size: 0.72rem;" aria-label="Skip School Account and go to Step 3">⏭️ Skip School Account</button>
-          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm" style="flex: 1.5; font-weight: 700;" aria-label="Continue to Step 3">➡️ Continue to Step 3</button>
+          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm hidden" hidden aria-hidden="true" style="flex: 1.5; font-weight: 700;" aria-label="Continue to Step 3">➡️ Continue to Step 3</button>
         </div>
       </section>
 

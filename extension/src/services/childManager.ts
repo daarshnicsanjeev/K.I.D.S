@@ -9,6 +9,7 @@ export interface ChildProfile {
   name: string; // First name: e.g. "Atharva"
   academicYear: string; // e.g. "2026-2027"
   createdAt: number;
+  step1Confirmed?: boolean;
   accountEmail?: string;
   studentAccountEmail?: string;
   schoolEmailDomain?: string;
@@ -54,27 +55,73 @@ export class ChildManager {
   }
 
   /**
-   * Validates clean first name (letters, spaces, hyphens, 2-30 characters) for UI inputs.
+   * Validates clean first name (letters, spaces, hyphens, 2-30 characters) for UI inputs and Google Drive filesystem safety.
    */
   public static validateFirstName(name: string): { valid: boolean; error?: string; cleanName: string } {
-    const raw = (name || '').trim();
-    if (!raw) {
-      return { valid: false, error: 'Please enter your child\'s first name.', cleanName: '' };
+    if (!name || typeof name !== 'string') {
+      return { valid: false, error: "Please enter your child's first name (cannot be blank or only spaces).", cleanName: '' };
     }
-    if (raw.length < 2) {
-      return { valid: false, error: 'First name must be at least 2 letters long.', cleanName: raw };
+
+    // 1. Check for blank or only whitespace
+    if (/^\s*$/.test(name)) {
+      return { valid: false, error: "Please enter your child's first name (cannot be blank or only spaces).", cleanName: '' };
     }
-    if (raw.length > 30) {
-      return { valid: false, error: 'First name cannot exceed 30 letters.', cleanName: raw };
+
+    // 2. Check for prohibited Drive & filesystem path characters
+    if (/[/\\:*?"<>|\x00-\x1F\x7F]/.test(name)) {
+      return { valid: false, error: 'Invalid characters: / \\ : * ? " < > | cannot be used in folder or file names.', cleanName: '' };
     }
-    if (!/^[a-zA-Z\s'-]+$/.test(raw)) {
-      return { valid: false, error: 'Please enter only letters, spaces, or hyphens.', cleanName: raw.replace(/[^a-zA-Z\s'-]/g, '') };
+
+    const trimmed = name.trim();
+
+    // 3. Check Windows/POSIX reserved names (e.g. CON, PRN, AUX, NUL, COM1-9, LPT1-9)
+    const reservedNames = ['CON', 'PRN', 'AUX', 'NUL', 'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9', 'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'];
+    if (reservedNames.includes(trimmed.toUpperCase())) {
+      return { valid: false, error: `${trimmed} is a reserved system name. Please choose a different name.`, cleanName: '' };
     }
-    // Capitalize each word nicely
-    const formatted = raw
-      .split(/[\s-]+/)
-      .map(part => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-      .join(raw.includes('-') ? '-' : ' ');
+
+    // 4. Reject numbers and symbols that are not letters, spaces, hyphens, or apostrophes
+    if (!/^[a-zA-Z\s'-]+$/.test(trimmed)) {
+      return { valid: false, error: 'First name can only contain letters, spaces, or hyphens.', cleanName: trimmed.replace(/[^a-zA-Z\s'-]/g, '') };
+    }
+
+    // 5. Check for leading or trailing hyphens or apostrophes
+    if (trimmed.startsWith('-') || trimmed.endsWith('-') || trimmed.startsWith("'") || trimmed.endsWith("'")) {
+      return { valid: false, error: 'Name cannot start or end with a hyphen or space.', cleanName: trimmed };
+    }
+
+    // 6. Check for at least 2 alphabetic letters (blocks "---", " - ", "''", etc.)
+    const lettersOnly = trimmed.replace(/[^a-zA-Z]/g, '');
+    if (lettersOnly.length < 2) {
+      return { valid: false, error: 'Name must contain at least 2 alphabetic letters.', cleanName: trimmed };
+    }
+
+    // 7. Check length limits
+    if (trimmed.length > 30) {
+      return { valid: false, error: 'First name cannot exceed 30 letters.', cleanName: trimmed };
+    }
+
+    // 8. Normalization: collapse multiple spaces and multiple hyphens
+    const normalized = trimmed
+      .replace(/\s+/g, ' ')
+      .replace(/-+/g, '-');
+
+    // 9. Capitalize each word nicely (respecting spaces and hyphens)
+    const formatted = normalized
+      .split(' ')
+      .map(word => {
+        return word
+          .split('-')
+          .map(part => {
+            return part
+              .split("'")
+              .map(seg => seg.charAt(0).toUpperCase() + seg.slice(1).toLowerCase())
+              .join("'");
+          })
+          .join('-');
+      })
+      .join(' ');
+
     return { valid: true, cleanName: formatted };
   }
 
@@ -367,4 +414,35 @@ export class ChildManager {
     await this.saveProfiles(merged, active ? active.id : undefined);
     return merged;
   }
+
+  /**
+   * Safely renames an existing child profile after running strict validation.
+   */
+  public static async renameProfile(childId: string, newName: string): Promise<ChildProfile> {
+    const val = this.validateFirstName(newName);
+    if (!val.valid) {
+      throw new Error(val.error || 'Invalid name');
+    }
+    const updated = await this.updateProfile(childId, { name: val.cleanName });
+    if (!updated) {
+      throw new Error(`Child profile "${childId}" was not found.`);
+    }
+    return updated;
+  }
+
+  /**
+   * Safely updates the academic year of an existing child profile.
+   */
+  public static async updateAcademicYear(childId: string, newYear: string): Promise<ChildProfile> {
+    const cleanYear = (newYear || '').trim();
+    if (!cleanYear) {
+      throw new Error('Academic year cannot be empty.');
+    }
+    const updated = await this.updateProfile(childId, { academicYear: cleanYear });
+    if (!updated) {
+      throw new Error(`Child profile "${childId}" was not found.`);
+    }
+    return updated;
+  }
 }
+

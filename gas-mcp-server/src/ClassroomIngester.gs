@@ -4,20 +4,98 @@
  * teacher comments, meet links, and downloads all attached worksheets/PDFs.
  */
 var ClassroomIngester = {
-  sync: function(targetFolderId, childName, academicYear, isIncremental) {
+  sync: function(targetFolderId, childName, academicYear, isIncremental, extractOnly) {
+    var startTime = new Date();
+    var deepLog = {
+      syncId: 'sync_' + startTime.getTime(),
+      timestamp: startTime.toISOString(),
+      childName: childName || 'Child',
+      academicYear: academicYear || '2026-2027',
+      extractOnly: !!extractOnly,
+      coursesAudit: [],
+      inventory: [],
+      summary: {
+        totalCoursesFound: 0,
+        coursesIngested: 0,
+        totalAnnouncements: 0,
+        totalCourseWork: 0,
+        totalMaterials: 0,
+        totalAttachments: 0,
+        driveFilesCount: 0,
+        youtubeVideosCount: 0,
+        webLinksCount: 0,
+        formsCount: 0,
+        duplicateAttachmentsCount: 0
+      },
+      logTimeline: []
+    };
+
+    function addLog(msg) {
+      deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] ' + msg);
+      McpLogger.log('INFO', 'CLASSROOM_DEEP_CRAWL', msg);
+    }
+
     try {
-      McpLogger.log('INFO', 'CLASSROOM_SYNC_START', 'Starting Google Classroom crawl for ' + childName);
+      addLog('🚀 Starting Google Classroom Deep Crawl for ' + (childName || 'Child') + (extractOnly ? ' (Read-Only Extract Mode)' : ''));
 
-      var parentFolder = DriveApp.getFolderById(targetFolderId);
-      var classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
-      var attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
+      var parentFolder = null;
+      var classroomFolder = null;
+      var attachFolder = null;
+      if (targetFolderId && !extractOnly) {
+        try {
+          parentFolder = DriveApp.getFolderById(targetFolderId);
+          classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
+          attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
+        } catch (fErr) {
+          McpLogger.log('WARN', 'CLASSROOM_FOLDER_WARN', 'Could not access parent targetFolderId: ' + fErr);
+        }
+      }
 
-      var courses = this.fetchAllCourses(academicYear);
+      var courses = this.fetchAllCourses(academicYear, deepLog);
       var allCourseData = [];
       var totalAttachments = 0;
+      var seenFileIds = {};
+
+      function recordAttachmentInventory(att, section, parentTitle) {
+        if (!att) return;
+        var itemType = 'DRIVE_FILE';
+        var idOrUrl = att.fileId || '';
+        if (att.youtubeUrl) {
+          itemType = 'YOUTUBE_VIDEO';
+          idOrUrl = att.youtubeUrl;
+          deepLog.summary.youtubeVideosCount++;
+        } else if (att.formUrl) {
+          itemType = 'GOOGLE_FORM';
+          idOrUrl = att.formUrl;
+          deepLog.summary.formsCount++;
+        } else if (att.url) {
+          itemType = 'WEB_LINK';
+          idOrUrl = att.url;
+          deepLog.summary.webLinksCount++;
+        } else if (att.fileId) {
+          if (seenFileIds[att.fileId]) {
+            itemType = 'DUPLICATE_FILE';
+            deepLog.summary.duplicateAttachmentsCount++;
+          } else {
+            seenFileIds[att.fileId] = true;
+            deepLog.summary.driveFilesCount++;
+          }
+        }
+        deepLog.inventory.push({
+          index: deepLog.inventory.length + 1,
+          type: itemType,
+          title: att.title || att.targetName || 'Untitled',
+          targetName: att.targetName || att.title || '',
+          fileId: att.fileId || null,
+          url: idOrUrl,
+          section: section,
+          parentTitle: (parentTitle || '').substring(0, 50)
+        });
+      }
 
       for (var i = 0; i < courses.length; i++) {
         var course = courses[i];
+        addLog('📖 Processing Course [' + (i + 1) + '/' + courses.length + ']: "' + course.name + '" (ID: ' + course.id + ')');
         var courseData = {
           id: course.id,
           name: course.name,
@@ -31,12 +109,21 @@ var ClassroomIngester = {
           materials: []
         };
 
-        // Announcements (with full attachment downloads & Drive link scanning)
-        try {
-          var annRes = Classroom.Courses.Announcements.list(course.id, { pageSize: 30 });
-          if (annRes && annRes.announcements) {
-            for (var aIdx = 0; aIdx < annRes.announcements.length; aIdx++) {
-              var a = annRes.announcements[aIdx];
+        // Announcements (with multi-page pagination & Drive link scanning)
+        var maxPages = isIncremental ? 1 : 50;
+        var annPageToken = null;
+        var annPage = 1;
+        var courseAnnouncements = [];
+        do {
+          try {
+            var annParams = { pageSize: isIncremental ? 20 : 50 };
+            if (annPageToken) annParams.pageToken = annPageToken;
+            var annRes = Classroom.Courses.Announcements.list(course.id, annParams);
+            var batch = (annRes && annRes.announcements) ? annRes.announcements : [];
+            addLog('📢 Course "' + course.name + '" Announcements Page ' + annPage + ': fetched ' + batch.length + ' items (hasMore: ' + !!(annRes && annRes.nextPageToken) + ')');
+
+            for (var aIdx = 0; aIdx < batch.length; aIdx++) {
+              var a = batch[aIdx];
               var annItem = {
                 id: a.id,
                 text: a.text || '',
@@ -47,7 +134,6 @@ var ClassroomIngester = {
                 attachments: []
               };
 
-              // 1. Download materials attached to announcement
               if (a.materials && a.materials.length > 0) {
                 for (var am = 0; am < a.materials.length; am++) {
                   var aMat = a.materials[am];
@@ -55,32 +141,47 @@ var ClassroomIngester = {
                   if (aDownloaded) {
                     annItem.attachments.push(aDownloaded);
                     totalAttachments++;
+                    recordAttachmentInventory(aDownloaded, 'announcement', a.text ? a.text.substring(0, 30) : a.id);
                   }
                 }
               }
 
-              // 2. Scan announcement text body for embedded Google Drive links
               if (a.text) {
                 var textDocs = this.scanTextForDriveFiles(a.text, attachFolder, course.name, 'AnnText_' + a.id);
                 for (var td = 0; td < textDocs.length; td++) {
                   annItem.attachments.push(textDocs[td]);
                   totalAttachments++;
+                  recordAttachmentInventory(textDocs[td], 'announcement_text_link', a.text.substring(0, 30));
                 }
               }
 
-              courseData.announcements.push(annItem);
+              courseAnnouncements.push(annItem);
             }
-          }
-        } catch (annErr) {
-          McpLogger.log('WARN', 'CLASSROOM_ANN_WARN', 'Could not fetch announcements for ' + course.name + ': ' + annErr);
-        }
 
-        // CourseWork (Assignments & Worksheets)
-        try {
-          var cwRes = Classroom.Courses.CourseWork.list(course.id, { pageSize: 50 });
-          if (cwRes && cwRes.courseWork) {
-            for (var j = 0; j < cwRes.courseWork.length; j++) {
-              var cw = cwRes.courseWork[j];
+            annPageToken = annRes ? annRes.nextPageToken : null;
+            annPage++;
+          } catch (annErr) {
+            McpLogger.log('WARN', 'CLASSROOM_ANN_WARN', 'Could not fetch announcements page ' + annPage + ' for ' + course.name + ': ' + annErr);
+            addLog('⚠️ Announcement fetch notice on page ' + annPage + ': ' + annErr.toString());
+            annPageToken = null;
+          }
+        } while (annPageToken && annPage <= maxPages);
+        courseData.announcements = courseAnnouncements;
+
+        // CourseWork (Assignments & Worksheets with multi-page pagination)
+        var cwPageToken = null;
+        var cwPage = 1;
+        var courseCwList = [];
+        do {
+          try {
+            var cwParams = { pageSize: isIncremental ? 20 : 50 };
+            if (cwPageToken) cwParams.pageToken = cwPageToken;
+            var cwRes = Classroom.Courses.CourseWork.list(course.id, cwParams);
+            var cwBatch = (cwRes && cwRes.courseWork) ? cwRes.courseWork : [];
+            addLog('📝 Course "' + course.name + '" CourseWork Page ' + cwPage + ': fetched ' + cwBatch.length + ' items (hasMore: ' + !!(cwRes && cwRes.nextPageToken) + ')');
+
+            for (var j = 0; j < cwBatch.length; j++) {
+              var cw = cwBatch[j];
               var cwItem = {
                 id: cw.id,
                 title: cw.title || 'Untitled Assignment',
@@ -98,22 +199,41 @@ var ClassroomIngester = {
               };
 
               try {
-                var subRes = Classroom.Courses.CourseWork.StudentSubmissions.list(course.id, cw.id, { userId: 'me' });
-                if (subRes && subRes.studentSubmissions && subRes.studentSubmissions.length > 0) {
-                  var sub = subRes.studentSubmissions[0];
-                  cwItem.submission = {
-                    id: sub.id,
-                    state: sub.state || 'ASSIGNED',
-                    assignedGrade: sub.assignedGrade !== undefined ? sub.assignedGrade : null,
-                    draftGrade: sub.draftGrade !== undefined ? sub.draftGrade : null,
-                    alternateLink: sub.alternateLink || '',
-                    updateTime: sub.updateTime,
-                    late: sub.late || false
-                  };
+                var skipSub = false;
+                if (isIncremental && cw.creationTime) {
+                  var ageMs = new Date().getTime() - new Date(cw.creationTime).getTime();
+                  if (ageMs > 30 * 24 * 60 * 60 * 1000) skipSub = true;
+                }
+                if (!skipSub) {
+                  var subRes = Classroom.Courses.CourseWork.StudentSubmissions.list(course.id, cw.id, { userId: 'me' });
+                  if (subRes && subRes.studentSubmissions && subRes.studentSubmissions.length > 0) {
+                    var sub = subRes.studentSubmissions[0];
+                    cwItem.submission = {
+                      id: sub.id,
+                      state: sub.state || 'ASSIGNED',
+                      assignedGrade: sub.assignedGrade !== undefined ? sub.assignedGrade : null,
+                      draftGrade: sub.draftGrade !== undefined ? sub.draftGrade : null,
+                      alternateLink: sub.alternateLink || '',
+                      updateTime: sub.updateTime,
+                      late: sub.late || false
+                    };
+
+                    // Extract student-submitted homework worksheets / attachments
+                    if (sub.assignmentSubmission && sub.assignmentSubmission.attachments && sub.assignmentSubmission.attachments.length > 0) {
+                      for (var sa = 0; sa < sub.assignmentSubmission.attachments.length; sa++) {
+                        var subAtt = sub.assignmentSubmission.attachments[sa];
+                        var dSub = this.downloadMaterialAttachment(subAtt, attachFolder, course.name, 'Sub_' + cw.title);
+                        if (dSub) {
+                          cwItem.attachments.push(dSub);
+                          totalAttachments++;
+                          recordAttachmentInventory(dSub, 'student_submission', cw.title);
+                        }
+                      }
+                    }
+                  }
                 }
               } catch (subErr) {}
 
-              // 1. Download attached materials
               if (cw.materials && cw.materials.length > 0) {
                 for (var m = 0; m < cw.materials.length; m++) {
                   var mat = cw.materials[m];
@@ -121,32 +241,47 @@ var ClassroomIngester = {
                   if (downloaded) {
                     cwItem.attachments.push(downloaded);
                     totalAttachments++;
+                    recordAttachmentInventory(downloaded, 'coursework', cw.title);
                   }
                 }
               }
 
-              // 2. Scan assignment description for embedded Google Drive links
               if (cw.description) {
                 var descDocs = this.scanTextForDriveFiles(cw.description, attachFolder, course.name, cw.title);
                 for (var dd = 0; dd < descDocs.length; dd++) {
                   cwItem.attachments.push(descDocs[dd]);
                   totalAttachments++;
+                  recordAttachmentInventory(descDocs[dd], 'coursework_desc_link', cw.title);
                 }
               }
 
-              courseData.courseWork.push(cwItem);
+              courseCwList.push(cwItem);
             }
-          }
-        } catch (cwErr) {
-          McpLogger.log('WARN', 'CLASSROOM_CW_WARN', 'Could not fetch coursework for ' + course.name + ': ' + cwErr);
-        }
 
-        // Materials (Reference Resources)
-        try {
-          var matRes = Classroom.Courses.CourseWorkMaterials.list(course.id, { pageSize: 30 });
-          if (matRes && matRes.courseWorkMaterial) {
-            for (var k = 0; k < matRes.courseWorkMaterial.length; k++) {
-              var cwm = matRes.courseWorkMaterial[k];
+            cwPageToken = cwRes ? cwRes.nextPageToken : null;
+            cwPage++;
+          } catch (cwErr) {
+            McpLogger.log('WARN', 'CLASSROOM_CW_WARN', 'Could not fetch coursework page ' + cwPage + ' for ' + course.name + ': ' + cwErr);
+            addLog('⚠️ Coursework fetch notice on page ' + cwPage + ': ' + cwErr.toString());
+            cwPageToken = null;
+          }
+        } while (cwPageToken && cwPage <= maxPages);
+        courseData.courseWork = courseCwList;
+
+        // Materials (Reference Resources with multi-page pagination)
+        var matPageToken = null;
+        var matPage = 1;
+        var courseMatList = [];
+        do {
+          try {
+            var matParams = { pageSize: isIncremental ? 20 : 50 };
+            if (matPageToken) matParams.pageToken = matPageToken;
+            var matRes = Classroom.Courses.CourseWorkMaterials.list(course.id, matParams);
+            var matBatch = (matRes && matRes.courseWorkMaterial) ? matRes.courseWorkMaterial : [];
+            addLog('📚 Course "' + course.name + '" Materials Page ' + matPage + ': fetched ' + matBatch.length + ' items (hasMore: ' + !!(matRes && matRes.nextPageToken) + ')');
+
+            for (var k = 0; k < matBatch.length; k++) {
+              var cwm = matBatch[k];
               var matItem = {
                 id: cwm.id,
                 title: cwm.title || 'Course Material',
@@ -163,6 +298,7 @@ var ClassroomIngester = {
                   if (dMat) {
                     matItem.attachments.push(dMat);
                     totalAttachments++;
+                    recordAttachmentInventory(dMat, 'material', cwm.title);
                   }
                 }
               }
@@ -172,16 +308,33 @@ var ClassroomIngester = {
                 for (var cd = 0; cd < cwmDocs.length; cd++) {
                   matItem.attachments.push(cwmDocs[cd]);
                   totalAttachments++;
+                  recordAttachmentInventory(cwmDocs[cd], 'material_desc_link', cwm.title);
                 }
               }
 
-              courseData.materials.push(matItem);
+              courseMatList.push(matItem);
             }
+
+            matPageToken = matRes ? matRes.nextPageToken : null;
+            matPage++;
+          } catch (matErr) {
+            McpLogger.log('WARN', 'CLASSROOM_MAT_WARN', 'Could not fetch materials page ' + matPage + ' for ' + course.name + ': ' + matErr);
+            addLog('⚠️ Materials fetch notice on page ' + matPage + ': ' + matErr.toString());
+            matPageToken = null;
           }
-        } catch (matErr) {}
+        } while (matPageToken && matPage <= maxPages);
+        courseData.materials = courseMatList;
 
         allCourseData.push(courseData);
       }
+
+      deepLog.summary.totalAnnouncements = allCourseData.reduce(function(acc, c) { return acc + (c.announcements ? c.announcements.length : 0); }, 0);
+      deepLog.summary.totalCourseWork = allCourseData.reduce(function(acc, c) { return acc + (c.courseWork ? c.courseWork.length : 0); }, 0);
+      deepLog.summary.totalMaterials = allCourseData.reduce(function(acc, c) { return acc + (c.materials ? c.materials.length : 0); }, 0);
+      deepLog.summary.totalAttachments = totalAttachments;
+      deepLog.executionTimeMs = (new Date()).getTime() - startTime.getTime();
+
+      var deepLogText = this.formatDeepLogReport(deepLog, allCourseData);
 
       var manifestPayload = {
         kidName: childName,
@@ -189,11 +342,29 @@ var ClassroomIngester = {
         lastSyncedAt: new Date().toISOString(),
         totalCourses: allCourseData.length,
         totalAttachments: totalAttachments,
-        courses: allCourseData
+        courses: allCourseData,
+        deepLog: deepLog,
+        deepLogText: deepLogText
       };
 
-      this.saveJsonFile(classroomFolder, 'classroom_data.json', manifestPayload);
-      McpLogger.log('SUCCESS', 'CLASSROOM_SYNC_COMPLETE', 'Successfully crawled ' + allCourseData.length + ' courses and vaulted ' + totalAttachments + ' attachments for ' + childName);
+      if (classroomFolder) {
+        var finalPayload = manifestPayload;
+        if (isIncremental) {
+          try {
+            var exFileIt = classroomFolder.getFilesByName('classroom_data.json');
+            if (exFileIt.hasNext()) {
+              var exData = JSON.parse(exFileIt.next().getContent());
+              if (exData && exData.courses) {
+                finalPayload = this.mergeClassroomData(exData, manifestPayload);
+              }
+            }
+          } catch (mErr) {}
+        }
+        this.saveJsonFile(classroomFolder, 'classroom_data.json', finalPayload);
+        this.saveJsonFile(classroomFolder, 'classroom_sync_deep_log.json', deepLog);
+        this.saveTextFile(classroomFolder, 'classroom_sync_deep_log.txt', deepLogText);
+      }
+      McpLogger.log('SUCCESS', 'CLASSROOM_SYNC_COMPLETE', 'Successfully crawled ' + allCourseData.length + ' courses and extracted ' + totalAttachments + ' attachments for ' + childName);
 
       return manifestPayload;
     } catch (err) {
@@ -202,18 +373,34 @@ var ClassroomIngester = {
     }
   },
 
-  fetchAllCourses: function(academicYear) {
+  fetchAllCourses: function(academicYear, deepLog) {
     var courses = [];
-    try {
-      // Strictly query ACTIVE courses only
-      var res = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] });
-      if (res && res.courses) courses = res.courses;
-    } catch (e) {
+    var pageToken = null;
+    var page = 1;
+    do {
       try {
-        var fallbackRes = Classroom.Courses.list({ courseStates: ['ACTIVE'] });
-        if (fallbackRes && fallbackRes.courses) courses = fallbackRes.courses;
-      } catch (e2) {}
-    }
+        var params = { studentId: 'me', courseStates: ['ACTIVE'], pageSize: 50 };
+        if (pageToken) params.pageToken = pageToken;
+        var res = Classroom.Courses.list(params);
+        if (res && res.courses) {
+          courses = courses.concat(res.courses);
+          if (deepLog) deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] Course list page ' + page + ': retrieved ' + res.courses.length + ' courses.');
+        }
+        pageToken = res ? res.nextPageToken : null;
+        page++;
+      } catch (e) {
+        try {
+          var fbParams = { courseStates: ['ACTIVE'], pageSize: 50 };
+          if (pageToken) fbParams.pageToken = pageToken;
+          var fallbackRes = Classroom.Courses.list(fbParams);
+          if (fallbackRes && fallbackRes.courses) courses = courses.concat(fallbackRes.courses);
+          pageToken = fallbackRes ? fallbackRes.nextPageToken : null;
+          page++;
+        } catch (e2) {
+          pageToken = null;
+        }
+      }
+    } while (pageToken && page <= 10);
 
     var self = this;
     var filtered = courses.filter(function(c) {
@@ -221,6 +408,20 @@ var ClassroomIngester = {
     });
 
     McpLogger.log('INFO', 'CLASSROOM_COURSES_FILTERED', 'Found ' + courses.length + ' active courses in account; filtered to ' + filtered.length + ' current-year classes.');
+    if (deepLog) {
+      deepLog.summary.totalCoursesFound = courses.length;
+      deepLog.summary.coursesIngested = filtered.length;
+      for (var ci = 0; ci < courses.length; ci++) {
+        var isInc = filtered.indexOf(courses[ci]) !== -1;
+        deepLog.coursesAudit.push({
+          id: courses[ci].id,
+          name: courses[ci].name,
+          section: courses[ci].section || '',
+          state: courses[ci].courseState,
+          included: isInc
+        });
+      }
+    }
     return filtered;
   },
 
@@ -267,7 +468,7 @@ var ClassroomIngester = {
   scanTextForDriveFiles: function(text, attachFolder, courseName, itemTitle) {
     if (!text) return [];
     var results = [];
-    var urlRegex = new RegExp('https?://(?:drive|docs)\\.google\\.com/[^\\s"\'\\)<>]+', 'gi');
+    var urlRegex = new RegExp('https?://(?:drive|docs)[.]google[.]com/[^\\s"<>]+', 'gi');
     var matches = text.match(urlRegex);
     if (matches) {
       for (var i = 0; i < matches.length; i++) {
@@ -287,6 +488,15 @@ var ClassroomIngester = {
       var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
       var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
       var targetName = cleanCourse + '_' + cleanTitle + '_' + (title || fileId);
+
+      if (!attachFolder) {
+        return {
+          title: title || targetName,
+          targetName: targetName,
+          fileId: fileId,
+          driveUrl: 'https://drive.google.com/file/d/' + fileId + '/view'
+        };
+      }
 
       var existing = attachFolder.getFilesByName(targetName);
       if (existing.hasNext()) {
@@ -351,10 +561,13 @@ var ClassroomIngester = {
 
   downloadMaterialAttachment: function(mat, attachFolder, courseName, itemTitle) {
     try {
-      if (mat.driveFile && mat.driveFile.driveFile) {
-        var df = mat.driveFile.driveFile;
+      if (mat.driveFile) {
+        var df = mat.driveFile.driveFile || mat.driveFile;
         var fileId = df.id;
-        var title = df.title || 'attachment';
+        var title = df.title || (mat.driveFile && mat.driveFile.title) || mat.title;
+        if (!title || title === 'attachment') {
+          title = (itemTitle ? itemTitle + '_file' : (df.name || 'drive_file'));
+        }
         var dObj = this.downloadDriveFileById(fileId, title, attachFolder, courseName, itemTitle);
         if (dObj) {
           dObj.alternateLink = df.alternateLink || '';
@@ -405,5 +618,158 @@ var ClassroomIngester = {
       return file;
     }
     return folder.createFile(fileName, payload, 'application/json');
+  },
+
+  saveTextFile: function(folder, fileName, content) {
+    var it = folder.getFilesByName(fileName);
+    if (it.hasNext()) {
+      var f = it.next();
+      f.setContent(content);
+      return f;
+    }
+    return folder.createFile(fileName, content, 'text/plain');
+  },
+
+  formatDeepLogReport: function(deepLog, allCourseData) {
+    var lines = [];
+    lines.push('================================================================================');
+    lines.push('       K.I.D.S. GOOGLE CLASSROOM DEEP DIAGNOSTIC AUDIT & CRAWL LOG');
+    lines.push('================================================================================');
+    lines.push('Generated At    : ' + deepLog.timestamp);
+    lines.push('Student / Child : ' + deepLog.childName);
+    lines.push('Academic Year   : ' + deepLog.academicYear);
+    lines.push('Sync Execution  : ' + (deepLog.extractOnly ? 'Direct Read-Only Gateway (0 student drive files)' : 'Full Sync'));
+    lines.push('Execution Time  : ' + (deepLog.executionTimeMs || 0) + ' ms');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('1. EXECUTIVE AUDIT SUMMARY');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('• Active Courses In Account : ' + deepLog.summary.totalCoursesFound);
+    lines.push('• Current-Year Ingested     : ' + deepLog.summary.coursesIngested);
+    lines.push('• Announcements Extracted   : ' + deepLog.summary.totalAnnouncements);
+    lines.push('• CourseWork Assignments    : ' + deepLog.summary.totalCourseWork);
+    lines.push('• Course Reference Materials: ' + deepLog.summary.totalMaterials);
+    lines.push('• Total Detected Attachments: ' + deepLog.summary.totalAttachments);
+    lines.push('    ├─ Downloadable Drive Files : ' + deepLog.summary.driveFilesCount + ' unique');
+    lines.push('    ├─ YouTube Video Links      : ' + deepLog.summary.youtubeVideosCount + ' (streamed in browser)');
+    lines.push('    ├─ External Web Links       : ' + deepLog.summary.webLinksCount);
+    lines.push('    ├─ Google Forms             : ' + deepLog.summary.formsCount);
+    lines.push('    └─ Duplicate Attachments    : ' + deepLog.summary.duplicateAttachmentsCount + ' (shared across notices)');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('2. COURSE BREAKDOWN & PAGINATION AUDIT');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var c = 0; c < allCourseData.length; c++) {
+      var course = allCourseData[c];
+      lines.push('[' + (c + 1) + '] Course: ' + course.name + (course.section ? ' (' + course.section + ')' : ''));
+      lines.push('    Course ID    : ' + course.id);
+      lines.push('    Course State : ' + course.courseState);
+      lines.push('    Class Link   : ' + (course.alternateLink || 'N/A'));
+      lines.push('    Content Audit: ' + (course.announcements ? course.announcements.length : 0) + ' announcements, ' +
+        (course.courseWork ? course.courseWork.length : 0) + ' coursework items, ' +
+        (course.materials ? course.materials.length : 0) + ' materials.');
+      lines.push('');
+    }
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('3. ITEMIZED ATTACHMENT INVENTORY (ALL ' + deepLog.inventory.length + ' DETECTED ITEMS)');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push(this.padRight('#', 4) + ' | ' + this.padRight('TYPE', 15) + ' | ' + this.padRight('TITLE / TARGET NAME', 40) + ' | ' + 'FILE ID / URL');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var i = 0; i < deepLog.inventory.length; i++) {
+      var item = deepLog.inventory[i];
+      var idxStr = this.padRight(String(item.index), 4);
+      var typeStr = this.padRight(item.type, 15);
+      var titleStr = this.padRight((item.title || item.targetName || '').substring(0, 38), 40);
+      var idStr = (item.fileId || item.url || '').substring(0, 45);
+      lines.push(idxStr + ' | ' + typeStr + ' | ' + titleStr + ' | ' + idStr);
+    }
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('4. DETAILED EXECUTION TIMELINE');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var t = 0; t < deepLog.logTimeline.length; t++) {
+      lines.push(deepLog.logTimeline[t]);
+    }
+    lines.push('================================================================================');
+    lines.push('                    END OF CLASSROOM DEEP DIAGNOSTIC AUDIT LOG');
+    lines.push('================================================================================');
+    return lines.join('\n');
+  },
+
+  padRight: function(str, len) {
+    str = String(str || '');
+    while (str.length < len) str += ' ';
+    return str;
+  },
+
+  mergeClassroomData: function(existing, incoming) {
+    if (!existing || !existing.courses) return incoming;
+    if (!incoming || !incoming.courses) return existing;
+
+    var mergedCourses = existing.courses.slice();
+    for (var i = 0; i < incoming.courses.length; i++) {
+      var inCourse = incoming.courses[i];
+      var exIdx = -1;
+      for (var j = 0; j < mergedCourses.length; j++) {
+        if (mergedCourses[j].id === inCourse.id) {
+          exIdx = j;
+          break;
+        }
+      }
+      if (exIdx === -1) {
+        mergedCourses.push(inCourse);
+      } else {
+        var exCourse = mergedCourses[exIdx];
+        var annMap = {};
+        var combinedAnn = [];
+        (inCourse.announcements || []).concat(exCourse.announcements || []).forEach(function(a) {
+          if (a && a.id && !annMap[a.id]) {
+            annMap[a.id] = true;
+            combinedAnn.push(a);
+          }
+        });
+        var cwMap = {};
+        var combinedCw = [];
+        (inCourse.courseWork || []).concat(exCourse.courseWork || []).forEach(function(cw) {
+          if (cw && cw.id && !cwMap[cw.id]) {
+            cwMap[cw.id] = true;
+            combinedCw.push(cw);
+          }
+        });
+        var matMap = {};
+        var combinedMat = [];
+        (inCourse.materials || []).concat(exCourse.materials || []).forEach(function(m) {
+          if (m && m.id && !matMap[m.id]) {
+            matMap[m.id] = true;
+            combinedMat.push(m);
+          }
+        });
+        mergedCourses[exIdx] = {
+          id: inCourse.id,
+          name: inCourse.name || exCourse.name,
+          section: inCourse.section || exCourse.section,
+          descriptionHeading: inCourse.descriptionHeading || exCourse.descriptionHeading,
+          room: inCourse.room || exCourse.room,
+          alternateLink: inCourse.alternateLink || exCourse.alternateLink,
+          courseState: inCourse.courseState || exCourse.courseState,
+          announcements: combinedAnn,
+          courseWork: combinedCw,
+          materials: combinedMat
+        };
+      }
+    }
+    return {
+      kidName: incoming.kidName || existing.kidName,
+      academicYear: incoming.academicYear || existing.academicYear,
+      lastSyncedAt: incoming.lastSyncedAt || new Date().toISOString(),
+      totalCourses: mergedCourses.length,
+      totalAttachments: mergedCourses.reduce(function(acc, c) {
+        var annAtts = (c.announcements || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        var cwAtts = (c.courseWork || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        var matAtts = (c.materials || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        return acc + annAtts + cwAtts + matAtts;
+      }, 0),
+      courses: mergedCourses
+    };
   }
 };

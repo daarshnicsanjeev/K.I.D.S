@@ -2,9 +2,10 @@ import { ChildManager, ChildProfile } from './childManager';
 import { AuthService } from './authService';
 import { PersonalDriveService } from './personalDriveService';
 import { WhatsAppDiagnosticLogger } from './whatsappLogger';
+import { NotificationService } from './notificationService';
 
-export const CURRENT_GAS_SERVER_VERSION = '4.1.0';
-export const CURRENT_GAS_CHANGELOG = 'Full Classroom, Coursework & Gmail Cloud Ingester with Attachment Downloads & Daily Digest Generator';
+export const CURRENT_GAS_SERVER_VERSION = '4.4.0';
+export const CURRENT_GAS_CHANGELOG = 'Deferred Trigger Creation Until 1-Time Sync Completion & Pre-Lock Fast-Exit Guards';
 
 /**
  * GasProvisionerService - Automated 1-Click Provisioning of personal Google Apps Script MCP Server
@@ -20,8 +21,24 @@ export interface ProvisionResult {
   initialSyncResult?: any;
 }
 
+export interface ActiveDeployProgress {
+  status: 'IN_PROGRESS' | 'COMPLETED' | 'ERROR' | 'IDLE';
+  workerType: 'SCHOOL_WORKER' | 'MASTER_WORKER';
+  childName?: string;
+  academicYear?: string;
+  percent: number;
+  phaseText: string;
+  subtext: string;
+  stage?: 'script' | 'data';
+  stagePercent?: number;
+  updatedAt: number;
+  result?: ProvisionResult;
+  error?: string;
+}
+
 export class GasProvisionerService {
   public static logCallback?: (msg: string) => void;
+  public static isInitialSyncRunning = false;
 
   public static async isServerUpdateAvailable(activeChild?: ChildProfile | null): Promise<{ isAvailable: boolean; currentVersion: string; deployedVersion?: string; changelog: string }> {
     const child = activeChild || (await ChildManager.getActiveProfile());
@@ -57,16 +74,62 @@ export class GasProvisionerService {
     return outdated;
   }
 
-  private static progressCallback?: (percent: number, phaseText: string, subtext: string) => void;
+  private static progressCallback?: (percent: number, phaseText: string, subtext: string, stage?: 'script' | 'data', stagePercent?: number) => void;
+  private static currentDeployProgress: ActiveDeployProgress | null = null;
 
-  public static setProgressCallback(cb?: (percent: number, phaseText: string, subtext: string) => void) {
+  public static setProgressCallback(cb?: (percent: number, phaseText: string, subtext: string, stage?: 'script' | 'data', stagePercent?: number) => void) {
     this.progressCallback = cb;
   }
 
-  public static reportProgress(percent: number, phaseText: string, subtext: string) {
-    if (this.progressCallback) {
-      try { this.progressCallback(percent, phaseText, subtext); } catch (e) {}
+  public static async getActiveDeployProgress(): Promise<ActiveDeployProgress | null> {
+    if (this.currentDeployProgress) return this.currentDeployProgress;
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        const stored = await chrome.storage.local.get(['active_deploy_progress']);
+        return stored.active_deploy_progress || null;
+      } catch (e) {}
     }
+    return null;
+  }
+
+  public static async setActiveDeployProgress(progress: ActiveDeployProgress | null): Promise<void> {
+    this.currentDeployProgress = progress;
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+      try {
+        if (progress) {
+          await chrome.storage.local.set({ active_deploy_progress: progress });
+        } else {
+          await chrome.storage.local.remove(['active_deploy_progress']);
+        }
+      } catch (e) {}
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime && chrome.runtime.sendMessage && progress) {
+      chrome.runtime.sendMessage({ type: 'DEPLOY_PROGRESS_UPDATE', payload: progress }).catch(() => {});
+    }
+  }
+
+  public static async clearActiveDeployProgress(): Promise<void> {
+    await this.setActiveDeployProgress(null);
+  }
+
+  public static reportProgress(percent: number, phaseText: string, subtext: string, stage?: 'script' | 'data', stagePercent?: number) {
+    if (this.progressCallback) {
+      try { this.progressCallback(percent, phaseText, subtext, stage, stagePercent); } catch (e) {}
+    }
+
+    const updated: ActiveDeployProgress = {
+      status: percent >= 100 ? 'COMPLETED' : 'IN_PROGRESS',
+      workerType: this.currentDeployProgress?.workerType || 'SCHOOL_WORKER',
+      childName: this.currentDeployProgress?.childName,
+      academicYear: this.currentDeployProgress?.academicYear,
+      percent,
+      phaseText,
+      subtext,
+      stage,
+      stagePercent,
+      updatedAt: Date.now()
+    };
+    this.setActiveDeployProgress(updated).catch(() => {});
   }
 
   public static log(msg: string) {
@@ -164,7 +227,7 @@ export class GasProvisionerService {
       webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${masterAccessKey}` : `${webAppUrl}?accessKey=${masterAccessKey}`;
     }
 
-    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId);
+    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId, undefined, 'master');
 
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set({
@@ -613,12 +676,9 @@ export class GasProvisionerService {
             'https://www.googleapis.com/auth/script.projects',
             'https://www.googleapis.com/auth/script.deployments',
             'https://www.googleapis.com/auth/drive.file',
-            'https://www.googleapis.com/auth/drive.readonly',
-            'https://www.googleapis.com/auth/drive.metadata.readonly',
             'https://www.googleapis.com/auth/classroom.courses.readonly',
             'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly',
-            'https://www.googleapis.com/auth/gmail.readonly'
+            'https://www.googleapis.com/auth/calendar.events.readonly'
           ].join(' ');
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -677,9 +737,49 @@ export class GasProvisionerService {
   }
 
   /**
+   * Renames an existing Google Apps Script project in-place via Drive API and updates CONFIG in Code.gs.
+   */
+  public static async renameAppsScriptProject(
+    scriptId: string,
+    newName: string,
+    academicYear: string = '',
+    token?: string
+  ): Promise<void> {
+    try {
+      const activeToken = token || await this.getAuthToken(false).catch(() => null);
+      if (!activeToken || !scriptId) return;
+
+      const yearSuffix = academicYear ? ` (${academicYear})` : '';
+      const newTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${newName}${yearSuffix}`;
+
+      // 1. Rename the Google Drive file (Apps Script projects are Drive files)
+      await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}`, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${activeToken}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ name: newTitle })
+      }).catch(() => {});
+
+      // 2. Also update CONFIG in Code.gs if accessKey is stored
+      let accessKey = '';
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const state = await chrome.storage.local.get(['access_key']);
+        accessKey = state.access_key || '';
+      }
+      if (accessKey) {
+        await this.updateProjectContent(scriptId, accessKey, activeToken, newName, academicYear).catch(() => {});
+      }
+    } catch (e) {
+      console.warn('[GasProvisioner] renameAppsScriptProject warning:', e);
+    }
+  }
+
+  /**
    * Pushes Code.gs, WorkspaceFetcher.gs, PortalApiFetcher.gs, StorageRepository.gs & appsscript.json.
    */
-  private static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child', academicYear: string = ''): Promise<any> {
+  public static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child', academicYear: string = ''): Promise<any> {
     const files = [
       {
         name: 'appsscript',
@@ -722,7 +822,8 @@ export class GasProvisionerService {
             'https://www.googleapis.com/auth/spreadsheets.readonly',
             'https://www.googleapis.com/auth/presentations',
             'https://www.googleapis.com/auth/presentations.readonly',
-            'https://www.googleapis.com/auth/script.external_request'
+            'https://www.googleapis.com/auth/script.external_request',
+            'https://www.googleapis.com/auth/script.scriptapp'
           ]
         }, null, 2)
       },
@@ -792,31 +893,68 @@ function testAuth() {
 }
 
 function doGet(e) {
-  // 1. One-time Parent Consent Handshake
+  // 1. One-time Parent Consent Handshake & Autonomous Trigger Provisioning
   if (!e || !e.parameter || !e.parameter.accessKey || e.parameter.auth === 'true' || e.parameter.authInit === 'true') {
     // Calling Classroom/Drive here forces Google's runtime engine to present the permission prompt
     try {
-      Classroom.Courses.list({ pageSize: 1 });
+      if (typeof Classroom !== 'undefined' && Classroom.Courses) {
+        Classroom.Courses.list({ pageSize: 1 });
+      }
     } catch (err) {}
+
+    var wType = (e && e.parameter && e.parameter.workerType) ? e.parameter.workerType : '';
+    var isDual = (e && e.parameter && (e.parameter.dualWorker === 'true' || e.parameter.isDualWorker === 'true'));
+    if (isDual || wType === 'school') {
+      try {
+        PropertiesService.getScriptProperties().setProperty('is_dual_worker', 'true');
+      } catch (pErr) {}
+    }
+    try {
+      setupAutonomousTriggers(wType);
+    } catch (trigErr) {
+      McpLogger.log('WARN', 'doGet:direct_trigger_attempt', trigErr.toString());
+    }
 
     return HtmlService.createHtmlOutput(
       '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+      '<title>K.I.D.S. Cloud Sync Authorization</title>' +
       '<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;margin:0;background:#f8fafc;color:#0f172a;}' +
-      '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:360px;}' +
+      '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:380px;}' +
       'h3{color:#16a34a;margin-top:0;font-size:20px;}' +
       'p{color:#64748b;font-size:14px;line-height:1.5;}' +
-      '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;}' +
+      '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;margin-top:10px;}' +
+      '</style></head>' +
       '<body><div class="box"><h3>✅ MCP Server Connected!</h3>' +
-      '<p>Google Workspace permissions approved. This window will close automatically...</p>' +
-      '<div class="badge">Closing automatically in 2s...</div></div>' +
+      '<p>Google Workspace permissions approved.</p>' +
+      '<div id="triggerBadge" class="badge">⚡ Activating 24/7 Cloud Sync...</div></div>' +
       '<script>' +
-      'setTimeout(function(){' +
+      'function closeWin() {' +
       '  try { google.script.host.close(); } catch(e) {}' +
       '  try { window.top.close(); } catch(e) {}' +
       '  try { window.close(); } catch(e) {}' +
-      '}, 1500);' +
+      '}' +
+      'try {' +
+      '  if (typeof google !== "undefined" && google.script && google.script.run) {' +
+      '    google.script.run' +
+      '      .withSuccessHandler(function(res) {' +
+      '        var el = document.getElementById("triggerBadge");' +
+      '        if (el) el.innerHTML = "⚡ 24/7 Cloud Trigger Active!";' +
+      '        setTimeout(closeWin, 1000);' +
+      '      })' +
+      '      .withFailureHandler(function(err) {' +
+      '        var el = document.getElementById("triggerBadge");' +
+      '        if (el) el.innerHTML = "⚡ Connected! Closing...";' +
+      '        setTimeout(closeWin, 1200);' +
+      '      })' +
+      '      .setupAutonomousTriggers("' + wType + '");' +
+      '  } else {' +
+      '    setTimeout(closeWin, 1500);' +
+      '  }' +
+      '} catch (err) {' +
+      '  setTimeout(closeWin, 1500);' +
+      '}' +
       '</script></body></html>'
-    ).setTitle('MCP Server Authorization');
+    ).setTitle('K.I.D.S. Cloud Sync Authorization');
   }
 
   if (e.parameter.accessKey !== CONFIG.accessKey) {
@@ -835,23 +973,41 @@ function doGet(e) {
       cleared: McpLogger.clearLogs()
     })).setMimeType(ContentService.MimeType.JSON);
   }
+  if (e.parameter.action === 'setupTriggers') {
+    var res = setupAutonomousTriggers(e.parameter.workerType);
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      result: res
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.action === 'pauseNightlySync') {
+    var pRes = pauseNightlySyncTriggers();
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      result: pRes
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.action === 'resumeMorningSync') {
+    var rRes = resumeMorningSyncTriggers();
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      result: rRes
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
   var serverName = 'Kids Intelligent Dashboard System (K.I.D.S.) - ' + (CONFIG.childName || 'Student') + (CONFIG.academicYear ? ' (' + CONFIG.academicYear + ')' : '');
   return ContentService.createTextOutput(JSON.stringify({
     status: 'online',
     server: serverName,
     childName: CONFIG.childName || 'Student',
-    academicYear: CONFIG.academicYear || ''
+    academicYear: CONFIG.academicYear || '',
+    version: '4.4.0'
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
   var startMs = new Date().getTime();
   try {
-    if (!e || !e.parameter || e.parameter.accessKey !== CONFIG.accessKey) {
-      McpLogger.log('WARN', 'doPost', 'Unauthorized access key attempt');
-      throw new Error("Unauthorized access key.");
-    }
-    if (!e.postData || !e.postData.contents) {
+    if (!e || !e.postData || !e.postData.contents) {
       throw new Error("No POST payload received.");
     }
 
@@ -859,6 +1015,12 @@ function doPost(e) {
     var method = json.method;
     var params = json.params || {};
     var id = json.id;
+
+    var passedKey = (e.parameter && e.parameter.accessKey) || (params && params.accessKey) || (json && json.accessKey);
+    if (!passedKey || passedKey !== CONFIG.accessKey) {
+      McpLogger.log('WARN', 'doPost', 'Unauthorized access key attempt');
+      throw new Error("Unauthorized access key.");
+    }
 
     var result;
 
@@ -910,8 +1072,66 @@ function doPost(e) {
     } else if (method === "register_mcp_tool" || method === "register_portal_job") {
       result = handleRegisterPortalJob(params);
       McpLogger.log('INFO', 'register_portal_job', { domain: params.domain, feature: params.feature });
-    } else if (method === "sync_classroom_and_gmail") {
+    } else if (method === "sync_classroom_and_gmail" || method === "extract_classroom_and_gmail") {
       result = handleSyncClassroomAndGmail(params);
+    } else if (method === "register_school_worker") {
+      result = handleRegisterSchoolWorker(params);
+    } else if (method === "sync_master_cloud_school") {
+      var tChild = params ? (params.childId || params.childName || params.targetChild) : null;
+      var initPass = params ? (params.isInitialPass === true || params.initialPass === true) : false;
+      result = runMasterCloudSchoolSync(params && (params.force === true || params.manual === true), tChild, initPass);
+    } else if (method === "pause_nightly_sync") {
+      result = pauseNightlySyncTriggers();
+    } else if (method === "resume_morning_sync") {
+      result = resumeMorningSyncTriggers();
+    } else if (method === "get_file_blob") {
+      result = handleGetFileBlob(params);
+    } else if (method === "get_gmail_attachment") {
+      result = handleGetGmailAttachment(params);
+    } else if (method === "get_vault_file") {
+      result = handleGetVaultFile(params);
+    } else if (method === "list_vault_files") {
+      result = handleListVaultFiles(params);
+    } else if (method === "save_vault_file") {
+      result = handleSaveVaultFile(params);
+    } else if (method === "search_vault_documents") {
+      var kidFolder = null;
+      var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+      if (targetFolderId) {
+        try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
+      }
+      if (typeof DocumentOcrService !== 'undefined') {
+        result = DocumentOcrService.searchVaultDocuments(kidFolder, params.query);
+      } else {
+        result = { error: 'DocumentOcrService not loaded' };
+      }
+    } else if (method === "index_whatsapp_media") {
+      if (typeof DocumentOcrService !== 'undefined') {
+        result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
+      } else {
+        result = { error: 'DocumentOcrService not loaded' };
+      }
+    } else if (method === "run_vault_ocr_indexing") {
+      var kidFolder = null;
+      var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+      if (targetFolderId) {
+        try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
+      }
+      if (typeof DocumentOcrService !== 'undefined') {
+        result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 12);
+      } else {
+        result = { error: 'DocumentOcrService not loaded' };
+      }
+    } else if (method === "set_sync_state" || method === "set_initial_sync_complete") {
+      result = handleSetSyncState(params);
+    } else if (method === "clear_triggers" || method === "clearTriggers") {
+      var allTriggers = ScriptApp.getProjectTriggers();
+      var clearedCount = 0;
+      for (var ct = 0; ct < allTriggers.length; ct++) {
+        ScriptApp.deleteTrigger(allTriggers[ct]);
+        clearedCount++;
+      }
+      result = { success: true, clearedCount: clearedCount };
     } else if (method === "sync_all_portals") {
       result = handleSyncAllPortals(params);
     } else if (method === "setup_triggers") {
@@ -1027,6 +1247,18 @@ function handleToolsList() {
         },
         required: ['fileId']
       }
+    },
+    {
+      name: 'search_vault_documents',
+      description: 'Searches all school worksheets, circulars, scanned PDFs, and WhatsApp chat images across all subjects and dates using intelligent full-text OCR indexing.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Keyword or phrase to search for inside documents and images (e.g. "Linear equations worksheet", "fee notice", "sports day")' },
+          childName: { type: 'string', description: 'Optional child first name to filter search' }
+        },
+        required: ['query']
+      }
     }
   ];
 
@@ -1034,7 +1266,17 @@ function handleToolsList() {
 }
 
 function handleToolsCall(name, args) {
-  if (name === 'get_whatsapp_school_updates') {
+  if (name === 'search_vault_documents') {
+    var kidFolder = null;
+    var targetFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
+    if (targetFolderId) {
+      try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
+    }
+    if (typeof DocumentOcrService !== 'undefined') {
+      return DocumentOcrService.searchVaultDocuments(kidFolder, args && args.query);
+    }
+    return { error: 'DocumentOcrService not loaded' };
+  } else if (name === 'get_whatsapp_school_updates') {
     var msgs = WhatsAppStorage.getRecentMessages(args && args.chat_filter, (args && args.max_count) || 35);
     McpLogger.log('INFO', 'whatsapp:get_updates', { filter: args && args.chat_filter, count: msgs.length });
     return {
@@ -1131,31 +1373,295 @@ function handleRegisterTool(params) {
   return { registered: true, toolName: toolName };
 }
 
-function handleSyncClassroomAndGmail(params) {
-  var folderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
-  var childName = params.childName || CONFIG.childName || 'Child';
-  var academicYear = params.academicYear || CONFIG.academicYear || '2026-2027';
-  var schoolDomain = params.schoolDomain || '';
+function handleGetFileBlob(params) {
+  var fileId = params.fileId;
+  if (!fileId) throw new Error("fileId is required");
+  try {
+    var file = DriveApp.getFileById(fileId);
+    var mimeType = file.getMimeType();
+    var isGoogleApp = mimeType && mimeType.indexOf('google-apps') !== -1;
+    var blob;
+    var name = file.getName();
+    if (isGoogleApp) {
+      var token = ScriptApp.getOAuthToken();
+      var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=application/pdf', {
+        headers: { 'Authorization': 'Bearer ' + token },
+        muteHttpExceptions: true
+      });
+      if (exportRes.getResponseCode() === 200) {
+        blob = exportRes.getBlob();
+        mimeType = 'application/pdf';
+        if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+      } else {
+        throw new Error('Export failed: ' + exportRes.getResponseCode());
+      }
+    } else {
+      blob = file.getBlob();
+    }
+    var base64 = Utilities.base64Encode(blob.getBytes());
+    return {
+      base64: base64,
+      mimeType: mimeType,
+      name: name
+    };
+  } catch (err) {
+    var token2 = ScriptApp.getOAuthToken();
+    var dlRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
+      headers: { 'Authorization': 'Bearer ' + token2 },
+      muteHttpExceptions: true
+    });
+    if (dlRes.getResponseCode() === 200) {
+      var dlBlob = dlRes.getBlob();
+      return {
+        base64: Utilities.base64Encode(dlBlob.getBytes()),
+        mimeType: dlBlob.getContentType() || 'application/octet-stream',
+        name: params.name || fileId
+      };
+    }
+    throw err;
+  }
+}
 
-  if (!folderId) throw new Error("targetFolderId is required for Classroom & Gmail sync.");
-
-  PropertiesService.getScriptProperties().setProperties({
-    target_folder_id: folderId,
-    child_name: childName,
-    academic_year: academicYear,
-    school_domain: schoolDomain
-  });
-
-  var classroomRes = ClassroomIngester.sync(folderId, childName, academicYear, false);
-  var gmailRes = GmailIngester.sync(folderId, childName, academicYear, schoolDomain, false);
-  var digestRes = DigestBuilder.build(folderId, childName, academicYear);
-
+function handleGetGmailAttachment(params) {
+  var messageId = params.messageId;
+  var attachmentIndex = params.attachmentIndex;
+  var filename = params.filename;
+  if (!messageId) throw new Error("messageId is required");
+  var msg = GmailApp.getMessageById(messageId);
+  if (!msg) throw new Error("Message not found: " + messageId);
+  var atts = msg.getAttachments();
+  var targetAtt = null;
+  if (attachmentIndex !== undefined && attachmentIndex !== null && atts[attachmentIndex]) {
+    targetAtt = atts[attachmentIndex];
+  } else if (filename) {
+    for (var i = 0; i < atts.length; i++) {
+      if (atts[i].getName() === filename) {
+        targetAtt = atts[i];
+        break;
+      }
+    }
+  }
+  if (!targetAtt && atts.length > 0) targetAtt = atts[0];
+  if (!targetAtt) throw new Error("Attachment not found in message: " + messageId);
   return {
-    success: true,
-    classroom: classroomRes,
-    gmail: gmailRes,
-    digest: digestRes
+    name: targetAtt.getName(),
+    mimeType: targetAtt.getContentType(),
+    size: targetAtt.getSize(),
+    base64: Utilities.base64Encode(targetAtt.getBytes())
   };
+}
+
+function handleSyncClassroomAndGmail(params) {
+  var isWriting = !params.extractOnly && !!params.targetFolderId;
+  var lock = isWriting ? LockService.getScriptLock() : null;
+  if (lock && !lock.tryLock(30000)) {
+    return { success: false, locked: true, error: "Script lock busy: sync in progress" };
+  }
+  try {
+    var folderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id') || null;
+    var childName = params.childName || CONFIG.childName || 'Child';
+    var academicYear = params.academicYear || CONFIG.academicYear || '2026-2027';
+    var schoolDomain = params.schoolDomain || '';
+
+    if (folderId) {
+      try {
+        PropertiesService.getScriptProperties().setProperties({
+          target_folder_id: folderId,
+          child_name: childName,
+          academic_year: academicYear,
+          school_domain: schoolDomain
+        });
+      } catch (pErr) {}
+    }
+
+    var classroomRes = ClassroomIngester.sync(folderId, childName, academicYear, !!params.isIncremental, !!params.extractOnly);
+    var gmailRes = null;
+    try {
+      gmailRes = GmailIngester.sync(folderId, childName, academicYear, schoolDomain, !!params.isIncremental, !!params.extractOnly);
+    } catch (gErr) {
+      McpLogger.log('WARN', 'GMAIL_SYNC_WARN', 'Gmail sync error: ' + gErr);
+      gmailRes = {
+        kidName: childName,
+        academicYear: academicYear,
+        schoolDomain: schoolDomain || '',
+        lastSyncedAt: new Date().toISOString(),
+        totalEmails: 0,
+        totalAttachments: 0,
+        emails: [],
+        error: gErr.toString()
+      };
+    }
+    var digestRes = null;
+    try {
+      if (folderId && !params.extractOnly) {
+        digestRes = DigestBuilder.build(folderId, childName, academicYear);
+      }
+    } catch (dErr) {
+      McpLogger.log('WARN', 'DIGEST_BUILD_SKIP', 'Skipping digest build: ' + dErr);
+    }
+
+    return {
+      success: true,
+      classroom: classroomRes,
+      gmail: gmailRes,
+      digest: digestRes
+    };
+  } finally {
+    if (lock) {
+      lock.releaseLock();
+    }
+  }
+}
+
+function handleGetVaultFile(params) {
+  var folderId = params.folderId;
+  var fileName = params.fileName;
+  var fileId = params.fileId;
+  var file = null;
+
+  try {
+    if (fileId) {
+      file = DriveApp.getFileById(fileId);
+    } else if (folderId && fileName) {
+      var folder = DriveApp.getFolderById(folderId);
+      if (!folder || folder.isTrashed()) return { success: false, notFound: true, error: "Folder not found" };
+      var it = folder.getFilesByName(fileName);
+      var count = 0;
+      while (it.hasNext()) {
+        var f = it.next();
+        if (f.isTrashed()) continue;
+        count++;
+        if (!file || f.getLastUpdated() > file.getLastUpdated()) {
+          file = f;
+        }
+      }
+      if (count > 1) {
+        McpLogger.log('WARN', 'DUPLICATE_DETECTED', 'Found ' + count + ' copies of ' + fileName + ' in folder ' + folderId + '. Selected newest.');
+      }
+    }
+
+    if (!file || file.isTrashed()) {
+      return { success: false, notFound: true, error: "File not found" };
+    }
+
+    var mime = file.getMimeType();
+    var content;
+    if (mime === 'application/json') {
+      try {
+        content = JSON.parse(file.getBlob().getDataAsString());
+      } catch (e) {
+        content = file.getBlob().getDataAsString();
+      }
+    } else {
+      content = file.getBlob().getDataAsString();
+    }
+
+    return {
+      success: true,
+      id: file.getId(),
+      name: file.getName(),
+      mimeType: mime,
+      content: content,
+      size: file.getSize(),
+      lastUpdated: file.getLastUpdated().toISOString()
+    };
+  } catch (err) {
+    return { success: false, notFound: true, error: err.toString() };
+  }
+}
+
+function handleListVaultFiles(params) {
+  var folderId = params.folderId;
+  if (!folderId) return { success: false, error: "No folderId provided" };
+
+  try {
+    var folder = DriveApp.getFolderById(folderId);
+    if (!folder || folder.isTrashed()) return { success: false, error: "Folder not found" };
+    var it = folder.getFiles();
+    var files = [];
+    while (it.hasNext()) {
+      var f = it.next();
+      if (!f.isTrashed()) {
+        files.push({
+          id: f.getId(),
+          name: f.getName(),
+          mimeType: f.getMimeType(),
+          size: f.getSize(),
+          lastUpdated: f.getLastUpdated().toISOString()
+        });
+      }
+    }
+    return { success: true, files: files };
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  }
+}
+
+function handleSaveVaultFile(params) {
+  var folderId = params.folderId;
+  var fileName = params.fileName;
+  var content = params.content;
+  var mimeType = params.mimeType || 'application/json';
+
+  if (!folderId || !fileName) return { success: false, error: "folderId and fileName required" };
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    return { success: false, locked: true, error: "Script lock busy: sync in progress" };
+  }
+
+  try {
+    var folder = DriveApp.getFolderById(folderId);
+    if (!folder || folder.isTrashed()) return { success: false, error: "Folder not found" };
+
+    var it = folder.getFilesByName(fileName);
+    var matches = [];
+    while (it.hasNext()) {
+      var f = it.next();
+      if (!f.isTrashed()) {
+        matches.push(f);
+      }
+    }
+
+    var targetFile = null;
+    var duplicatesTrashed = 0;
+
+    if (matches.length > 0) {
+      targetFile = matches[0];
+      for (var i = 1; i < matches.length; i++) {
+        if (matches[i].getLastUpdated() > targetFile.getLastUpdated()) {
+          targetFile = matches[i];
+        }
+      }
+
+      for (var j = 0; j < matches.length; j++) {
+        if (matches[j].getId() !== targetFile.getId()) {
+          try {
+            matches[j].setTrashed(true);
+            duplicatesTrashed++;
+          } catch (tErr) {}
+        }
+      }
+    }
+
+    if (duplicatesTrashed > 0) {
+      McpLogger.log('WARN', 'DUPLICATE_HEALED', 'Trashed ' + duplicatesTrashed + ' stale duplicate(s) of ' + fileName + ' in folder ' + folderId + '. Kept newest (' + targetFile.getId() + ').');
+    }
+
+    var payloadStr = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+
+    if (targetFile) {
+      targetFile.setContent(payloadStr);
+      return { success: true, id: targetFile.getId(), updated: true, duplicatesTrashed: duplicatesTrashed };
+    } else {
+      var created = folder.createFile(fileName, payloadStr, mimeType);
+      return { success: true, id: created.getId(), created: true, duplicatesTrashed: duplicatesTrashed };
+    }
+  } catch (err) {
+    return { success: false, error: err.toString() };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function handleSyncAllPortals(params) {
@@ -1164,15 +1670,27 @@ function handleSyncAllPortals(params) {
 }
 
 function handleRegisterPortalJob(params) {
-  var childId = params.childId || 'default_child';
   var kidName = params.childName || params.kidName || CONFIG.childName || 'Child';
+  var props = PropertiesService.getScriptProperties();
   var portalFolderId = params.portalFolderId || params.targetFolderId;
+  if (!portalFolderId) {
+    try {
+      var schoolRaw = props.getProperty('multi_child_school_registry');
+      if (schoolRaw) {
+        var schoolReg = JSON.parse(schoolRaw);
+        var matchedSchoolChild = (schoolReg.children || []).find(function(sc) {
+          return sc.childId === childId || (sc.kidName && sc.kidName.toLowerCase() === kidName.toLowerCase());
+        });
+        if (matchedSchoolChild && matchedSchoolChild.targetFolderId) {
+          portalFolderId = matchedSchoolChild.targetFolderId;
+        }
+      }
+    } catch(e) {}
+  }
   var domain = params.domain;
   var feature = params.feature;
   var endpointSpec = params.endpoint_spec || { url: params.url };
   var authSpec = params.auth_spec || { cookies: params.cookies };
-
-  var props = PropertiesService.getScriptProperties();
   var raw = props.getProperty('multi_child_portal_registry');
   var registry = raw ? JSON.parse(raw) : { children: [] };
 
@@ -1211,33 +1729,725 @@ function handleRegisterPortalJob(params) {
   return { registered: true, childId: childId, domain: domain, feature: feature };
 }
 
-function handleSetupTriggers(params) {
-  var type = params.type;
-  if (type === 'school_1min') {
-    setupMinuteTrigger();
-    return { triggerSet: true, cadence: 'everyMinutes(1)' };
-  } else if (type === 'portal_6hr') {
-    setupSixHourTrigger();
-    return { triggerSet: true, cadence: 'everyHours(6)' };
+function handleRegisterSchoolWorker(params) {
+  var childId = params.childId || 'default_child';
+  var kidName = params.childName || params.kidName || 'Atharva';
+  var academicYear = params.academicYear || '2026-2027';
+  var schoolWorkerUrl = params.schoolWorkerUrl;
+  var schoolDomain = params.schoolDomain || '';
+  var targetFolderId = params.targetFolderId;
+  var initialSyncComplete = params.initialSyncComplete !== undefined ? !!params.initialSyncComplete : false;
+
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty('multi_child_school_registry');
+  var registry;
+  try {
+    registry = raw ? JSON.parse(raw) : { children: [] };
+  } catch (e) {
+    registry = { children: [] };
   }
-  return { triggerSet: false, error: 'Unknown trigger type' };
+  if (!registry.children) registry.children = [];
+
+  var child = registry.children.find(function(c) { return c.childId === childId || (c.kidName && c.kidName.toLowerCase() === kidName.toLowerCase()); });
+  if (!child) {
+    child = {
+      childId: childId,
+      kidName: kidName,
+      academicYear: academicYear,
+      schoolWorkerUrl: schoolWorkerUrl,
+      schoolDomain: schoolDomain,
+      targetFolderId: targetFolderId,
+      initialSyncComplete: initialSyncComplete,
+      registeredAt: new Date().toISOString()
+    };
+    registry.children.push(child);
+  } else {
+    if (schoolWorkerUrl) child.schoolWorkerUrl = schoolWorkerUrl;
+    if (academicYear) child.academicYear = academicYear;
+    if (schoolDomain) child.schoolDomain = schoolDomain;
+    if (targetFolderId) child.targetFolderId = targetFolderId;
+    if (params.initialSyncComplete !== undefined) {
+      child.initialSyncComplete = !!params.initialSyncComplete;
+    }
+    child.updatedAt = new Date().toISOString();
+  }
+
+  props.setProperty('multi_child_school_registry', JSON.stringify(registry));
+  var triggerRes = null;
+  // Strictly defer autonomous trigger creation until 1-time initial sync has completed.
+  // When Step 2 registers the child initially, child.initialSyncComplete is false -> no trigger created.
+  // When 1-time data sync completes, the extension re-registers with initialSyncComplete: true -> trigger created!
+  if (child.initialSyncComplete === true) {
+    try {
+      triggerRes = setupMasterCloudSyncTrigger();
+    } catch(tErr) {
+      triggerRes = { success: false, error: tErr.toString() };
+    }
+  } else {
+    triggerRes = { success: true, deferred: true, reason: 'awaiting_1time_sync_completion' };
+    McpLogger.log('INFO', 'TRIGGER_DEFERRED', 'Autonomous 1-minute trigger deferred for ' + kidName + ' until 1-time initial sync completes.');
+  }
+
+  McpLogger.log('SUCCESS', 'SCHOOL_REGISTER_OK', 'Registered School Cloud Worker for ' + kidName + ' (' + academicYear + ') in Personal Master Worker');
+  return {
+    registered: true,
+    childId: childId,
+    kidName: kidName,
+    initialSyncComplete: child.initialSyncComplete,
+    triggerResult: triggerRes
+  };
 }
 
-function runIncrementalSchoolSync() {
+/**
+ * Nightly Quiet Hours: Directly deletes all 1-minute sync triggers at 11:00 PM IST.
+ * Ensures zero 1-minute triggers exist or fire between 11 PM and 6 AM IST.
+ */
+function pauseNightlySyncTriggers() {
+  var deletedCount = 0;
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      var hFn = triggers[i].getHandlerFunction();
+      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+        ScriptApp.deleteTrigger(triggers[i]);
+        deletedCount++;
+      }
+    }
+    McpLogger.log('INFO', 'QUIET_HOURS_PAUSED', 'Paused 1-minute sync for the night (11 PM to 6 AM IST). Deleted ' + deletedCount + ' trigger(s).');
+  } catch (err) {
+    McpLogger.log('WARN', 'QUIET_HOURS_PAUSE_ERROR', 'Could not delete 1-minute trigger: ' + err);
+  }
+  return { paused: true, deletedTriggers: deletedCount };
+}
+
+/**
+ * Morning Wake-up: Re-creates the 1-minute sync trigger at 6:00 AM IST.
+ */
+function resumeMorningSyncTriggers() {
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      var hFn = triggers[i].getHandlerFunction();
+      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+        ScriptApp.deleteTrigger(triggers[i]);
+      }
+    }
+
+    var props = PropertiesService.getScriptProperties();
+    var rawReg = props.getProperty('multi_child_school_registry');
+    var canInstallSync = false;
+    if (rawReg) {
+      try {
+        var parsedReg = JSON.parse(rawReg);
+        canInstallSync = (parsedReg.children || []).some(function(c) { return c && c.initialSyncComplete === true; });
+      } catch(e) {}
+    }
+
+    if (canInstallSync) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
+      McpLogger.log('SUCCESS', 'QUIET_HOURS_RESUMED', 'Restored 1-minute Master Cloud sync trigger for daytime (6 AM to 11 PM IST).');
+      return { resumed: true, trigger: 'runMasterCloudSchoolSync (1m)' };
+    } else {
+      McpLogger.log('INFO', 'QUIET_HOURS_RESUME_DEFERRED', 'Morning resume deferred: initial 1-time sync is not yet complete.');
+      return { resumed: false, reason: 'initial_sync_incomplete' };
+    }
+  } catch (err) {
+    McpLogger.log('ERROR', 'QUIET_HOURS_RESUME_ERROR', 'Could not restore 1-minute trigger: ' + err);
+    return { resumed: false, error: err.toString() };
+  }
+}
+
+/**
+ * Installs daily scheduled triggers at 11 PM (to delete 1m trigger) and 6 AM (to restore 1m trigger) in IST.
+ */
+function setupQuietHoursScheduleTriggers() {
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      var hFn = triggers[i].getHandlerFunction();
+      if (hFn === 'pauseNightlySyncTriggers' || hFn === 'resumeMorningSyncTriggers') {
+        ScriptApp.deleteTrigger(triggers[i]);
+      }
+    }
+
+    try {
+      var pauseB = ScriptApp.newTrigger('pauseNightlySyncTriggers').timeBased();
+      if (typeof pauseB.atHour === 'function') pauseB = pauseB.atHour(23);
+      if (typeof pauseB.inTimezone === 'function') pauseB = pauseB.inTimezone('Asia/Kolkata');
+      if (typeof pauseB.everyDays === 'function') pauseB = pauseB.everyDays(1);
+      if (typeof pauseB.create === 'function') pauseB.create();
+    } catch (e1) {}
+
+    try {
+      var resumeB = ScriptApp.newTrigger('resumeMorningSyncTriggers').timeBased();
+      if (typeof resumeB.atHour === 'function') resumeB = resumeB.atHour(6);
+      if (typeof resumeB.inTimezone === 'function') resumeB = resumeB.inTimezone('Asia/Kolkata');
+      if (typeof resumeB.everyDays === 'function') resumeB = resumeB.everyDays(1);
+      if (typeof resumeB.create === 'function') resumeB.create();
+    } catch (e2) {}
+
+    McpLogger.log('INFO', 'SCHEDULE_TRIGGERS_CREATED', 'Configured direct trigger schedule: pause at 11 PM IST, resume at 6 AM IST.');
+    return { success: true };
+  } catch (err) {
+    McpLogger.log('WARN', 'SCHEDULE_TRIGGERS_ERROR', 'Error setting up quiet hours triggers: ' + err);
+    return { success: false, error: err.toString() };
+  }
+}
+
+function setupMasterCloudSyncTrigger(intervalMinutes) {
+  var mins = intervalMinutes || 1;
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      var hFn = triggers[i].getHandlerFunction();
+      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+        ScriptApp.deleteTrigger(triggers[i]);
+      }
+    }
+
+    // Install daily 11 PM pause and 6 AM resume schedule triggers
+    setupQuietHoursScheduleTriggers();
+
+    if (mins === 1) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
+    } else if (mins === 5) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(5).create();
+    } else if (mins === 10) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(10).create();
+    } else if (mins === 30) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(30).create();
+    } else if (mins === 60) {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyHours(1).create();
+    } else {
+      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
+    }
+    McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created ' + mins + '-minute autonomous Master Cloud trigger for Student Classroom sync.');
+    return { success: true, cadence: 'everyMinutes(' + mins + ')' };
+  } catch (err) {
+    McpLogger.log('WARN', 'TRIGGER_CREATE_FAILED', 'Could not create Master Cloud trigger: ' + err);
+    return { success: false, error: err.toString() };
+  }
+}
+
+function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) {
   var props = PropertiesService.getScriptProperties();
-  var folderId = props.getProperty('target_folder_id');
-  var childName = props.getProperty('child_name') || CONFIG.childName || 'Child';
-  var academicYear = props.getProperty('academic_year') || CONFIG.academicYear || '2026-2027';
-  var schoolDomain = props.getProperty('school_domain') || '';
 
-  if (!folderId) return;
+  // FAST-EXIT GUARD 0: IST Quiet Hours (11:00 PM to 6:00 AM IST)
+  // When 11 PM arrives, directly delete the 1-minute trigger so it NEVER fires overnight!
+  if (forceRun !== true && props.getProperty('quiet_hours_disabled') !== 'true') {
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      try {
+        pauseNightlySyncTriggers();
+      } catch (delErr) {}
+      return { count: 0, status: 'quiet_hours_ist_11pm_to_6am', reason: 'Deleted 1-minute trigger for quiet hours (11 PM to 6 AM IST)', skipped: true };
+    }
+  }
 
+  // FAST-EXIT GUARD 1: Check Script Properties BEFORE acquiring ScriptLock!
+  var raw = props.getProperty('multi_child_school_registry');
+  if (!raw) return { count: 0, status: 'awaiting_step2_registration', skipped: true };
+
+  var registry;
+  try {
+    registry = JSON.parse(raw);
+  } catch (parseErr) {
+    return { count: 0, status: 'invalid_registry_json', skipped: true };
+  }
+
+  var children = registry.children || [];
+  if (!children || children.length === 0) return { count: 0, status: 'no_children_registered', skipped: true };
+
+  var hasActive = false;
+  for (var cIdx = 0; cIdx < children.length; cIdx++) {
+    var checkChild = children[cIdx];
+    if (checkChild) {
+      if (targetChildIdOrName) {
+        if (checkChild.childId === targetChildIdOrName || (checkChild.kidName && checkChild.kidName.toLowerCase() === String(targetChildIdOrName).toLowerCase())) {
+          hasActive = true;
+          break;
+        }
+      } else if (checkChild.initialSyncComplete === true || isInitialPass === true) {
+        hasActive = true;
+        break;
+      }
+    }
+  }
+
+  if (!hasActive) {
+    return { count: 0, status: 'awaiting_1time_sync_completion', skipped: true };
+  }
+
+  // FAST-EXIT GUARD 2: Only acquire lock if there is active work to do.
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(20000)) return;
+  if (!lock.tryLock(5000)) return { skipped: true, reason: 'Sync already in progress' };
 
   try {
-    ClassroomIngester.sync(folderId, childName, academicYear, true);
-    GmailIngester.sync(folderId, childName, academicYear, schoolDomain, true);
+    var syncedCount = 0;
+    var nowMs = new Date().getTime();
+
+    for (var i = 0; i < children.length; i++) {
+      var ch = children[i];
+      if (!ch || !ch.schoolWorkerUrl || !ch.targetFolderId) continue;
+
+      if (targetChildIdOrName) {
+        var matchTarget = (ch.childId === targetChildIdOrName || (ch.kidName && ch.kidName.toLowerCase() === String(targetChildIdOrName).toLowerCase()));
+        if (!matchTarget) continue;
+      }
+
+      // Fast-Exit Guard: Strictly skip children whose 1-time initial sync has not completed,
+      // UNLESS this execution is specifically targeting them for initial sync!
+      var isChildInitial = (ch.initialSyncComplete !== true) || (isInitialPass === true);
+      if (!targetChildIdOrName && isInitialPass !== true) {
+        if (ch.initialSyncComplete !== true) {
+          // Recurring trigger strictly skips this child until 1-time initial sync completes!
+          continue;
+        }
+      }
+
+      var kidFolder;
+      try {
+        kidFolder = DriveApp.getFolderById(ch.targetFolderId);
+        if (!kidFolder || kidFolder.isTrashed()) continue;
+      } catch (folderErr) {
+        continue;
+      }
+
+      try {
+        var resp = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+          method: 'POST',
+          contentType: 'application/json',
+          payload: JSON.stringify({
+            method: 'extract_classroom_and_gmail',
+            params: {
+              childName: ch.kidName,
+              academicYear: ch.academicYear,
+              schoolDomain: ch.schoolDomain,
+              extractOnly: true,
+              isIncremental: !isChildInitial
+            }
+          }),
+          muteHttpExceptions: true
+        });
+
+        if (resp.getResponseCode() === 200) {
+          var data;
+          try {
+            data = JSON.parse(resp.getContentText());
+          } catch (jsonErr) {
+            continue;
+          }
+
+          var syncRes = data.result || data;
+          if (!syncRes || syncRes.error || !syncRes.classroom) continue;
+
+          var it = kidFolder.getFoldersByName('classroom');
+          var classFolder = it.hasNext() ? it.next() : kidFolder.createFolder('classroom');
+          var attIt = classFolder.getFoldersByName('attachments');
+          var attachFolder = attIt.hasNext() ? attIt.next() : classFolder.createFolder('attachments');
+
+          // Save classroom_data.json (merging with existing so historical archive is preserved)
+          var fIt = classFolder.getFilesByName('classroom_data.json');
+          var finalClassroom = syncRes.classroom;
+          var exFile = null;
+          var exClassroomContent = '';
+          if (fIt.hasNext()) {
+            exFile = fIt.next();
+            try {
+              exClassroomContent = exFile.getContent();
+              var exData = JSON.parse(exClassroomContent);
+              if (exData && exData.courses && syncRes.classroom && syncRes.classroom.courses) {
+                finalClassroom = mergeClassroomData(exData, syncRes.classroom);
+              }
+            } catch (pErr) {}
+          }
+          var jsonStr = JSON.stringify(finalClassroom, null, 2);
+          if (exFile) {
+            if (exClassroomContent !== jsonStr) {
+              exFile.setContent(jsonStr);
+            }
+          } else {
+            classFolder.createFile('classroom_data.json', jsonStr, 'application/json');
+          }
+
+          // Save school_emails.json (merging with existing)
+          if (syncRes.gmail && syncRes.gmail.emails) {
+            try {
+              var emIt = kidFolder.getFoldersByName('emails');
+              var emailsFolder = emIt.hasNext() ? emIt.next() : kidFolder.createFolder('emails');
+              var emailFileIt = emailsFolder.getFilesByName('school_emails.json');
+              var finalEmails = syncRes.gmail;
+              var exEmailFile = null;
+              var exEmailContent = '';
+              if (emailFileIt.hasNext()) {
+                exEmailFile = emailFileIt.next();
+                try {
+                  exEmailContent = exEmailFile.getContent();
+                  var exEmailData = JSON.parse(exEmailContent);
+                  if (exEmailData && exEmailData.emails) {
+                    var eMap = {};
+                    var combEmails = [];
+                    (syncRes.gmail.emails || []).concat(exEmailData.emails || []).forEach(function(em) {
+                      if (em && em.id && !eMap[em.id]) {
+                        eMap[em.id] = true;
+                        combEmails.push(em);
+                      }
+                    });
+                    finalEmails = {
+                      kidName: syncRes.gmail.kidName || ch.kidName,
+                      academicYear: syncRes.gmail.academicYear || ch.academicYear,
+                      schoolDomain: syncRes.gmail.schoolDomain || ch.schoolDomain,
+                      lastSyncedAt: new Date().toISOString(),
+                      totalEmails: combEmails.length,
+                      totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
+                      emails: combEmails
+                    };
+                  }
+                } catch (emErr) {}
+              }
+              var emailJsonStr = JSON.stringify(finalEmails, null, 2);
+              if (exEmailFile) {
+                if (exEmailContent !== emailJsonStr) {
+                  exEmailFile.setContent(emailJsonStr);
+                }
+              } else {
+                emailsFolder.createFile('school_emails.json', emailJsonStr, 'application/json');
+              }
+            } catch (gSaveErr) {}
+          }
+
+          // Save digest
+          if (syncRes.digest) {
+            var dIt = kidFolder.getFilesByName('daily_digest.json');
+            var dStr = JSON.stringify(syncRes.digest, null, 2);
+            if (dIt.hasNext()) {
+              var dFile = dIt.next();
+              try {
+                if (dFile.getContent() !== dStr) {
+                  dFile.setContent(dStr);
+                }
+              } catch (dErr) {
+                dFile.setContent(dStr);
+              }
+            } else {
+              kidFolder.createFile('daily_digest.json', dStr, 'application/json');
+            }
+          }
+
+          // Download any new attachments in-memory from Student Worker
+          if (syncRes.classroom.courses && Array.isArray(syncRes.classroom.courses)) {
+            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
+            var existingClassFiles = {};
+            try {
+              var cfIt = attachFolder.getFiles();
+              while (cfIt.hasNext()) {
+                var f = cfIt.next();
+                var fn = f.getName();
+                existingClassFiles[fn] = true;
+                existingClassFiles[fn.toLowerCase()] = true;
+              }
+            } catch (cfErr) {}
+
+            var courses = syncRes.classroom.courses;
+            for (var cIdx = 0; cIdx < courses.length; cIdx++) {
+              var c = courses[cIdx];
+              var cName = (c.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 15);
+              var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
+              for (var itIdx = 0; itIdx < allItems.length; itIdx++) {
+                var itm = allItems[itIdx];
+                if (itm.attachments && Array.isArray(itm.attachments)) {
+                  for (var aIdx = 0; aIdx < itm.attachments.length; aIdx++) {
+                    var att = itm.attachments[aIdx];
+                    if (!att || !att.fileId) continue;
+                    var attTargetName = att.targetName || (cName + '_' + (att.title || att.fileId));
+                    if (existingClassFiles[attTargetName] || existingClassFiles[attTargetName.toLowerCase()]) continue;
+
+                    try {
+                      var blobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+                        method: 'POST',
+                        contentType: 'application/json',
+                        payload: JSON.stringify({
+                          method: 'get_file_blob',
+                          params: { fileId: att.fileId }
+                        }),
+                        muteHttpExceptions: true
+                      });
+                      if (blobRes.getResponseCode() === 200) {
+                        var blobData = JSON.parse(blobRes.getContentText());
+                        var blobObj = blobData.result || blobData;
+                        if (blobObj && blobObj.base64) {
+                          var decoded = Utilities.base64Decode(blobObj.base64);
+                          var newBlob = Utilities.newBlob(decoded, blobObj.mimeType || 'application/octet-stream', attTargetName);
+                          var newFile = attachFolder.createFile(newBlob);
+                          existingClassFiles[attTargetName] = true;
+                          existingClassFiles[attTargetName.toLowerCase()] = true;
+                          try {
+                            if (typeof DocumentOcrService !== 'undefined') {
+                              DocumentOcrService.indexDocument(kidFolder, newFile, 'classroom');
+                            }
+                          } catch (docIdxErr) {}
+                        }
+                      }
+                    } catch (blobErr) {}
+                  }
+                }
+              }
+            }
+          }
+
+          // Download any new email circular attachments in-memory from Student Worker
+          if (syncRes.gmail && syncRes.gmail.emails && Array.isArray(syncRes.gmail.emails)) {
+            var emAttIt = emailsFolder.getFoldersByName('attachments');
+            var emailAttachFolder = emAttIt.hasNext() ? emAttIt.next() : emailsFolder.createFolder('attachments');
+
+            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
+            var existingEmailFiles = {};
+            try {
+              var efIt = emailAttachFolder.getFiles();
+              while (efIt.hasNext()) {
+                var ef = efIt.next();
+                var efn = ef.getName();
+                existingEmailFiles[efn] = true;
+                existingEmailFiles[efn.toLowerCase()] = true;
+              }
+            } catch (efErr) {}
+
+            var emails = syncRes.gmail.emails;
+            for (var emIdx = 0; emIdx < emails.length; emIdx++) {
+              var emailItem = emails[emIdx];
+              if (emailItem.attachments && Array.isArray(emailItem.attachments)) {
+                for (var eaIdx = 0; eaIdx < emailItem.attachments.length; eaIdx++) {
+                  var eAtt = emailItem.attachments[eaIdx];
+                  if (!eAtt || !eAtt.name) continue;
+                  var eTargetName = eAtt.cleanName || ((emailItem.subject || 'email').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) + '_' + eAtt.name);
+                  if (existingEmailFiles[eTargetName] || existingEmailFiles[eTargetName.toLowerCase()]) continue;
+
+                  try {
+                    var eBlob = null;
+                    if (eAtt.base64) {
+                      var eDecoded = Utilities.base64Decode(eAtt.base64);
+                      eBlob = Utilities.newBlob(eDecoded, eAtt.mimeType || 'application/octet-stream', eTargetName);
+                    } else if (eAtt.fileId) {
+                      var gBlobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+                        method: 'POST',
+                        contentType: 'application/json',
+                        payload: JSON.stringify({ method: 'get_file_blob', params: { fileId: eAtt.fileId } }),
+                        muteHttpExceptions: true
+                      });
+                      if (gBlobRes.getResponseCode() === 200) {
+                        var gData = JSON.parse(gBlobRes.getContentText());
+                        var gObj = gData.result || gData;
+                        if (gObj && gObj.base64) {
+                          eBlob = Utilities.newBlob(Utilities.base64Decode(gObj.base64), gObj.mimeType || 'application/octet-stream', eTargetName);
+                        }
+                      }
+                    } else if (emailItem.id) {
+                      var mBlobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+                        method: 'POST',
+                        contentType: 'application/json',
+                        payload: JSON.stringify({ method: 'get_gmail_attachment', params: { messageId: emailItem.id, attachmentIndex: eaIdx, filename: eAtt.name } }),
+                        muteHttpExceptions: true
+                      });
+                      if (mBlobRes.getResponseCode() === 200) {
+                        var mData = JSON.parse(mBlobRes.getContentText());
+                        var mObj = mData.result || mData;
+                        if (mObj && mObj.base64) {
+                          eBlob = Utilities.newBlob(Utilities.base64Decode(mObj.base64), mObj.mimeType || 'application/octet-stream', eTargetName);
+                        }
+                      }
+                    }
+                    if (eBlob) {
+                      var newEmailFile = emailAttachFolder.createFile(eBlob);
+                      existingEmailFiles[eTargetName] = true;
+                      existingEmailFiles[eTargetName.toLowerCase()] = true;
+                      try {
+                        if (typeof DocumentOcrService !== 'undefined') {
+                          DocumentOcrService.indexDocument(kidFolder, newEmailFile, 'email');
+                        }
+                      } catch (docEmailIdxErr) {}
+                    }
+                  } catch (eBlobErr) {}
+                }
+              }
+            }
+          }
+
+          syncedCount++;
+          if (isChildInitial) {
+            ch.initialSyncComplete = true;
+            ch.lastInitialSyncedAt = new Date().toISOString();
+            props.setProperty('multi_child_school_registry', JSON.stringify(registry));
+            McpLogger.log('SUCCESS', 'INITIAL_SYNC_COMPLETE', '1-Time data sync completed for ' + (ch.kidName || 'Child') + ' in Master Cloud Worker with all coursework, emails, and attachments.');
+            try {
+              setupMasterCloudSyncTrigger();
+            } catch (trigErr) {}
+          } else {
+            McpLogger.log('SUCCESS', 'MASTER_CLOUD_SYNC_OK', 'Autonomous 24/7 cloud sync succeeded for ' + (ch.kidName || 'Child') + ' under Parent Account.');
+          }
+        }
+      } catch (err) {
+        // School worker not ready or temporarily offline; skip gracefully
+      }
+    }
+    return { success: true, syncedCount: syncedCount, initialSyncComplete: true };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function mergeClassroomData(existing, incoming) {
+  if (!existing || !existing.courses) return incoming;
+  if (!incoming || !incoming.courses) return existing;
+
+  var mergedCourses = existing.courses.slice();
+  for (var i = 0; i < incoming.courses.length; i++) {
+    var inCourse = incoming.courses[i];
+    var exIdx = -1;
+    for (var j = 0; j < mergedCourses.length; j++) {
+      if (mergedCourses[j].id === inCourse.id) {
+        exIdx = j;
+        break;
+      }
+    }
+    if (exIdx === -1) {
+      mergedCourses.push(inCourse);
+    } else {
+      var exCourse = mergedCourses[exIdx];
+      var annMap = {};
+      var combinedAnn = [];
+      (inCourse.announcements || []).concat(exCourse.announcements || []).forEach(function(a) {
+        if (a && a.id && !annMap[a.id]) {
+          annMap[a.id] = true;
+          combinedAnn.push(a);
+        }
+      });
+      var cwMap = {};
+      var combinedCw = [];
+      (inCourse.courseWork || []).concat(exCourse.courseWork || []).forEach(function(cw) {
+        if (cw && cw.id && !cwMap[cw.id]) {
+          cwMap[cw.id] = true;
+          combinedCw.push(cw);
+        }
+      });
+      var matMap = {};
+      var combinedMat = [];
+      (inCourse.materials || []).concat(exCourse.materials || []).forEach(function(m) {
+        if (m && m.id && !matMap[m.id]) {
+          matMap[m.id] = true;
+          combinedMat.push(m);
+        }
+      });
+      mergedCourses[exIdx] = {
+        id: inCourse.id,
+        name: inCourse.name || exCourse.name,
+        section: inCourse.section || exCourse.section,
+        descriptionHeading: inCourse.descriptionHeading || exCourse.descriptionHeading,
+        room: inCourse.room || exCourse.room,
+        alternateLink: inCourse.alternateLink || exCourse.alternateLink,
+        courseState: inCourse.courseState || exCourse.courseState,
+        announcements: combinedAnn,
+        courseWork: combinedCw,
+        materials: combinedMat
+      };
+    }
+  }
+  return {
+    kidName: incoming.kidName || existing.kidName,
+    academicYear: incoming.academicYear || existing.academicYear,
+    lastSyncedAt: incoming.lastSyncedAt || new Date().toISOString(),
+    totalCourses: mergedCourses.length,
+    totalAttachments: mergedCourses.reduce(function(acc, c) {
+      var annAtts = (c.announcements || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+      var cwAtts = (c.courseWork || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+      var matAtts = (c.materials || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+      return acc + annAtts + cwAtts + matAtts;
+    }, 0),
+    courses: mergedCourses
+  };
+}
+
+function handleSetupTriggers(params) {
+  var type = params.type;
+  var res;
+  if (type === 'school_1min') {
+    res = setupMinuteTrigger();
+    return {
+      triggerSet: !!(res && res.success),
+      cadence: 'everyMinutes(1)',
+      error: res && !res.success ? res.error : null,
+      details: res
+    };
+  } else if (type === 'portal_6hr') {
+    res = setupSixHourTrigger();
+    return {
+      triggerSet: !!(res && res.success),
+      cadence: 'everyHours(6)',
+      error: res && !res.success ? res.error : null,
+      details: res
+    };
+  } else if (type === 'master_cloud_1min' || type === 'master_cloud_1hr') {
+    res = setupMasterCloudSyncTrigger();
+    return {
+      triggerSet: !!(res && res.success),
+      cadence: 'everyMinutes(1)',
+      error: res && !res.success ? res.error : null,
+      details: res
+    };
+  }
+  return { triggerSet: false, error: 'Unknown trigger type: ' + type };
+}
+
+function runIncrementalSchoolSync(forceRun) {
+  var props = PropertiesService.getScriptProperties();
+
+  // FAST-EXIT GUARD 0: IST Quiet Hours (11:00 PM to 6:00 AM IST)
+  // Automatic triggers pause during night hours (23:00 to 06:00 IST).
+  if (forceRun !== true && props.getProperty('quiet_hours_disabled') !== 'true') {
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      try {
+        pauseNightlySyncTriggers();
+      } catch (delErr) {}
+      return { skipped: true, status: 'quiet_hours_ist_11pm_to_6am', reason: 'Deleted trigger for quiet hours (11 PM to 6 AM IST)' };
+    }
+  }
+
+  // Fast-Exit Guard 1 (< 5ms): Do not execute if 1-time initial data extraction is incomplete
+  if (props.getProperty('initial_sync_complete') !== 'true') {
+    return { skipped: true, reason: 'awaiting_1time_sync_completion' };
+  }
+
+  // Fast-Exit Guard 2 (< 10ms): In dual-worker mode, Master Personal Worker orchestrates sync 24/7.
+  // The School Cloud Worker is passive. Clean up any redundant trigger and exit immediately.
+  var isDual = props.getProperty('is_dual_worker') === 'true' ||
+               (typeof CONFIG !== 'undefined' && CONFIG.isDualWorker);
+  if (isDual) {
+    try {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getHandlerFunction() === 'runIncrementalSchoolSync') {
+          ScriptApp.deleteTrigger(triggers[i]);
+        }
+      }
+    } catch (tErr) {}
+    return { skipped: true, reason: 'managed_by_master_worker' };
+  }
+
+  var folderId = props.getProperty('target_folder_id');
+  var childName = props.getProperty('child_name') || (typeof CONFIG !== 'undefined' && CONFIG.childName) || 'Child';
+  var academicYear = props.getProperty('academic_year') || (typeof CONFIG !== 'undefined' && CONFIG.academicYear) || '2026-2027';
+  var schoolDomain = props.getProperty('school_domain') || '';
+
+  if (!folderId) return { skipped: true, reason: 'no_target_folder' };
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { skipped: true, reason: 'locked' };
+
+  try {
+    ClassroomIngester.sync(folderId, childName, academicYear, true, false);
+    GmailIngester.sync(folderId, childName, academicYear, schoolDomain, true, false);
     DigestBuilder.build(folderId, childName, academicYear);
   } catch (e) {
     McpLogger.log('ERROR', 'SCHOOL_CRON_ERROR', '1-Minute sync error: ' + e);
@@ -1250,26 +2460,96 @@ function runIncrementalPortalSync() {
   PortalIngester.syncAll();
 }
 
-function setupMinuteTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'runIncrementalSchoolSync') {
-      ScriptApp.deleteTrigger(triggers[i]);
+function setupAutonomousTriggers(workerType) {
+  var installed = [];
+  var isMaster = workerType === 'master' ||
+                 (typeof CONFIG !== 'undefined' && (CONFIG.childName === 'Master' || CONFIG.academicYear === 'Family')) ||
+                 !!PropertiesService.getScriptProperties().getProperty('multi_child_school_registry');
+
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    if (isMaster) {
+      for (var i = 0; i < triggers.length; i++) {
+        var hFn = triggers[i].getHandlerFunction();
+        if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+          ScriptApp.deleteTrigger(triggers[i]);
+        }
+      }
+
+      var props = PropertiesService.getScriptProperties();
+      var rawReg = props.getProperty('multi_child_school_registry');
+      var canInstallSync = false;
+      if (rawReg) {
+        try {
+          var parsedReg = JSON.parse(rawReg);
+          canInstallSync = (parsedReg.children || []).some(function(c) { return c && c.initialSyncComplete === true; });
+        } catch(e) {}
+      }
+
+      // Ensure daily 11 PM (pause) and 6 AM (resume) IST schedule triggers are installed
+      setupQuietHoursScheduleTriggers();
+
+      if (canInstallSync) {
+        ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
+        installed.push('runMasterCloudSchoolSync (1m)');
+        McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 1-minute autonomous Master Cloud trigger.');
+      } else {
+        installed.push('runMasterCloudSchoolSync (deferred until 1-time sync completes)');
+        McpLogger.log('INFO', 'TRIGGER_DEFERRED', 'Master Cloud trigger deferred until child initial data sync completes.');
+      }
+
+      for (var j = 0; j < triggers.length; j++) {
+        if (triggers[j].getHandlerFunction() === 'runIncrementalPortalSync') {
+          ScriptApp.deleteTrigger(triggers[j]);
+        }
+      }
+      ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
+      installed.push('runIncrementalPortalSync (6h)');
+    } else {
+      // Clean up any existing duplicate triggers
+      for (var k = 0; k < triggers.length; k++) {
+        if (triggers[k].getHandlerFunction() === 'runIncrementalSchoolSync') {
+          ScriptApp.deleteTrigger(triggers[k]);
+        }
+      }
+      var props = PropertiesService.getScriptProperties();
+      var isDual = props.getProperty('is_dual_worker') === 'true' ||
+                   (typeof CONFIG !== 'undefined' && CONFIG.isDualWorker);
+      if (!isDual) {
+        ScriptApp.newTrigger('runIncrementalSchoolSync').timeBased().everyMinutes(1).create();
+        installed.push('runIncrementalSchoolSync (1m)');
+        McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 1-minute School Cloud trigger.');
+      } else {
+        installed.push('School Cloud Worker registered (managed by Master Cloud Worker)');
+        McpLogger.log('INFO', 'TRIGGER_SKIPPED', 'School Cloud Worker is managed by Master Cloud Worker. Standalone trigger skipped.');
+      }
     }
+  } catch (e) {
+    McpLogger.log('ERROR', 'TRIGGER_CREATION_FAILED', 'Failed to create autonomous trigger: ' + e);
+    return { success: false, error: e.toString() };
   }
-  ScriptApp.newTrigger('runIncrementalSchoolSync').timeBased().everyMinutes(1).create();
-  McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 1-minute cloud time trigger for Google Classroom & Gmail sync.');
+
+  return { success: true, isMaster: isMaster, installed: installed };
+}
+
+function setupMinuteTrigger() {
+  return setupAutonomousTriggers('school');
 }
 
 function setupSixHourTrigger() {
-  var triggers = ScriptApp.getProjectTriggers();
-  for (var i = 0; i < triggers.length; i++) {
-    if (triggers[i].getHandlerFunction() === 'runIncrementalPortalSync') {
-      ScriptApp.deleteTrigger(triggers[i]);
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      if (triggers[i].getHandlerFunction() === 'runIncrementalPortalSync') {
+        ScriptApp.deleteTrigger(triggers[i]);
+      }
     }
+    ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
+    McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 6-hour cloud time trigger for School Portal scraping.');
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.toString() };
   }
-  ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
-  McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 6-hour cloud time trigger for School Portal scraping.');
 }
 
 function handlePreflightProxy(params) {
@@ -1293,6 +2573,45 @@ function handlePreflightProxy(params) {
   } catch (err) {
     return { success: false, error: err.toString() };
   }
+}
+
+function handleSetSyncState(params) {
+  var props = PropertiesService.getScriptProperties();
+  var updates = {};
+  if (params.initialSyncComplete !== undefined) {
+    updates.initial_sync_complete = params.initialSyncComplete ? 'true' : 'false';
+  }
+  if (params.isDualWorker !== undefined) {
+    updates.is_dual_worker = params.isDualWorker ? 'true' : 'false';
+  }
+  if (params.targetFolderId) {
+    updates.target_folder_id = params.targetFolderId;
+  }
+  if (params.childName) {
+    updates.child_name = params.childName;
+  }
+  if (params.academicYear) {
+    updates.academic_year = params.academicYear;
+  }
+  if (params.schoolDomain) {
+    updates.school_domain = params.schoolDomain;
+  }
+
+  props.setProperties(updates);
+
+  // If dual-worker mode is active, clean up any existing school-side triggers
+  if (updates.is_dual_worker === 'true') {
+    try {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        if (triggers[i].getHandlerFunction() === 'runIncrementalSchoolSync') {
+          ScriptApp.deleteTrigger(triggers[i]);
+        }
+      }
+    } catch (e) {}
+  }
+
+  return { success: true, updated: updates };
 }
 `
       },
@@ -1501,9 +2820,12 @@ var WhatsAppStorage = {
 
     var ocrText = '';
     try {
-      var ocrRes = DriveContentExtractor.extractText(fileId, 4000);
-      if (ocrRes && ocrRes.text) {
-        ocrText = ocrRes.text;
+      if (typeof DocumentOcrService !== 'undefined') {
+        var docRec = DocumentOcrService.indexDocument(folder, file, 'whatsapp');
+        if (docRec && docRec.text) ocrText = docRec.text;
+      } else if (typeof DriveContentExtractor !== 'undefined') {
+        var ocrRes = DriveContentExtractor.extractText(fileId, 4000);
+        if (ocrRes && ocrRes.text) ocrText = ocrRes.text;
       }
     } catch (ocrErr) {
       McpLogger.log('WARN', 'attachment:ocr_failed', { fileId: fileId, error: ocrErr.toString() });
@@ -2277,6 +3599,437 @@ var WorkspaceFetcher = {
 `
       },
       {
+        name: 'DocumentOcrService',
+        type: 'SERVER_JS',
+        source: `
+var DocumentOcrService = {
+  INDEX_FILE_NAME: 'ocr_search_index.json',
+  STATUS_FILE_NAME: 'ocr_job_status.json',
+
+  hasNativeTextLayer: function(blob) {
+    if (!blob) return { hasText: false, extractedText: '' };
+    try {
+      var rawString = blob.getDataAsString();
+      if (!rawString || rawString.length < 50) return { hasText: false, extractedText: '' };
+
+      var textPieces = [];
+      var tjRegex = /\\(([^)]+)\\)\\s*(?:Tj|'|")/g;
+      var match;
+      var totalChars = 0;
+      while ((match = tjRegex.exec(rawString)) !== null && totalChars < 5000) {
+        var str = match[1].replace(/\\\\([()\\\\])/g, '$1');
+        textPieces.push(str);
+        totalChars += str.length;
+      }
+
+      var arrayTjRegex = /\\[([^\\]]+)\\]\\s*TJ/g;
+      while ((match = arrayTjRegex.exec(rawString)) !== null && totalChars < 5000) {
+        var inner = match[1];
+        var innerParenRegex = /\\(([^)]+)\\)/g;
+        var innerMatch;
+        while ((innerMatch = innerParenRegex.exec(inner)) !== null) {
+          var str2 = innerMatch[1].replace(/\\\\([()\\\\])/g, '$1');
+          textPieces.push(str2);
+          totalChars += str2.length;
+        }
+      }
+
+      var extracted = textPieces.join(' ').replace(/\\s+/g, ' ').trim();
+      var words = extracted.match(/[a-zA-Z0-9\\u0900-\\u097F]{2,}/g) || [];
+      var readableChars = words.join('').length;
+      var ratio = readableChars / Math.max(1, extracted.length);
+
+      if (readableChars >= 50 && ratio >= 0.50) {
+        return { hasText: true, extractedText: extracted };
+      }
+    } catch (e) {}
+    return { hasText: false, extractedText: '' };
+  },
+
+  performDriveOcr: function(fileId, fileName) {
+    if (!fileId) return null;
+    var maxChars = 8000;
+    var copyId = null;
+
+    try {
+      var token = ScriptApp.getOAuthToken();
+      var resource = {
+        title: 'temp_ocr_' + (fileName || fileId).replace(/[^a-zA-Z0-9]/g, '_').substring(0, 30),
+        mimeType: 'application/vnd.google-apps.document'
+      };
+
+      if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.copy) {
+        var copy = Drive.Files.copy(resource, fileId, { ocr: true, ocrLanguage: 'en,hi', supportsAllDrives: true });
+        if (copy && copy.id) copyId = copy.id;
+      } else {
+        var copyRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v2/files/' + fileId + '/copy?ocr=true&ocrLanguage=en,hi&supportsAllDrives=true', {
+          method: 'POST',
+          headers: {
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json'
+          },
+          payload: JSON.stringify(resource),
+          muteHttpExceptions: true
+        });
+        if (copyRes.getResponseCode() === 200) {
+          var copyData = JSON.parse(copyRes.getContentText());
+          if (copyData && copyData.id) copyId = copyData.id;
+        }
+      }
+
+      if (copyId) {
+        var text = '';
+        try {
+          var doc = DocumentApp.openById(copyId);
+          text = doc.getBody().getText();
+        } catch (docErr) {
+          var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
+            headers: { 'Authorization': 'Bearer ' + token },
+            muteHttpExceptions: true
+          });
+          if (exportRes.getResponseCode() === 200) {
+            text = exportRes.getContentText();
+          }
+        }
+
+        try {
+          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
+            Drive.Files.remove(copyId);
+          } else {
+            DriveApp.getFileById(copyId).setTrashed(true);
+          }
+        } catch (delErr) {}
+
+        if (text && text.trim()) {
+          return text.trim().substring(0, maxChars);
+        }
+      }
+    } catch (err) {
+      McpLogger.log('WARN', 'OCR_CONVERT_FAIL', 'OCR conversion failed for ' + (fileName || fileId) + ': ' + err.toString());
+      if (copyId) {
+        try { DriveApp.getFileById(copyId).setTrashed(true); } catch (e) {}
+      }
+    }
+    return null;
+  },
+
+  extractDocumentText: function(file) {
+    if (!file) return { text: '', isOcr: false };
+
+    var fileId = file.getId ? file.getId() : file.id;
+    var fileName = (file.getName ? file.getName() : file.name || '').toLowerCase();
+    var mime = (file.getMimeType ? file.getMimeType() : file.mimeType || '').toLowerCase();
+
+    if (mime === 'application/vnd.google-apps.document') {
+      try {
+        var docText = DocumentApp.openById(fileId).getBody().getText();
+        return { text: (docText || '').trim().substring(0, 8000), isOcr: false };
+      } catch (e) {}
+    }
+    if (mime === 'application/vnd.google-apps.spreadsheet') {
+      try {
+        var ss = SpreadsheetApp.openById(fileId);
+        var sheets = ss.getSheets();
+        var rows = [];
+        for (var s = 0; s < Math.min(sheets.length, 2); s++) {
+          var data = sheets[s].getDataRange().getDisplayValues();
+          for (var r = 0; r < Math.min(data.length, 25); r++) {
+            rows.push(data[r].join(' | '));
+          }
+        }
+        return { text: rows.join('\\n').substring(0, 8000), isOcr: false };
+      } catch (e) {}
+    }
+
+    if (mime.indexOf('text/') === 0 || mime === 'application/json' || mime === 'application/csv' || /\\.(txt|csv|json|html|md)$/i.test(fileName)) {
+      try {
+        var rawText = file.getBlob().getDataAsString();
+        return { text: (rawText || '').trim().substring(0, 8000), isOcr: false };
+      } catch (e) {}
+    }
+
+    if (mime === 'application/pdf' || fileName.endsWith('.pdf')) {
+      try {
+        var blob = file.getBlob();
+        var pdfCheck = this.hasNativeTextLayer(blob);
+        if (pdfCheck.hasText) {
+          return { text: pdfCheck.extractedText.substring(0, 8000), isOcr: false };
+        }
+      } catch (e) {}
+      var ocrPdfText = this.performDriveOcr(fileId, fileName);
+      return { text: ocrPdfText || '', isOcr: true };
+    }
+
+    if (mime.indexOf('image/') === 0 || /\\.(jpg|jpeg|png|webp|heic|bmp|tiff)$/i.test(fileName)) {
+      var ocrImgText = this.performDriveOcr(fileId, fileName);
+      return { text: ocrImgText || '', isOcr: true };
+    }
+
+    return { text: '', isOcr: false };
+  },
+
+  getOrCreateIndexFile: function(kidFolder) {
+    if (!kidFolder) return null;
+    var fIt = kidFolder.getFilesByName(this.INDEX_FILE_NAME);
+    if (fIt.hasNext()) {
+      return fIt.next();
+    }
+    var initialPayload = JSON.stringify({
+      version: '1.0.0',
+      lastUpdatedAt: new Date().toISOString(),
+      totalIndexed: 0,
+      documents: []
+    }, null, 2);
+    return kidFolder.createFile(this.INDEX_FILE_NAME, initialPayload, 'application/json');
+  },
+
+  indexDocument: function(kidFolder, file, sourceContext) {
+    if (!kidFolder || !file) return null;
+
+    try {
+      var fileId = file.getId ? file.getId() : file.id;
+      var fileName = file.getName ? file.getName() : file.name;
+      var fileUrl = file.getUrl ? file.getUrl() : ('https://drive.google.com/file/d/' + fileId + '/view');
+
+      var indexFile = this.getOrCreateIndexFile(kidFolder);
+      var indexData = { documents: [] };
+      try {
+        indexData = JSON.parse(indexFile.getContent());
+      } catch (e) {}
+
+      var docs = indexData.documents || [];
+      var existingIdx = -1;
+      for (var i = 0; i < docs.length; i++) {
+        if (docs[i].fileId === fileId) {
+          existingIdx = i;
+          break;
+        }
+      }
+
+      if (existingIdx !== -1 && docs[existingIdx].text && docs[existingIdx].text.length > 0) {
+        return docs[existingIdx];
+      }
+
+      var extraction = this.extractDocumentText(file);
+      var text = extraction.text || '';
+      var wordCount = text ? text.split(/\\s+/).filter(Boolean).length : 0;
+      var snippet = text.length > 180 ? text.substring(0, 180) + '...' : text;
+
+      var docRecord = {
+        fileId: fileId,
+        fileName: fileName,
+        source: sourceContext || 'classroom',
+        mimeType: file.getMimeType ? file.getMimeType() : 'application/octet-stream',
+        isOcr: extraction.isOcr,
+        wordCount: wordCount,
+        snippet: snippet,
+        text: text,
+        driveUrl: fileUrl,
+        indexedAt: new Date().toISOString()
+      };
+
+      if (existingIdx !== -1) {
+        docs[existingIdx] = docRecord;
+      } else {
+        docs.push(docRecord);
+      }
+
+      indexData.lastUpdatedAt = new Date().toISOString();
+      indexData.totalIndexed = docs.length;
+      indexData.documents = docs;
+
+      indexFile.setContent(JSON.stringify(indexData, null, 2));
+      McpLogger.log('INFO', 'DOC_INDEXED', 'Indexed ' + fileName + ' (' + sourceContext + ', OCR=' + extraction.isOcr + ', words=' + wordCount + ')');
+      return docRecord;
+    } catch (err) {
+      McpLogger.log('WARN', 'DOC_INDEX_ERROR', 'Failed to index document: ' + err.toString());
+      return null;
+    }
+  },
+
+  indexDocumentById: function(fileId, childName, sourceContext) {
+    if (!fileId) return { success: false, error: 'Missing fileId' };
+    try {
+      var file = DriveApp.getFileById(fileId);
+      var parents = file.getParents();
+      var kidFolder = parents.hasNext() ? parents.next() : null;
+
+      if (kidFolder && (kidFolder.getName() === 'attachments' || kidFolder.getName() === 'whatsapp')) {
+        var grandParents = kidFolder.getParents();
+        if (grandParents.hasNext()) {
+          var gp = grandParents.next();
+          if (gp.getName() === 'whatsapp') {
+            var ggp = gp.getParents();
+            if (ggp.hasNext()) kidFolder = ggp.next();
+          } else {
+            kidFolder = gp;
+          }
+        }
+      }
+
+      if (!kidFolder) {
+        return { success: false, error: 'Could not resolve parent vault folder' };
+      }
+
+      var record = this.indexDocument(kidFolder, file, sourceContext || 'whatsapp');
+      return { success: true, record: record };
+    } catch (err) {
+      return { success: false, error: err.toString() };
+    }
+  },
+
+  runAutomatedVaultIndexing: function(kidFolder, maxBatch) {
+    if (!kidFolder) return { count: 0, status: 'no_folder' };
+    maxBatch = maxBatch || 12;
+
+    var indexFile = this.getOrCreateIndexFile(kidFolder);
+    var indexData = { documents: [] };
+    try {
+      indexData = JSON.parse(indexFile.getContent());
+    } catch (e) {}
+
+    var indexedMap = {};
+    (indexData.documents || []).forEach(function(d) {
+      if (d && d.fileId) indexedMap[d.fileId] = true;
+    });
+
+    var pendingFiles = [];
+
+    try {
+      var cIt = kidFolder.getFoldersByName('classroom');
+      if (cIt.hasNext()) {
+        var caIt = cIt.next().getFoldersByName('attachments');
+        if (caIt.hasNext()) {
+          var cfIt = caIt.next().getFiles();
+          while (cfIt.hasNext()) {
+            var cf = cfIt.next();
+            if (!indexedMap[cf.getId()]) pendingFiles.push({ file: cf, source: 'classroom' });
+          }
+        }
+      }
+
+      var eIt = kidFolder.getFoldersByName('emails');
+      if (eIt.hasNext()) {
+        var eaIt = eIt.next().getFoldersByName('attachments');
+        if (eaIt.hasNext()) {
+          var efIt = eaIt.next().getFiles();
+          while (efIt.hasNext()) {
+            var ef = efIt.next();
+            if (!indexedMap[ef.getId()]) pendingFiles.push({ file: ef, source: 'email' });
+          }
+        }
+      }
+
+      var wIt = kidFolder.getFoldersByName('whatsapp');
+      if (wIt.hasNext()) {
+        var wfIt = wIt.next().getFiles();
+        while (wfIt.hasNext()) {
+          var wf = wfIt.next();
+          var wName = wf.getName().toLowerCase();
+          if (wName !== 'whatsapp_school_archive.json' && !indexedMap[wf.getId()]) {
+            pendingFiles.push({ file: wf, source: 'whatsapp' });
+          }
+        }
+      }
+    } catch (scanErr) {
+      McpLogger.log('WARN', 'INDEX_SCAN_WARN', scanErr.toString());
+    }
+
+    var processed = 0;
+    for (var p = 0; p < pendingFiles.length && p < maxBatch; p++) {
+      var item = pendingFiles[p];
+      this.indexDocument(kidFolder, item.file, item.source);
+      processed++;
+    }
+
+    return {
+      success: true,
+      processed: processed,
+      totalPendingRemaining: Math.max(0, pendingFiles.length - processed),
+      totalIndexed: (indexData.documents || []).length + processed
+    };
+  },
+
+  searchVaultDocuments: function(kidFolder, query) {
+    if (!kidFolder || !query) return { results: [], count: 0 };
+    var cleanQuery = query.toLowerCase().trim();
+    var terms = cleanQuery.split(/\\s+/).filter(Boolean);
+
+    var indexFile = this.getOrCreateIndexFile(kidFolder);
+    var indexData = { documents: [] };
+    try {
+      indexData = JSON.parse(indexFile.getContent());
+    } catch (e) {
+      return { results: [], count: 0 };
+    }
+
+    var docs = indexData.documents || [];
+    var scoredResults = [];
+
+    for (var i = 0; i < docs.length; i++) {
+      var d = docs[i];
+      if (!d) continue;
+
+      var textLower = (d.text || '').toLowerCase();
+      var nameLower = (d.fileName || '').toLowerCase();
+      var sourceLower = (d.source || '').toLowerCase();
+
+      var matchScore = 0;
+      var matchedTerms = [];
+
+      for (var t = 0; t < terms.length; t++) {
+        var term = terms[t];
+        if (nameLower.indexOf(term) !== -1) {
+          matchScore += 10;
+          matchedTerms.push(term);
+        }
+        if (textLower.indexOf(term) !== -1) {
+          matchScore += 5;
+          matchedTerms.push(term);
+        }
+        if (sourceLower.indexOf(term) !== -1) {
+          matchScore += 2;
+          matchedTerms.push(term);
+        }
+      }
+
+      if (matchScore > 0) {
+        var excerpt = d.snippet || '';
+        if (d.text && terms.length > 0) {
+          var firstIdx = textLower.indexOf(terms[0]);
+          if (firstIdx !== -1) {
+            var start = Math.max(0, firstIdx - 60);
+            var end = Math.min(d.text.length, firstIdx + 140);
+            excerpt = (start > 0 ? '...' : '') + d.text.substring(start, end).replace(/\\s+/g, ' ') + (end < d.text.length ? '...' : '');
+          }
+        }
+
+        scoredResults.push({
+          fileId: d.fileId,
+          fileName: d.fileName,
+          source: d.source,
+          isOcr: d.isOcr,
+          wordCount: d.wordCount,
+          excerpt: excerpt,
+          driveUrl: d.driveUrl,
+          score: matchScore,
+          matchedTerms: matchedTerms
+        });
+      }
+    }
+
+    scoredResults.sort(function(a, b) { return b.score - a.score; });
+
+    return {
+      query: query,
+      count: scoredResults.length,
+      results: scoredResults.slice(0, 15)
+    };
+  }
+};
+`
+      },
+      {
         name: 'DriveContentExtractor',
         type: 'SERVER_JS',
         source: `
@@ -2423,20 +4176,98 @@ var DriveContentExtractor = {
         type: 'SERVER_JS',
         source: `
 var ClassroomIngester = {
-  sync: function(targetFolderId, childName, academicYear, isIncremental) {
+  sync: function(targetFolderId, childName, academicYear, isIncremental, extractOnly) {
+    var startTime = new Date();
+    var deepLog = {
+      syncId: 'sync_' + startTime.getTime(),
+      timestamp: startTime.toISOString(),
+      childName: childName || 'Child',
+      academicYear: academicYear || '2026-2027',
+      extractOnly: !!extractOnly,
+      coursesAudit: [],
+      inventory: [],
+      summary: {
+        totalCoursesFound: 0,
+        coursesIngested: 0,
+        totalAnnouncements: 0,
+        totalCourseWork: 0,
+        totalMaterials: 0,
+        totalAttachments: 0,
+        driveFilesCount: 0,
+        youtubeVideosCount: 0,
+        webLinksCount: 0,
+        formsCount: 0,
+        duplicateAttachmentsCount: 0
+      },
+      logTimeline: []
+    };
+
+    function addLog(msg) {
+      deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] ' + msg);
+      McpLogger.log('INFO', 'CLASSROOM_DEEP_CRAWL', msg);
+    }
+
     try {
-      McpLogger.log('INFO', 'CLASSROOM_SYNC_START', 'Starting Google Classroom crawl for ' + childName);
+      addLog('🚀 Starting Google Classroom Deep Crawl for ' + (childName || 'Child') + (extractOnly ? ' (Read-Only Extract Mode)' : ''));
 
-      var parentFolder = DriveApp.getFolderById(targetFolderId);
-      var classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
-      var attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
+      var parentFolder = null;
+      var classroomFolder = null;
+      var attachFolder = null;
+      if (targetFolderId && !extractOnly) {
+        try {
+          parentFolder = DriveApp.getFolderById(targetFolderId);
+          classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
+          attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
+        } catch (fErr) {
+          addLog('⚠️ Target folder access notice (read-only mode active): ' + fErr.toString());
+        }
+      }
 
-      var courses = this.fetchAllCourses(academicYear);
+      var courses = this.fetchAllCourses(academicYear, deepLog);
       var allCourseData = [];
       var totalAttachments = 0;
+      var seenFileIds = {};
+
+      function recordAttachmentInventory(att, section, parentTitle) {
+        if (!att) return;
+        var itemType = 'DRIVE_FILE';
+        var idOrUrl = att.fileId || '';
+        if (att.youtubeUrl) {
+          itemType = 'YOUTUBE_VIDEO';
+          idOrUrl = att.youtubeUrl;
+          deepLog.summary.youtubeVideosCount++;
+        } else if (att.formUrl) {
+          itemType = 'GOOGLE_FORM';
+          idOrUrl = att.formUrl;
+          deepLog.summary.formsCount++;
+        } else if (att.url) {
+          itemType = 'WEB_LINK';
+          idOrUrl = att.url;
+          deepLog.summary.webLinksCount++;
+        } else if (att.fileId) {
+          if (seenFileIds[att.fileId]) {
+            itemType = 'DUPLICATE_FILE';
+            deepLog.summary.duplicateAttachmentsCount++;
+          } else {
+            seenFileIds[att.fileId] = true;
+            deepLog.summary.driveFilesCount++;
+          }
+        }
+        deepLog.inventory.push({
+          index: deepLog.inventory.length + 1,
+          type: itemType,
+          title: att.title || att.targetName || 'Untitled',
+          targetName: att.targetName || att.title || '',
+          fileId: att.fileId || null,
+          url: idOrUrl,
+          section: section,
+          parentTitle: (parentTitle || '').substring(0, 50)
+        });
+      }
 
       for (var i = 0; i < courses.length; i++) {
         var course = courses[i];
+        addLog('📖 Processing Course [' + (i + 1) + '/' + courses.length + ']: "' + course.name + '" (ID: ' + course.id + ')');
         var courseData = {
           id: course.id,
           name: course.name,
@@ -2450,12 +4281,21 @@ var ClassroomIngester = {
           materials: []
         };
 
-        // Announcements (with full attachment downloads & Drive link scanning)
-        try {
-          var annRes = Classroom.Courses.Announcements.list(course.id, { pageSize: 30 });
-          if (annRes && annRes.announcements) {
-            for (var aIdx = 0; aIdx < annRes.announcements.length; aIdx++) {
-              var a = annRes.announcements[aIdx];
+        // Announcements (with multi-page pagination & Drive link scanning)
+        var maxPages = isIncremental ? 1 : 50;
+        var annPageToken = null;
+        var annPage = 1;
+        var courseAnnouncements = [];
+        do {
+          try {
+            var annParams = { pageSize: isIncremental ? 20 : 50 };
+            if (annPageToken) annParams.pageToken = annPageToken;
+            var annRes = Classroom.Courses.Announcements.list(course.id, annParams);
+            var batch = (annRes && annRes.announcements) ? annRes.announcements : [];
+            addLog('📢 Course "' + course.name + '" Announcements Page ' + annPage + ': fetched ' + batch.length + ' items (hasMore: ' + !!(annRes && annRes.nextPageToken) + ')');
+
+            for (var aIdx = 0; aIdx < batch.length; aIdx++) {
+              var a = batch[aIdx];
               var annItem = {
                 id: a.id,
                 text: a.text || '',
@@ -2473,6 +4313,7 @@ var ClassroomIngester = {
                   if (aDownloaded) {
                     annItem.attachments.push(aDownloaded);
                     totalAttachments++;
+                    recordAttachmentInventory(aDownloaded, 'announcement', a.text ? a.text.substring(0, 30) : a.id);
                   }
                 }
               }
@@ -2482,22 +4323,37 @@ var ClassroomIngester = {
                 for (var td = 0; td < textDocs.length; td++) {
                   annItem.attachments.push(textDocs[td]);
                   totalAttachments++;
+                  recordAttachmentInventory(textDocs[td], 'announcement_text_link', a.text.substring(0, 30));
                 }
               }
 
-              courseData.announcements.push(annItem);
+              courseAnnouncements.push(annItem);
             }
-          }
-        } catch (annErr) {
-          McpLogger.log('WARN', 'CLASSROOM_ANN_WARN', 'Could not fetch announcements for ' + course.name + ': ' + annErr);
-        }
 
-        // CourseWork (Assignments & Worksheets)
-        try {
-          var cwRes = Classroom.Courses.CourseWork.list(course.id, { pageSize: 50 });
-          if (cwRes && cwRes.courseWork) {
-            for (var j = 0; j < cwRes.courseWork.length; j++) {
-              var cw = cwRes.courseWork[j];
+            annPageToken = annRes ? annRes.nextPageToken : null;
+            annPage++;
+          } catch (annErr) {
+            McpLogger.log('WARN', 'CLASSROOM_ANN_WARN', 'Could not fetch announcements page ' + annPage + ' for ' + course.name + ': ' + annErr);
+            addLog('⚠️ Announcement fetch notice on page ' + annPage + ': ' + annErr.toString());
+            annPageToken = null;
+          }
+        } while (annPageToken && annPage <= maxPages);
+        courseData.announcements = courseAnnouncements;
+
+        // CourseWork (Assignments & Worksheets with multi-page pagination)
+        var cwPageToken = null;
+        var cwPage = 1;
+        var courseCwList = [];
+        do {
+          try {
+            var cwParams = { pageSize: isIncremental ? 20 : 50 };
+            if (cwPageToken) cwParams.pageToken = cwPageToken;
+            var cwRes = Classroom.Courses.CourseWork.list(course.id, cwParams);
+            var cwBatch = (cwRes && cwRes.courseWork) ? cwRes.courseWork : [];
+            addLog('📝 Course "' + course.name + '" CourseWork Page ' + cwPage + ': fetched ' + cwBatch.length + ' items (hasMore: ' + !!(cwRes && cwRes.nextPageToken) + ')');
+
+            for (var j = 0; j < cwBatch.length; j++) {
+              var cw = cwBatch[j];
               var cwItem = {
                 id: cw.id,
                 title: cw.title || 'Untitled Assignment',
@@ -2515,18 +4371,38 @@ var ClassroomIngester = {
               };
 
               try {
-                var subRes = Classroom.Courses.CourseWork.StudentSubmissions.list(course.id, cw.id, { userId: 'me' });
-                if (subRes && subRes.studentSubmissions && subRes.studentSubmissions.length > 0) {
-                  var sub = subRes.studentSubmissions[0];
-                  cwItem.submission = {
-                    id: sub.id,
-                    state: sub.state || 'ASSIGNED',
-                    assignedGrade: sub.assignedGrade !== undefined ? sub.assignedGrade : null,
-                    draftGrade: sub.draftGrade !== undefined ? sub.draftGrade : null,
-                    alternateLink: sub.alternateLink || '',
-                    updateTime: sub.updateTime,
-                    late: sub.late || false
-                  };
+                var skipSub = false;
+                if (isIncremental && cw.creationTime) {
+                  var ageMs = new Date().getTime() - new Date(cw.creationTime).getTime();
+                  if (ageMs > 30 * 24 * 60 * 60 * 1000) skipSub = true;
+                }
+                if (!skipSub) {
+                  var subRes = Classroom.Courses.CourseWork.StudentSubmissions.list(course.id, cw.id, { userId: 'me' });
+                  if (subRes && subRes.studentSubmissions && subRes.studentSubmissions.length > 0) {
+                    var sub = subRes.studentSubmissions[0];
+                    cwItem.submission = {
+                      id: sub.id,
+                      state: sub.state || 'ASSIGNED',
+                      assignedGrade: sub.assignedGrade !== undefined ? sub.assignedGrade : null,
+                      draftGrade: sub.draftGrade !== undefined ? sub.draftGrade : null,
+                      alternateLink: sub.alternateLink || '',
+                      updateTime: sub.updateTime,
+                      late: sub.late || false
+                    };
+
+                    // Extract student-submitted homework worksheets / attachments
+                    if (sub.assignmentSubmission && sub.assignmentSubmission.attachments && sub.assignmentSubmission.attachments.length > 0) {
+                      for (var sa = 0; sa < sub.assignmentSubmission.attachments.length; sa++) {
+                        var subAtt = sub.assignmentSubmission.attachments[sa];
+                        var dSub = this.downloadMaterialAttachment(subAtt, attachFolder, course.name, 'Sub_' + cw.title);
+                        if (dSub) {
+                          cwItem.attachments.push(dSub);
+                          totalAttachments++;
+                          recordAttachmentInventory(dSub, 'student_submission', cw.title);
+                        }
+                      }
+                    }
+                  }
                 }
               } catch (subErr) {}
 
@@ -2537,6 +4413,7 @@ var ClassroomIngester = {
                   if (downloaded) {
                     cwItem.attachments.push(downloaded);
                     totalAttachments++;
+                    recordAttachmentInventory(downloaded, 'coursework', cw.title);
                   }
                 }
               }
@@ -2546,22 +4423,37 @@ var ClassroomIngester = {
                 for (var dd = 0; dd < descDocs.length; dd++) {
                   cwItem.attachments.push(descDocs[dd]);
                   totalAttachments++;
+                  recordAttachmentInventory(descDocs[dd], 'coursework_desc_link', cw.title);
                 }
               }
 
-              courseData.courseWork.push(cwItem);
+              courseCwList.push(cwItem);
             }
-          }
-        } catch (cwErr) {
-          McpLogger.log('WARN', 'CLASSROOM_CW_WARN', 'Could not fetch coursework for ' + course.name + ': ' + cwErr);
-        }
 
-        // Materials (Reference Resources)
-        try {
-          var matRes = Classroom.Courses.CourseWorkMaterials.list(course.id, { pageSize: 30 });
-          if (matRes && matRes.courseWorkMaterial) {
-            for (var k = 0; k < matRes.courseWorkMaterial.length; k++) {
-              var cwm = matRes.courseWorkMaterial[k];
+            cwPageToken = cwRes ? cwRes.nextPageToken : null;
+            cwPage++;
+          } catch (cwErr) {
+            McpLogger.log('WARN', 'CLASSROOM_CW_WARN', 'Could not fetch coursework page ' + cwPage + ' for ' + course.name + ': ' + cwErr);
+            addLog('⚠️ Coursework fetch notice on page ' + cwPage + ': ' + cwErr.toString());
+            cwPageToken = null;
+          }
+        } while (cwPageToken && cwPage <= maxPages);
+        courseData.courseWork = courseCwList;
+
+        // Materials (Reference Resources with multi-page pagination)
+        var matPageToken = null;
+        var matPage = 1;
+        var courseMatList = [];
+        do {
+          try {
+            var matParams = { pageSize: isIncremental ? 20 : 50 };
+            if (matPageToken) matParams.pageToken = matPageToken;
+            var matRes = Classroom.Courses.CourseWorkMaterials.list(course.id, matParams);
+            var matBatch = (matRes && matRes.courseWorkMaterial) ? matRes.courseWorkMaterial : [];
+            addLog('📚 Course "' + course.name + '" Materials Page ' + matPage + ': fetched ' + matBatch.length + ' items (hasMore: ' + !!(matRes && matRes.nextPageToken) + ')');
+
+            for (var k = 0; k < matBatch.length; k++) {
+              var cwm = matBatch[k];
               var matItem = {
                 id: cwm.id,
                 title: cwm.title || 'Course Material',
@@ -2578,6 +4470,7 @@ var ClassroomIngester = {
                   if (dMat) {
                     matItem.attachments.push(dMat);
                     totalAttachments++;
+                    recordAttachmentInventory(dMat, 'material', cwm.title);
                   }
                 }
               }
@@ -2587,16 +4480,33 @@ var ClassroomIngester = {
                 for (var cd = 0; cd < cwmDocs.length; cd++) {
                   matItem.attachments.push(cwmDocs[cd]);
                   totalAttachments++;
+                  recordAttachmentInventory(cwmDocs[cd], 'material_desc_link', cwm.title);
                 }
               }
 
-              courseData.materials.push(matItem);
+              courseMatList.push(matItem);
             }
+
+            matPageToken = matRes ? matRes.nextPageToken : null;
+            matPage++;
+          } catch (matErr) {
+            McpLogger.log('WARN', 'CLASSROOM_MAT_WARN', 'Could not fetch materials page ' + matPage + ' for ' + course.name + ': ' + matErr);
+            addLog('⚠️ Materials fetch notice on page ' + matPage + ': ' + matErr.toString());
+            matPageToken = null;
           }
-        } catch (matErr) {}
+        } while (matPageToken && matPage <= maxPages);
+        courseData.materials = courseMatList;
 
         allCourseData.push(courseData);
       }
+
+      deepLog.summary.totalAnnouncements = allCourseData.reduce(function(acc, c) { return acc + (c.announcements ? c.announcements.length : 0); }, 0);
+      deepLog.summary.totalCourseWork = allCourseData.reduce(function(acc, c) { return acc + (c.courseWork ? c.courseWork.length : 0); }, 0);
+      deepLog.summary.totalMaterials = allCourseData.reduce(function(acc, c) { return acc + (c.materials ? c.materials.length : 0); }, 0);
+      deepLog.summary.totalAttachments = totalAttachments;
+      deepLog.executionTimeMs = (new Date()).getTime() - startTime.getTime();
+
+      var deepLogText = this.formatDeepLogReport(deepLog, allCourseData);
 
       var manifestPayload = {
         kidName: childName,
@@ -2604,11 +4514,33 @@ var ClassroomIngester = {
         lastSyncedAt: new Date().toISOString(),
         totalCourses: allCourseData.length,
         totalAttachments: totalAttachments,
-        courses: allCourseData
+        courses: allCourseData,
+        deepLog: deepLog,
+        deepLogText: deepLogText
       };
 
-      this.saveJsonFile(classroomFolder, 'classroom_data.json', manifestPayload);
-      McpLogger.log('SUCCESS', 'CLASSROOM_SYNC_COMPLETE', 'Successfully crawled ' + allCourseData.length + ' courses and vaulted ' + totalAttachments + ' attachments for ' + childName);
+      if (classroomFolder) {
+        try {
+          var finalPayload = manifestPayload;
+          if (isIncremental) {
+            try {
+              var exFileIt = classroomFolder.getFilesByName('classroom_data.json');
+              if (exFileIt.hasNext()) {
+                var exData = JSON.parse(exFileIt.next().getContent());
+                if (exData && exData.courses) {
+                  finalPayload = this.mergeClassroomData(exData, manifestPayload);
+                }
+              }
+            } catch (mErr) {}
+          }
+          this.saveJsonFile(classroomFolder, 'classroom_data.json', finalPayload);
+          this.saveJsonFile(classroomFolder, 'classroom_sync_deep_log.json', deepLog);
+          this.saveTextFile(classroomFolder, 'classroom_sync_deep_log.txt', deepLogText);
+        } catch (sErr) {
+          addLog('⚠️ Notice saving files to Drive: ' + sErr.toString());
+        }
+      }
+      McpLogger.log('SUCCESS', 'CLASSROOM_SYNC_COMPLETE', 'Successfully crawled ' + allCourseData.length + ' courses and extracted ' + totalAttachments + ' attachments for ' + childName);
 
       return manifestPayload;
     } catch (err) {
@@ -2617,24 +4549,131 @@ var ClassroomIngester = {
     }
   },
 
-  fetchAllCourses: function(academicYear) {
-    var courses = [];
-    try {
-      var res = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'] });
-      if (res && res.courses) courses = res.courses;
-    } catch (e) {
-      try {
-        var fallbackRes = Classroom.Courses.list({ courseStates: ['ACTIVE'] });
-        if (fallbackRes && fallbackRes.courses) courses = fallbackRes.courses;
-      } catch (e2) {}
+  formatDeepLogReport: function(deepLog, allCourseData) {
+    var lines = [];
+    lines.push('================================================================================');
+    lines.push('       K.I.D.S. GOOGLE CLASSROOM DEEP DIAGNOSTIC AUDIT & CRAWL LOG');
+    lines.push('================================================================================');
+    lines.push('Generated At    : ' + deepLog.timestamp);
+    lines.push('Student / Child : ' + deepLog.childName);
+    lines.push('Academic Year   : ' + deepLog.academicYear);
+    lines.push('Sync Execution  : ' + (deepLog.extractOnly ? 'Direct Read-Only Gateway (0 student drive files)' : 'Full Sync'));
+    lines.push('Execution Time  : ' + (deepLog.executionTimeMs || 0) + ' ms');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('1. EXECUTIVE AUDIT SUMMARY');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('• Active Courses In Account : ' + deepLog.summary.totalCoursesFound);
+    lines.push('• Current-Year Ingested     : ' + deepLog.summary.coursesIngested);
+    lines.push('• Announcements Extracted   : ' + deepLog.summary.totalAnnouncements);
+    lines.push('• CourseWork Assignments    : ' + deepLog.summary.totalCourseWork);
+    lines.push('• Course Reference Materials: ' + deepLog.summary.totalMaterials);
+    lines.push('• Total Detected Attachments: ' + deepLog.summary.totalAttachments);
+    lines.push('    ├─ Downloadable Drive Files : ' + deepLog.summary.driveFilesCount + ' unique');
+    lines.push('    ├─ YouTube Video Links      : ' + deepLog.summary.youtubeVideosCount + ' (streamed in browser)');
+    lines.push('    ├─ External Web Links       : ' + deepLog.summary.webLinksCount);
+    lines.push('    ├─ Google Forms             : ' + deepLog.summary.formsCount);
+    lines.push('    └─ Duplicate Attachments    : ' + deepLog.summary.duplicateAttachmentsCount + ' (shared across notices)');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('2. COURSE BREAKDOWN & PAGINATION AUDIT');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var c = 0; c < allCourseData.length; c++) {
+      var course = allCourseData[c];
+      lines.push('[' + (c + 1) + '] Course: ' + course.name + (course.section ? ' (' + course.section + ')' : ''));
+      lines.push('    Course ID    : ' + course.id);
+      lines.push('    Course State : ' + course.courseState);
+      lines.push('    Class Link   : ' + (course.alternateLink || 'N/A'));
+      lines.push('    Content Audit: ' + (course.announcements ? course.announcements.length : 0) + ' announcements, ' +
+        (course.courseWork ? course.courseWork.length : 0) + ' coursework items, ' +
+        (course.materials ? course.materials.length : 0) + ' materials.');
+      lines.push('');
     }
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('3. ITEMIZED ATTACHMENT INVENTORY (ALL ' + deepLog.inventory.length + ' DETECTED ITEMS)');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push(this.padRight('#', 4) + ' | ' + this.padRight('TYPE', 15) + ' | ' + this.padRight('TITLE / TARGET NAME', 40) + ' | ' + 'FILE ID / URL');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var i = 0; i < deepLog.inventory.length; i++) {
+      var item = deepLog.inventory[i];
+      var idxStr = this.padRight(String(item.index), 4);
+      var typeStr = this.padRight(item.type, 15);
+      var titleStr = this.padRight((item.title || item.targetName || '').substring(0, 38), 40);
+      var idStr = (item.fileId || item.url || '').substring(0, 45);
+      lines.push(idxStr + ' | ' + typeStr + ' | ' + titleStr + ' | ' + idStr);
+    }
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('4. DETAILED EXECUTION TIMELINE');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var t = 0; t < deepLog.logTimeline.length; t++) {
+      lines.push(deepLog.logTimeline[t]);
+    }
+    lines.push('================================================================================');
+    lines.push('                    END OF CLASSROOM DEEP DIAGNOSTIC AUDIT LOG');
+    lines.push('================================================================================');
+    return lines.join('\\n');
+  },
+
+  padRight: function(str, len) {
+    str = String(str || '');
+    while (str.length < len) str += ' ';
+    return str;
+  },
+
+  fetchAllCourses: function(academicYear, deepLog) {
+    var courses = [];
+    var pageToken = null;
+    var page = 1;
+    do {
+      try {
+        var params = { studentId: 'me', courseStates: ['ACTIVE'], pageSize: 50 };
+        if (pageToken) params.pageToken = pageToken;
+        var res = Classroom.Courses.list(params);
+        if (res && res.courses) {
+          courses = courses.concat(res.courses);
+          if (deepLog) deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] Course list page ' + page + ': retrieved ' + res.courses.length + ' courses.');
+        }
+        pageToken = res ? res.nextPageToken : null;
+        page++;
+      } catch (e) {
+        try {
+          var fbParams = { courseStates: ['ACTIVE'], pageSize: 50 };
+          if (pageToken) fbParams.pageToken = pageToken;
+          var fallbackRes = Classroom.Courses.list(fbParams);
+          if (fallbackRes && fallbackRes.courses) courses = courses.concat(fallbackRes.courses);
+          pageToken = fallbackRes ? fallbackRes.nextPageToken : null;
+          page++;
+        } catch (e2) {
+          pageToken = null;
+        }
+      }
+    } while (pageToken && page <= 10);
 
     var self = this;
     var filtered = courses.filter(function(c) {
       return self.isCurrentClass(c, academicYear);
     });
+    if (filtered.length === 0 && courses.length > 0) {
+      McpLogger.log('WARN', 'CLASSROOM_FILTER_FALLBACK', 'No courses matched current academic year filter; falling back to all ' + courses.length + ' active courses.');
+      filtered = courses;
+    }
 
     McpLogger.log('INFO', 'CLASSROOM_COURSES_FILTERED', 'Found ' + courses.length + ' active courses in account; filtered to ' + filtered.length + ' current-year classes.');
+    if (deepLog) {
+      deepLog.summary.totalCoursesFound = courses.length;
+      deepLog.summary.coursesIngested = filtered.length;
+      for (var ci = 0; ci < courses.length; ci++) {
+        var isInc = filtered.indexOf(courses[ci]) !== -1;
+        deepLog.coursesAudit.push({
+          id: courses[ci].id,
+          name: courses[ci].name,
+          section: courses[ci].section || '',
+          state: courses[ci].courseState,
+          included: isInc
+        });
+      }
+    }
     return filtered;
   },
 
@@ -2681,7 +4720,7 @@ var ClassroomIngester = {
   scanTextForDriveFiles: function(text, attachFolder, courseName, itemTitle) {
     if (!text) return [];
     var results = [];
-    var urlRegex = new RegExp('https?://(?:drive|docs)\\.google\\.com/[^\\s"\'\\)<>]+', 'gi');
+    var urlRegex = new RegExp('https?://(?:drive|docs)[.]google[.]com/[^\\\\s"<>]+', 'gi');
     var matches = text.match(urlRegex);
     if (matches) {
       for (var i = 0; i < matches.length; i++) {
@@ -2701,6 +4740,15 @@ var ClassroomIngester = {
       var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
       var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
       var targetName = cleanCourse + '_' + cleanTitle + '_' + (title || fileId);
+
+      if (!attachFolder) {
+        return {
+          title: title || targetName,
+          targetName: targetName,
+          fileId: fileId,
+          driveUrl: 'https://drive.google.com/file/d/' + fileId + '/view'
+        };
+      }
 
       var existing = attachFolder.getFilesByName(targetName);
       if (existing.hasNext()) {
@@ -2764,10 +4812,13 @@ var ClassroomIngester = {
 
   downloadMaterialAttachment: function(mat, attachFolder, courseName, itemTitle) {
     try {
-      if (mat.driveFile && mat.driveFile.driveFile) {
-        var df = mat.driveFile.driveFile;
+      if (mat.driveFile) {
+        var df = mat.driveFile.driveFile || mat.driveFile;
         var fileId = df.id;
-        var title = df.title || 'attachment';
+        var title = df.title || (mat.driveFile && mat.driveFile.title) || mat.title;
+        if (!title || title === 'attachment') {
+          title = (itemTitle ? itemTitle + '_file' : (df.name || 'drive_file'));
+        }
         var dObj = this.downloadDriveFileById(fileId, title, attachFolder, courseName, itemTitle);
         if (dObj) {
           dObj.alternateLink = df.alternateLink || '';
@@ -2818,6 +4869,87 @@ var ClassroomIngester = {
       return file;
     }
     return folder.createFile(fileName, payload, 'application/json');
+  },
+
+  saveTextFile: function(folder, fileName, content) {
+    var it = folder.getFilesByName(fileName);
+    if (it.hasNext()) {
+      var f = it.next();
+      f.setContent(content);
+      return f;
+    }
+    return folder.createFile(fileName, content, 'text/plain');
+  },
+
+  mergeClassroomData: function(existing, incoming) {
+    if (!existing || !existing.courses) return incoming;
+    if (!incoming || !incoming.courses) return existing;
+
+    var mergedCourses = existing.courses.slice();
+    for (var i = 0; i < incoming.courses.length; i++) {
+      var inCourse = incoming.courses[i];
+      var exIdx = -1;
+      for (var j = 0; j < mergedCourses.length; j++) {
+        if (mergedCourses[j].id === inCourse.id) {
+          exIdx = j;
+          break;
+        }
+      }
+      if (exIdx === -1) {
+        mergedCourses.push(inCourse);
+      } else {
+        var exCourse = mergedCourses[exIdx];
+        var annMap = {};
+        var combinedAnn = [];
+        (inCourse.announcements || []).concat(exCourse.announcements || []).forEach(function(a) {
+          if (a && a.id && !annMap[a.id]) {
+            annMap[a.id] = true;
+            combinedAnn.push(a);
+          }
+        });
+        var cwMap = {};
+        var combinedCw = [];
+        (inCourse.courseWork || []).concat(exCourse.courseWork || []).forEach(function(cw) {
+          if (cw && cw.id && !cwMap[cw.id]) {
+            cwMap[cw.id] = true;
+            combinedCw.push(cw);
+          }
+        });
+        var matMap = {};
+        var combinedMat = [];
+        (inCourse.materials || []).concat(exCourse.materials || []).forEach(function(m) {
+          if (m && m.id && !matMap[m.id]) {
+            matMap[m.id] = true;
+            combinedMat.push(m);
+          }
+        });
+        mergedCourses[exIdx] = {
+          id: inCourse.id,
+          name: inCourse.name || exCourse.name,
+          section: inCourse.section || exCourse.section,
+          descriptionHeading: inCourse.descriptionHeading || exCourse.descriptionHeading,
+          room: inCourse.room || exCourse.room,
+          alternateLink: inCourse.alternateLink || exCourse.alternateLink,
+          courseState: inCourse.courseState || exCourse.courseState,
+          announcements: combinedAnn,
+          courseWork: combinedCw,
+          materials: combinedMat
+        };
+      }
+    }
+    return {
+      kidName: incoming.kidName || existing.kidName,
+      academicYear: incoming.academicYear || existing.academicYear,
+      lastSyncedAt: incoming.lastSyncedAt || new Date().toISOString(),
+      totalCourses: mergedCourses.length,
+      totalAttachments: mergedCourses.reduce(function(acc, c) {
+        var annAtts = (c.announcements || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        var cwAtts = (c.courseWork || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        var matAtts = (c.materials || []).reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0);
+        return acc + annAtts + cwAtts + matAtts;
+      }, 0),
+      courses: mergedCourses
+    };
   }
 };
 `
@@ -2827,35 +4959,83 @@ var ClassroomIngester = {
         type: 'SERVER_JS',
         source: `
 var GmailIngester = {
-  sync: function(targetFolderId, childName, academicYear, schoolDomain, isIncremental) {
+  sync: function(targetFolderId, childName, academicYear, schoolDomain, isIncremental, extractOnly) {
     try {
-      McpLogger.log('INFO', 'GMAIL_SYNC_START', 'Starting Gmail circular sync for ' + childName + ' (Domain: ' + (schoolDomain || 'auto') + ')');
+      McpLogger.log('INFO', 'GMAIL_SYNC_START', 'Starting Gmail circular sync for ' + childName + ' (Domain: ' + (schoolDomain || 'auto') + ', ExtractOnly: ' + !!extractOnly + ')');
 
-      var parentFolder = DriveApp.getFolderById(targetFolderId);
-      var emailsFolder = this.getOrCreateSubfolder(parentFolder, 'emails');
-      var attachFolder = this.getOrCreateSubfolder(emailsFolder, 'attachments');
+      var parentFolder = null;
+      var emailsFolder = null;
+      var attachFolder = null;
+      if (targetFolderId && !extractOnly) {
+        try {
+          parentFolder = DriveApp.getFolderById(targetFolderId);
+          emailsFolder = this.getOrCreateSubfolder(parentFolder, 'emails');
+          attachFolder = this.getOrCreateSubfolder(emailsFolder, 'attachments');
+        } catch (fErr) {
+          McpLogger.log('WARN', 'GMAIL_FOLDER_WARN', 'Could not access or create emails folder in targetFolderId: ' + fErr);
+        }
+      }
 
-      var domainFilter = schoolDomain ? 'from:(@' + schoolDomain.replace(/^@/, '') + ')' : '';
-      var query = (domainFilter ? domainFilter + ' ' : '') + '-from:(classroom.google.com) -subject:("New assignment" OR "Graded" OR "Due tomorrow")';
-      
+      var cleanDomain = (schoolDomain || '').trim().replace(new RegExp('^@'), '').toLowerCase();
+      var isGenericDomain = !cleanDomain || new RegExp('^(gmail|googlemail|google|yahoo|hotmail|outlook)[.]com$', 'i').test(cleanDomain);
+      var domainFilter = (!isGenericDomain) ? 'from:' + cleanDomain : '';
+      var classroomExclusion = '-from:(classroom.google.com) -from:(no-reply-classroom@google.com) -from:(notifications.google.com) -subject:("New assignment" OR "Graded" OR "Due tomorrow")';
+      var query = (domainFilter ? domainFilter + ' ' : '') + classroomExclusion;
+
+      var afterEpoch = null;
       if (isIncremental) {
         var props = PropertiesService.getScriptProperties();
         var lastSync = props.getProperty('last_gmail_sync_time');
         if (lastSync) {
-          var afterEpoch = Math.floor(new Date(lastSync).getTime() / 1000);
+          afterEpoch = Math.floor(new Date(lastSync).getTime() / 1000);
           query += ' after:' + afterEpoch;
         }
       }
 
-      var threads = GmailApp.search(query, 0, 40);
+      var threads = [];
+      var startIdx = 0;
+      var pageSize = 50;
+      var maxSearchIdx = isIncremental ? 50 : 300;
+      while (startIdx < maxSearchIdx) {
+        var batch = GmailApp.search(query, startIdx, pageSize);
+        if (!batch || batch.length === 0) break;
+        threads = threads.concat(batch);
+        if (batch.length < pageSize) break;
+        startIdx += pageSize;
+      }
+
+      // If domain filter was applied but yielded zero threads, fall back to broad query
+      // (only on full initial sync, not on 1-minute incremental checks where zero new emails is normal)
+      if (threads.length === 0 && domainFilter && !isIncremental) {
+        McpLogger.log('INFO', 'GMAIL_DOMAIN_FALLBACK', 'No circulars found for domain ' + cleanDomain + '; retrying with broad notice search');
+        var broadQuery = classroomExclusion;
+        if (isIncremental && afterEpoch) broadQuery += ' after:' + afterEpoch;
+        startIdx = 0;
+        while (startIdx < 300) {
+          var broadBatch = GmailApp.search(broadQuery, startIdx, pageSize);
+          if (!broadBatch || broadBatch.length === 0) break;
+          threads = threads.concat(broadBatch);
+          if (broadBatch.length < pageSize) break;
+          startIdx += pageSize;
+        }
+      }
+
       var emailList = [];
       var totalAttachments = 0;
+      var cumulativeBase64Bytes = 0;
 
       for (var t = 0; t < threads.length; t++) {
         var msgs = threads[t].getMessages();
         for (var m = 0; m < msgs.length; m++) {
           var msg = msgs[m];
-          var sender = msg.getFrom();
+          var sender = msg.getFrom() || '';
+
+          // Strict filter: omit automated classroom notifications that contain only trimmed message alerts
+          var senderLower = sender.toLowerCase();
+          if (senderLower.indexOf('classroom.google.com') !== -1 || senderLower.indexOf('no-reply-classroom@google.com') !== -1) {
+            continue;
+          }
+
           var subject = msg.getSubject() || 'Untitled Notice';
           var date = msg.getDate();
 
@@ -2863,11 +5043,11 @@ var GmailIngester = {
             id: msg.getId(),
             threadId: threads[t].getId(),
             from: sender,
-            to: msg.getTo(),
+            to: msg.getTo() || '',
             subject: subject,
             date: date ? date.toISOString() : '',
             snippet: msg.getPlainBody().substring(0, 300),
-            body: msg.getPlainBody().substring(0, 4000),
+            body: msg.getPlainBody().substring(0, 8000),
             attachments: []
           };
 
@@ -2876,23 +5056,43 @@ var GmailIngester = {
             var att = atts[a];
             var cleanSubj = subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
             var attName = cleanSubj + '_' + att.getName();
-            try {
-              var existing = attachFolder.getFilesByName(attName);
-              var fileObj;
-              if (existing.hasNext()) {
-                fileObj = existing.next();
-              } else {
-                fileObj = attachFolder.createFile(att.copyBlob().setName(attName));
-                totalAttachments++;
-              }
-              item.attachments.push({
-                name: att.getName(),
-                fileId: fileObj.getId(),
-                driveUrl: fileObj.getUrl(),
-                mimeType: att.getContentType(),
-                size: att.getSize()
-              });
-            } catch (attErr) {}
+            var attSize = att.getSize();
+            var base64Payload = null;
+
+            // Include base64 directly for attachments <= 2MB, up to 8MB cumulative in this sync batch
+            if (attSize > 0 && attSize <= 2 * 1024 * 1024 && (cumulativeBase64Bytes + attSize) <= 8 * 1024 * 1024) {
+              try {
+                base64Payload = Utilities.base64Encode(att.getBytes());
+                cumulativeBase64Bytes += attSize;
+              } catch (b64Err) {}
+            }
+
+            var fileObj = null;
+            if (attachFolder && !extractOnly) {
+              try {
+                var existing = attachFolder.getFilesByName(attName);
+                if (existing.hasNext()) {
+                  fileObj = existing.next();
+                } else {
+                  fileObj = attachFolder.createFile(att.copyBlob().setName(attName));
+                  totalAttachments++;
+                }
+              } catch (attErr) {}
+            }
+            item.attachments.push({
+              name: att.getName(),
+              targetName: attName,
+              fileId: fileObj ? fileObj.getId() : '',
+              driveUrl: fileObj ? fileObj.getUrl() : '',
+              mimeType: att.getContentType(),
+              size: attSize,
+              messageId: msg.getId(),
+              attachmentIndex: a,
+              base64: base64Payload
+            });
+            if (!fileObj && base64Payload) {
+              totalAttachments++;
+            }
           }
 
           var emailBody = msg.getPlainBody();
@@ -2924,13 +5124,61 @@ var GmailIngester = {
         emails: emailList
       };
 
-      this.saveJsonFile(emailsFolder, 'school_emails.json', resultPayload);
-      PropertiesService.getScriptProperties().setProperty('last_gmail_sync_time', new Date().toISOString());
+      if (emailsFolder && !extractOnly) {
+        try {
+          var finalEmails = resultPayload;
+          if (isIncremental) {
+            try {
+              var exEmIt = emailsFolder.getFilesByName('school_emails.json');
+              if (exEmIt.hasNext()) {
+                var exEmData = JSON.parse(exEmIt.next().getContent());
+                if (exEmData && exEmData.emails) {
+                  var emMap = {};
+                  var combEmails = [];
+                  (emailList || []).concat(exEmData.emails || []).forEach(function(em) {
+                    if (em && em.id && !emMap[em.id]) {
+                      emMap[em.id] = true;
+                      combEmails.push(em);
+                    }
+                  });
+                  finalEmails = {
+                    kidName: childName,
+                    academicYear: academicYear,
+                    schoolDomain: schoolDomain || '',
+                    lastSyncedAt: new Date().toISOString(),
+                    totalEmails: combEmails.length,
+                    totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
+                    emails: combEmails
+                  };
+                }
+              }
+            } catch (mergeErr) {}
+          }
+          this.saveJsonFile(emailsFolder, 'school_emails.json', finalEmails);
+        } catch (sErr) {
+          McpLogger.log('WARN', 'GMAIL_SAVE_WARN', 'Could not save school_emails.json directly: ' + sErr);
+        }
+      }
+      try {
+        PropertiesService.getScriptProperties().setProperty('last_gmail_sync_time', new Date().toISOString());
+      } catch (pErr) {}
 
       McpLogger.log('SUCCESS', 'GMAIL_SYNC_COMPLETE', 'Successfully captured ' + emailList.length + ' emails and ' + totalAttachments + ' attachments for ' + childName);
       return resultPayload;
     } catch (err) {
       McpLogger.log('ERROR', 'GMAIL_SYNC_ERROR', 'Gmail sync failed: ' + err.toString());
+      if (extractOnly) {
+        return {
+          kidName: childName,
+          academicYear: academicYear,
+          schoolDomain: schoolDomain || '',
+          lastSyncedAt: new Date().toISOString(),
+          totalEmails: 0,
+          totalAttachments: 0,
+          emails: [],
+          error: err.toString()
+        };
+      }
       throw err;
     }
   },
@@ -2949,7 +5197,7 @@ var GmailIngester = {
   scanTextForDriveFiles: function(text, attachFolder, prefix, subject) {
     if (!text) return [];
     var results = [];
-    var urlRegex = new RegExp('https?://(?:drive|docs)\\.google\\.com/[^\\s"\'\\)<>]+', 'gi');
+    var urlRegex = new RegExp('https?://(?:drive|docs)[.]google[.]com/[^\\\\s"<>]+', 'gi');
     var matches = text.match(urlRegex);
     if (matches) {
       for (var i = 0; i < matches.length; i++) {
@@ -2958,30 +5206,42 @@ var GmailIngester = {
         if (fId) {
           var cleanSubj = (subject || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
           var targetName = (prefix || 'Email') + '_' + cleanSubj + '_' + fId.substring(0, 8);
-          var existing = attachFolder.getFilesByName(targetName);
-          if (existing.hasNext()) {
-            var ex = existing.next();
-            results.push({ title: targetName, fileId: ex.getId(), driveUrl: ex.getUrl() });
-            continue;
-          }
-          try {
-            var srcFile = DriveApp.getFileById(fId);
-            var mime = srcFile.getMimeType();
-            if (mime.indexOf('google-apps') !== -1) {
-              var token = ScriptApp.getOAuthToken();
-              var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fId + '/export?mimeType=application/pdf', {
-                headers: { 'Authorization': 'Bearer ' + token },
-                muteHttpExceptions: true
-              });
-              if (exportRes.getResponseCode() === 200) {
-                var createdPdf = attachFolder.createFile(exportRes.getBlob().setName(targetName + '.pdf'));
-                results.push({ title: targetName + ' (PDF)', fileId: createdPdf.getId(), driveUrl: createdPdf.getUrl() });
+          if (attachFolder) {
+            try {
+              var existing = attachFolder.getFilesByName(targetName);
+              if (existing.hasNext()) {
+                var ex = existing.next();
+                results.push({ title: targetName, fileId: ex.getId(), driveUrl: ex.getUrl(), mimeType: 'application/pdf' });
+                continue;
               }
-            } else {
-              var copied = srcFile.makeCopy(targetName, attachFolder);
-              results.push({ title: targetName, fileId: copied.getId(), driveUrl: copied.getUrl() });
-            }
-          } catch (e) {}
+              var srcFile = DriveApp.getFileById(fId);
+              var mime = srcFile.getMimeType();
+              if (mime.indexOf('google-apps') !== -1) {
+                var token = ScriptApp.getOAuthToken();
+                var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fId + '/export?mimeType=application/pdf', {
+                  headers: { 'Authorization': 'Bearer ' + token },
+                  muteHttpExceptions: true
+                });
+                if (exportRes.getResponseCode() === 200) {
+                  var createdPdf = attachFolder.createFile(exportRes.getBlob().setName(targetName + '.pdf'));
+                  results.push({ title: targetName + ' (PDF)', fileId: createdPdf.getId(), driveUrl: createdPdf.getUrl(), mimeType: 'application/pdf' });
+                  continue;
+                }
+              } else {
+                var copied = srcFile.makeCopy(targetName, attachFolder);
+                results.push({ title: targetName, fileId: copied.getId(), driveUrl: copied.getUrl(), mimeType: mime });
+                continue;
+              }
+            } catch (e) {}
+          }
+          // If attachFolder is null or student cannot write, return fileId for Parent Vault sync
+          results.push({
+            title: targetName,
+            fileId: fId,
+            driveUrl: u,
+            mimeType: 'application/pdf',
+            size: 0
+          });
         }
       }
     }
@@ -3014,8 +5274,14 @@ var GmailIngester = {
 var DigestBuilder = {
   build: function(targetFolderId, childName, academicYear) {
     try {
-      var parentFolder = DriveApp.getFolderById(targetFolderId);
-      var digestFolder = this.getOrCreateSubfolder(parentFolder, 'daily_digests');
+      var parentFolder = null;
+      var digestFolder = null;
+      if (targetFolderId) {
+        try {
+          parentFolder = DriveApp.getFolderById(targetFolderId);
+          digestFolder = this.getOrCreateSubfolder(parentFolder, 'daily_digests');
+        } catch (fErr) {}
+      }
 
       var classroomData = this.readJsonFile(parentFolder, 'classroom/classroom_data.json');
       var emailData = this.readJsonFile(parentFolder, 'emails/school_emails.json');
@@ -3071,10 +5337,6 @@ var DigestBuilder = {
         md += '_No external school portals registered._\\n\\n';
       }
 
-      // Save latest_digest.md
-      this.saveTextFile(digestFolder, 'latest_digest.md', md);
-
-      // Save master_timeline.json
       var masterTimeline = {
         kidName: childName,
         academicYear: academicYear,
@@ -3083,13 +5345,19 @@ var DigestBuilder = {
         emails: emailData || null,
         portals: portalStatus || null
       };
-      this.saveJsonFile(digestFolder, 'master_timeline.json', masterTimeline);
+
+      if (digestFolder) {
+        try {
+          this.saveTextFile(digestFolder, 'latest_digest.md', md);
+          this.saveJsonFile(digestFolder, 'master_timeline.json', masterTimeline);
+        } catch (sErr) {}
+      }
 
       McpLogger.log('SUCCESS', 'DIGEST_BUILD_COMPLETE', 'Generated latest_digest.md and master_timeline.json for ' + childName);
-      return { success: true };
+      return { success: true, md: md, masterTimeline: masterTimeline };
     } catch (err) {
       McpLogger.log('ERROR', 'DIGEST_BUILD_ERROR', 'Digest build error: ' + err.toString());
-      throw err;
+      return { success: false, error: err.toString() };
     }
   },
 
@@ -3150,25 +5418,45 @@ var PortalIngester = {
     if (!lock.tryLock(30000)) return { status: 'locked' };
 
     try {
-      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing 6-hour autonomous portal sync for all children');
       var props = PropertiesService.getScriptProperties();
       var rawRegistry = props.getProperty('multi_child_portal_registry');
       if (!rawRegistry) {
-        McpLogger.log('INFO', 'PORTAL_CRON_EMPTY', 'No registered school portals found in registry.');
-        return { status: 'empty' };
+        return { status: 'empty', reason: 'No registered school portals found in registry.' };
       }
 
-      var registry = JSON.parse(rawRegistry);
+      var registry;
+      try {
+        registry = JSON.parse(rawRegistry);
+      } catch (parseErr) {
+        return { status: 'error', reason: 'Invalid portal registry JSON' };
+      }
+
       var children = registry.children || [];
+      if (!children || children.length === 0) {
+        return { status: 'empty', reason: 'No children configured with portals yet.' };
+      }
+
+      var hasAnyActiveDomains = false;
+      for (var i = 0; i < children.length; i++) {
+        if (children[i].domains && Object.keys(children[i].domains).length > 0) {
+          hasAnyActiveDomains = true;
+          break;
+        }
+      }
+      if (!hasAnyActiveDomains) {
+        return { status: 'empty', reason: 'No active portal domains registered yet.' };
+      }
+
+      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing 6-hour autonomous portal sync for all children');
       var results = [];
 
       for (var c = 0; c < children.length; c++) {
         var child = children[c];
         try {
           var childRes = this.syncChild(child);
-          results.push(childRes);
+          if (childRes) results.push(childRes);
         } catch (childErr) {
-          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal sync error for ' + child.kidName + ': ' + childErr);
+          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal sync error for ' + (child.kidName || 'Child') + ': ' + childErr);
         }
       }
 
@@ -3179,10 +5467,19 @@ var PortalIngester = {
   },
 
   syncChild: function(child) {
-    var childFolder = DriveApp.getFolderById(child.portalFolderId);
+    if (!child || !child.portalFolderId) return null;
+    var childFolder;
+    try {
+      childFolder = DriveApp.getFolderById(child.portalFolderId);
+      if (!childFolder || childFolder.isTrashed()) return null;
+    } catch (fErr) {
+      return null;
+    }
+
     var portalsFolder = this.getOrCreateSubfolder(childFolder, 'portals');
     var domains = child.domains || {};
     var domainKeys = Object.keys(domains);
+    if (domainKeys.length === 0) return null;
 
     var statuses = [];
 
@@ -3393,7 +5690,14 @@ var PortalIngester = {
       })
     });
 
-    const result = await response.json();
+    const text = await response.text();
+    let result: any;
+    try {
+      result = JSON.parse(text);
+    } catch (parseErr) {
+      throw new Error(`Google Apps Script Execution API returned non-JSON (HTTP ${response.status}): ${text.substring(0, 120)}`);
+    }
+
     if (result.error) {
       throw new Error(`Execution error: ${result.error.message}`);
     }
@@ -3520,13 +5824,13 @@ var PortalIngester = {
    * Prompts 1-time end-user Google authorization in a focused popup modal.
    * Auto-closes automatically when authorization completes.
    */
-  public static promptInTabAuthorization(webAppUrl: string): Promise<void> {
+  public static promptInTabAuthorization(webAppUrl: string, workerType: 'master' | 'school' = 'school'): Promise<void> {
     if (typeof chrome === 'undefined' || !chrome.windows) {
       return Promise.resolve();
     }
 
     const cleanBaseUrl = webAppUrl.split('?')[0];
-    const authUrl = `${cleanBaseUrl}?authInit=true`;
+    const authUrl = `${cleanBaseUrl}?authInit=true&workerType=${workerType}&dualWorker=${workerType === 'school' ? 'true' : 'false'}`;
 
     this.log('🚀 Opening focused Google Authorization window...');
 
@@ -3607,7 +5911,7 @@ var PortalIngester = {
    * Proactively detects if Google requires 1-time interactive script authorization.
    * Prompts the clean Google consent dialog (Review Permissions -> Allow) routed to the student account.
    */
-  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string): Promise<void> {
+  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string, workerType: 'master' | 'school' = 'school'): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     try {
       const pingRes = await fetch(cleanUrl, {
@@ -3627,6 +5931,8 @@ var PortalIngester = {
 
         const urlObj = new URL(cleanUrl);
         urlObj.searchParams.set('auth', 'true');
+        urlObj.searchParams.set('workerType', workerType);
+        urlObj.searchParams.set('dualWorker', workerType === 'school' ? 'true' : 'false');
         if (targetEmail) {
           urlObj.searchParams.set('authuser', targetEmail);
           this.log(`📧 Routing authorization specifically to Google account: ${targetEmail}`);
@@ -3799,13 +6105,29 @@ var PortalIngester = {
     studentEmail: string,
     schoolDomain: string
   ): Promise<ProvisionResult> {
-    this.log(`🎓 Provisioning Worker A (Student Account: ${studentEmail || 'School'}) for ${childName}...`);
+    this.currentDeployProgress = {
+      status: 'IN_PROGRESS',
+      workerType: 'SCHOOL_WORKER',
+      childName,
+      academicYear,
+      percent: 10,
+      phaseText: 'Phase 1: Authenticating',
+      subtext: 'Authenticating Student School Account & Google Apps Script API...',
+      stage: 'script',
+      stagePercent: 10,
+      updatedAt: Date.now()
+    };
+    await this.setActiveDeployProgress(this.currentDeployProgress);
+
+    try {
+      this.log(`🎓 Provisioning Worker A (Student Account: ${studentEmail || 'School'}) for ${childName}...`);
     this.reportProgress(15, 'Phase 1 of 5 (15%)', 'Authenticating Student School Account & Google Apps Script API...');
 
     // 1. Find Existing Project or Create New (Prevents Duplication)
     const activeProfile = await ChildManager.getActiveProfile();
     let scriptId: string = '';
     let isReused = false;
+    let existingProject: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (activeProfile?.schoolGasScriptId) {
       const isAlive = await this.verifyScriptAlive(activeProfile.schoolGasScriptId, studentToken);
@@ -3817,11 +6139,11 @@ var PortalIngester = {
     }
 
     if (!scriptId) {
-      const existing = await this.findExistingProject(studentToken, childName, academicYear);
-      if (existing?.scriptId) {
-        const isAlive = await this.verifyScriptAlive(existing.scriptId, studentToken);
+      existingProject = await this.findExistingProject(studentToken, childName, academicYear);
+      if (existingProject?.scriptId) {
+        const isAlive = await this.verifyScriptAlive(existingProject.scriptId, studentToken);
         if (isAlive) {
-          scriptId = existing.scriptId;
+          scriptId = existingProject.scriptId;
           isReused = true;
           this.log(`📦 Reusing existing School Worker project from Google Drive config: ${scriptId}`);
         }
@@ -3844,127 +6166,556 @@ var PortalIngester = {
     // 3. Deploy
     this.reportProgress(65, 'Phase 3 of 5 (65%)', 'Deploying Student Account Cloud Web App...');
     const version = await this.createVersion(scriptId, studentToken, childName, academicYear);
-    const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
-    const deploymentId = deployment.deploymentId;
+    let deploymentId = existingProject?.deploymentId || '';
+    if (!deploymentId && activeProfile?.schoolGasDeploymentUrl) {
+      const depMatch = activeProfile.schoolGasDeploymentUrl.match(/\/s\/([^/?&]+)/);
+      if (depMatch) deploymentId = depMatch[1];
+    }
+
+    if (deploymentId) {
+      try {
+        await this.updateDeployment(scriptId, deploymentId, version.versionNumber, studentToken, childName, academicYear);
+        this.log(`🔄 Updated existing Student Web App deployment in-place: ${deploymentId}`);
+      } catch (depErr) {
+        const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
+        deploymentId = deployment.deploymentId;
+      }
+    } else {
+      const deployment = await this.createDeployment(scriptId, version.versionNumber, studentToken, childName, academicYear);
+      deploymentId = deployment.deploymentId;
+    }
+
     const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
     this.log(`🚀 Deployed Student Web App: ${webAppUrl}`);
 
     // 4. Ensure Permissions / Authorization Handshake
-    this.reportProgress(80, 'Phase 4 of 5 (80%)', 'Verifying Google Workspace permissions handshake...');
+    this.reportProgress(80, 'Phase 4: Permissions', 'Verifying Google Workspace permissions handshake...', 'script', 100);
     await this.ensureScriptAuthorized(webAppUrl, studentToken, scriptId, studentEmail);
 
-    // 5. Configure 1-Minute Cron Trigger & Run 1-Time Full Ingestion
-    let initialSyncResult: any = null;
-    try {
-      this.reportProgress(85, 'Phase 5 of 5 (85%)', 'Activating 1-minute autonomous cloud trigger...');
-      
-      // Attempt 1: Web App authenticated trigger dispatch
-      let triggerOk = false;
-      try {
-        const trigRes = await fetch(webAppUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${studentToken}`
-          },
-          body: JSON.stringify({
-            method: 'setup_triggers',
-            params: { type: 'school_1min' }
-          })
-        });
-        if (trigRes.ok) {
-          const tJson = await trigRes.json();
-          if (!tJson.error) triggerOk = true;
-        }
-      } catch (e) {}
-
-      // Fallback: Direct Execution API
-      if (!triggerOk) {
-        try {
-          await this.executeMcpCommand(studentToken, scriptId, 'setupMinuteTrigger', []);
-        } catch (e) {}
-      }
-
-      this.log('⏱️ Set up 1-minute autonomous cloud trigger for Google Classroom & Gmail.');
-
-      this.reportProgress(90, 'Phase 5 of 5 (90%)', '1-Time Full Sync: Ingesting Classroom courses, homework & Gmail circulars...');
-      
-      let syncData: any = null;
-      try {
-        const syncRes = await fetch(webAppUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${studentToken}`
-          },
-          body: JSON.stringify({
-            method: 'sync_classroom_and_gmail',
-            params: {
-              targetFolderId: parentFolderId,
-              childName,
-              academicYear,
-              schoolDomain
-            }
-          })
-        });
-
-        if (syncRes.ok) {
-          const json = await syncRes.json();
-          if (!json.error) syncData = json;
-        }
-      } catch (e) {}
-
-      // Robust fallback: Direct Cloud Execution API (scripts.run)
-      if (!syncData || syncData.error) {
-        this.log('🔄 Executing Classroom & Gmail cloud sync via direct Apps Script Engine...');
-        const directResult = await this.executeMcpCommand(studentToken, scriptId, 'handleSyncClassroomAndGmail', [{
-          targetFolderId: parentFolderId,
-          childName,
-          academicYear,
-          schoolDomain
-        }]);
-        syncData = { result: directResult };
-      }
-
-      if (syncData) {
-        if (syncData.error) {
-          throw new Error(`Apps Script Execution Error: ${syncData.error.message || JSON.stringify(syncData.error)}`);
-        }
-        initialSyncResult = syncData.result || syncData;
-        const courses = initialSyncResult?.classroom?.totalCourses ?? initialSyncResult?.classroom?.courses?.length ?? 0;
-        const emails = initialSyncResult?.gmail?.totalEmails ?? initialSyncResult?.gmail?.emails?.length ?? 0;
-        const attachments = initialSyncResult?.classroom?.totalAttachments ?? 0;
-        this.log(`📥 1-Time Full Initial Sync Complete: Ingested ${courses} Classroom courses, ${attachments} attachments & ${emails} school emails into Drive!`);
-      }
-    } catch (syncErr: any) {
-      this.log(`⚠️ Initial sync notice: ${syncErr.message || String(syncErr)}`);
-    }
-
-    // 6. Update Child Profile
-    if (activeProfile && activeProfile.id) {
-      await ChildManager.updateProfile(activeProfile.id, {
+    // 5. Update Child Profile & Google Drive Config Immediately
+    const currentProfile = activeProfile || (await ChildManager.getActiveProfile());
+    if (currentProfile && currentProfile.id) {
+      await ChildManager.updateProfile(currentProfile.id, {
         schoolGasScriptId: scriptId,
         schoolGasDeploymentUrl: webAppUrl,
         studentAccountEmail: studentEmail,
         schoolEmailDomain: schoolDomain,
         lastSchoolSync: new Date().toISOString()
       });
+      try {
+        const pToken = await PersonalDriveService.getValidToken(false);
+        await PersonalDriveService.saveKidConfig(pToken, childName, academicYear, {
+          schoolGasScriptId: scriptId,
+          schoolGasDeploymentUrl: webAppUrl,
+          studentAccountEmail: studentEmail,
+          schoolEmailDomain: schoolDomain
+        });
+      } catch (cfgErr) {}
     }
 
-    this.reportProgress(100, 'Step 2 Complete', '1-Time sync complete & 1-minute cloud background sync active!');
-    return {
+    if (webAppUrl) {
+      PersonalDriveService.callGasWorkerRpc(webAppUrl, 'set_sync_state', {
+        isDualWorker: true,
+        childName,
+        academicYear
+      }).catch(() => {});
+    }
+
+    // 6. Register School Cloud Worker with Personal Master Worker for 24/7 autonomous cloud sync
+    let registeredWithMaster = false;
+    try {
+      this.log('🔗 Registering School Cloud Worker with Personal Master Worker for 24/7 autonomous cloud sync...');
+      const pToken = await PersonalDriveService.getValidToken(false);
+      const rootFolder = await PersonalDriveService.getOrCreateRootFolder(pToken);
+      const rootConfig = await PersonalDriveService.readJsonFileInFolder(pToken, rootFolder.id, 'K.I.D.S._Data_config.json').catch(() => null);
+      let masterScriptId = rootConfig?.masterWorkerScriptId;
+      let masterWorkerUrl = rootConfig?.masterWorkerDeploymentUrl;
+      if (!masterScriptId && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        const stored = await chrome.storage.local.get(['master_worker_script_id', 'master_worker_deployment_url']).catch(() => null);
+        masterScriptId = stored?.master_worker_script_id;
+        if (!masterWorkerUrl) masterWorkerUrl = stored?.master_worker_deployment_url;
+      }
+
+      if (masterWorkerUrl || masterScriptId) {
+        const kidFolder = await PersonalDriveService.getOrCreateKidFolder(pToken, childName, academicYear);
+
+        // Strategy A: Direct Web App JSON-RPC POST
+        if (masterWorkerUrl) {
+          try {
+            const regRes = await fetch(masterWorkerUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                method: 'register_school_worker',
+                params: {
+                  childId: activeProfile?.id || 'default_child',
+                  childName: childName,
+                  academicYear: academicYear,
+                  schoolWorkerUrl: webAppUrl,
+                  schoolDomain: schoolDomain,
+                  targetFolderId: kidFolder.id,
+                  initialSyncComplete: false
+                }
+              })
+            });
+            if (regRes.ok) {
+              registeredWithMaster = true;
+              this.log('✅ Personal Master Worker registered (autonomous trigger deferred until 1-time sync completes).');
+            }
+          } catch (webAppErr) {}
+        }
+
+        // Strategy B: Apps Script Execution API fallback
+        if (!registeredWithMaster && masterScriptId) {
+          try {
+            await this.executeMcpCommand(pToken, masterScriptId, 'handleRegisterSchoolWorker', [{
+              childId: activeProfile?.id || 'default_child',
+              childName: childName,
+              academicYear: academicYear,
+              schoolWorkerUrl: webAppUrl,
+              schoolDomain: schoolDomain,
+              targetFolderId: kidFolder.id,
+              initialSyncComplete: false
+            }]);
+            registeredWithMaster = true;
+            this.log('✅ Personal Master Worker registered via API (autonomous trigger deferred until 1-time sync completes).');
+          } catch (apiErr) {}
+        }
+
+        // Delegate 1-Time Cloud Sync to Master Cloud Worker in Google Cloud (Trigger activated only after completion)
+        if (registeredWithMaster) {
+          if (masterWorkerUrl) {
+            PersonalDriveService.callGasWorkerRpc(masterWorkerUrl, 'sync_master_cloud_school', {
+              childId: activeProfile?.id || 'default_child',
+              childName: childName,
+              academicYear: academicYear,
+              isInitialPass: true,
+              force: true
+            }).catch((rpcErr) => {
+              console.warn('[GasProvisioner] Notice: Cloud 1-time sync trigger:', rpcErr);
+            });
+          } else if (masterScriptId) {
+            this.executeMcpCommand(pToken, masterScriptId, 'runMasterCloudSchoolSync', [true, childName, true]).catch((apiErr) => {
+              console.warn('[GasProvisioner] Notice: API cloud 1-time sync trigger:', apiErr);
+            });
+          }
+        }
+
+        if (!registeredWithMaster) {
+          this.log('ℹ️ School Cloud Worker connected to Parent Vault.');
+        }
+      } else {
+        this.log('ℹ️ Personal Master Worker not yet deployed. Deploy Master Worker in Step 1 anytime to enable 24/7 cloud triggers.');
+      }
+    } catch (masterRegErr: any) {
+      this.log(`ℹ️ Master Worker registration notice: ${masterRegErr.message || String(masterRegErr)}`);
+    }
+
+    // 7. Script Creation Complete! Inform user they can move forward with next steps
+    this.reportProgress(100, 'School Cloud Worker Created', 'Worker active! You can now move forward with next steps while initial data is fetched in background.', 'script', 100);
+    const result: ProvisionResult = {
       success: true,
       scriptId,
       deploymentId,
       webAppUrl,
-      verifiedTools: ['sync_classroom_and_gmail'],
-      initialSyncResult
+      verifiedTools: ['sync_classroom_and_gmail']
     };
+
+    const completedProgress: ActiveDeployProgress = {
+      status: 'COMPLETED',
+      workerType: 'SCHOOL_WORKER',
+      childName,
+      academicYear,
+      percent: 100,
+      phaseText: 'School Cloud Worker Created',
+      subtext: 'Worker active! You can now move forward with next steps while initial data is fetched in background.',
+      stage: 'script',
+      stagePercent: 100,
+      updatedAt: Date.now(),
+      result
+    };
+    await this.setActiveDeployProgress(completedProgress);
+
+    // 8. 1-Time Ingestion Hand-Off:
+    // If Master Worker is registered, it executes 1st-time extraction and attachment downloads directly in Google Cloud,
+    // activating cloud triggers ONLY after full completion.
+    if (!registeredWithMaster) {
+      this.runInitialSchoolDataSync(
+        childName,
+        academicYear,
+        studentToken,
+        webAppUrl,
+        scriptId,
+        studentEmail,
+        schoolDomain
+      ).catch((bgErr) => {
+        console.warn('[GasProvisioner] Background initial data sync error:', bgErr);
+      });
+    } else {
+      this.log(`🚀 1-Time initial data extraction delegated to Personal Master Cloud Worker for ${childName}. Autonomous trigger will activate only after completion.`);
+    }
+
+    return result;
+  } catch (err: any) {
+    const errorProgress: ActiveDeployProgress = {
+      status: 'ERROR',
+      workerType: 'SCHOOL_WORKER',
+      childName,
+      academicYear,
+      percent: this.currentDeployProgress?.percent || 0,
+      phaseText: 'School Worker Deployment Error',
+      subtext: err.message || String(err),
+      updatedAt: Date.now(),
+      error: err.message || String(err)
+    };
+    await this.setActiveDeployProgress(errorProgress);
+    throw err;
+  }
   }
 
   /**
-   * Provisions Worker B in Parent's Personal Account (6-Hour Autonomous Portal Scraper).
+   * Executes 1-time initial extraction of Classroom coursework, circulars, and attachments in background.
+   * Runs asynchronously without blocking the user, updates storage upon completion, and triggers desktop notification.
    */
+  public static async runInitialSchoolDataSync(
+    childName?: string,
+    academicYear?: string,
+    studentTokenOverride?: string,
+    webAppUrlOverride?: string,
+    scriptIdOverride?: string,
+    studentEmailOverride?: string,
+    schoolDomainOverride?: string
+  ): Promise<any> {
+    const activeProf = await ChildManager.getActiveProfile();
+    const resolvedChild = childName || activeProf?.name || 'Atharva';
+    const cleanYear = academicYear || activeProf?.academicYear || '2026-2027';
+
+    if (this.isInitialSyncRunning) {
+      this.log(`ℹ️ Initial school data sync already active in background for ${resolvedChild}.`);
+      return { inProgress: true };
+    }
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        const storedSync = await chrome.storage.local.get(['step2_initial_sync_in_progress']);
+        if (storedSync.step2_initial_sync_in_progress) {
+          this.log(`ℹ️ Initial school data sync already active in storage for ${resolvedChild}.`);
+          return { inProgress: true };
+        }
+      } catch (e) {}
+    }
+    this.isInitialSyncRunning = true;
+
+    // Keep Service Worker alive across Manifest V3 inactivity boundary during long fetch
+    const keepAliveInterval = (typeof setInterval !== 'undefined') ? setInterval(() => {
+      try {
+        if (typeof chrome !== 'undefined' && chrome.runtime?.getPlatformInfo) {
+          chrome.runtime.getPlatformInfo(() => {});
+        }
+      } catch (e) {}
+    }, 15000) : null;
+
+    if (typeof chrome !== 'undefined' && chrome.alarms?.create) {
+      try {
+        chrome.alarms.create('INITIAL_SCHOOL_SYNC_SUPERVISOR', { periodInMinutes: 1 });
+      } catch (e) {}
+    }
+
+    let sToken = studentTokenOverride;
+    if (!sToken) {
+      try { sToken = await AuthService.getValidAuthToken(false); } catch (e) {}
+    }
+    const webAppUrl = webAppUrlOverride || activeProf?.schoolGasDeploymentUrl;
+    const scriptId = scriptIdOverride || activeProf?.schoolGasScriptId;
+    const studentEmail = studentEmailOverride || activeProf?.studentAccountEmail || '';
+    const schoolDomain = schoolDomainOverride || activeProf?.schoolEmailDomain || (studentEmail.includes('@') ? studentEmail.split('@')[1] : '');
+
+    await chrome.storage.local.set({
+      step2_sync_status: 'IN_PROGRESS',
+      step2_initial_sync_in_progress: true,
+      step2_initial_sync_complete: false,
+      step2_initial_sync_summary: null,
+      step2_sync_error: null
+    }).catch(() => {});
+
+    try {
+      await WhatsAppDiagnosticLogger.log('INFO', 'GAS', `📥 Starting 1-time background data extraction for ${resolvedChild}...`);
+
+      // Obtain Parent Token and Kid Folder ID so extraction has target reference
+      const pToken = await PersonalDriveService.getValidToken(false);
+      let targetFolderId = '';
+      try {
+        const kidFolder = await PersonalDriveService.getOrCreateKidFolder(pToken, resolvedChild, cleanYear);
+        targetFolderId = kidFolder.id;
+      } catch (kfErr) {
+        console.warn('[GasProvisioner] Notice: could not pre-resolve kidFolder ID:', kfErr);
+      }
+
+      let syncData: any = null;
+      let initialSyncResult: any = null;
+
+      if (webAppUrl && sToken) {
+        try {
+          await fetch(webAppUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${sToken}`
+            },
+            body: JSON.stringify({ method: 'clear_triggers' })
+          });
+        } catch (e) {}
+      }
+
+      const hasValidData = (d: any) => Boolean(d && (d.classroom || d.result?.classroom));
+
+      // 1. Direct Cloud Execution API (scripts.run)
+      if (scriptId && sToken) {
+        try {
+          const directResult = await this.executeMcpCommand(sToken, scriptId, 'handleSyncClassroomAndGmail', [{
+            targetFolderId,
+            childName: resolvedChild,
+            academicYear: cleanYear,
+            schoolDomain,
+            extractOnly: true,
+            isIncremental: false
+          }]);
+          if (hasValidData(directResult)) {
+            syncData = { result: directResult };
+          }
+        } catch (e: any) {
+          this.log(`ℹ️ Direct scripts.run notice: ${e.message}`);
+        }
+      }
+
+      // 2. Web App POST (Uses authenticated RPC via PersonalDriveService.callGasWorkerRpc)
+      if (!hasValidData(syncData) && webAppUrl) {
+        try {
+          this.log(`⏳ Connecting to School Cloud Worker to extract Classroom coursework & circulars for ${resolvedChild}...`);
+          const storedKey = (await chrome.storage.local.get(['gas_access_key', 'access_key']).catch(() => null)) as any;
+          const accessKey = storedKey?.gas_access_key || storedKey?.access_key || undefined;
+
+          const rpcRes = await PersonalDriveService.callGasWorkerRpc(webAppUrl, 'sync_classroom_and_gmail', {
+            targetFolderId,
+            childName: resolvedChild,
+            academicYear: cleanYear,
+            schoolDomain,
+            extractOnly: true,
+            isIncremental: false,
+            accessKey
+          });
+
+          if (hasValidData(rpcRes)) {
+            syncData = rpcRes;
+            const foundCourses = rpcRes.classroom?.totalCourses ?? rpcRes.result?.classroom?.totalCourses ?? (rpcRes.classroom?.courses?.length || 0);
+            const foundEmails = rpcRes.gmail?.totalEmails ?? rpcRes.result?.gmail?.totalEmails ?? (rpcRes.gmail?.emails?.length || 0);
+            const foundAtts = rpcRes.classroom?.totalAttachments ?? rpcRes.result?.classroom?.totalAttachments ?? 0;
+            this.log(`✅ Extracted data from School Cloud Worker: found ${foundCourses} course(s), ${foundEmails} circular(s), and ${foundAtts} attachment(s). Processing into Parent Vault...`);
+          } else if (rpcRes?.error) {
+            this.log(`⚠️ Web App sync reported error: ${rpcRes.error.message || JSON.stringify(rpcRes.error)}`);
+          } else {
+            this.log(`⚠️ Web App returned response without classroom data: ${JSON.stringify(rpcRes).substring(0, 120)}`);
+          }
+        } catch (e: any) {
+          this.log(`⚠️ Web App sync RPC notice: ${e?.message || String(e)}`);
+        }
+      }
+
+      // 3. Fallback: Re-use existing classroom_data.json and school_emails.json ONLY in offline/local mock mode (never mask online worker failure)
+      if (!hasValidData(syncData) && !webAppUrl && !scriptId) {
+        try {
+          const classInfo = await PersonalDriveService.getOrCreateClassroomFolder(pToken, resolvedChild, cleanYear);
+          const existingClass = (await PersonalDriveService.readSchoolVaultFile(classInfo.id, 'classroom_data.json').catch(() => null)) ||
+                                (await PersonalDriveService.readJsonFileInFolder(pToken, classInfo.id, 'classroom_data.json').catch(() => null));
+          if (existingClass && existingClass.courses && existingClass.courses.length > 0) {
+            let existingGmail = null;
+            try {
+              const emailInfo = await PersonalDriveService.getOrCreateEmailsFolder(pToken, resolvedChild, cleanYear);
+              existingGmail = (await PersonalDriveService.readSchoolVaultFile(emailInfo.id, 'school_emails.json').catch(() => null)) ||
+                              (await PersonalDriveService.readJsonFileInFolder(pToken, emailInfo.id, 'school_emails.json').catch(() => null));
+            } catch (e) {}
+            syncData = { result: { classroom: existingClass, gmail: existingGmail } };
+          }
+        } catch (e) {}
+      }
+
+      // STRICT SAFETY GATE: Never claim success or send completion notification if extraction failed!
+      if (!hasValidData(syncData)) {
+        throw new Error(`Failed to extract school data for ${resolvedChild}. School worker did not return coursework or circular data.`);
+      }
+
+      initialSyncResult = syncData.result || syncData;
+      if (!initialSyncResult.gmail) {
+        initialSyncResult.gmail = {
+          kidName: resolvedChild,
+          academicYear: cleanYear,
+          schoolDomain: schoolDomain || '',
+          lastSyncedAt: new Date().toISOString(),
+          totalEmails: 0,
+          totalAttachments: 0,
+          emails: []
+        };
+      }
+      let coursesCount = initialSyncResult?.classroom?.totalCourses ?? initialSyncResult?.classroom?.courses?.length ?? 0;
+      let emailsCount = initialSyncResult?.gmail?.totalEmails ?? initialSyncResult?.gmail?.emails?.length ?? 0;
+
+      if (coursesCount === 0 && emailsCount === 0) {
+        throw new Error(`Zero courses and zero emails found for ${resolvedChild}. Initial sync could not capture any data.`);
+      }
+
+      await WhatsAppDiagnosticLogger.log('INFO', 'GAS', `💾 Saving extracted data into Parent Vault (${coursesCount} courses, ${emailsCount} circulars)... complete Parent ownership.`);
+      await PersonalDriveService.saveExtractedSchoolData(pToken, resolvedChild, cleanYear, initialSyncResult, sToken, webAppUrl, scriptId);
+
+      // Verify and count attachments downloaded into Parent Drive vault
+      let totalAttachments = 0;
+      let totalEmailAttachments = 0;
+      try {
+        const classInfo = await PersonalDriveService.getOrCreateClassroomFolder(pToken, resolvedChild, cleanYear);
+        const vaultFiles = await PersonalDriveService.listSchoolVaultFiles(classInfo.attachmentsFolderId).catch(() => []);
+        const attachmentsOnDrive = (vaultFiles && vaultFiles.length > 0)
+          ? vaultFiles
+          : await PersonalDriveService.listFilesInFolder(pToken, classInfo.attachmentsFolderId).catch(() => []);
+        totalAttachments = attachmentsOnDrive.length;
+      } catch (cntErr) {
+        totalAttachments = initialSyncResult?.classroom?.totalAttachments ?? 0;
+      }
+      try {
+        const emailInfo = await PersonalDriveService.getOrCreateEmailsFolder(pToken, resolvedChild, cleanYear);
+        const vaultEmailFiles = await PersonalDriveService.listSchoolVaultFiles(emailInfo.attachmentsFolderId).catch(() => []);
+        const emailAttachmentsOnDrive = (vaultEmailFiles && vaultEmailFiles.length > 0)
+          ? vaultEmailFiles
+          : await PersonalDriveService.listFilesInFolder(pToken, emailInfo.attachmentsFolderId).catch(() => []);
+        totalEmailAttachments = emailAttachmentsOnDrive.length;
+      } catch (e) {}
+
+      const summary = {
+        courses: coursesCount,
+        attachments: totalAttachments + totalEmailAttachments,
+        classroomAttachments: totalAttachments,
+        emailAttachments: totalEmailAttachments,
+        emails: emailsCount,
+        completedAt: Date.now()
+      };
+
+      await chrome.storage.local.set({
+        step2_sync_status: 'COMPLETED',
+        step2_initial_sync_complete: true,
+        step2_initial_sync_in_progress: false,
+        step2_initial_sync_summary: summary,
+        step2_sync_error: null
+      }).catch(() => {});
+
+      // Signal Master Worker that initial sync is complete so 24/7 cloud sync can seamlessly take over
+      try {
+        let masterWorkerUrl = '';
+        let masterScriptId = '';
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+          const stored = await chrome.storage.local.get(['master_worker_deployment_url', 'master_worker_script_id']).catch(() => null);
+          masterWorkerUrl = stored?.master_worker_deployment_url || '';
+          masterScriptId = stored?.master_worker_script_id || '';
+        }
+        if (!masterWorkerUrl || !masterScriptId) {
+          const rootFolder = await PersonalDriveService.getOrCreateRootFolder(pToken).catch(() => null);
+          if (rootFolder && rootFolder.id) {
+            const rootConfig = await PersonalDriveService.readJsonFileInFolder(pToken, rootFolder.id, 'K.I.D.S._Data_config.json').catch(() => null);
+            if (!masterWorkerUrl) masterWorkerUrl = rootConfig?.masterWorkerDeploymentUrl || '';
+            if (!masterScriptId) masterScriptId = rootConfig?.masterWorkerScriptId || '';
+          }
+        }
+        let masterRegistered = false;
+        if (masterWorkerUrl) {
+          try {
+            const regRes = await fetch(masterWorkerUrl, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                jsonrpc: '2.0',
+                method: 'register_school_worker',
+                params: {
+                  childName: resolvedChild,
+                  academicYear: cleanYear,
+                  initialSyncComplete: true
+                }
+              })
+            });
+            if (regRes.ok) masterRegistered = true;
+          } catch (mErr) {
+            console.warn('[GasProvisioner] Notice: direct post to master worker failed:', mErr);
+          }
+        }
+
+        if (!masterRegistered && masterScriptId) {
+          try {
+            await this.executeMcpCommand(pToken, masterScriptId, 'handleRegisterSchoolWorker', [{
+              childName: resolvedChild,
+              academicYear: cleanYear,
+              initialSyncComplete: true
+            }]);
+            masterRegistered = true;
+          } catch (apiErr) {
+            console.warn('[GasProvisioner] Notice: API fallback to master worker failed:', apiErr);
+          }
+        }
+
+        // Notify School Cloud Worker that initial sync is complete & dual-worker mode is active
+        if (webAppUrl) {
+          PersonalDriveService.callGasWorkerRpc(webAppUrl, 'set_sync_state', {
+            initialSyncComplete: true,
+            isDualWorker: true,
+            childName: resolvedChild,
+            academicYear: cleanYear,
+          }).catch((err: any) => {
+            console.warn('[GasProvisioner] Notice: could not set initialSyncComplete on school worker:', err);
+          });
+        }
+
+        // Trigger automated vault OCR indexing pass on Master Cloud Worker to process the backlog cleanly
+        PersonalDriveService.triggerMasterVaultOcrIndexing(targetFolderId, 15).catch((ocrErr: any) => {
+          console.warn('[GasProvisioner] Notice: automated vault OCR indexing trigger deferred:', ocrErr);
+        });
+      } catch (notifyMasterErr) {}
+
+      await WhatsAppDiagnosticLogger.log(
+        'SUCCESS',
+        'GAS',
+        `🎉 1st-time data sync complete for ${resolvedChild}! Ingested ${coursesCount} courses, ${totalAttachments + totalEmailAttachments} attachments (${totalAttachments} Classroom, ${totalEmailAttachments} Email circulars) & ${emailsCount} emails. Cloud Worker will now fetch incremental data 24/7 even if machine is shut down.`
+      );
+
+      await NotificationService.send({
+        id: `school_sync_${Date.now()}`,
+        title: 'K.I.D.S. School Sync Complete',
+        message: `1st-time data sync complete for ${resolvedChild}! Ingested ${coursesCount} courses, ${totalAttachments + totalEmailAttachments} attachments (${totalAttachments} Classroom, ${totalEmailAttachments} Email circulars) & ${emailsCount} emails.`,
+        priority: 2,
+        requireInteraction: true
+      }).catch(() => {});
+
+      return summary;
+    } catch (err: any) {
+      console.warn('[GasProvisioner] runInitialSchoolDataSync error:', err);
+      await chrome.storage.local.set({
+        step2_sync_status: 'ERROR',
+        step2_initial_sync_complete: false,
+        step2_initial_sync_in_progress: false,
+        step2_sync_error: err?.message || String(err)
+      }).catch(() => {});
+
+      await WhatsAppDiagnosticLogger.log(
+        'ERROR',
+        'GAS',
+        `❌ 1st-time data sync failed for ${resolvedChild}: ${err?.message || String(err)}`
+      );
+      throw err;
+    } finally {
+      this.isInitialSyncRunning = false;
+      if (keepAliveInterval) clearInterval(keepAliveInterval);
+      if (typeof chrome !== 'undefined' && chrome.alarms?.clear) {
+        try {
+          chrome.alarms.clear('INITIAL_SCHOOL_SYNC_SUPERVISOR').catch(() => {});
+        } catch (e) {}
+      }
+    }
+  }
+
   public static async provisionPersonalWorker(
     parentToken: string,
     parentFolderId: string,
@@ -3988,7 +6739,7 @@ var PortalIngester = {
 
     // Setup 6-Hour Cron
     try {
-      await fetch(webAppUrl, {
+      const triggerRes = await fetch(webAppUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -3996,8 +6747,16 @@ var PortalIngester = {
           params: { type: 'portal_6hr' }
         })
       });
-      this.log('⏱️ Set up 6-hour autonomous cloud trigger for School Portals.');
-    } catch (e) {}
+      const triggerJson = await triggerRes.json().catch(() => null);
+      if (triggerJson?.result?.triggerSet) {
+        this.log('⏱️ Set up 6-hour autonomous cloud trigger for School Portals.');
+      } else {
+        const errMsg = triggerJson?.result?.error || triggerJson?.error?.message || 'Trigger creation was not permitted or failed.';
+        this.log(`⚠️ Autonomous trigger setup returned warning: ${errMsg}`);
+      }
+    } catch (e: any) {
+      this.log(`⚠️ Could not reach trigger setup endpoint: ${e?.message || e}`);
+    }
 
     const active = await ChildManager.getActiveProfile();
     if (active && active.id) {

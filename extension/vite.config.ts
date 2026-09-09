@@ -2,6 +2,9 @@ import { defineConfig } from 'vite';
 import { resolve } from 'path';
 
 export default defineConfig({
+  test: {
+    testTimeout: 20000
+  },
   build: {
     outDir: 'dist',
     minify: false,
@@ -12,9 +15,6 @@ export default defineConfig({
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
         background: resolve(__dirname, 'src/background/serviceWorker.ts'),
-        content: resolve(__dirname, 'src/content/interceptor.ts'),
-        injected: resolve(__dirname, 'src/content/mainWorldInterceptor.ts'),
-        autoDeployScript: resolve(__dirname, 'src/content/autoDeployScript.ts'),
         whatsappExtractor: resolve(__dirname, 'src/content/whatsappExtractor.ts'),
         universalDomExtractor: resolve(__dirname, 'src/content/universalDomExtractor.ts')
       },

@@ -379,11 +379,12 @@ var WorkspaceFetcher = {
     try {
       args = args || {};
       var targetChild = args.child_name || 'Atharva';
-      var files = DriveApp.getFilesByName('groups_manifest.json');
+      var files = DriveApp.getFilesByName('K.I.D.S._groups_manifest.json');
+      if (!files.hasNext()) files = DriveApp.getFilesByName('groups_manifest.json');
       if (!files.hasNext()) {
         return {
           success: false,
-          message: 'groups_manifest.json not found on Google Drive.',
+          message: 'K.I.D.S._groups_manifest.json not found on Google Drive.',
           manifest: null
         };
       }

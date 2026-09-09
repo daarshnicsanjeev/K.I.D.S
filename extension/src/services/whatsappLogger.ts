@@ -80,7 +80,9 @@ export class WhatsAppDiagnosticLogger {
     return logs
       .map(l => {
         const metaStr = l.metadata ? ` | Meta: ${JSON.stringify(l.metadata)}` : '';
-        return `[${l.timestamp}] [${l.level}] [WA_${l.category}] ${l.message}${metaStr}`;
+        const waCategories = ['CONN', 'EXTRACT', 'FILTER', 'SCAN', 'OCR'];
+        const tag = waCategories.includes(l.category) ? `WA_${l.category}` : l.category;
+        return `[${l.timestamp}] [${l.level}] [${tag}] ${l.message}${metaStr}`;
       })
       .join('\n');
   }

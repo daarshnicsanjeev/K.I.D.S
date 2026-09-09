@@ -3,10 +3,49 @@
  * Synthesizes Classroom coursework, school emails, and portal snapshots into
  * latest_digest.md and master_timeline.json in Google Drive for Gemini Spark.
  */
+var ParentVaultManager = {
+  ensureParentOwnership: function(folder) {
+    if (!folder) return { cloned: 0 };
+    var count = 0;
+    try {
+      var myEmail = '';
+      try {
+        myEmail = Session.getActiveUser().getEmail() || Session.getEffectiveUser().getEmail() || '';
+      } catch (e) {}
+
+      var files = folder.getFiles();
+      while (files.hasNext()) {
+        var file = files.next();
+        try {
+          var owner = file.getOwner();
+          var ownerEmail = owner ? owner.getEmail() : '';
+          if (ownerEmail && myEmail && ownerEmail.toLowerCase() !== myEmail.toLowerCase()) {
+            var fileName = file.getName();
+            var parentCopy = file.makeCopy(fileName, folder);
+            file.setTrashed(true);
+            count++;
+            McpLogger.log('INFO', 'VAULT_OWNERSHIP_MIGRATED', 'Transferred 100% parent ownership for ' + fileName + ' (' + myEmail + ')');
+          }
+        } catch (fErr) {}
+      }
+
+      var subfolders = folder.getFolders();
+      while (subfolders.hasNext()) {
+        var sub = subfolders.next();
+        count += this.ensureParentOwnership(sub).cloned;
+      }
+    } catch (err) {
+      McpLogger.log('WARN', 'VAULT_OWNERSHIP_WARN', 'Parent ownership scan note: ' + err);
+    }
+    return { cloned: count };
+  }
+};
+
 var DigestBuilder = {
   build: function(targetFolderId, childName, academicYear) {
     try {
       var parentFolder = DriveApp.getFolderById(targetFolderId);
+      try { ParentVaultManager.ensureParentOwnership(parentFolder); } catch (voErr) {}
       var digestFolder = this.getOrCreateSubfolder(parentFolder, 'daily_digests');
 
       var classroomData = this.readJsonFile(parentFolder, 'classroom/classroom_data.json');
