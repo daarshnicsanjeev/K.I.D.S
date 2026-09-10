@@ -465,12 +465,23 @@ export class PersonalDriveService {
           const data = await searchRes.json();
           if (data.files && data.files.length > 0) {
             const primary = data.files[0];
-            // Auto-clean any secondary duplicate subfolders created by past race conditions
+            // Auto-clean any secondary duplicate subfolders created by past race conditions.
+            // Awaited (not fire-and-forget) and its outcome logged either way — a silently
+            // failed delete here is indistinguishable from success and leaves duplicates
+            // accumulating forever, which is exactly what happened before this fix.
             if (data.files.length > 1) {
               for (let i = 1; i < data.files.length; i++) {
                 const dup = data.files[i];
-                await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removing duplicate subfolder "${folderName}" under parent ${parentId} (ID: ${dup.id})`);
-                this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, token).catch(() => {});
+                try {
+                  const delRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, token);
+                  if (delRes.ok || delRes.status === 404) {
+                    await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removed duplicate subfolder "${folderName}" under parent ${parentId} (ID: ${dup.id}).`);
+                  } else {
+                    await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_DUP_CLEANUP_FAILED] Could not remove duplicate subfolder "${folderName}" (ID: ${dup.id}): HTTP ${delRes.status}. It will be retried on the next resolution of this folder.`);
+                  }
+                } catch (delErr: any) {
+                  await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_DUP_CLEANUP_FAILED] Could not remove duplicate subfolder "${folderName}" (ID: ${dup.id}): ${delErr?.message || String(delErr)}.`);
+                }
               }
             }
             return { id: primary.id, webViewLink: primary.webViewLink };
