@@ -1128,10 +1128,27 @@ export class PersonalDriveService {
       }
     }
 
-    // Trigger automated vault OCR indexing pass on Master Cloud Worker for all newly downloaded attachments
-    this.triggerMasterVaultOcrIndexing(kidInfo.id, 15).catch((ocrErr) => {
-      console.warn('[PersonalDriveService] Background vault OCR indexing trigger deferred:', ocrErr);
-    });
+    // Persist recent attachment-sync diagnostic logs to Drive so they're inspectable directly
+    // (chrome.storage.local, where WhatsAppDiagnosticLogger normally lives, isn't reachable outside
+    // the browser). Written unconditionally so a partial/failed pass is visible too, not just success.
+    try {
+      const recentLogs = await WhatsAppDiagnosticLogger.getLogs(60);
+      await this.saveJsonFileInFolder(token, kidInfo.id, 'extension_sync_diagnostics_log.json', {
+        updatedAt: new Date().toISOString(),
+        logs: recentLogs
+      });
+    } catch (logSaveErr) {
+      console.warn('[PersonalDriveService] Could not persist diagnostics log to Drive:', logSaveErr);
+    }
+
+    // Trigger vault OCR indexing directly on the worker that holds this child's data.
+    // (triggerMasterVaultOcrIndexing only works when a separate master worker URL is registered;
+    // single-worker deployments have none, so that call silently no-ops.)
+    if (webAppUrl) {
+      this.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2).catch((ocrErr) => {
+        console.warn('[PersonalDriveService] Background vault OCR indexing trigger deferred:', ocrErr);
+      });
+    }
   }
 
   public static isSyncingAttachments = false;
