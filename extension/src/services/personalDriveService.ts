@@ -1154,13 +1154,6 @@ export class PersonalDriveService {
       scriptId?: string;
     }
   ): Promise<{ total: number; downloaded: number; skipped: number; failed: number }> {
-    if (process.env.NODE_ENV !== 'test') {
-      console.log('[PersonalDriveService] syncClassroomAttachments: School attachment synchronization is managed exclusively by Google Apps Script Master Cloud Worker 24/7. Skipping extension download pass.');
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        await chrome.storage.local.set({ classroom_attachment_sync_in_progress: false }).catch(() => {});
-      }
-      return { total: 0, downloaded: 0, skipped: 0, failed: 0 };
-    }
     // If called from a UI window (e.g. extension popup), delegate to background Service Worker
     // so downloads persist without interruption if popup is closed or minimized.
     if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime?.sendMessage && process.env.NODE_ENV !== 'test') {
@@ -1431,13 +1424,6 @@ export class PersonalDriveService {
       scriptId?: string;
     }
   ): Promise<{ total: number; downloaded: number; skipped: number; failed: number }> {
-    if (process.env.NODE_ENV !== 'test') {
-      console.log('[PersonalDriveService] syncEmailAttachments: Email circular attachment synchronization is managed exclusively by Google Apps Script Master Cloud Worker 24/7. Skipping extension download pass.');
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        await chrome.storage.local.set({ email_attachment_sync_in_progress: false }).catch(() => {});
-      }
-      return { total: 0, downloaded: 0, skipped: 0, failed: 0 };
-    }
     // If called from a UI window (e.g. extension popup), delegate to background Service Worker
     // so downloads persist without interruption if popup is closed or minimized.
     if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime?.sendMessage && process.env.NODE_ENV !== 'test') {

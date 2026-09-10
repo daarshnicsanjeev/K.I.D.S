@@ -6832,10 +6832,18 @@ var PortalIngester = {
           });
         }
 
-        // Trigger automated vault OCR indexing pass on Master Cloud Worker to process the backlog cleanly
-        PersonalDriveService.triggerMasterVaultOcrIndexing(targetFolderId, 15).catch((ocrErr: any) => {
-          console.warn('[GasProvisioner] Notice: automated vault OCR indexing trigger deferred:', ocrErr);
-        });
+        // Trigger vault OCR indexing directly on the worker that actually holds this child's data.
+        // (triggerMasterVaultOcrIndexing only works when a separate master worker URL is registered;
+        // single-worker deployments have no such URL, so that call silently no-ops.) The worker's own
+        // run_vault_ocr_indexing handler self-schedules a continuation trigger if a backlog remains.
+        if (webAppUrl) {
+          PersonalDriveService.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', {
+            targetFolderId,
+            maxBatch: 15
+          }, 2).catch((ocrErr: any) => {
+            console.warn('[GasProvisioner] Notice: automated vault OCR indexing trigger deferred:', ocrErr);
+          });
+        }
       } catch (notifyMasterErr) {}
 
       await WhatsAppDiagnosticLogger.log(

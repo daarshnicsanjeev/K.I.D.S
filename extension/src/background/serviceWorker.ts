@@ -2375,24 +2375,17 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
             await handleMessage({ type: 'SYNC_WHATSAPP_CHATS' });
           }
 
-          // Initial School Setup Resumer: If initial 1-time setup was interrupted, delegate to Master Cloud Worker
+          // Initial School Setup Resumer: 1-time sync is owned entirely by the extension now.
+          // GAS is never asked to drive the initial backlog — only the ongoing incremental cron,
+          // which it only starts once this flow marks initialSyncComplete=true on the worker.
           try {
-            const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress', 'master_worker_deployment_url']);
+            const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress']);
             if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
               const activeProfile = await ChildManager.getActiveProfile();
               if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
-                if (syncState.master_worker_deployment_url) {
-                  PersonalDriveService.callGasWorkerRpc(syncState.master_worker_deployment_url, 'sync_master_cloud_school', {
-                    childName: activeProfile.name,
-                    academicYear: activeProfile.academicYear,
-                    isInitialPass: true,
-                    force: true
-                  }).catch(() => {});
-                } else {
-                  GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
-                    console.warn('[ServiceWorker] Background initial school sync resume notice:', err);
-                  });
-                }
+                GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
+                  console.warn('[ServiceWorker] Background initial school sync resume notice:', err);
+                });
               }
             }
           } catch (attErr) {}
@@ -2406,22 +2399,13 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
 if (typeof chrome !== 'undefined' && chrome.storage?.local) {
   setTimeout(async () => {
     try {
-      const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress', 'master_worker_deployment_url']);
+      const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress']);
       if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
         const activeProfile = await ChildManager.getActiveProfile();
         if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
-          if (syncState.master_worker_deployment_url) {
-            PersonalDriveService.callGasWorkerRpc(syncState.master_worker_deployment_url, 'sync_master_cloud_school', {
-              childName: activeProfile.name,
-              academicYear: activeProfile.academicYear,
-              isInitialPass: true,
-              force: true
-            }).catch(() => {});
-          } else {
-            GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
-              console.warn('[ServiceWorker] Startup initial school sync notice:', err);
-            });
-          }
+          GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
+            console.warn('[ServiceWorker] Startup initial school sync notice:', err);
+          });
         }
       }
     } catch (e) {}
