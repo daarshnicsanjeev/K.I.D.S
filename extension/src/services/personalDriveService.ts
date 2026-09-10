@@ -339,13 +339,8 @@ export class PersonalDriveService {
             const primary = searchData.files[0];
             await chrome.storage.local.set({ personal_drive_folder_id: primary.id });
 
-            // Auto-clean any secondary duplicate folders created by race conditions
             if (searchData.files.length > 1) {
-              for (let i = 1; i < searchData.files.length; i++) {
-                const dup = searchData.files[i];
-                await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removing duplicate folder "${this.FOLDER_NAME}" (ID: ${dup.id})`);
-                this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, validToken).catch(() => {});
-              }
+              await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_DETECTED] Found ${searchData.files.length} folders named "${this.FOLDER_NAME}"; using the oldest (ID: ${primary.id}). No automatic merge/cleanup is performed.`);
             }
 
             return { id: primary.id, webViewLink: primary.webViewLink };
@@ -465,60 +460,8 @@ export class PersonalDriveService {
           const data = await searchRes.json();
           if (data.files && data.files.length > 0) {
             const primary = data.files[0];
-            // Auto-clean any secondary duplicate subfolders created by past race conditions.
-            // IMPORTANT: two duplicate folders can each hold genuinely different files (both
-            // were live targets before the race was caught) — deleting one outright would
-            // permanently destroy whatever content only exists there. Move every file/subfolder
-            // out into the canonical folder first (skipping same-named collisions, which are
-            // true duplicates of content already present), then remove the now-empty duplicate.
             if (data.files.length > 1) {
-              const primaryId = data.files[0].id;
-              for (let i = 1; i < data.files.length; i++) {
-                const dup = data.files[i];
-                try {
-                  const primaryNamesRes = await this.fetchWithAuth(
-                    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${primaryId}' in parents and trashed = false`)}&fields=files(name)&pageSize=1000`,
-                    {}, token
-                  );
-                  const primaryNames = new Set<string>();
-                  if (primaryNamesRes.ok) {
-                    const pd = await primaryNamesRes.json();
-                    for (const f of (pd.files || [])) primaryNames.add(f.name);
-                  }
-
-                  const dupChildrenRes = await this.fetchWithAuth(
-                    `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(`'${dup.id}' in parents and trashed = false`)}&fields=files(id,name)&pageSize=1000`,
-                    {}, token
-                  );
-                  let movedCount = 0;
-                  let skippedCount = 0;
-                  if (dupChildrenRes.ok) {
-                    const dc = await dupChildrenRes.json();
-                    for (const child of (dc.files || [])) {
-                      if (primaryNames.has(child.name)) {
-                        skippedCount++; // already present in canonical folder — true duplicate content
-                        continue;
-                      }
-                      const moveRes = await this.fetchWithAuth(
-                        `https://www.googleapis.com/drive/v3/files/${child.id}?addParents=${primaryId}&removeParents=${dup.id}`,
-                        { method: 'PATCH' },
-                        token
-                      );
-                      if (moveRes.ok) movedCount++;
-                    }
-                  }
-                  await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_MERGE] Merged duplicate subfolder "${folderName}" (ID: ${dup.id}) into canonical (ID: ${primaryId}): moved ${movedCount} item(s), ${skippedCount} already present.`);
-
-                  const delRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, token);
-                  if (delRes.ok || delRes.status === 404) {
-                    await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removed now-empty duplicate subfolder "${folderName}" (ID: ${dup.id}).`);
-                  } else {
-                    await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_DUP_CLEANUP_FAILED] Merged contents but could not remove emptied duplicate folder "${folderName}" (ID: ${dup.id}): HTTP ${delRes.status}.`);
-                  }
-                } catch (delErr: any) {
-                  await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_DUP_CLEANUP_FAILED] Error merging/removing duplicate subfolder "${folderName}" (ID: ${dup.id}): ${delErr?.message || String(delErr)}.`);
-                }
-              }
+              await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_DETECTED] Found ${data.files.length} folders named "${folderName}" under parent ${parentId}; using the oldest (ID: ${primary.id}). No automatic merge/cleanup is performed.`);
             }
             return { id: primary.id, webViewLink: primary.webViewLink };
           }
