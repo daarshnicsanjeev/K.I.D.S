@@ -293,6 +293,7 @@ export class PersonalDriveService {
   }
 
   private static rootFolderPromise: Promise<{ id: string; webViewLink?: string }> | null = null;
+  private static subfolderPromises: Map<string, Promise<{ id: string; webViewLink?: string }>> = new Map();
 
   /**
    * Gets or creates the root folder on Personal Google Drive with strict concurrency mutex and deduplication.
@@ -449,37 +450,61 @@ export class PersonalDriveService {
    * Gets or creates a subfolder inside a given parent folder.
    */
   public static async getOrCreateSubfolder(token: string, folderName: string, parentId: string, description?: string): Promise<{ id: string; webViewLink?: string }> {
-    const q = encodeURIComponent(`name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
-    const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink)`, {}, token);
+    const cacheKey = `${parentId}::${folderName}`;
+    const inFlight = this.subfolderPromises.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
 
-    if (searchRes.ok) {
-      const data = await searchRes.json();
-      if (data.files && data.files.length > 0) {
-        return { id: data.files[0].id, webViewLink: data.files[0].webViewLink };
+    const promise = (async () => {
+      try {
+        const q = encodeURIComponent(`name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+        const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink,createdTime)&orderBy=createdTime`, {}, token);
+
+        if (searchRes.ok) {
+          const data = await searchRes.json();
+          if (data.files && data.files.length > 0) {
+            const primary = data.files[0];
+            // Auto-clean any secondary duplicate subfolders created by past race conditions
+            if (data.files.length > 1) {
+              for (let i = 1; i < data.files.length; i++) {
+                const dup = data.files[i];
+                await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_CLEANUP] Removing duplicate subfolder "${folderName}" under parent ${parentId} (ID: ${dup.id})`);
+                this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${dup.id}`, { method: 'DELETE' }, token).catch(() => {});
+              }
+            }
+            return { id: primary.id, webViewLink: primary.webViewLink };
+          }
+        }
+
+        const res = await this.fetchWithAuth(
+          'https://www.googleapis.com/drive/v3/files',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: folderName,
+              mimeType: 'application/vnd.google-apps.folder',
+              parents: [parentId],
+              description: description || `Folder for ${folderName}`
+            })
+          },
+          token
+        );
+
+        if (!res.ok) {
+          throw new Error(`Failed to create subfolder "${folderName}": HTTP ${res.status}`);
+        }
+
+        const created = await res.json();
+        return { id: created.id, webViewLink: created.webViewLink };
+      } finally {
+        this.subfolderPromises.delete(cacheKey);
       }
-    }
+    })();
 
-    const res = await this.fetchWithAuth(
-      'https://www.googleapis.com/drive/v3/files',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: folderName,
-          mimeType: 'application/vnd.google-apps.folder',
-          parents: [parentId],
-          description: description || `Folder for ${folderName}`
-        })
-      },
-      token
-    );
-
-    if (!res.ok) {
-      throw new Error(`Failed to create subfolder "${folderName}": HTTP ${res.status}`);
-    }
-
-    const created = await res.json();
-    return { id: created.id, webViewLink: created.webViewLink };
+    this.subfolderPromises.set(cacheKey, promise);
+    return promise;
   }
 
   /**
@@ -1547,6 +1572,12 @@ export class PersonalDriveService {
       }
       const itemsToProcess: EmailAttachmentItem[] = [];
       const seenKeys = new Set<string>();
+      // Reply chains routinely forward/quote the same attachment across multiple messages —
+      // each has a distinct messageId (so seenKeys alone won't catch it) but produces the same
+      // generated Drive filename (subject + attachment name). Dedupe on that too, since Drive
+      // silently allows duplicate filenames in one folder and would otherwise save it once per
+      // message instead of once total.
+      const seenTargetNames = new Set<string>();
 
       for (const em of emailData.emails) {
         const msgId = em.id;
@@ -1559,7 +1590,10 @@ export class PersonalDriveService {
             const targetName = att.targetName || `${cleanSubj}_${attName}`;
             const key = att.fileId ? `drive_${att.fileId}` : `gmail_${msgId}_${attName}`;
             if (seenKeys.has(key)) continue;
+            const targetNameKey = targetName.toLowerCase().normalize('NFC');
+            if (seenTargetNames.has(targetNameKey)) continue;
             seenKeys.add(key);
+            seenTargetNames.add(targetNameKey);
 
             itemsToProcess.push({
               messageId: att.messageId || msgId,
