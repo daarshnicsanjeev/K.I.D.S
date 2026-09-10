@@ -1446,6 +1446,7 @@ function handleGetFileBlob(params) {
     McpLogger.log('WARN', 'GET_BLOB_DRIVEAPP_WARN', 'DriveApp fetch error for ' + fid + ': ' + errC.toString());
   }
 
+  McpLogger.log('WARN', 'GET_FILE_BLOB_FAILED', 'All strategies failed to retrieve file ' + fid + ' (last known name: ' + name + ', mime: ' + mime + ')');
   return {
     success: false,
     error: 'Unable to retrieve file ' + fid
@@ -1822,6 +1823,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { skipped: true, reason: 'Sync already in progress' };
 
+  McpLogger.log('INFO', 'RUN_MASTER_CLOUD_SYNC_INVOKED', 'runMasterCloudSchoolSync running for ' + children.length + ' registered child(ren). forceRun=' + forceRun + ' targetChild=' + targetChildIdOrName + ' isInitialPass=' + isInitialPass);
   var syncStartTime = new Date().getTime();
   var MAX_SYNC_RUNTIME_MS = 270000; // 4.5 minutes (leaves 90s safety margin before 6.0m limit)
 
@@ -1903,16 +1905,24 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           muteHttpExceptions: true
         });
 
+        if (resp.getResponseCode() !== 200) {
+          McpLogger.log('WARN', 'MASTER_SYNC_HTTP_ERROR', 'extract_classroom_and_gmail HTTP ' + resp.getResponseCode() + ' for ' + (ch.kidName || 'Child') + ': ' + resp.getContentText().substring(0, 300));
+        }
+
         if (resp.getResponseCode() === 200) {
           var data;
           try {
             data = JSON.parse(resp.getContentText());
           } catch (jsonErr) {
+            McpLogger.log('WARN', 'MASTER_SYNC_BAD_JSON', 'Could not parse extract_classroom_and_gmail response for ' + (ch.kidName || 'Child') + ': ' + jsonErr.toString() + ' | raw: ' + resp.getContentText().substring(0, 300));
             continue;
           }
 
           var syncRes = data.result || data;
-          if (!syncRes || syncRes.error || !syncRes.classroom) continue;
+          if (!syncRes || syncRes.error || !syncRes.classroom) {
+            McpLogger.log('WARN', 'MASTER_SYNC_BAD_RESPONSE', 'extract_classroom_and_gmail returned no usable classroom data for ' + (ch.kidName || 'Child') + ': ' + JSON.stringify(syncRes).substring(0, 300));
+            continue;
+          }
 
           var downloadFailed = 0;
           var failedAttachments = [];
@@ -2259,7 +2269,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           }
         }
       } catch (err) {
-        // School worker not ready or temporarily offline; skip gracefully
+        McpLogger.log('ERROR', 'MASTER_SYNC_CHILD_ERROR', 'runMasterCloudSchoolSync failed while processing ' + (ch.kidName || 'Child') + ': ' + err.toString() + (err.stack ? (' | stack: ' + err.stack) : ''));
       }
     }
     return { success: true, syncedCount: syncedCount, initialSyncComplete: true };
@@ -2499,6 +2509,8 @@ function runIncrementalSchoolSync(forceRun) {
 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { skipped: true, reason: 'locked' };
+
+  McpLogger.log('INFO', 'RUN_INCREMENTAL_SCHOOL_SYNC_INVOKED', 'runIncrementalSchoolSync running for ' + childName + '.');
 
   try {
     ClassroomIngester.sync(folderId, childName, academicYear, true, false);
@@ -4313,8 +4325,11 @@ var ClassroomIngester = {
     };
 
     function addLog(msg) {
+      // Kept only in the embedded deepLog (saved inside classroom_data.json) — not routed through
+      // the shared McpLogger buffer, which is capped at 100 entries and needs to stay free for
+      // actual operational signals (sync entrypoints, attachment failures, errors), not per-page
+      // crawl chatter that repeats every cycle.
       deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] ' + msg);
-      McpLogger.log('INFO', 'CLASSROOM_DEEP_CRAWL', msg);
     }
 
     try {

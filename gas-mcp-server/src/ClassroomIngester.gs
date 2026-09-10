@@ -31,8 +31,11 @@ var ClassroomIngester = {
     };
 
     function addLog(msg) {
+      // Kept only in the embedded deepLog (saved inside classroom_data.json) — not routed through
+      // the shared McpLogger buffer, which is capped at 100 entries and needs to stay free for
+      // actual operational signals (sync entrypoints, attachment failures, errors), not per-page
+      // crawl chatter that repeats every cycle.
       deepLog.logTimeline.push('[' + (new Date()).toISOString() + '] ' + msg);
-      McpLogger.log('INFO', 'CLASSROOM_DEEP_CRAWL', msg);
     }
 
     try {
