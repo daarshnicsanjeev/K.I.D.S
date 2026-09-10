@@ -110,23 +110,16 @@ var DocumentOcrService = {
           text = doc.getBody().getText();
         } catch (docErr) {
           // Fallback to plain text export endpoint
-          var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
-            headers: { 'Authorization': 'Bearer ' + token },
-            muteHttpExceptions: true
-          });
-          if (exportRes.getResponseCode() === 200) {
-            text = exportRes.getContentText();
-          }
+          try {
+            var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
+              headers: { 'Authorization': 'Bearer ' + token },
+              muteHttpExceptions: true
+            });
+            if (exportRes.getResponseCode() === 200) {
+              text = exportRes.getContentText();
+            }
+          } catch (expErr) {}
         }
-
-        // Clean up temporary doc immediately
-        try {
-          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
-            Drive.Files.remove(copyId);
-          } else {
-            DriveApp.getFileById(copyId).setTrashed(true);
-          }
-        } catch (delErr) {}
 
         if (text && text.trim()) {
           return text.trim().substring(0, maxChars);
@@ -134,8 +127,17 @@ var DocumentOcrService = {
       }
     } catch (err) {
       McpLogger.log('WARN', 'OCR_CONVERT_FAIL', 'OCR conversion failed for ' + (fileName || fileId) + ': ' + err.toString());
+    } finally {
       if (copyId) {
-        try { DriveApp.getFileById(copyId).setTrashed(true); } catch (e) {}
+        try {
+          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
+            Drive.Files.remove(copyId);
+          } else {
+            DriveApp.getFileById(copyId).setTrashed(true);
+          }
+        } catch (delErr) {
+          try { DriveApp.getFileById(copyId).setTrashed(true); } catch (e) {}
+        }
       }
     }
     return null;

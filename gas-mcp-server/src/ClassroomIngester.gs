@@ -487,7 +487,8 @@ var ClassroomIngester = {
     try {
       var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
       var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-      var targetName = cleanCourse + '_' + cleanTitle + '_' + (title || fileId);
+      var rawTitle = (title || fileId).replace(/(\.pdf)+$/i, '').replace(/\.{2,}/g, '.');
+      var targetName = cleanCourse + '_' + cleanTitle + '_' + rawTitle;
 
       if (!attachFolder) {
         return {
@@ -522,7 +523,8 @@ var ClassroomIngester = {
             muteHttpExceptions: true
           });
           if (exportRes.getResponseCode() === 200) {
-            var pdfBlob = exportRes.getBlob().setName(targetName + '.pdf');
+            var cleanPdfTarget = targetName.replace(/(\.pdf)+$/i, '') + '.pdf';
+            var pdfBlob = exportRes.getBlob().setName(cleanPdfTarget);
             var createdPdf = attachFolder.createFile(pdfBlob);
             return {
               title: (title || targetName) + ' (PDF)',

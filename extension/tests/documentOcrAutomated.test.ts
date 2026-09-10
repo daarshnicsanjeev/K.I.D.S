@@ -469,4 +469,86 @@ describe('Fully Automated Document OCR & Search Engine', () => {
       globalThis.fetch = originalFetch;
     }
   });
+
+  it('runAutonomousVaultOcr in Code.gs automatically self-schedules continuation until pending files reach 0', () => {
+    const codeFilePath = path.resolve(__dirname, '../../gas-mcp-server/src/Code.gs');
+    const code = fs.readFileSync(codeFilePath, 'utf8');
+
+    let triggerCreated = false;
+    let triggerAfterMs = 0;
+    let deletedTriggers: string[] = [];
+
+    let mockPending = 25;
+    const sandbox = {
+      PropertiesService: {
+        getScriptProperties: () => ({
+          getProperty: (k: string) => {
+            if (k === 'multi_child_school_registry') {
+              return JSON.stringify({
+                children: [{ kidName: 'Atharva', targetFolderId: 'kid_folder_123' }]
+              });
+            }
+            return null;
+          }
+        })
+      },
+      LockService: {
+        getScriptLock: () => ({
+          tryLock: () => true,
+          releaseLock: () => {}
+        })
+      },
+      DriveApp: {
+        getFolderById: (id: string) => ({
+          getId: () => id,
+          isTrashed: () => false
+        })
+      },
+      DocumentOcrService: {
+        runAutomatedVaultIndexing: (folder: any, batch: number) => {
+          mockPending = Math.max(0, mockPending - batch);
+          return {
+            success: true,
+            processed: batch,
+            totalPendingRemaining: mockPending
+          };
+        }
+      },
+      ScriptApp: {
+        getProjectTriggers: () => [],
+        deleteTrigger: (trig: any) => { deletedTriggers.push(trig.getHandlerFunction()); },
+        newTrigger: (fnName: string) => ({
+          timeBased: () => ({
+            after: (ms: number) => ({
+              create: () => {
+                triggerCreated = true;
+                triggerAfterMs = ms;
+              }
+            })
+          })
+        })
+      },
+      McpLogger: {
+        log: () => {}
+      }
+    };
+
+    const ctx = vm.createContext(sandbox);
+
+    // Pass 1: mockPending = 25 -> Remaining = 10 -> Continuation trigger created for 20s
+    vm.runInContext(code + '\nocrRes1 = runAutonomousVaultOcr();', ctx);
+    const res1 = (sandbox as any).ocrRes1;
+    expect(res1.success).toBe(true);
+    expect(res1.totalRemaining).toBe(10);
+    expect(triggerCreated).toBe(true);
+    expect(triggerAfterMs).toBe(20000);
+
+    // Pass 2: Remaining = 0 -> All done -> No continuation trigger created
+    triggerCreated = false;
+    vm.runInContext(code + '\nocrRes2 = runAutonomousVaultOcr();', ctx);
+    const res2 = (sandbox as any).ocrRes2;
+    expect(res2.success).toBe(true);
+    expect(res2.totalRemaining).toBe(0);
+    expect(triggerCreated).toBe(false);
+  });
 });

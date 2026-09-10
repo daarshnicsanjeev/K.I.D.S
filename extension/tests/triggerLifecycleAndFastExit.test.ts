@@ -67,6 +67,7 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     const code = fs.readFileSync(repoCodePath, 'utf-8');
 
     const scriptProps: Record<string, string> = {
+      quiet_hours_disabled: 'true',
       target_folder_id: 'folder_123',
       initial_sync_complete: 'false'
     };
@@ -121,6 +122,7 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     const code = fs.readFileSync(repoCodePath, 'utf-8');
 
     const scriptProps: Record<string, string> = {
+      quiet_hours_disabled: 'true',
       target_folder_id: 'folder_123',
       initial_sync_complete: 'true',
       is_dual_worker: 'true'
@@ -366,6 +368,7 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
 
     let lockAttempted = false;
     const propsStore: Record<string, string> = {
+      quiet_hours_disabled: 'true',
       multi_child_school_registry: JSON.stringify({
         children: [{
           kidName: 'Atharva',

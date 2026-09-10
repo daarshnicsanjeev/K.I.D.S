@@ -1205,7 +1205,16 @@ async function handleMessage(message: { type: string; payload?: any }) {
                   toast.style.border = '1px solid #3b82f6';
                 }
 
-                toast.innerHTML = `<span>${msg}</span><button style="background:transparent;border:none;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;" onclick="this.parentElement.remove()">✕</button>`;
+                const msgSpan = document.createElement('span');
+                msgSpan.textContent = msg;
+                const closeBtn = document.createElement('button');
+                closeBtn.style.cssText = 'background:transparent;border:none;color:inherit;font-size:16px;cursor:pointer;margin-left:8px;';
+                closeBtn.textContent = '✕';
+                closeBtn.addEventListener('click', () => {
+                  try { toast.remove(); } catch (e) {}
+                });
+                toast.appendChild(msgSpan);
+                toast.appendChild(closeBtn);
                 document.body.appendChild(toast);
 
                 if (durationMs > 0) {

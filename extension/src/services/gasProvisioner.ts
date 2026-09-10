@@ -895,7 +895,6 @@ function testAuth() {
 function doGet(e) {
   // 1. One-time Parent Consent Handshake & Autonomous Trigger Provisioning
   if (!e || !e.parameter || !e.parameter.accessKey || e.parameter.auth === 'true' || e.parameter.authInit === 'true') {
-    // Calling Classroom/Drive here forces Google's runtime engine to present the permission prompt
     try {
       if (typeof Classroom !== 'undefined' && Classroom.Courses) {
         Classroom.Courses.list({ pageSize: 1 });
@@ -957,7 +956,7 @@ function doGet(e) {
     ).setTitle('K.I.D.S. Cloud Sync Authorization');
   }
 
-  if (e.parameter.accessKey !== CONFIG.accessKey) {
+  if (typeof CONFIG !== 'undefined' && e.parameter.accessKey !== CONFIG.accessKey) {
     return ContentService.createTextOutput(JSON.stringify({ error: "Unauthorized access key." }))
       .setMimeType(ContentService.MimeType.JSON);
   }
@@ -994,18 +993,14 @@ function doGet(e) {
       result: rRes
     })).setMimeType(ContentService.MimeType.JSON);
   }
-  var serverName = 'Kids Intelligent Dashboard System (K.I.D.S.) - ' + (CONFIG.childName || 'Student') + (CONFIG.academicYear ? ' (' + CONFIG.academicYear + ')' : '');
   return ContentService.createTextOutput(JSON.stringify({
-    status: 'online',
-    server: serverName,
-    childName: CONFIG.childName || 'Student',
-    academicYear: CONFIG.academicYear || '',
-    version: '4.4.0'
+    status: "ok",
+    version: "4.4.0",
+    name: "Kids Intelligent Dashboard System (K.I.D.S.) Cloud Ingestion Engine"
   })).setMimeType(ContentService.MimeType.JSON);
 }
 
 function doPost(e) {
-  var startMs = new Date().getTime();
   try {
     if (!e || !e.postData || !e.postData.contents) {
       throw new Error("No POST payload received.");
@@ -1017,9 +1012,12 @@ function doPost(e) {
     var id = json.id;
 
     var passedKey = (e.parameter && e.parameter.accessKey) || (params && params.accessKey) || (json && json.accessKey);
-    if (!passedKey || passedKey !== CONFIG.accessKey) {
-      McpLogger.log('WARN', 'doPost', 'Unauthorized access key attempt');
-      throw new Error("Unauthorized access key.");
+    if (typeof CONFIG !== 'undefined' && CONFIG.accessKey && passedKey !== CONFIG.accessKey) {
+      return ContentService.createTextOutput(JSON.stringify({
+        jsonrpc: "2.0",
+        id: id !== undefined ? id : null,
+        error: { code: -32000, message: "Unauthorized access key." }
+      })).setMimeType(ContentService.MimeType.JSON);
     }
 
     var result;
@@ -1027,59 +1025,29 @@ function doPost(e) {
     if (method === "initialize") {
       result = {
         protocolVersion: "2024-11-05",
-        capabilities: {
-          tools: {}
-        },
-        serverInfo: {
-          name: "Kids Intelligent Dashboard System (K.I.D.S.) - " + (CONFIG.childName || 'Student') + (CONFIG.academicYear ? " (" + CONFIG.academicYear + ")" : ""),
-          version: "3.0.0"
-        }
+        capabilities: { tools: {} },
+        serverInfo: { name: "K.I.D.S. Cloud Ingestion Engine", version: "4.0.0" }
       };
-      McpLogger.log('INFO', 'initialize', { client: params.clientInfo || 'Gemini Spark' });
     } else if (method === "notifications/initialized") {
-      return ContentService.createTextOutput(JSON.stringify({
-        jsonrpc: "2.0",
-        id: id !== undefined ? id : null
-      })).setMimeType(ContentService.MimeType.JSON);
+      return ContentService.createTextOutput(JSON.stringify({ jsonrpc: "2.0", id: id !== undefined ? id : null })).setMimeType(ContentService.MimeType.JSON);
     } else if (method === "tools/list") {
       result = handleToolsList();
-      McpLogger.log('INFO', 'tools/list', { toolCount: result.tools ? result.tools.length : 0 });
     } else if (method === "tools/call") {
-      try {
-        var callResult = handleToolsCall(params.name, params.arguments || {});
-        result = formatMcpCallToolResult(callResult, false);
-        var durationMs = new Date().getTime() - startMs;
-        McpLogger.log('INFO', 'tools/call:' + params.name, { durationMs: durationMs, success: true });
-      } catch (callErr) {
-        var durationMs = new Date().getTime() - startMs;
-        McpLogger.log('ERROR', 'tools/call:' + params.name, { durationMs: durationMs, error: callErr.toString() });
-        result = formatMcpCallToolResult({ error: callErr.toString() }, true);
-      }
-    } else if (method === "server/getLogs") {
-      result = { logs: McpLogger.getLogs() };
-    } else if (method === "server/clearLogs") {
-      result = { cleared: McpLogger.clearLogs() };
-    } else if (method === "get_mcp_folder_info") {
-      result = DriveFolderManager.getFolderInfo();
-    } else if (method === "upload_whatsapp_attachment") {
-      result = WhatsAppStorage.saveAttachment(params.fileName, params.base64Data, params.mimeType, params.messageContext);
-    } else if (method === "archive_whatsapp_messages") {
-      result = WhatsAppStorage.saveMessages(params.messages);
-    } else if (method === "get_whatsapp_messages") {
-      result = { messages: WhatsAppStorage.getRecentMessages(params.chat_filter, params.max_count) };
-    } else if (method === "cache_live_tab_content") {
-      result = LiveTabStorage.saveTabContent(params.tabData);
-    } else if (method === "register_mcp_tool" || method === "register_portal_job") {
-      result = handleRegisterPortalJob(params);
-      McpLogger.log('INFO', 'register_portal_job', { domain: params.domain, feature: params.feature });
+      result = handleToolsCall(params.name, params.arguments || {});
     } else if (method === "sync_classroom_and_gmail" || method === "extract_classroom_and_gmail") {
       result = handleSyncClassroomAndGmail(params);
+    } else if (method === "sync_all_portals") {
+      result = handleSyncAllPortals(params);
     } else if (method === "register_school_worker") {
       result = handleRegisterSchoolWorker(params);
     } else if (method === "sync_master_cloud_school") {
       var tChild = params ? (params.childId || params.childName || params.targetChild) : null;
       var initPass = params ? (params.isInitialPass === true || params.initialPass === true) : false;
       result = runMasterCloudSchoolSync(params && (params.force === true || params.manual === true), tChild, initPass);
+    } else if (method === "register_portal_job" || method === "register_mcp_tool") {
+      result = handleRegisterPortalJob(params);
+    } else if (method === "setup_triggers") {
+      result = handleSetupTriggers(params);
     } else if (method === "pause_nightly_sync") {
       result = pauseNightlySyncTriggers();
     } else if (method === "resume_morning_sync") {
@@ -1100,28 +1068,31 @@ function doPost(e) {
       if (targetFolderId) {
         try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
       }
-      if (typeof DocumentOcrService !== 'undefined') {
-        result = DocumentOcrService.searchVaultDocuments(kidFolder, params.query);
-      } else {
-        result = { error: 'DocumentOcrService not loaded' };
-      }
+      result = DocumentOcrService.searchVaultDocuments(kidFolder, params.query);
     } else if (method === "index_whatsapp_media") {
-      if (typeof DocumentOcrService !== 'undefined') {
-        result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
-      } else {
-        result = { error: 'DocumentOcrService not loaded' };
-      }
+      result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
     } else if (method === "run_vault_ocr_indexing") {
       var kidFolder = null;
       var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
       if (targetFolderId) {
         try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
       }
-      if (typeof DocumentOcrService !== 'undefined') {
-        result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 12);
-      } else {
-        result = { error: 'DocumentOcrService not loaded' };
+      result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
+      if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+        try {
+          var ocrTrigs = ScriptApp.getProjectTriggers();
+          for (var ot = 0; ot < ocrTrigs.length; ot++) {
+            if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+              ScriptApp.deleteTrigger(ocrTrigs[ot]);
+            }
+          }
+          ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
+          result.continuationScheduled = true;
+          McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
+        } catch (ocrContErr) {}
       }
+    } else if (method === "run_autonomous_vault_ocr") {
+      result = runAutonomousVaultOcr();
     } else if (method === "set_sync_state" || method === "set_initial_sync_complete") {
       result = handleSetSyncState(params);
     } else if (method === "clear_triggers" || method === "clearTriggers") {
@@ -1132,20 +1103,7 @@ function doPost(e) {
         clearedCount++;
       }
       result = { success: true, clearedCount: clearedCount };
-    } else if (method === "sync_all_portals") {
-      result = handleSyncAllPortals(params);
-    } else if (method === "setup_triggers") {
-      result = handleSetupTriggers(params);
-    } else if (method === "delete_mcp_tool") {
-      result = { deleted: StorageRepository.deleteTool(params.domain, params.feature) };
-      McpLogger.log('INFO', 'delete_mcp_tool', params);
-    } else if (method === "rename_mcp_tool") {
-      result = { renamed: StorageRepository.renameTool(params.domain, params.oldFeature, params.newFeature) };
-      McpLogger.log('INFO', 'rename_mcp_tool', params);
-    } else if (method === "test_preflight_proxy") {
-      result = handlePreflightProxy(params);
     } else {
-      McpLogger.log('WARN', 'unknown_method', { method: method });
       throw new Error("Method not supported: " + method);
     }
 
@@ -1156,299 +1114,12 @@ function doPost(e) {
     })).setMimeType(ContentService.MimeType.JSON);
 
   } catch (err) {
-    var durationMs = new Date().getTime() - startMs;
-    McpLogger.log('ERROR', 'doPost:exception', { durationMs: durationMs, error: err.toString() });
     return ContentService.createTextOutput(JSON.stringify({
       jsonrpc: "2.0",
       id: null,
       error: { code: -32603, message: err.toString() }
     })).setMimeType(ContentService.MimeType.JSON);
   }
-}
-
-function formatMcpCallToolResult(data, isError) {
-  var textPayload;
-  if (typeof data === 'string') {
-    textPayload = data;
-  } else {
-    textPayload = JSON.stringify(data, null, 2);
-  }
-  return {
-    content: [
-      {
-        type: "text",
-        text: textPayload
-      }
-    ],
-    isError: !!isError
-  };
-}
-
-function handleToolsList() {
-  var masterTool = [
-    {
-      name: 'get_all_school_updates',
-      description: 'MASTER TOOL: Unified tool to fetch ALL student school data (Google Classroom, Gmail circulars, Calendar events, EduSprint portal features, and recent WhatsApp class group announcements/homework) in a single unified call with 1 authorization. Always inspect WhatsApp notices for daily homework assignments (such as ICT, Science, Math worksheets) announced by teachers.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          gmail_query: { type: 'string', description: 'Optional search query for Gmail' },
-          whatsapp_filter: { type: 'string', description: 'Optional WhatsApp chat name or topic filter (e.g. "Grade 3B" or "homework")' }
-        }
-      }
-    },
-    {
-      name: 'get_whatsapp_school_updates',
-      description: 'WHATSAPP TOOL: Fetches recent school notices, teacher broadcasts, homework assignments (e.g. ICT homework, Science, Hindi, Math, English), and shared links from user-tracked WhatsApp school groups.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          chat_filter: { type: 'string', description: 'Filter by specific chat/group name or keyword (e.g. "Grade 3B CAIE" or "homework")' },
-          max_count: { type: 'number', description: 'Maximum number of recent messages to return (default: 35)' }
-        }
-      }
-    },
-    {
-      name: 'query_whatsapp_history',
-      description: 'WHATSAPP ARCHIVE TOOL: Searches historical WhatsApp school messages and homework stored in Google Drive archive (whatsapp_school_archive.json) across all dates and subjects.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Search term, subject (e.g. "ICT", "Science", "homework"), date (e.g. "24 August"), or teacher name' }
-        },
-        required: ['query']
-      }
-    },
-    {
-      name: 'get_live_web_tab_content',
-      description: 'UNIVERSAL LIVE WEB TOOL: Retrieves structured text, tables, and notices from any active web tab currently open in the user Chrome browser.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          domain_or_keyword: { type: 'string', description: 'Domain name or keyword of the open tab to query (e.g. "edusprint.in", "wikipedia", "classroom")' }
-        }
-      }
-    },
-    {
-      name: 'get_mcp_server_logs',
-      description: 'DIAGNOSTIC TOOL: Retrieves the recent detailed execution logs of this MCP Server, including incoming JSON-RPC calls, execution latency, and error traces.',
-      inputSchema: {
-        type: 'object',
-        properties: {}
-      }
-    },
-    {
-      name: 'fetch_drive_file_ocr',
-      description: 'ON-DEMAND OCR TOOL: Extracts high-resolution OCR text from PDF attachments or worksheet images stored in Google Drive.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          fileId: { type: 'string', description: 'Google Drive File ID to extract OCR text from' }
-        },
-        required: ['fileId']
-      }
-    },
-    {
-      name: 'search_vault_documents',
-      description: 'Searches all school worksheets, circulars, scanned PDFs, and WhatsApp chat images across all subjects and dates using intelligent full-text OCR indexing.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          query: { type: 'string', description: 'Keyword or phrase to search for inside documents and images (e.g. "Linear equations worksheet", "fee notice", "sports day")' },
-          childName: { type: 'string', description: 'Optional child first name to filter search' }
-        },
-        required: ['query']
-      }
-    }
-  ];
-
-  return { tools: masterTool };
-}
-
-function handleToolsCall(name, args) {
-  if (name === 'search_vault_documents') {
-    var kidFolder = null;
-    var targetFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
-    if (targetFolderId) {
-      try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
-    }
-    if (typeof DocumentOcrService !== 'undefined') {
-      return DocumentOcrService.searchVaultDocuments(kidFolder, args && args.query);
-    }
-    return { error: 'DocumentOcrService not loaded' };
-  } else if (name === 'get_whatsapp_school_updates') {
-    var msgs = WhatsAppStorage.getRecentMessages(args && args.chat_filter, (args && args.max_count) || 35);
-    McpLogger.log('INFO', 'whatsapp:get_updates', { filter: args && args.chat_filter, count: msgs.length });
-    return {
-      timestamp: new Date().toISOString(),
-      messages: msgs
-    };
-  } else if (name === 'query_whatsapp_history') {
-    var results = WhatsAppStorage.queryHistory(args && args.query, 60);
-    McpLogger.log('INFO', 'whatsapp:query_history', { query: args && args.query, resultsCount: results.length });
-    return {
-      timestamp: new Date().toISOString(),
-      query: args && args.query,
-      results: results
-    };
-  } else if (name === 'get_live_web_tab_content') {
-    var tabData = LiveTabStorage.getTabContent(args && args.domain_or_keyword);
-    McpLogger.log('INFO', 'live_tab:get_content', { domainOrKeyword: args && args.domain_or_keyword, found: !!tabData });
-    return {
-      timestamp: new Date().toISOString(),
-      tabData: tabData
-    };
-  } else if (name === 'fetch_drive_file_ocr') {
-    return DriveContentExtractor.extractText(args && args.fileId, 6000);
-  } else if (name === 'get_mcp_server_logs') {
-    return {
-      timestamp: new Date().toISOString(),
-      logs: McpLogger.getLogs()
-    };
-  } else if (name === 'get_all_school_updates') {
-    var result = {
-      timestamp: new Date().toISOString(),
-      google_classroom: null,
-      school_gmail_circulars: null,
-      calendar_events: null,
-      whatsapp_school_notices: null,
-      portal_data: {}
-    };
-
-    try { result.google_classroom = WorkspaceFetcher.getGoogleClassroomWork(); } catch (e) { result.google_classroom = { error: e.toString() }; }
-    try { result.school_gmail_circulars = WorkspaceFetcher.getSchoolGmailMessages(args && args.gmail_query); } catch (e) { result.school_gmail_circulars = { error: e.toString() }; }
-    try { result.calendar_events = WorkspaceFetcher.getCalendarEvents(); } catch (e) { result.calendar_events = { error: e.toString() }; }
-    try {
-      result.whatsapp_school_notices = WhatsAppStorage.getRecentMessages(args && args.whatsapp_filter, 35);
-      McpLogger.log('INFO', 'whatsapp:school_notices', { count: result.whatsapp_school_notices ? result.whatsapp_school_notices.length : 0 });
-    } catch (we) {
-      result.whatsapp_school_notices = { error: we.toString() };
-      McpLogger.log('WARN', 'whatsapp:school_notices_failed', { error: we.toString() });
-    }
-
-    try {
-      result.live_web_tab_content = LiveTabStorage.getTabContent();
-    } catch (lte) {
-      result.live_web_tab_content = null;
-    }
-
-    var registered = StorageRepository.getRegisteredTools();
-    for (var i = 0; i < registered.length; i++) {
-      var t = registered[i];
-      try {
-        var key = t.feature || t.name;
-        result.portal_data[key] = PortalApiFetcher.fetchPortalData(t);
-      } catch (err) {
-        result.portal_data[t.name] = { error: err.toString() };
-      }
-    }
-
-    return result;
-  } else if (name === 'get_google_classroom_work') {
-    return WorkspaceFetcher.getGoogleClassroomWork();
-  } else if (name === 'get_school_gmail_messages') {
-    return WorkspaceFetcher.getSchoolGmailMessages(args && args.query);
-  } else if (name === 'get_calendar_events') {
-    return WorkspaceFetcher.getCalendarEvents();
-  }
-
-  var registered = StorageRepository.getRegisteredTools();
-  for (var i = 0; i < registered.length; i++) {
-    if (registered[i].name === name) {
-      return PortalApiFetcher.fetchPortalData(registered[i]);
-    }
-  }
-
-  throw new Error('Tool not found: ' + name);
-}
-
-function handleRegisterTool(params) {
-  var domain = params.domain;
-  var feature = params.feature;
-  var endpointSpec = params.endpoint_spec || { url: params.url, method: 'GET' };
-  var authSpec = params.auth_spec || { cookies: params.cookies };
-  var domSnapshot = params.dom_snapshot || '';
-
-  var toolName = StorageRepository.saveTool(domain, feature, endpointSpec, authSpec, domSnapshot);
-  return { registered: true, toolName: toolName };
-}
-
-function handleGetFileBlob(params) {
-  var fileId = params.fileId;
-  if (!fileId) throw new Error("fileId is required");
-  try {
-    var file = DriveApp.getFileById(fileId);
-    var mimeType = file.getMimeType();
-    var isGoogleApp = mimeType && mimeType.indexOf('google-apps') !== -1;
-    var blob;
-    var name = file.getName();
-    if (isGoogleApp) {
-      var token = ScriptApp.getOAuthToken();
-      var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '/export?mimeType=application/pdf', {
-        headers: { 'Authorization': 'Bearer ' + token },
-        muteHttpExceptions: true
-      });
-      if (exportRes.getResponseCode() === 200) {
-        blob = exportRes.getBlob();
-        mimeType = 'application/pdf';
-        if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
-      } else {
-        throw new Error('Export failed: ' + exportRes.getResponseCode());
-      }
-    } else {
-      blob = file.getBlob();
-    }
-    var base64 = Utilities.base64Encode(blob.getBytes());
-    return {
-      base64: base64,
-      mimeType: mimeType,
-      name: name
-    };
-  } catch (err) {
-    var token2 = ScriptApp.getOAuthToken();
-    var dlRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
-      headers: { 'Authorization': 'Bearer ' + token2 },
-      muteHttpExceptions: true
-    });
-    if (dlRes.getResponseCode() === 200) {
-      var dlBlob = dlRes.getBlob();
-      return {
-        base64: Utilities.base64Encode(dlBlob.getBytes()),
-        mimeType: dlBlob.getContentType() || 'application/octet-stream',
-        name: params.name || fileId
-      };
-    }
-    throw err;
-  }
-}
-
-function handleGetGmailAttachment(params) {
-  var messageId = params.messageId;
-  var attachmentIndex = params.attachmentIndex;
-  var filename = params.filename;
-  if (!messageId) throw new Error("messageId is required");
-  var msg = GmailApp.getMessageById(messageId);
-  if (!msg) throw new Error("Message not found: " + messageId);
-  var atts = msg.getAttachments();
-  var targetAtt = null;
-  if (attachmentIndex !== undefined && attachmentIndex !== null && atts[attachmentIndex]) {
-    targetAtt = atts[attachmentIndex];
-  } else if (filename) {
-    for (var i = 0; i < atts.length; i++) {
-      if (atts[i].getName() === filename) {
-        targetAtt = atts[i];
-        break;
-      }
-    }
-  }
-  if (!targetAtt && atts.length > 0) targetAtt = atts[0];
-  if (!targetAtt) throw new Error("Attachment not found in message: " + messageId);
-  return {
-    name: targetAtt.getName(),
-    mimeType: targetAtt.getContentType(),
-    size: targetAtt.getSize(),
-    base64: Utilities.base64Encode(targetAtt.getBytes())
-  };
 }
 
 function handleSyncClassroomAndGmail(params) {
@@ -1459,8 +1130,8 @@ function handleSyncClassroomAndGmail(params) {
   }
   try {
     var folderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id') || null;
-    var childName = params.childName || CONFIG.childName || 'Child';
-    var academicYear = params.academicYear || CONFIG.academicYear || '2026-2027';
+    var childName = params.childName || 'Atharva';
+    var academicYear = params.academicYear || '2026-2027';
     var schoolDomain = params.schoolDomain || '';
 
     if (folderId) {
@@ -1664,13 +1335,160 @@ function handleSaveVaultFile(params) {
   }
 }
 
+function handleGetFileBlob(params) {
+  var fid = params.fileId;
+  if (!fid) return { success: false, error: "No fileId provided" };
+
+  var name = 'attachment_' + fid;
+  var mime = 'application/octet-stream';
+  var tok = ScriptApp.getOAuthToken();
+
+  // Strategy A: Drive REST API v3 with ScriptApp.getOAuthToken() & supportsAllDrives=true
+  try {
+    var metaUrl = 'https://www.googleapis.com/drive/v3/files/' + fid + '?fields=id,name,mimeType,size&supportsAllDrives=true';
+    var metaRes = UrlFetchApp.fetch(metaUrl, {
+      headers: { 'Authorization': 'Bearer ' + tok },
+      muteHttpExceptions: true
+    });
+
+    if (metaRes.getResponseCode() === 200) {
+      var meta = JSON.parse(metaRes.getContentText());
+      name = meta.name || name;
+      mime = meta.mimeType || mime;
+      var isGoogleApp = mime && mime.indexOf('application/vnd.google-apps') !== -1;
+
+      var dlUrl = isGoogleApp
+        ? 'https://www.googleapis.com/drive/v3/files/' + fid + '/export?mimeType=application/pdf&supportsAllDrives=true'
+        : 'https://www.googleapis.com/drive/v3/files/' + fid + '?alt=media&supportsAllDrives=true';
+
+      var dlRes = UrlFetchApp.fetch(dlUrl, {
+        headers: { 'Authorization': 'Bearer ' + tok },
+        muteHttpExceptions: true
+      });
+
+      if (dlRes.getResponseCode() === 200) {
+        var blob = dlRes.getBlob();
+        if (isGoogleApp) {
+          mime = 'application/pdf';
+          if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+        }
+        return {
+          success: true,
+          name: name,
+          mimeType: mime,
+          base64: Utilities.base64Encode(blob.getBytes())
+        };
+      }
+    }
+  } catch (errA) {
+    McpLogger.log('WARN', 'GET_BLOB_V3_WARN', 'REST API v3 fetch error for ' + fid + ': ' + errA.toString());
+  }
+
+  // Strategy B: Advanced Drive Service (v2) if available
+  try {
+    if (typeof Drive !== 'undefined' && Drive.Files) {
+      var fileResource = Drive.Files.get(fid, { supportsAllDrives: true });
+      if (fileResource) {
+        name = fileResource.title || name;
+        mime = fileResource.mimeType || mime;
+        var fetchUrl = fileResource.downloadUrl;
+        if (fileResource.exportLinks && fileResource.exportLinks['application/pdf']) {
+          fetchUrl = fileResource.exportLinks['application/pdf'];
+          mime = 'application/pdf';
+          if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+        }
+        if (fetchUrl) {
+          var advRes = UrlFetchApp.fetch(fetchUrl, {
+            headers: { 'Authorization': 'Bearer ' + tok },
+            muteHttpExceptions: true
+          });
+          if (advRes.getResponseCode() === 200) {
+            return {
+              success: true,
+              name: name,
+              mimeType: mime,
+              base64: Utilities.base64Encode(advRes.getBlob().getBytes())
+            };
+          }
+        }
+      }
+    }
+  } catch (errB) {
+    McpLogger.log('WARN', 'GET_BLOB_V2_WARN', 'Advanced Drive v2 fetch error for ' + fid + ': ' + errB.toString());
+  }
+
+  // Strategy C: DriveApp fallback (if user opened or added to personal My Drive)
+  try {
+    var f = DriveApp.getFileById(fid);
+    if (f) {
+      name = f.getName() || name;
+      mime = f.getMimeType() || mime;
+      var b;
+      if (mime.indexOf('google-apps') !== -1) {
+        var exp = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fid + '/export?mimeType=application/pdf', {
+          headers: { 'Authorization': 'Bearer ' + tok },
+          muteHttpExceptions: true
+        });
+        b = exp.getBlob();
+        mime = 'application/pdf';
+        if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+      } else {
+        b = f.getBlob();
+      }
+      return {
+        success: true,
+        name: name,
+        mimeType: mime,
+        base64: Utilities.base64Encode(b.getBytes())
+      };
+    }
+  } catch (errC) {
+    McpLogger.log('WARN', 'GET_BLOB_DRIVEAPP_WARN', 'DriveApp fetch error for ' + fid + ': ' + errC.toString());
+  }
+
+  return {
+    success: false,
+    error: 'Unable to retrieve file ' + fid
+  };
+}
+
+function handleGetGmailAttachment(params) {
+  var messageId = params.messageId;
+  var attachmentIndex = params.attachmentIndex;
+  var filename = params.filename;
+  if (!messageId) throw new Error("messageId is required");
+  var msg = GmailApp.getMessageById(messageId);
+  if (!msg) throw new Error("Message not found: " + messageId);
+  var atts = msg.getAttachments();
+  var targetAtt = null;
+  if (attachmentIndex !== undefined && attachmentIndex !== null && atts[attachmentIndex]) {
+    targetAtt = atts[attachmentIndex];
+  } else if (filename) {
+    for (var i = 0; i < atts.length; i++) {
+      if (atts[i].getName() === filename) {
+        targetAtt = atts[i];
+        break;
+      }
+    }
+  }
+  if (!targetAtt && atts.length > 0) targetAtt = atts[0];
+  if (!targetAtt) throw new Error("Attachment not found in message: " + messageId);
+  return {
+    name: targetAtt.getName(),
+    mimeType: targetAtt.getContentType(),
+    size: targetAtt.getSize(),
+    base64: Utilities.base64Encode(targetAtt.getBytes())
+  };
+}
+
 function handleSyncAllPortals(params) {
   var res = PortalIngester.syncAll();
   return { success: true, result: res };
 }
 
 function handleRegisterPortalJob(params) {
-  var kidName = params.childName || params.kidName || CONFIG.childName || 'Child';
+  var childId = params.childId || 'default_child';
+  var kidName = params.childName || params.kidName || 'Atharva';
   var props = PropertiesService.getScriptProperties();
   var portalFolderId = params.portalFolderId || params.targetFolderId;
   if (!portalFolderId) {
@@ -1691,6 +1509,7 @@ function handleRegisterPortalJob(params) {
   var feature = params.feature;
   var endpointSpec = params.endpoint_spec || { url: params.url };
   var authSpec = params.auth_spec || { cookies: params.cookies };
+
   var raw = props.getProperty('multi_child_portal_registry');
   var registry = raw ? JSON.parse(raw) : { children: [] };
 
@@ -1808,7 +1627,7 @@ function pauseNightlySyncTriggers() {
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
       var hFn = triggers[i].getHandlerFunction();
-      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync' || hFn === 'runAutonomousVaultOcr') {
         ScriptApp.deleteTrigger(triggers[i]);
         deletedCount++;
       }
@@ -1846,6 +1665,10 @@ function resumeMorningSyncTriggers() {
     if (canInstallSync) {
       ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
       McpLogger.log('SUCCESS', 'QUIET_HOURS_RESUMED', 'Restored 1-minute Master Cloud sync trigger for daytime (6 AM to 11 PM IST).');
+      // Restart autonomous OCR if it was interrupted by quiet hours
+      try {
+        ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(30000).create();
+      } catch (ocrErr) {}
       return { resumed: true, trigger: 'runMasterCloudSchoolSync (1m)' };
     } else {
       McpLogger.log('INFO', 'QUIET_HOURS_RESUME_DEFERRED', 'Morning resume deferred: initial 1-time sync is not yet complete.');
@@ -1908,6 +1731,15 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
     // Install daily 11 PM pause and 6 AM resume schedule triggers
     setupQuietHoursScheduleTriggers();
 
+    // Don't install the recurring sync trigger during quiet hours — it would immediately
+    // fire, hit the quiet-hours guard, and delete OCR continuation triggers
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'SYNC_TRIGGER_DEFERRED', 'Quiet hours active (IST). 1-minute trigger will be installed at 6 AM by morning resume.');
+      return { success: true, cadence: 'deferred_to_6am' };
+    }
+
     if (mins === 1) {
       ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
     } else if (mins === 5) {
@@ -1932,8 +1764,15 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
 function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) {
   var props = PropertiesService.getScriptProperties();
 
+  // RESUME GUARD: If initial sync was interrupted, resume with correct flags
+  var pendingInitialChild = props.getProperty('initial_sync_in_progress_child');
+  if (pendingInitialChild) {
+    if (!targetChildIdOrName) targetChildIdOrName = pendingInitialChild;
+    isInitialPass = true;
+    forceRun = true;
+  }
+
   // FAST-EXIT GUARD 0: IST Quiet Hours (11:00 PM to 6:00 AM IST)
-  // When 11 PM arrives, directly delete the 1-minute trigger so it NEVER fires overnight!
   if (forceRun !== true && props.getProperty('quiet_hours_disabled') !== 'true') {
     var now = new Date();
     var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
@@ -1983,11 +1822,42 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { skipped: true, reason: 'Sync already in progress' };
 
+  var syncStartTime = new Date().getTime();
+  var MAX_SYNC_RUNTIME_MS = 270000; // 4.5 minutes (leaves 90s safety margin before 6.0m limit)
+
+  function isTimeExpiring() {
+    return (new Date().getTime() - syncStartTime) > MAX_SYNC_RUNTIME_MS;
+  }
+
+  function scheduleContinuation() {
+    try {
+      var trigs = ScriptApp.getProjectTriggers();
+      for (var tI = 0; tI < trigs.length; tI++) {
+        if (trigs[tI].getHandlerFunction() === 'runMasterCloudSchoolSync') {
+          ScriptApp.deleteTrigger(trigs[tI]);
+        }
+      }
+      ScriptApp.newTrigger('runMasterCloudSchoolSync')
+        .timeBased()
+        .after(10000)
+        .create();
+      McpLogger.log('INFO', 'CONTINUATION_TRIGGER_SET', '4.5-minute time budget reached. Scheduled 10-second continuation trigger.');
+      return true;
+    } catch (tErr) {
+      McpLogger.log('WARN', 'CONTINUATION_TRIGGER_FAIL', 'Could not schedule continuation trigger: ' + tErr);
+      return false;
+    }
+  }
+
   try {
     var syncedCount = 0;
-    var nowMs = new Date().getTime();
 
     for (var i = 0; i < children.length; i++) {
+      if (isTimeExpiring()) {
+        scheduleContinuation();
+        return { success: true, continuationScheduled: true, checkpoint: 'child_boundary_' + i };
+      }
+
       var ch = children[i];
       if (!ch || !ch.schoolWorkerUrl || !ch.targetFolderId) continue;
 
@@ -1996,12 +1866,9 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
         if (!matchTarget) continue;
       }
 
-      // Fast-Exit Guard: Strictly skip children whose 1-time initial sync has not completed,
-      // UNLESS this execution is specifically targeting them for initial sync!
       var isChildInitial = (ch.initialSyncComplete !== true) || (isInitialPass === true);
       if (!targetChildIdOrName && isInitialPass !== true) {
         if (ch.initialSyncComplete !== true) {
-          // Recurring trigger strictly skips this child until 1-time initial sync completes!
           continue;
         }
       }
@@ -2012,6 +1879,11 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
         if (!kidFolder || kidFolder.isTrashed()) continue;
       } catch (folderErr) {
         continue;
+      }
+
+      // Mark initial sync in progress so continuation knows which child to resume
+      if (isChildInitial) {
+        props.setProperty('initial_sync_in_progress_child', ch.childId || ch.kidName);
       }
 
       try {
@@ -2042,12 +1914,19 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           var syncRes = data.result || data;
           if (!syncRes || syncRes.error || !syncRes.classroom) continue;
 
+          var downloadFailed = 0;
+
           var it = kidFolder.getFoldersByName('classroom');
           var classFolder = it.hasNext() ? it.next() : kidFolder.createFolder('classroom');
           var attIt = classFolder.getFoldersByName('attachments');
           var attachFolder = attIt.hasNext() ? attIt.next() : classFolder.createFolder('attachments');
 
-          // Save classroom_data.json (merging with existing so historical archive is preserved)
+          var emIt = kidFolder.getFoldersByName('emails');
+          var emailsFolder = emIt.hasNext() ? emIt.next() : kidFolder.createFolder('emails');
+          var emAttIt = emailsFolder.getFoldersByName('attachments');
+          var emailAttachFolder = emAttIt.hasNext() ? emAttIt.next() : emailsFolder.createFolder('attachments');
+
+          // Save classroom_data.json (merging with existing)
           var fIt = classFolder.getFilesByName('classroom_data.json');
           var finalClassroom = syncRes.classroom;
           var exFile = null;
@@ -2071,157 +1950,40 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
             classFolder.createFile('classroom_data.json', jsonStr, 'application/json');
           }
 
-          // Save school_emails.json (merging with existing)
-          if (syncRes.gmail && syncRes.gmail.emails) {
-            try {
-              var emIt = kidFolder.getFoldersByName('emails');
-              var emailsFolder = emIt.hasNext() ? emIt.next() : kidFolder.createFolder('emails');
-              var emailFileIt = emailsFolder.getFilesByName('school_emails.json');
-              var finalEmails = syncRes.gmail;
-              var exEmailFile = null;
-              var exEmailContent = '';
-              if (emailFileIt.hasNext()) {
-                exEmailFile = emailFileIt.next();
-                try {
-                  exEmailContent = exEmailFile.getContent();
-                  var exEmailData = JSON.parse(exEmailContent);
-                  if (exEmailData && exEmailData.emails) {
-                    var eMap = {};
-                    var combEmails = [];
-                    (syncRes.gmail.emails || []).concat(exEmailData.emails || []).forEach(function(em) {
-                      if (em && em.id && !eMap[em.id]) {
-                        eMap[em.id] = true;
-                        combEmails.push(em);
-                      }
-                    });
-                    finalEmails = {
-                      kidName: syncRes.gmail.kidName || ch.kidName,
-                      academicYear: syncRes.gmail.academicYear || ch.academicYear,
-                      schoolDomain: syncRes.gmail.schoolDomain || ch.schoolDomain,
-                      lastSyncedAt: new Date().toISOString(),
-                      totalEmails: combEmails.length,
-                      totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
-                      emails: combEmails
-                    };
-                  }
-                } catch (emErr) {}
-              }
-              var emailJsonStr = JSON.stringify(finalEmails, null, 2);
-              if (exEmailFile) {
-                if (exEmailContent !== emailJsonStr) {
-                  exEmailFile.setContent(emailJsonStr);
-                }
-              } else {
-                emailsFolder.createFile('school_emails.json', emailJsonStr, 'application/json');
-              }
-            } catch (gSaveErr) {}
-          }
-
-          // Save digest
-          if (syncRes.digest) {
-            var dIt = kidFolder.getFilesByName('daily_digest.json');
-            var dStr = JSON.stringify(syncRes.digest, null, 2);
-            if (dIt.hasNext()) {
-              var dFile = dIt.next();
-              try {
-                if (dFile.getContent() !== dStr) {
-                  dFile.setContent(dStr);
-                }
-              } catch (dErr) {
-                dFile.setContent(dStr);
-              }
-            } else {
-              kidFolder.createFile('daily_digest.json', dStr, 'application/json');
+          // 1-query batch cache for Email Attachments
+          var existingEmailFiles = {};
+          try {
+            var efIt = emailAttachFolder.getFiles();
+            while (efIt.hasNext()) {
+              var ef = efIt.next();
+              var efn = ef.getName();
+              existingEmailFiles[efn] = true;
+              existingEmailFiles[efn.toLowerCase()] = true;
             }
-          }
+          } catch (efErr) {}
 
-          // Download any new attachments in-memory from Student Worker
-          if (syncRes.classroom.courses && Array.isArray(syncRes.classroom.courses)) {
-            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
-            var existingClassFiles = {};
-            try {
-              var cfIt = attachFolder.getFiles();
-              while (cfIt.hasNext()) {
-                var f = cfIt.next();
-                var fn = f.getName();
-                existingClassFiles[fn] = true;
-                existingClassFiles[fn.toLowerCase()] = true;
-              }
-            } catch (cfErr) {}
-
-            var courses = syncRes.classroom.courses;
-            for (var cIdx = 0; cIdx < courses.length; cIdx++) {
-              var c = courses[cIdx];
-              var cName = (c.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 15);
-              var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
-              for (var itIdx = 0; itIdx < allItems.length; itIdx++) {
-                var itm = allItems[itIdx];
-                if (itm.attachments && Array.isArray(itm.attachments)) {
-                  for (var aIdx = 0; aIdx < itm.attachments.length; aIdx++) {
-                    var att = itm.attachments[aIdx];
-                    if (!att || !att.fileId) continue;
-                    var attTargetName = att.targetName || (cName + '_' + (att.title || att.fileId));
-                    if (existingClassFiles[attTargetName] || existingClassFiles[attTargetName.toLowerCase()]) continue;
-
-                    try {
-                      var blobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
-                        method: 'POST',
-                        contentType: 'application/json',
-                        payload: JSON.stringify({
-                          method: 'get_file_blob',
-                          params: { fileId: att.fileId }
-                        }),
-                        muteHttpExceptions: true
-                      });
-                      if (blobRes.getResponseCode() === 200) {
-                        var blobData = JSON.parse(blobRes.getContentText());
-                        var blobObj = blobData.result || blobData;
-                        if (blobObj && blobObj.base64) {
-                          var decoded = Utilities.base64Decode(blobObj.base64);
-                          var newBlob = Utilities.newBlob(decoded, blobObj.mimeType || 'application/octet-stream', attTargetName);
-                          var newFile = attachFolder.createFile(newBlob);
-                          existingClassFiles[attTargetName] = true;
-                          existingClassFiles[attTargetName.toLowerCase()] = true;
-                          try {
-                            if (typeof DocumentOcrService !== 'undefined') {
-                              DocumentOcrService.indexDocument(kidFolder, newFile, 'classroom');
-                            }
-                          } catch (docIdxErr) {}
-                        }
-                      }
-                    } catch (blobErr) {}
-                  }
-                }
-              }
-            }
-          }
-
-          // Download any new email circular attachments in-memory from Student Worker
+          // PRIORITY 1: Download urgent email circular attachments & strip base64 from memory
           if (syncRes.gmail && syncRes.gmail.emails && Array.isArray(syncRes.gmail.emails)) {
-            var emAttIt = emailsFolder.getFoldersByName('attachments');
-            var emailAttachFolder = emAttIt.hasNext() ? emAttIt.next() : emailsFolder.createFolder('attachments');
-
-            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
-            var existingEmailFiles = {};
-            try {
-              var efIt = emailAttachFolder.getFiles();
-              while (efIt.hasNext()) {
-                var ef = efIt.next();
-                var efn = ef.getName();
-                existingEmailFiles[efn] = true;
-                existingEmailFiles[efn.toLowerCase()] = true;
-              }
-            } catch (efErr) {}
-
             var emails = syncRes.gmail.emails;
             for (var emIdx = 0; emIdx < emails.length; emIdx++) {
               var emailItem = emails[emIdx];
               if (emailItem.attachments && Array.isArray(emailItem.attachments)) {
                 for (var eaIdx = 0; eaIdx < emailItem.attachments.length; eaIdx++) {
+                  if (isTimeExpiring()) {
+                    scheduleContinuation();
+                    return { success: true, continuationScheduled: true, checkpoint: 'email_att_' + eaIdx };
+                  }
                   var eAtt = emailItem.attachments[eaIdx];
                   if (!eAtt || !eAtt.name) continue;
-                  var eTargetName = eAtt.cleanName || ((emailItem.subject || 'email').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) + '_' + eAtt.name);
-                  if (existingEmailFiles[eTargetName] || existingEmailFiles[eTargetName.toLowerCase()]) continue;
+                  var rawAttName = (eAtt.name || 'attachment').replace(/(\\.pdf)+$/i, '').replace(/\\.{2,}/g, '.');
+                  var cleanSubject = (emailItem.subject || 'circular').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
+                  var isPdf = (eAtt.name || '').toLowerCase().indexOf('.pdf') !== -1;
+                  var eTargetName = eAtt.cleanName || (cleanSubject + '_' + rawAttName + (isPdf ? '.pdf' : ''));
+
+                  if (existingEmailFiles[eTargetName] || existingEmailFiles[eTargetName.toLowerCase()]) {
+                    delete eAtt.base64;
+                    continue;
+                  }
 
                   try {
                     var eBlob = null;
@@ -2261,13 +2023,182 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
                       var newEmailFile = emailAttachFolder.createFile(eBlob);
                       existingEmailFiles[eTargetName] = true;
                       existingEmailFiles[eTargetName.toLowerCase()] = true;
-                      try {
-                        if (typeof DocumentOcrService !== 'undefined') {
-                          DocumentOcrService.indexDocument(kidFolder, newEmailFile, 'email');
-                        }
-                      } catch (docEmailIdxErr) {}
+                      eAtt.fileId = newEmailFile.getId();
+                      eAtt.driveUrl = newEmailFile.getUrl();
+                    } else if (eAtt.base64 || eAtt.fileId || emailItem.id) {
+                      downloadFailed++;
                     }
-                  } catch (eBlobErr) {}
+                  } catch (eBlobErr) { downloadFailed++; }
+                  delete eAtt.base64; // Strip base64 to prevent JSON bloat
+                }
+              }
+            }
+          }
+
+          // Save school_emails.json (merging with existing and purging any legacy inline base64)
+          if (syncRes.gmail && syncRes.gmail.emails) {
+            try {
+              var emailFileIt = emailsFolder.getFilesByName('school_emails.json');
+              var finalEmails = syncRes.gmail;
+              var exEmailFile = null;
+              var exEmailContent = '';
+              if (emailFileIt.hasNext()) {
+                exEmailFile = emailFileIt.next();
+                try {
+                  exEmailContent = exEmailFile.getContent();
+                  var exEmailData = JSON.parse(exEmailContent);
+                  if (exEmailData && exEmailData.emails) {
+                    var eMap = {};
+                    var combEmails = [];
+                    (syncRes.gmail.emails || []).concat(exEmailData.emails || []).forEach(function(em) {
+                      if (em && em.id && !eMap[em.id]) {
+                        eMap[em.id] = true;
+                        // Purge legacy base64 and save to Drive
+                        if (em.attachments && Array.isArray(em.attachments)) {
+                          em.attachments.forEach(function(legacyAtt) {
+                            if (legacyAtt && legacyAtt.base64) {
+                              try {
+                                var lRaw = (legacyAtt.name || 'attachment').replace(/(\\.pdf)+$/i, '').replace(/\\.{2,}/g, '.');
+                                var lExt = (legacyAtt.name || '').toLowerCase().indexOf('.pdf') !== -1 ? '.pdf' : '';
+                                var lTarget = legacyAtt.cleanName || ((em.subject || 'circular').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) + '_' + lRaw + lExt);
+                                if (!existingEmailFiles[lTarget] && !existingEmailFiles[lTarget.toLowerCase()]) {
+                                  var lBlob = Utilities.newBlob(Utilities.base64Decode(legacyAtt.base64), legacyAtt.mimeType || 'application/octet-stream', lTarget);
+                                  var lf = emailAttachFolder.createFile(lBlob);
+                                  existingEmailFiles[lTarget] = true;
+                                  existingEmailFiles[lTarget.toLowerCase()] = true;
+                                  legacyAtt.fileId = lf.getId();
+                                  legacyAtt.driveUrl = lf.getUrl();
+                                }
+                              } catch (lErr) {}
+                              delete legacyAtt.base64;
+                            }
+                          });
+                        }
+                        combEmails.push(em);
+                      }
+                    });
+                    finalEmails = {
+                      kidName: syncRes.gmail.kidName || ch.kidName,
+                      academicYear: syncRes.gmail.academicYear || ch.academicYear,
+                      schoolDomain: syncRes.gmail.schoolDomain || ch.schoolDomain,
+                      lastSyncedAt: new Date().toISOString(),
+                      totalEmails: combEmails.length,
+                      totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
+                      emails: combEmails
+                    };
+                  }
+                } catch (emErr) {}
+              }
+              if (finalEmails && finalEmails.emails) {
+                finalEmails.emails.forEach(function(fe) {
+                  if (fe.attachments) {
+                    fe.attachments.forEach(function(fa) { delete fa.base64; });
+                  }
+                });
+              }
+              var emailJsonStr = JSON.stringify(finalEmails, null, 2);
+              if (exEmailFile) {
+                if (exEmailContent !== emailJsonStr) {
+                  exEmailFile.setContent(emailJsonStr);
+                }
+              } else {
+                emailsFolder.createFile('school_emails.json', emailJsonStr, 'application/json');
+              }
+            } catch (gSaveErr) {}
+          }
+
+          // Save digest
+          if (syncRes.digest) {
+            var dIt = kidFolder.getFilesByName('daily_digest.json');
+            var dStr = JSON.stringify(syncRes.digest, null, 2);
+            if (dIt.hasNext()) {
+              var dFile = dIt.next();
+              try {
+                if (dFile.getContent() !== dStr) {
+                  dFile.setContent(dStr);
+                }
+              } catch (dErr) {
+                dFile.setContent(dStr);
+              }
+            } else {
+              kidFolder.createFile('daily_digest.json', dStr, 'application/json');
+            }
+          }
+
+          // PRIORITY 2: Download Classroom attachments with time budget checks (OCR decoupled)
+          if (syncRes.classroom.courses && Array.isArray(syncRes.classroom.courses)) {
+            var existingClassFiles = {};
+            try {
+              var cfIt = attachFolder.getFiles();
+              while (cfIt.hasNext()) {
+                var f = cfIt.next();
+                var fn = f.getName();
+                if (fn && fn.indexOf('temp_ocr_') === 0) {
+                  try { f.setTrashed(true); } catch (tErr) {}
+                  continue;
+                }
+                existingClassFiles[fn] = true;
+                existingClassFiles[fn.toLowerCase()] = true;
+              }
+            } catch (cfErr) {}
+
+            var courses = syncRes.classroom.courses;
+            for (var cIdx = 0; cIdx < courses.length; cIdx++) {
+              var c = courses[cIdx];
+              var cName = (c.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 15);
+              var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
+              for (var itIdx = 0; itIdx < allItems.length; itIdx++) {
+                var itm = allItems[itIdx];
+                if (itm.attachments && Array.isArray(itm.attachments)) {
+                  for (var aIdx = 0; aIdx < itm.attachments.length; aIdx++) {
+                    if (isTimeExpiring()) {
+                      scheduleContinuation();
+                      return { success: true, continuationScheduled: true, checkpoint: 'classroom_' + aIdx };
+                    }
+                    var att = itm.attachments[aIdx];
+                    if (!att || !att.fileId) continue;
+                    var rawTitle = (att.title || att.fileId).replace(/(\\.pdf)+$/i, '').replace(/\\.{2,}/g, '.');
+                    var isClassPdf = (att.title || '').toLowerCase().indexOf('.pdf') !== -1;
+                    var attTargetName = att.targetName || (cName + '_' + rawTitle);
+                    // Ensure file extension is present — Drive auto-appends extensions from MIME type,
+                    // so files on disk have .pdf but targetName from ClassroomIngester may not
+                    if (isClassPdf && !/\\.pdf$/i.test(attTargetName)) {
+                      attTargetName += '.pdf';
+                    } else if (!isClassPdf) {
+                      var extMatch = (att.title || '').match(/(\\.[a-zA-Z0-9]{2,5})$/);
+                      if (extMatch && !attTargetName.endsWith(extMatch[1])) {
+                        attTargetName += extMatch[1];
+                      }
+                    }
+                    if (existingClassFiles[attTargetName] || existingClassFiles[attTargetName.toLowerCase()]) continue;
+
+                    try {
+                      var blobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+                        method: 'POST',
+                        contentType: 'application/json',
+                        payload: JSON.stringify({
+                          method: 'get_file_blob',
+                          params: { fileId: att.fileId }
+                        }),
+                        muteHttpExceptions: true
+                      });
+                      if (blobRes.getResponseCode() === 200) {
+                        var blobData = JSON.parse(blobRes.getContentText());
+                        var blobObj = blobData.result || blobData;
+                        if (blobObj && blobObj.base64) {
+                          var decoded = Utilities.base64Decode(blobObj.base64);
+                          var newBlob = Utilities.newBlob(decoded, blobObj.mimeType || 'application/octet-stream', attTargetName);
+                          attachFolder.createFile(newBlob);
+                          existingClassFiles[attTargetName] = true;
+                          existingClassFiles[attTargetName.toLowerCase()] = true;
+                        } else {
+                          downloadFailed++;
+                        }
+                      } else {
+                        downloadFailed++;
+                      }
+                    } catch (blobErr) { downloadFailed++; }
+                  }
                 }
               }
             }
@@ -2275,15 +2206,42 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
 
           syncedCount++;
           if (isChildInitial) {
-            ch.initialSyncComplete = true;
-            ch.lastInitialSyncedAt = new Date().toISOString();
-            props.setProperty('multi_child_school_registry', JSON.stringify(registry));
-            McpLogger.log('SUCCESS', 'INITIAL_SYNC_COMPLETE', '1-Time data sync completed for ' + (ch.kidName || 'Child') + ' in Master Cloud Worker with all coursework, emails, and attachments.');
-            try {
-              setupMasterCloudSyncTrigger();
-            } catch (trigErr) {}
+            if (downloadFailed === 0) {
+              ch.initialSyncComplete = true;
+              ch.lastInitialSyncedAt = new Date().toISOString();
+              props.setProperty('multi_child_school_registry', JSON.stringify(registry));
+              props.deleteProperty('initial_sync_in_progress_child');
+              McpLogger.log('SUCCESS', 'INITIAL_SYNC_COMPLETE', '1-Time data sync completed for ' + (ch.kidName || 'Child') + ' — all attachments verified on Drive.');
+              try {
+                setupMasterCloudSyncTrigger();
+              } catch (trigErr) {}
+              try {
+                if (typeof DigestBuilder !== 'undefined' && DigestBuilder.build) {
+                  DigestBuilder.build(kidFolder);
+                }
+              } catch (digErr) {}
+              // Schedule autonomous OCR indexing chain to index 100% of newly downloaded vault files
+              try {
+                var ocrTrigs = ScriptApp.getProjectTriggers();
+                for (var ot = 0; ot < ocrTrigs.length; ot++) {
+                  if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+                    ScriptApp.deleteTrigger(ocrTrigs[ot]);
+                  }
+                }
+                ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(5000).create();
+                McpLogger.log('INFO', 'OCR_TRIGGER_SCHEDULED', 'Autonomous OCR indexing scheduled to start in 5 seconds.');
+              } catch (ocrTrigErr) {}
+            } else {
+              McpLogger.log('WARN', 'INITIAL_SYNC_INCOMPLETE', downloadFailed + ' attachment download(s) failed for ' + (ch.kidName || 'Child') + '. Scheduling 10s retry.');
+              scheduleContinuation();
+            }
           } else {
             McpLogger.log('SUCCESS', 'MASTER_CLOUD_SYNC_OK', 'Autonomous 24/7 cloud sync succeeded for ' + (ch.kidName || 'Child') + ' under Parent Account.');
+            try {
+              if (typeof DigestBuilder !== 'undefined' && DigestBuilder.build) {
+                DigestBuilder.build(kidFolder);
+              }
+            } catch (digErr2) {}
           }
         }
       } catch (err) {
@@ -2367,8 +2325,88 @@ function mergeClassroomData(existing, incoming) {
   };
 }
 
+/**
+ * Autonomous Vault OCR Continuation Engine:
+ * Indexes newly ingested attachments across classroom, emails, and whatsapp
+ * in discrete batches of 15. If pending files remain, automatically schedules
+ * the next 20-second continuation trigger until all vault documents are 100% indexed.
+ */
+function runAutonomousVaultOcr() {
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { skipped: true, reason: 'OCR indexing already in progress' };
+
+  try {
+    // Delete any existing OCR continuation triggers to avoid duplicate queues
+    var trigs = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < trigs.length; i++) {
+      if (trigs[i].getHandlerFunction() === 'runAutonomousVaultOcr') {
+        ScriptApp.deleteTrigger(trigs[i]);
+      }
+    }
+
+    var foldersToIndex = [];
+    var raw = props.getProperty('multi_child_school_registry');
+    if (raw) {
+      try {
+        var reg = JSON.parse(raw);
+        (reg.children || []).forEach(function(ch) {
+          if (ch && ch.targetFolderId) foldersToIndex.push(ch.targetFolderId);
+        });
+      } catch (e) {}
+    }
+    if (foldersToIndex.length === 0) {
+      var tfId = props.getProperty('target_folder_id');
+      if (tfId) foldersToIndex.push(tfId);
+    }
+
+    var totalRemaining = 0;
+    var totalProcessed = 0;
+
+    for (var f = 0; f < foldersToIndex.length; f++) {
+      var kFolder = null;
+      try { kFolder = DriveApp.getFolderById(foldersToIndex[f]); } catch (e) {}
+      if (!kFolder || kFolder.isTrashed()) continue;
+
+      if (typeof DocumentOcrService !== 'undefined') {
+        var res = DocumentOcrService.runAutomatedVaultIndexing(kFolder, 15);
+        if (res) {
+          totalProcessed += (res.processed || 0);
+          totalRemaining += (res.totalPendingRemaining || 0);
+        }
+      }
+    }
+
+    // Don't schedule OCR continuation during quiet hours — morning resume will restart
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'OCR_QUIET_HOURS_PAUSE', 'OCR paused for quiet hours. Processed: ' + totalProcessed + ', remaining: ' + totalRemaining + '. Will resume at 6 AM IST.');
+      return { success: true, processed: totalProcessed, totalRemaining: totalRemaining, quietHours: true };
+    }
+
+    if (totalRemaining > 0) {
+      try {
+        ScriptApp.newTrigger('runAutonomousVaultOcr')
+          .timeBased()
+          .after(20000)
+          .create();
+        McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Batch indexed ' + totalProcessed + ' files. ' + totalRemaining + ' pending. Next batch in 20s.');
+      } catch (trigErr) {
+        McpLogger.log('WARN', 'OCR_CONTINUATION_TRIGGER_FAIL', trigErr.toString());
+      }
+    } else {
+      McpLogger.log('SUCCESS', 'OCR_INDEXING_COMPLETE', 'All vault attachments successfully OCR indexed (' + totalProcessed + ' in last batch).');
+    }
+
+    return { success: true, processed: totalProcessed, totalRemaining: totalRemaining };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 function handleSetupTriggers(params) {
-  var type = params.type;
+  var type = params.type; // 'school_1min' or 'portal_6hr' or 'master_cloud_1min'
   var res;
   if (type === 'school_1min') {
     res = setupMinuteTrigger();
@@ -2398,6 +2436,9 @@ function handleSetupTriggers(params) {
   return { triggerSet: false, error: 'Unknown trigger type: ' + type };
 }
 
+/**
+ * Worker A Trigger: 1-Minute Incremental Background Cron for School Account
+ */
 function runIncrementalSchoolSync(forceRun) {
   var props = PropertiesService.getScriptProperties();
 
@@ -2436,8 +2477,8 @@ function runIncrementalSchoolSync(forceRun) {
   }
 
   var folderId = props.getProperty('target_folder_id');
-  var childName = props.getProperty('child_name') || (typeof CONFIG !== 'undefined' && CONFIG.childName) || 'Child';
-  var academicYear = props.getProperty('academic_year') || (typeof CONFIG !== 'undefined' && CONFIG.academicYear) || '2026-2027';
+  var childName = props.getProperty('child_name') || 'Atharva';
+  var academicYear = props.getProperty('academic_year') || '2026-2027';
   var schoolDomain = props.getProperty('school_domain') || '';
 
   if (!folderId) return { skipped: true, reason: 'no_target_folder' };
@@ -2456,6 +2497,9 @@ function runIncrementalSchoolSync(forceRun) {
   }
 }
 
+/**
+ * Worker B Trigger: 6-Hour Background Cron for Personal Account
+ */
 function runIncrementalPortalSync() {
   PortalIngester.syncAll();
 }
@@ -2552,27 +2596,44 @@ function setupSixHourTrigger() {
   }
 }
 
-function handlePreflightProxy(params) {
-  var spec = params.endpoint_spec || { url: params.url, method: 'GET' };
-  var cookies = params.cookies || (params.auth_spec ? params.auth_spec.cookies : '');
-
-  var options = {
-    method: spec.method || 'GET',
-    headers: { 'User-Agent': 'Mozilla/5.0' },
-    muteHttpExceptions: true
+function handleToolsList() {
+  return {
+    tools: [
+      { name: 'sync_classroom_and_gmail', description: 'Run full sync of Classroom & Gmail', inputSchema: { type: 'object', properties: {} } },
+      { name: 'sync_all_portals', description: 'Run full scraping of registered school portals', inputSchema: { type: 'object', properties: {} } },
+      { name: 'register_portal_job', description: 'Register a child school portal endpoint', inputSchema: { type: 'object', properties: {} } },
+      {
+        name: 'search_vault_documents',
+        description: 'Searches all school worksheets, circulars, scanned PDFs, and WhatsApp chat images across all subjects and dates using intelligent full-text OCR indexing.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Keyword or phrase to search for inside documents and images (e.g. "Linear equations worksheet", "fee notice", "sports day")' },
+            childName: { type: 'string', description: 'Optional child first name to filter search' }
+          },
+          required: ['query']
+        }
+      }
+    ]
   };
-  if (cookies) {
-    options.headers['Cookie'] = cookies;
-  }
+}
 
-  try {
-    var response = UrlFetchApp.fetch(spec.url, options);
-    var code = response.getResponseCode();
-    var contentText = response.getContentText();
-    return { success: true, statusCode: code, pageDataSnippet: contentText.substring(0, 1000) };
-  } catch (err) {
-    return { success: false, error: err.toString() };
+function handleToolsCall(name, args) {
+  if (name === 'sync_classroom_and_gmail') {
+    return handleSyncClassroomAndGmail(args);
+  } else if (name === 'sync_all_portals') {
+    return handleSyncAllPortals(args);
+  } else if (name === 'register_portal_job') {
+    return handleRegisterPortalJob(args);
+  } else if (name === 'search_vault_documents') {
+    var kidFolder = null;
+    var targetFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
+    if (targetFolderId) {
+      try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
+    }
+    return DocumentOcrService.searchVaultDocuments(kidFolder, args.query);
   }
+  throw new Error('Tool not found: ' + name);
 }
 
 function handleSetSyncState(params) {
@@ -3683,22 +3744,16 @@ var DocumentOcrService = {
           var doc = DocumentApp.openById(copyId);
           text = doc.getBody().getText();
         } catch (docErr) {
-          var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
-            headers: { 'Authorization': 'Bearer ' + token },
-            muteHttpExceptions: true
-          });
-          if (exportRes.getResponseCode() === 200) {
-            text = exportRes.getContentText();
-          }
+          try {
+            var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
+              headers: { 'Authorization': 'Bearer ' + token },
+              muteHttpExceptions: true
+            });
+            if (exportRes.getResponseCode() === 200) {
+              text = exportRes.getContentText();
+            }
+          } catch (expErr) {}
         }
-
-        try {
-          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
-            Drive.Files.remove(copyId);
-          } else {
-            DriveApp.getFileById(copyId).setTrashed(true);
-          }
-        } catch (delErr) {}
 
         if (text && text.trim()) {
           return text.trim().substring(0, maxChars);
@@ -3706,8 +3761,17 @@ var DocumentOcrService = {
       }
     } catch (err) {
       McpLogger.log('WARN', 'OCR_CONVERT_FAIL', 'OCR conversion failed for ' + (fileName || fileId) + ': ' + err.toString());
+    } finally {
       if (copyId) {
-        try { DriveApp.getFileById(copyId).setTrashed(true); } catch (e) {}
+        try {
+          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
+            Drive.Files.remove(copyId);
+          } else {
+            DriveApp.getFileById(copyId).setTrashed(true);
+          }
+        } catch (delErr) {
+          try { DriveApp.getFileById(copyId).setTrashed(true); } catch (e) {}
+        }
       }
     }
     return null;
@@ -4085,13 +4149,6 @@ var DriveContentExtractor = {
       if (copy && copy.id) {
         var doc = DocumentApp.openById(copy.id);
         var text = doc.getBody().getText();
-        try {
-          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
-            Drive.Files.remove(copy.id);
-          } else {
-            DriveApp.getFileById(copy.id).setTrashed(true);
-          }
-        } catch (delErr) {}
         if (text && text.trim()) {
           var trimmed = text.trim();
           try {
@@ -4103,9 +4160,22 @@ var DriveContentExtractor = {
       }
     } catch (ocrCopyErr) {
       debugLog.push('ocrCopyErr:' + ocrCopyErr.toString());
+    } finally {
+      if (copy && copy.id) {
+        try {
+          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
+            Drive.Files.remove(copy.id);
+          } else {
+            DriveApp.getFileById(copy.id).setTrashed(true);
+          }
+        } catch (delErr) {
+          try { DriveApp.getFileById(copy.id).setTrashed(true); } catch (e) {}
+        }
+      }
     }
 
     // Strategy 2: Download Media Blob via Drive API v3 -> Upload with OCR
+    var tempFileId = null;
     try {
       var token2 = ScriptApp.getOAuthToken();
       var mediaRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media&supportsAllDrives=true', {
@@ -4120,9 +4190,9 @@ var DriveContentExtractor = {
             mimeType: 'application/vnd.google-apps.document'
           }, blob, { ocr: true, ocrLanguage: 'en,hi' });
           if (tempFile && tempFile.id) {
+            tempFileId = tempFile.id;
             var tempDoc = DocumentApp.openById(tempFile.id);
             var ocrText = tempDoc.getBody().getText();
-            try { Drive.Files.remove(tempFile.id); } catch (e) {}
             if (ocrText && ocrText.trim()) {
               var trimmed2 = ocrText.trim();
               try {
@@ -4138,6 +4208,18 @@ var DriveContentExtractor = {
       }
     } catch (blobOcrErr) {
       debugLog.push('blobOcrErr:' + blobOcrErr.toString());
+    } finally {
+      if (tempFileId) {
+        try {
+          if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.remove) {
+            Drive.Files.remove(tempFileId);
+          } else {
+            DriveApp.getFileById(tempFileId).setTrashed(true);
+          }
+        } catch (e) {
+          try { DriveApp.getFileById(tempFileId).setTrashed(true); } catch (e2) {}
+        }
+      }
     }
 
     // Strategy 3: Native Google Workspace App Direct Open (Docs, Sheets, Slides)
@@ -4739,7 +4821,8 @@ var ClassroomIngester = {
     try {
       var cleanCourse = (courseName || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
       var cleanTitle = (itemTitle || '').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-      var targetName = cleanCourse + '_' + cleanTitle + '_' + (title || fileId);
+      var rawTitle = (title || fileId).replace(/(\\.pdf)+$/i, '').replace(/\\.{2,}/g, '.');
+      var targetName = cleanCourse + '_' + cleanTitle + '_' + rawTitle;
 
       if (!attachFolder) {
         return {
@@ -4774,7 +4857,8 @@ var ClassroomIngester = {
             muteHttpExceptions: true
           });
           if (exportRes.getResponseCode() === 200) {
-            var pdfBlob = exportRes.getBlob().setName(targetName + '.pdf');
+            var cleanPdfTarget = targetName.replace(/(\\.pdf)+$/i, '') + '.pdf';
+            var pdfBlob = exportRes.getBlob().setName(cleanPdfTarget);
             var createdPdf = attachFolder.createFile(pdfBlob);
             return {
               title: (title || targetName) + ' (PDF)',

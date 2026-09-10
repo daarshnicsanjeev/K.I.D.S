@@ -186,7 +186,22 @@ function doPost(e) {
       if (targetFolderId) {
         try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
       }
-      result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 12);
+      result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
+      if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+        try {
+          var ocrTrigs = ScriptApp.getProjectTriggers();
+          for (var ot = 0; ot < ocrTrigs.length; ot++) {
+            if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+              ScriptApp.deleteTrigger(ocrTrigs[ot]);
+            }
+          }
+          ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
+          result.continuationScheduled = true;
+          McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
+        } catch (ocrContErr) {}
+      }
+    } else if (method === "run_autonomous_vault_ocr") {
+      result = runAutonomousVaultOcr();
     } else if (method === "set_sync_state" || method === "set_initial_sync_complete") {
       result = handleSetSyncState(params);
     } else if (method === "clear_triggers" || method === "clearTriggers") {
@@ -721,7 +736,7 @@ function pauseNightlySyncTriggers() {
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
       var hFn = triggers[i].getHandlerFunction();
-      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync' || hFn === 'runAutonomousVaultOcr') {
         ScriptApp.deleteTrigger(triggers[i]);
         deletedCount++;
       }
@@ -759,6 +774,10 @@ function resumeMorningSyncTriggers() {
     if (canInstallSync) {
       ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
       McpLogger.log('SUCCESS', 'QUIET_HOURS_RESUMED', 'Restored 1-minute Master Cloud sync trigger for daytime (6 AM to 11 PM IST).');
+      // Restart autonomous OCR if it was interrupted by quiet hours
+      try {
+        ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(30000).create();
+      } catch (ocrErr) {}
       return { resumed: true, trigger: 'runMasterCloudSchoolSync (1m)' };
     } else {
       McpLogger.log('INFO', 'QUIET_HOURS_RESUME_DEFERRED', 'Morning resume deferred: initial 1-time sync is not yet complete.');
@@ -821,6 +840,15 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
     // Install daily 11 PM pause and 6 AM resume schedule triggers
     setupQuietHoursScheduleTriggers();
 
+    // Don't install the recurring sync trigger during quiet hours — it would immediately
+    // fire, hit the quiet-hours guard, and delete OCR continuation triggers
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'SYNC_TRIGGER_DEFERRED', 'Quiet hours active (IST). 1-minute trigger will be installed at 6 AM by morning resume.');
+      return { success: true, cadence: 'deferred_to_6am' };
+    }
+
     if (mins === 1) {
       ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
     } else if (mins === 5) {
@@ -845,8 +873,15 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
 function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) {
   var props = PropertiesService.getScriptProperties();
 
+  // RESUME GUARD: If initial sync was interrupted, resume with correct flags
+  var pendingInitialChild = props.getProperty('initial_sync_in_progress_child');
+  if (pendingInitialChild) {
+    if (!targetChildIdOrName) targetChildIdOrName = pendingInitialChild;
+    isInitialPass = true;
+    forceRun = true;
+  }
+
   // FAST-EXIT GUARD 0: IST Quiet Hours (11:00 PM to 6:00 AM IST)
-  // When 11 PM arrives, directly delete the 1-minute trigger so it NEVER fires overnight!
   if (forceRun !== true && props.getProperty('quiet_hours_disabled') !== 'true') {
     var now = new Date();
     var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
@@ -896,11 +931,42 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
   var lock = LockService.getScriptLock();
   if (!lock.tryLock(5000)) return { skipped: true, reason: 'Sync already in progress' };
 
+  var syncStartTime = new Date().getTime();
+  var MAX_SYNC_RUNTIME_MS = 270000; // 4.5 minutes (leaves 90s safety margin before 6.0m limit)
+
+  function isTimeExpiring() {
+    return (new Date().getTime() - syncStartTime) > MAX_SYNC_RUNTIME_MS;
+  }
+
+  function scheduleContinuation() {
+    try {
+      var trigs = ScriptApp.getProjectTriggers();
+      for (var tI = 0; tI < trigs.length; tI++) {
+        if (trigs[tI].getHandlerFunction() === 'runMasterCloudSchoolSync') {
+          ScriptApp.deleteTrigger(trigs[tI]);
+        }
+      }
+      ScriptApp.newTrigger('runMasterCloudSchoolSync')
+        .timeBased()
+        .after(10000)
+        .create();
+      McpLogger.log('INFO', 'CONTINUATION_TRIGGER_SET', '4.5-minute time budget reached. Scheduled 10-second continuation trigger.');
+      return true;
+    } catch (tErr) {
+      McpLogger.log('WARN', 'CONTINUATION_TRIGGER_FAIL', 'Could not schedule continuation trigger: ' + tErr);
+      return false;
+    }
+  }
+
   try {
     var syncedCount = 0;
-    var nowMs = new Date().getTime();
 
     for (var i = 0; i < children.length; i++) {
+      if (isTimeExpiring()) {
+        scheduleContinuation();
+        return { success: true, continuationScheduled: true, checkpoint: 'child_boundary_' + i };
+      }
+
       var ch = children[i];
       if (!ch || !ch.schoolWorkerUrl || !ch.targetFolderId) continue;
 
@@ -909,12 +975,9 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
         if (!matchTarget) continue;
       }
 
-      // Fast-Exit Guard: Strictly skip children whose 1-time initial sync has not completed,
-      // UNLESS this execution is specifically targeting them for initial sync!
       var isChildInitial = (ch.initialSyncComplete !== true) || (isInitialPass === true);
       if (!targetChildIdOrName && isInitialPass !== true) {
         if (ch.initialSyncComplete !== true) {
-          // Recurring trigger strictly skips this child until 1-time initial sync completes!
           continue;
         }
       }
@@ -925,6 +988,11 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
         if (!kidFolder || kidFolder.isTrashed()) continue;
       } catch (folderErr) {
         continue;
+      }
+
+      // Mark initial sync in progress so continuation knows which child to resume
+      if (isChildInitial) {
+        props.setProperty('initial_sync_in_progress_child', ch.childId || ch.kidName);
       }
 
       try {
@@ -955,12 +1023,19 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           var syncRes = data.result || data;
           if (!syncRes || syncRes.error || !syncRes.classroom) continue;
 
+          var downloadFailed = 0;
+
           var it = kidFolder.getFoldersByName('classroom');
           var classFolder = it.hasNext() ? it.next() : kidFolder.createFolder('classroom');
           var attIt = classFolder.getFoldersByName('attachments');
           var attachFolder = attIt.hasNext() ? attIt.next() : classFolder.createFolder('attachments');
 
-          // Save classroom_data.json (merging with existing so historical archive is preserved)
+          var emIt = kidFolder.getFoldersByName('emails');
+          var emailsFolder = emIt.hasNext() ? emIt.next() : kidFolder.createFolder('emails');
+          var emAttIt = emailsFolder.getFoldersByName('attachments');
+          var emailAttachFolder = emAttIt.hasNext() ? emAttIt.next() : emailsFolder.createFolder('attachments');
+
+          // Save classroom_data.json (merging with existing)
           var fIt = classFolder.getFilesByName('classroom_data.json');
           var finalClassroom = syncRes.classroom;
           var exFile = null;
@@ -984,157 +1059,40 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
             classFolder.createFile('classroom_data.json', jsonStr, 'application/json');
           }
 
-          // Save school_emails.json (merging with existing)
-          if (syncRes.gmail && syncRes.gmail.emails) {
-            try {
-              var emIt = kidFolder.getFoldersByName('emails');
-              var emailsFolder = emIt.hasNext() ? emIt.next() : kidFolder.createFolder('emails');
-              var emailFileIt = emailsFolder.getFilesByName('school_emails.json');
-              var finalEmails = syncRes.gmail;
-              var exEmailFile = null;
-              var exEmailContent = '';
-              if (emailFileIt.hasNext()) {
-                exEmailFile = emailFileIt.next();
-                try {
-                  exEmailContent = exEmailFile.getContent();
-                  var exEmailData = JSON.parse(exEmailContent);
-                  if (exEmailData && exEmailData.emails) {
-                    var eMap = {};
-                    var combEmails = [];
-                    (syncRes.gmail.emails || []).concat(exEmailData.emails || []).forEach(function(em) {
-                      if (em && em.id && !eMap[em.id]) {
-                        eMap[em.id] = true;
-                        combEmails.push(em);
-                      }
-                    });
-                    finalEmails = {
-                      kidName: syncRes.gmail.kidName || ch.kidName,
-                      academicYear: syncRes.gmail.academicYear || ch.academicYear,
-                      schoolDomain: syncRes.gmail.schoolDomain || ch.schoolDomain,
-                      lastSyncedAt: new Date().toISOString(),
-                      totalEmails: combEmails.length,
-                      totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
-                      emails: combEmails
-                    };
-                  }
-                } catch (emErr) {}
-              }
-              var emailJsonStr = JSON.stringify(finalEmails, null, 2);
-              if (exEmailFile) {
-                if (exEmailContent !== emailJsonStr) {
-                  exEmailFile.setContent(emailJsonStr);
-                }
-              } else {
-                emailsFolder.createFile('school_emails.json', emailJsonStr, 'application/json');
-              }
-            } catch (gSaveErr) {}
-          }
-
-          // Save digest
-          if (syncRes.digest) {
-            var dIt = kidFolder.getFilesByName('daily_digest.json');
-            var dStr = JSON.stringify(syncRes.digest, null, 2);
-            if (dIt.hasNext()) {
-              var dFile = dIt.next();
-              try {
-                if (dFile.getContent() !== dStr) {
-                  dFile.setContent(dStr);
-                }
-              } catch (dErr) {
-                dFile.setContent(dStr);
-              }
-            } else {
-              kidFolder.createFile('daily_digest.json', dStr, 'application/json');
+          // 1-query batch cache for Email Attachments
+          var existingEmailFiles = {};
+          try {
+            var efIt = emailAttachFolder.getFiles();
+            while (efIt.hasNext()) {
+              var ef = efIt.next();
+              var efn = ef.getName();
+              existingEmailFiles[efn] = true;
+              existingEmailFiles[efn.toLowerCase()] = true;
             }
-          }
+          } catch (efErr) {}
 
-          // Download any new attachments in-memory from Student Worker
-          if (syncRes.classroom.courses && Array.isArray(syncRes.classroom.courses)) {
-            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
-            var existingClassFiles = {};
-            try {
-              var cfIt = attachFolder.getFiles();
-              while (cfIt.hasNext()) {
-                var f = cfIt.next();
-                var fn = f.getName();
-                existingClassFiles[fn] = true;
-                existingClassFiles[fn.toLowerCase()] = true;
-              }
-            } catch (cfErr) {}
-
-            var courses = syncRes.classroom.courses;
-            for (var cIdx = 0; cIdx < courses.length; cIdx++) {
-              var c = courses[cIdx];
-              var cName = (c.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 15);
-              var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
-              for (var itIdx = 0; itIdx < allItems.length; itIdx++) {
-                var itm = allItems[itIdx];
-                if (itm.attachments && Array.isArray(itm.attachments)) {
-                  for (var aIdx = 0; aIdx < itm.attachments.length; aIdx++) {
-                    var att = itm.attachments[aIdx];
-                    if (!att || !att.fileId) continue;
-                    var attTargetName = att.targetName || (cName + '_' + (att.title || att.fileId));
-                    if (existingClassFiles[attTargetName] || existingClassFiles[attTargetName.toLowerCase()]) continue;
-
-                    try {
-                      var blobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
-                        method: 'POST',
-                        contentType: 'application/json',
-                        payload: JSON.stringify({
-                          method: 'get_file_blob',
-                          params: { fileId: att.fileId }
-                        }),
-                        muteHttpExceptions: true
-                      });
-                      if (blobRes.getResponseCode() === 200) {
-                        var blobData = JSON.parse(blobRes.getContentText());
-                        var blobObj = blobData.result || blobData;
-                        if (blobObj && blobObj.base64) {
-                          var decoded = Utilities.base64Decode(blobObj.base64);
-                          var newBlob = Utilities.newBlob(decoded, blobObj.mimeType || 'application/octet-stream', attTargetName);
-                          var newFile = attachFolder.createFile(newBlob);
-                          existingClassFiles[attTargetName] = true;
-                          existingClassFiles[attTargetName.toLowerCase()] = true;
-                          try {
-                            if (typeof DocumentOcrService !== 'undefined') {
-                              DocumentOcrService.indexDocument(kidFolder, newFile, 'classroom');
-                            }
-                          } catch (docIdxErr) {}
-                        }
-                      }
-                    } catch (blobErr) {}
-                  }
-                }
-              }
-            }
-          }
-
-          // Download any new email circular attachments in-memory from Student Worker
+          // PRIORITY 1: Download urgent email circular attachments & strip base64 from memory
           if (syncRes.gmail && syncRes.gmail.emails && Array.isArray(syncRes.gmail.emails)) {
-            var emAttIt = emailsFolder.getFoldersByName('attachments');
-            var emailAttachFolder = emAttIt.hasNext() ? emAttIt.next() : emailsFolder.createFolder('attachments');
-
-            // 1-query batch cache: Load all existing files once to eliminate hundreds of individual Drive API queries
-            var existingEmailFiles = {};
-            try {
-              var efIt = emailAttachFolder.getFiles();
-              while (efIt.hasNext()) {
-                var ef = efIt.next();
-                var efn = ef.getName();
-                existingEmailFiles[efn] = true;
-                existingEmailFiles[efn.toLowerCase()] = true;
-              }
-            } catch (efErr) {}
-
             var emails = syncRes.gmail.emails;
             for (var emIdx = 0; emIdx < emails.length; emIdx++) {
               var emailItem = emails[emIdx];
               if (emailItem.attachments && Array.isArray(emailItem.attachments)) {
                 for (var eaIdx = 0; eaIdx < emailItem.attachments.length; eaIdx++) {
+                  if (isTimeExpiring()) {
+                    scheduleContinuation();
+                    return { success: true, continuationScheduled: true, checkpoint: 'email_att_' + eaIdx };
+                  }
                   var eAtt = emailItem.attachments[eaIdx];
                   if (!eAtt || !eAtt.name) continue;
-                  var eTargetName = eAtt.cleanName || ((emailItem.subject || 'email').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) + '_' + eAtt.name);
-                  if (existingEmailFiles[eTargetName] || existingEmailFiles[eTargetName.toLowerCase()]) continue;
+                  var rawAttName = (eAtt.name || 'attachment').replace(/(\.pdf)+$/i, '').replace(/\.{2,}/g, '.');
+                  var cleanSubject = (emailItem.subject || 'circular').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
+                  var isPdf = (eAtt.name || '').toLowerCase().indexOf('.pdf') !== -1;
+                  var eTargetName = eAtt.cleanName || (cleanSubject + '_' + rawAttName + (isPdf ? '.pdf' : ''));
+
+                  if (existingEmailFiles[eTargetName] || existingEmailFiles[eTargetName.toLowerCase()]) {
+                    delete eAtt.base64;
+                    continue;
+                  }
 
                   try {
                     var eBlob = null;
@@ -1174,13 +1132,182 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
                       var newEmailFile = emailAttachFolder.createFile(eBlob);
                       existingEmailFiles[eTargetName] = true;
                       existingEmailFiles[eTargetName.toLowerCase()] = true;
-                      try {
-                        if (typeof DocumentOcrService !== 'undefined') {
-                          DocumentOcrService.indexDocument(kidFolder, newEmailFile, 'email');
-                        }
-                      } catch (docEmailIdxErr) {}
+                      eAtt.fileId = newEmailFile.getId();
+                      eAtt.driveUrl = newEmailFile.getUrl();
+                    } else if (eAtt.base64 || eAtt.fileId || emailItem.id) {
+                      downloadFailed++;
                     }
-                  } catch (eBlobErr) {}
+                  } catch (eBlobErr) { downloadFailed++; }
+                  delete eAtt.base64; // Strip base64 to prevent JSON bloat
+                }
+              }
+            }
+          }
+
+          // Save school_emails.json (merging with existing and purging any legacy inline base64)
+          if (syncRes.gmail && syncRes.gmail.emails) {
+            try {
+              var emailFileIt = emailsFolder.getFilesByName('school_emails.json');
+              var finalEmails = syncRes.gmail;
+              var exEmailFile = null;
+              var exEmailContent = '';
+              if (emailFileIt.hasNext()) {
+                exEmailFile = emailFileIt.next();
+                try {
+                  exEmailContent = exEmailFile.getContent();
+                  var exEmailData = JSON.parse(exEmailContent);
+                  if (exEmailData && exEmailData.emails) {
+                    var eMap = {};
+                    var combEmails = [];
+                    (syncRes.gmail.emails || []).concat(exEmailData.emails || []).forEach(function(em) {
+                      if (em && em.id && !eMap[em.id]) {
+                        eMap[em.id] = true;
+                        // Purge legacy base64 and save to Drive
+                        if (em.attachments && Array.isArray(em.attachments)) {
+                          em.attachments.forEach(function(legacyAtt) {
+                            if (legacyAtt && legacyAtt.base64) {
+                              try {
+                                var lRaw = (legacyAtt.name || 'attachment').replace(/(\.pdf)+$/i, '').replace(/\.{2,}/g, '.');
+                                var lExt = (legacyAtt.name || '').toLowerCase().indexOf('.pdf') !== -1 ? '.pdf' : '';
+                                var lTarget = legacyAtt.cleanName || ((em.subject || 'circular').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20) + '_' + lRaw + lExt);
+                                if (!existingEmailFiles[lTarget] && !existingEmailFiles[lTarget.toLowerCase()]) {
+                                  var lBlob = Utilities.newBlob(Utilities.base64Decode(legacyAtt.base64), legacyAtt.mimeType || 'application/octet-stream', lTarget);
+                                  var lf = emailAttachFolder.createFile(lBlob);
+                                  existingEmailFiles[lTarget] = true;
+                                  existingEmailFiles[lTarget.toLowerCase()] = true;
+                                  legacyAtt.fileId = lf.getId();
+                                  legacyAtt.driveUrl = lf.getUrl();
+                                }
+                              } catch (lErr) {}
+                              delete legacyAtt.base64;
+                            }
+                          });
+                        }
+                        combEmails.push(em);
+                      }
+                    });
+                    finalEmails = {
+                      kidName: syncRes.gmail.kidName || ch.kidName,
+                      academicYear: syncRes.gmail.academicYear || ch.academicYear,
+                      schoolDomain: syncRes.gmail.schoolDomain || ch.schoolDomain,
+                      lastSyncedAt: new Date().toISOString(),
+                      totalEmails: combEmails.length,
+                      totalAttachments: combEmails.reduce(function(a, x) { return a + (x.attachments ? x.attachments.length : 0); }, 0),
+                      emails: combEmails
+                    };
+                  }
+                } catch (emErr) {}
+              }
+              if (finalEmails && finalEmails.emails) {
+                finalEmails.emails.forEach(function(fe) {
+                  if (fe.attachments) {
+                    fe.attachments.forEach(function(fa) { delete fa.base64; });
+                  }
+                });
+              }
+              var emailJsonStr = JSON.stringify(finalEmails, null, 2);
+              if (exEmailFile) {
+                if (exEmailContent !== emailJsonStr) {
+                  exEmailFile.setContent(emailJsonStr);
+                }
+              } else {
+                emailsFolder.createFile('school_emails.json', emailJsonStr, 'application/json');
+              }
+            } catch (gSaveErr) {}
+          }
+
+          // Save digest
+          if (syncRes.digest) {
+            var dIt = kidFolder.getFilesByName('daily_digest.json');
+            var dStr = JSON.stringify(syncRes.digest, null, 2);
+            if (dIt.hasNext()) {
+              var dFile = dIt.next();
+              try {
+                if (dFile.getContent() !== dStr) {
+                  dFile.setContent(dStr);
+                }
+              } catch (dErr) {
+                dFile.setContent(dStr);
+              }
+            } else {
+              kidFolder.createFile('daily_digest.json', dStr, 'application/json');
+            }
+          }
+
+          // PRIORITY 2: Download Classroom attachments with time budget checks (OCR decoupled)
+          if (syncRes.classroom.courses && Array.isArray(syncRes.classroom.courses)) {
+            var existingClassFiles = {};
+            try {
+              var cfIt = attachFolder.getFiles();
+              while (cfIt.hasNext()) {
+                var f = cfIt.next();
+                var fn = f.getName();
+                if (fn && fn.indexOf('temp_ocr_') === 0) {
+                  try { f.setTrashed(true); } catch (tErr) {}
+                  continue;
+                }
+                existingClassFiles[fn] = true;
+                existingClassFiles[fn.toLowerCase()] = true;
+              }
+            } catch (cfErr) {}
+
+            var courses = syncRes.classroom.courses;
+            for (var cIdx = 0; cIdx < courses.length; cIdx++) {
+              var c = courses[cIdx];
+              var cName = (c.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 15);
+              var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
+              for (var itIdx = 0; itIdx < allItems.length; itIdx++) {
+                var itm = allItems[itIdx];
+                if (itm.attachments && Array.isArray(itm.attachments)) {
+                  for (var aIdx = 0; aIdx < itm.attachments.length; aIdx++) {
+                    if (isTimeExpiring()) {
+                      scheduleContinuation();
+                      return { success: true, continuationScheduled: true, checkpoint: 'classroom_' + aIdx };
+                    }
+                    var att = itm.attachments[aIdx];
+                    if (!att || !att.fileId) continue;
+                    var rawTitle = (att.title || att.fileId).replace(/(\.pdf)+$/i, '').replace(/\.{2,}/g, '.');
+                    var isClassPdf = (att.title || '').toLowerCase().indexOf('.pdf') !== -1;
+                    var attTargetName = att.targetName || (cName + '_' + rawTitle);
+                    // Ensure file extension is present — Drive auto-appends extensions from MIME type,
+                    // so files on disk have .pdf but targetName from ClassroomIngester may not
+                    if (isClassPdf && !/\.pdf$/i.test(attTargetName)) {
+                      attTargetName += '.pdf';
+                    } else if (!isClassPdf) {
+                      var extMatch = (att.title || '').match(/(\.[a-zA-Z0-9]{2,5})$/);
+                      if (extMatch && !attTargetName.endsWith(extMatch[1])) {
+                        attTargetName += extMatch[1];
+                      }
+                    }
+                    if (existingClassFiles[attTargetName] || existingClassFiles[attTargetName.toLowerCase()]) continue;
+
+                    try {
+                      var blobRes = UrlFetchApp.fetch(ch.schoolWorkerUrl, {
+                        method: 'POST',
+                        contentType: 'application/json',
+                        payload: JSON.stringify({
+                          method: 'get_file_blob',
+                          params: { fileId: att.fileId }
+                        }),
+                        muteHttpExceptions: true
+                      });
+                      if (blobRes.getResponseCode() === 200) {
+                        var blobData = JSON.parse(blobRes.getContentText());
+                        var blobObj = blobData.result || blobData;
+                        if (blobObj && blobObj.base64) {
+                          var decoded = Utilities.base64Decode(blobObj.base64);
+                          var newBlob = Utilities.newBlob(decoded, blobObj.mimeType || 'application/octet-stream', attTargetName);
+                          attachFolder.createFile(newBlob);
+                          existingClassFiles[attTargetName] = true;
+                          existingClassFiles[attTargetName.toLowerCase()] = true;
+                        } else {
+                          downloadFailed++;
+                        }
+                      } else {
+                        downloadFailed++;
+                      }
+                    } catch (blobErr) { downloadFailed++; }
+                  }
                 }
               }
             }
@@ -1188,15 +1315,42 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
 
           syncedCount++;
           if (isChildInitial) {
-            ch.initialSyncComplete = true;
-            ch.lastInitialSyncedAt = new Date().toISOString();
-            props.setProperty('multi_child_school_registry', JSON.stringify(registry));
-            McpLogger.log('SUCCESS', 'INITIAL_SYNC_COMPLETE', '1-Time data sync completed for ' + (ch.kidName || 'Child') + ' in Master Cloud Worker with all coursework, emails, and attachments.');
-            try {
-              setupMasterCloudSyncTrigger();
-            } catch (trigErr) {}
+            if (downloadFailed === 0) {
+              ch.initialSyncComplete = true;
+              ch.lastInitialSyncedAt = new Date().toISOString();
+              props.setProperty('multi_child_school_registry', JSON.stringify(registry));
+              props.deleteProperty('initial_sync_in_progress_child');
+              McpLogger.log('SUCCESS', 'INITIAL_SYNC_COMPLETE', '1-Time data sync completed for ' + (ch.kidName || 'Child') + ' — all attachments verified on Drive.');
+              try {
+                setupMasterCloudSyncTrigger();
+              } catch (trigErr) {}
+              try {
+                if (typeof DigestBuilder !== 'undefined' && DigestBuilder.build) {
+                  DigestBuilder.build(kidFolder);
+                }
+              } catch (digErr) {}
+              // Schedule autonomous OCR indexing chain to index 100% of newly downloaded vault files
+              try {
+                var ocrTrigs = ScriptApp.getProjectTriggers();
+                for (var ot = 0; ot < ocrTrigs.length; ot++) {
+                  if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+                    ScriptApp.deleteTrigger(ocrTrigs[ot]);
+                  }
+                }
+                ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(5000).create();
+                McpLogger.log('INFO', 'OCR_TRIGGER_SCHEDULED', 'Autonomous OCR indexing scheduled to start in 5 seconds.');
+              } catch (ocrTrigErr) {}
+            } else {
+              McpLogger.log('WARN', 'INITIAL_SYNC_INCOMPLETE', downloadFailed + ' attachment download(s) failed for ' + (ch.kidName || 'Child') + '. Scheduling 10s retry.');
+              scheduleContinuation();
+            }
           } else {
             McpLogger.log('SUCCESS', 'MASTER_CLOUD_SYNC_OK', 'Autonomous 24/7 cloud sync succeeded for ' + (ch.kidName || 'Child') + ' under Parent Account.');
+            try {
+              if (typeof DigestBuilder !== 'undefined' && DigestBuilder.build) {
+                DigestBuilder.build(kidFolder);
+              }
+            } catch (digErr2) {}
           }
         }
       } catch (err) {
@@ -1278,6 +1432,86 @@ function mergeClassroomData(existing, incoming) {
     }, 0),
     courses: mergedCourses
   };
+}
+
+/**
+ * Autonomous Vault OCR Continuation Engine:
+ * Indexes newly ingested attachments across classroom, emails, and whatsapp
+ * in discrete batches of 15. If pending files remain, automatically schedules
+ * the next 20-second continuation trigger until all vault documents are 100% indexed.
+ */
+function runAutonomousVaultOcr() {
+  var props = PropertiesService.getScriptProperties();
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(5000)) return { skipped: true, reason: 'OCR indexing already in progress' };
+
+  try {
+    // Delete any existing OCR continuation triggers to avoid duplicate queues
+    var trigs = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < trigs.length; i++) {
+      if (trigs[i].getHandlerFunction() === 'runAutonomousVaultOcr') {
+        ScriptApp.deleteTrigger(trigs[i]);
+      }
+    }
+
+    var foldersToIndex = [];
+    var raw = props.getProperty('multi_child_school_registry');
+    if (raw) {
+      try {
+        var reg = JSON.parse(raw);
+        (reg.children || []).forEach(function(ch) {
+          if (ch && ch.targetFolderId) foldersToIndex.push(ch.targetFolderId);
+        });
+      } catch (e) {}
+    }
+    if (foldersToIndex.length === 0) {
+      var tfId = props.getProperty('target_folder_id');
+      if (tfId) foldersToIndex.push(tfId);
+    }
+
+    var totalRemaining = 0;
+    var totalProcessed = 0;
+
+    for (var f = 0; f < foldersToIndex.length; f++) {
+      var kFolder = null;
+      try { kFolder = DriveApp.getFolderById(foldersToIndex[f]); } catch (e) {}
+      if (!kFolder || kFolder.isTrashed()) continue;
+
+      if (typeof DocumentOcrService !== 'undefined') {
+        var res = DocumentOcrService.runAutomatedVaultIndexing(kFolder, 15);
+        if (res) {
+          totalProcessed += (res.processed || 0);
+          totalRemaining += (res.totalPendingRemaining || 0);
+        }
+      }
+    }
+
+    // Don't schedule OCR continuation during quiet hours — morning resume will restart
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'OCR_QUIET_HOURS_PAUSE', 'OCR paused for quiet hours. Processed: ' + totalProcessed + ', remaining: ' + totalRemaining + '. Will resume at 6 AM IST.');
+      return { success: true, processed: totalProcessed, totalRemaining: totalRemaining, quietHours: true };
+    }
+
+    if (totalRemaining > 0) {
+      try {
+        ScriptApp.newTrigger('runAutonomousVaultOcr')
+          .timeBased()
+          .after(20000)
+          .create();
+        McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Batch indexed ' + totalProcessed + ' files. ' + totalRemaining + ' pending. Next batch in 20s.');
+      } catch (trigErr) {
+        McpLogger.log('WARN', 'OCR_CONTINUATION_TRIGGER_FAIL', trigErr.toString());
+      }
+    } else {
+      McpLogger.log('SUCCESS', 'OCR_INDEXING_COMPLETE', 'All vault attachments successfully OCR indexed (' + totalProcessed + ' in last batch).');
+    }
+
+    return { success: true, processed: totalProcessed, totalRemaining: totalRemaining };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 function handleSetupTriggers(params) {
