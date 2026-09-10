@@ -232,6 +232,7 @@ function doPost(e) {
 }
 
 function handleSyncClassroomAndGmail(params) {
+  try { McpLogger.log('INFO', 'HANDLE_SYNC_CLASSROOM_GMAIL_CALLED', 'childName=' + params.childName + ' extractOnly=' + params.extractOnly + ' isIncremental=' + params.isIncremental + ' targetFolderId=' + params.targetFolderId); } catch (logErr) {}
   var isWriting = !params.extractOnly && !!params.targetFolderId;
   var lock = isWriting ? LockService.getScriptLock() : null;
   if (lock && !lock.tryLock(30000)) {
@@ -279,6 +280,13 @@ function handleSyncClassroomAndGmail(params) {
     } catch (dErr) {
       McpLogger.log('WARN', 'DIGEST_BUILD_SKIP', 'Skipping digest build: ' + dErr);
     }
+
+    try {
+      var logFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+      if (logFolderId) {
+        McpLogger.saveToVault(DriveApp.getFolderById(logFolderId));
+      }
+    } catch (saveErr) {}
 
     return {
       success: true,
@@ -872,6 +880,7 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
 }
 
 function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) {
+  try { McpLogger.log('INFO', 'RUN_MASTER_CLOUD_SYNC_CALLED', 'Invoked with forceRun=' + forceRun + ' targetChild=' + targetChildIdOrName + ' isInitialPass=' + isInitialPass); } catch (logErr) {}
   var props = PropertiesService.getScriptProperties();
 
   // RESUME GUARD: If initial sync was interrupted, resume with correct flags
