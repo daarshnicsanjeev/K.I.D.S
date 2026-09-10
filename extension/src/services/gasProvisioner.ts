@@ -6554,20 +6554,29 @@ var PortalIngester = {
     const resolvedChild = childName || activeProf?.name || 'Atharva';
     const cleanYear = academicYear || activeProf?.academicYear || '2026-2027';
 
+    // CRITICAL: this in-memory flag must be set synchronously, with no await between the check
+    // and the set. Two near-simultaneous callers (the 2-second boot resumer and the 5-minute
+    // alarm both fire close to a fresh extension load) can otherwise both pass this check before
+    // either sets it — the previous version awaited a chrome.storage.local read in between,
+    // opening exactly that window, and both callers would proceed to run a full initial sync in
+    // parallel, each independently creating its own "classroom"/"emails" folder. Confirmed via
+    // Drive timestamps showing two such folders receiving writes ~50 minutes apart from what was
+    // reported as a single fresh run.
     if (this.isInitialSyncRunning) {
       this.log(`ℹ️ Initial school data sync already active in background for ${resolvedChild}.`);
       return { inProgress: true };
     }
+    this.isInitialSyncRunning = true;
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
       try {
         const storedSync = await chrome.storage.local.get(['step2_initial_sync_in_progress']);
         if (storedSync.step2_initial_sync_in_progress) {
           this.log(`ℹ️ Initial school data sync already active in storage for ${resolvedChild}.`);
+          this.isInitialSyncRunning = false;
           return { inProgress: true };
         }
       } catch (e) {}
     }
-    this.isInitialSyncRunning = true;
 
     // Keep Service Worker alive across Manifest V3 inactivity boundary during long fetch
     const keepAliveInterval = (typeof setInterval !== 'undefined') ? setInterval(() => {

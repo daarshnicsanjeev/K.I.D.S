@@ -2233,11 +2233,19 @@ async function handleMessage(message: { type: string; payload?: any }) {
     }
 
     case 'SYNC_CLASSROOM_ATTACHMENTS': {
-      return { success: true, skipped: true, reason: 'managed_by_gas_master_worker' };
+      const p = message.payload || {};
+      const data = await PersonalDriveService.syncClassroomAttachments(
+        p.parentToken, p.studentToken, p.childName, p.academicYear, p.options
+      );
+      return { success: true, data };
     }
 
     case 'SYNC_EMAIL_ATTACHMENTS': {
-      return { success: true, skipped: true, reason: 'managed_by_gas_master_worker' };
+      const p = message.payload || {};
+      const data = await PersonalDriveService.syncEmailAttachments(
+        p.parentToken, p.studentToken, p.childName, p.academicYear, p.options
+      );
+      return { success: true, data };
     }
 
     case 'GET_CLASSROOM_DEEP_LOG': {
