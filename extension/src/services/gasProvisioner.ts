@@ -2490,6 +2490,20 @@ function runIncrementalSchoolSync(forceRun) {
     ClassroomIngester.sync(folderId, childName, academicYear, true, false);
     GmailIngester.sync(folderId, childName, academicYear, schoolDomain, true, false);
     DigestBuilder.build(folderId, childName, academicYear);
+    // Schedule autonomous OCR indexing chain for newly downloaded vault files.
+    // Mirrors the same continuation-trigger pattern used in runMasterCloudSchoolSync,
+    // so single-worker deployments get OCR coverage too, not just dual-worker ones.
+    try {
+      var ocrIncTrigs = ScriptApp.getProjectTriggers();
+      for (var oit = 0; oit < ocrIncTrigs.length; oit++) {
+        if (ocrIncTrigs[oit].getHandlerFunction() === 'runAutonomousVaultOcr') {
+          ScriptApp.deleteTrigger(ocrIncTrigs[oit]);
+        }
+      }
+      ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(5000).create();
+    } catch (ocrIncTrigErr) {
+      McpLogger.log('WARN', 'OCR_TRIGGER_SCHEDULE_FAIL', 'Could not schedule OCR indexing after incremental sync: ' + ocrIncTrigErr);
+    }
   } catch (e) {
     McpLogger.log('ERROR', 'SCHOOL_CRON_ERROR', '1-Minute sync error: ' + e);
   } finally {
