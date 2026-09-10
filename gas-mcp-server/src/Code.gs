@@ -1336,6 +1336,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           if (failedAttachments.length > 0) {
             McpLogger.log('WARN', 'ATTACHMENT_DOWNLOAD_FAILURES', { kidName: ch.kidName, academicYear: ch.academicYear, count: failedAttachments.length, items: failedAttachments });
           }
+          try { McpLogger.saveToVault(kidFolder); } catch (saveErr) {}
 
           syncedCount++;
           if (isChildInitial) {
@@ -1379,6 +1380,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
         }
       } catch (err) {
         McpLogger.log('ERROR', 'MASTER_SYNC_CHILD_ERROR', 'runMasterCloudSchoolSync failed while processing ' + (ch.kidName || 'Child') + ': ' + err.toString() + (err.stack ? (' | stack: ' + err.stack) : ''));
+        try { McpLogger.saveToVault(kidFolder); } catch (saveErr) {}
       }
     }
     return { success: true, syncedCount: syncedCount, initialSyncComplete: true };
@@ -1625,6 +1627,9 @@ function runIncrementalSchoolSync(forceRun) {
     ClassroomIngester.sync(folderId, childName, academicYear, true, false);
     GmailIngester.sync(folderId, childName, academicYear, schoolDomain, true, false);
     DigestBuilder.build(folderId, childName, academicYear);
+    try {
+      McpLogger.saveToVault(DriveApp.getFolderById(folderId));
+    } catch (saveErr) {}
     // Schedule autonomous OCR indexing chain for newly downloaded vault files.
     // Mirrors the same continuation-trigger pattern used in runMasterCloudSchoolSync,
     // so single-worker deployments get OCR coverage too, not just dual-worker ones.
@@ -1641,6 +1646,7 @@ function runIncrementalSchoolSync(forceRun) {
     }
   } catch (e) {
     McpLogger.log('ERROR', 'SCHOOL_CRON_ERROR', '1-Minute sync error: ' + e);
+    try { McpLogger.saveToVault(DriveApp.getFolderById(folderId)); } catch (saveErr) {}
   } finally {
     lock.releaseLock();
   }
