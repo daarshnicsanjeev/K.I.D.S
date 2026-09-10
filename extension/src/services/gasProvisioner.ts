@@ -1915,6 +1915,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           if (!syncRes || syncRes.error || !syncRes.classroom) continue;
 
           var downloadFailed = 0;
+          var failedAttachments = [];
 
           var it = kidFolder.getFoldersByName('classroom');
           var classFolder = it.hasNext() ? it.next() : kidFolder.createFolder('classroom');
@@ -2027,8 +2028,12 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
                       eAtt.driveUrl = newEmailFile.getUrl();
                     } else if (eAtt.base64 || eAtt.fileId || emailItem.id) {
                       downloadFailed++;
+                      failedAttachments.push({ type: 'email', name: eTargetName, fileId: eAtt.fileId || null, subject: emailItem.subject || '', reason: 'no_blob_returned' });
                     }
-                  } catch (eBlobErr) { downloadFailed++; }
+                  } catch (eBlobErr) {
+                    downloadFailed++;
+                    failedAttachments.push({ type: 'email', name: eTargetName, fileId: eAtt.fileId || null, subject: emailItem.subject || '', reason: eBlobErr.toString() });
+                  }
                   delete eAtt.base64; // Strip base64 to prevent JSON bloat
                 }
               }
@@ -2193,15 +2198,24 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
                           existingClassFiles[attTargetName.toLowerCase()] = true;
                         } else {
                           downloadFailed++;
+                          failedAttachments.push({ type: 'classroom', name: attTargetName, fileId: att.fileId, course: c.name || '', reason: 'no_base64_in_response' });
                         }
                       } else {
                         downloadFailed++;
+                        failedAttachments.push({ type: 'classroom', name: attTargetName, fileId: att.fileId, course: c.name || '', reason: 'http_' + blobRes.getResponseCode() });
                       }
-                    } catch (blobErr) { downloadFailed++; }
+                    } catch (blobErr) {
+                      downloadFailed++;
+                      failedAttachments.push({ type: 'classroom', name: attTargetName, fileId: att.fileId, course: c.name || '', reason: blobErr.toString() });
+                    }
                   }
                 }
               }
             }
+          }
+
+          if (failedAttachments.length > 0) {
+            McpLogger.log('WARN', 'ATTACHMENT_DOWNLOAD_FAILURES', { kidName: ch.kidName, academicYear: ch.academicYear, count: failedAttachments.length, items: failedAttachments });
           }
 
           syncedCount++;
