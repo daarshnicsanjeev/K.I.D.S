@@ -3950,23 +3950,33 @@ var DocumentOcrService = {
       var fileName = file.getName ? file.getName() : file.name;
       var fileUrl = file.getUrl ? file.getUrl() : ('https://drive.google.com/file/d/' + fileId + '/view');
 
-      var indexFile = this.getOrCreateIndexFile(kidFolder);
-      var indexData = { documents: [] };
+      // Multiple triggers can call into OCR indexing within seconds of each other (the extension's
+      // own initial-sync call, the self-scheduled 20s continuation, and a freshly-created incremental
+      // sync trigger) with no other serialization between them. Without a lock, two concurrent
+      // executions each do their own read -> modify -> write of the single shared
+      // ocr_search_index.json, and whichever one writes last silently discards every document the
+      // other one just indexed. Confirmed live: 17 DOC_INDEXED successes logged in one run, only 1
+      // document survived on disk. LockService.getScriptLock() serializes the check below.
+      var checkLock = LockService.getScriptLock();
+      if (!checkLock.tryLock(30000)) {
+        McpLogger.log('WARN', 'DOC_INDEX_LOCK_BUSY', 'Could not acquire lock to check index for ' + fileName);
+        return null;
+      }
+      var cached = null;
       try {
-        indexData = JSON.parse(indexFile.getContent());
-      } catch (e) {}
-
-      var docs = indexData.documents || [];
-      var existingIdx = -1;
-      for (var i = 0; i < docs.length; i++) {
-        if (docs[i].fileId === fileId) {
-          existingIdx = i;
-          break;
+        var checkFile = this.getOrCreateIndexFile(kidFolder);
+        var checkData = { documents: [] };
+        try { checkData = JSON.parse(checkFile.getContent()); } catch (e) {}
+        var checkDocs = checkData.documents || [];
+        for (var i = 0; i < checkDocs.length; i++) {
+          if (checkDocs[i].fileId === fileId) { cached = checkDocs[i]; break; }
         }
+      } finally {
+        checkLock.releaseLock();
       }
 
-      if (existingIdx !== -1 && docs[existingIdx].text && docs[existingIdx].text.length > 0) {
-        return docs[existingIdx];
+      if (cached && cached.text && cached.text.length > 0) {
+        return cached;
       }
 
       var extraction = this.extractDocumentText(file);
@@ -3987,17 +3997,37 @@ var DocumentOcrService = {
         indexedAt: new Date().toISOString()
       };
 
-      if (existingIdx !== -1) {
-        docs[existingIdx] = docRecord;
-      } else {
-        docs.push(docRecord);
+      // Re-acquire the lock for the write and re-read the CURRENT file content here (not the
+      // possibly-now-stale copy from the check above, and not carried across the slow OCR call
+      // above, which is deliberately done outside the lock) so this write merges onto whatever any
+      // concurrent execution wrote in the meantime instead of overwriting it.
+      var writeLock = LockService.getScriptLock();
+      if (!writeLock.tryLock(30000)) {
+        McpLogger.log('WARN', 'DOC_INDEX_LOCK_BUSY', 'Could not acquire lock to write index for ' + fileName);
+        return null;
+      }
+      try {
+        var indexFile = this.getOrCreateIndexFile(kidFolder);
+        var indexData = { documents: [] };
+        try { indexData = JSON.parse(indexFile.getContent()); } catch (e) {}
+        var docs = indexData.documents || [];
+        var existingIdx = -1;
+        for (var j = 0; j < docs.length; j++) {
+          if (docs[j].fileId === fileId) { existingIdx = j; break; }
+        }
+        if (existingIdx !== -1) {
+          docs[existingIdx] = docRecord;
+        } else {
+          docs.push(docRecord);
+        }
+        indexData.lastUpdatedAt = new Date().toISOString();
+        indexData.totalIndexed = docs.length;
+        indexData.documents = docs;
+        indexFile.setContent(JSON.stringify(indexData, null, 2));
+      } finally {
+        writeLock.releaseLock();
       }
 
-      indexData.lastUpdatedAt = new Date().toISOString();
-      indexData.totalIndexed = docs.length;
-      indexData.documents = docs;
-
-      indexFile.setContent(JSON.stringify(indexData, null, 2));
       McpLogger.log('INFO', 'DOC_INDEXED', 'Indexed ' + fileName + ' (' + sourceContext + ', OCR=' + extraction.isOcr + ', words=' + wordCount + ')');
       return docRecord;
     } catch (err) {
@@ -4097,15 +4127,24 @@ var DocumentOcrService = {
     var processed = 0;
     for (var p = 0; p < pendingFiles.length && p < maxBatch; p++) {
       var item = pendingFiles[p];
-      this.indexDocument(kidFolder, item.file, item.source);
-      processed++;
+      var docRecord = this.indexDocument(kidFolder, item.file, item.source);
+      if (docRecord) processed++;
     }
+
+    // Re-read the index fresh rather than trusting the snapshot captured before the loop plus a
+    // guessed "+ processed" — that arithmetic assumes every attempt in this loop succeeded and that
+    // nothing else touched the file meanwhile, neither of which actually held (see indexDocument's
+    // per-call file error handling, and the lock added there for concurrent-execution safety).
+    // indexDocument's own writes are the only source of truth for what's actually persisted.
+    var finalIndexFile = this.getOrCreateIndexFile(kidFolder);
+    var finalIndexData = { documents: [] };
+    try { finalIndexData = JSON.parse(finalIndexFile.getContent()); } catch (e) {}
 
     return {
       success: true,
       processed: processed,
       totalPendingRemaining: Math.max(0, pendingFiles.length - processed),
-      totalIndexed: (indexData.documents || []).length + processed
+      totalIndexed: (finalIndexData.documents || []).length
     };
   },
 
