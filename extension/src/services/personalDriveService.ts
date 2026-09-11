@@ -452,7 +452,36 @@ export class PersonalDriveService {
     }
 
     const promise = (async () => {
+      // Persistent cache: the in-flight promise cache above (and any in-memory re-entrancy
+      // flag elsewhere) only protects concurrent calls within a single JS execution context.
+      // It does NOT survive an MV3 service worker restart, and it does NOT cover the popup and
+      // background running as separate contexts — both real gaps confirmed by duplicate
+      // "classroom"/"emails" folders forming even after those in-memory guards were fixed.
+      // chrome.storage.local is persistent and shared across every context, so once a folder's
+      // ID is known, every future caller (any context, any restart) reuses it directly instead
+      // of racing another search-or-create. This is the same pattern getOrCreateRootFolder
+      // already uses, and no root-folder duplicate has ever been observed.
+      const storageKey = `subfolder_id::${cacheKey}`;
       try {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          const cached = await chrome.storage.local.get([storageKey]);
+          const cachedId = cached[storageKey];
+          if (cachedId) {
+            try {
+              const checkRes = await this.fetchWithAuth(
+                `https://www.googleapis.com/drive/v3/files/${cachedId}?fields=id,name,webViewLink,trashed,parents`,
+                {}, token
+              );
+              if (checkRes.ok) {
+                const checkData = await checkRes.json();
+                if (!checkData.trashed && checkData.name === folderName && (checkData.parents || []).includes(parentId)) {
+                  return { id: checkData.id, webViewLink: checkData.webViewLink };
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
         const q = encodeURIComponent(`name = '${folderName}' and '${parentId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
         const searchRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,webViewLink,createdTime)&orderBy=createdTime`, {}, token);
 
@@ -462,6 +491,9 @@ export class PersonalDriveService {
             const primary = data.files[0];
             if (data.files.length > 1) {
               await WhatsAppDiagnosticLogger.log('WARN', 'DRIVE', `[DRIVE_DUP_DETECTED] Found ${data.files.length} folders named "${folderName}" under parent ${parentId}; using the oldest (ID: ${primary.id}). No automatic merge/cleanup is performed.`);
+            }
+            if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+              await chrome.storage.local.set({ [storageKey]: primary.id }).catch(() => {});
             }
             return { id: primary.id, webViewLink: primary.webViewLink };
           }
@@ -487,6 +519,9 @@ export class PersonalDriveService {
         }
 
         const created = await res.json();
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          await chrome.storage.local.set({ [storageKey]: created.id }).catch(() => {});
+        }
         return { id: created.id, webViewLink: created.webViewLink };
       } finally {
         this.subfolderPromises.delete(cacheKey);
