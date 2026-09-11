@@ -6446,24 +6446,17 @@ var PortalIngester = {
           } catch (apiErr) {}
         }
 
-        // Delegate 1-Time Cloud Sync to Master Cloud Worker in Google Cloud (Trigger activated only after completion)
-        if (registeredWithMaster) {
-          if (masterWorkerUrl) {
-            PersonalDriveService.callGasWorkerRpc(masterWorkerUrl, 'sync_master_cloud_school', {
-              childId: activeProfile?.id || 'default_child',
-              childName: childName,
-              academicYear: academicYear,
-              isInitialPass: true,
-              force: true
-            }).catch((rpcErr) => {
-              console.warn('[GasProvisioner] Notice: Cloud 1-time sync trigger:', rpcErr);
-            });
-          } else if (masterScriptId) {
-            this.executeMcpCommand(pToken, masterScriptId, 'runMasterCloudSchoolSync', [true, childName, true]).catch((apiErr) => {
-              console.warn('[GasProvisioner] Notice: API cloud 1-time sync trigger:', apiErr);
-            });
-          }
-        }
+        // NOTE: this used to also fire sync_master_cloud_school with isInitialPass:true here,
+        // kicking off a full GAS-side initial sync (its own extraction + attachment download
+        // loop, creating its own classroom/emails folders) on the Personal Master Worker,
+        // completely independently of and concurrently with the extension's own
+        // runInitialSchoolDataSync. That's confirmed to be the actual cause of duplicate
+        // classroom/emails folders — two separate runtimes (Google's cloud and the browser)
+        // syncing the same data with zero shared state between them, which no amount of
+        // chrome.storage.local-based locking in the extension could ever prevent. The 1-time
+        // sync is owned entirely by the extension now; registering the child here (above, with
+        // initialSyncComplete: false) is enough for the Master Worker to know about it and pick
+        // up ongoing incremental sync once the extension marks it complete.
 
         if (!registeredWithMaster) {
           this.log('ℹ️ School Cloud Worker connected to Parent Vault.');
