@@ -1186,15 +1186,23 @@ export class PersonalDriveService {
     // fetch() even completes once there's no other pending work keeping it alive. And its outcome
     // is logged via WhatsAppDiagnosticLogger (not just console.warn), so it actually shows up in
     // the Drive-persisted log below instead of being invisible outside the browser console.
-    if (webAppUrl) {
+    // The vault folder (kidInfo.id) lives in the PARENT's own Drive. Only a worker authorized
+    // under the parent's identity can actually read/write it via DriveApp — the school/student
+    // worker (webAppUrl) is authorized under a different identity and has no access to it at all.
+    // Confirmed by a real "Exception: Access denied: DriveApp." error when this was pointed at
+    // webAppUrl directly. Prefer the Master Worker (which is deployed specifically under the
+    // parent's identity for exactly this reason); fall back to webAppUrl only when no separate
+    // master is registered, i.e. a genuine single-identity deployment.
+    const ocrTargetUrl = (await this.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
+    if (ocrTargetUrl) {
       try {
-        const ocrRes = await this.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2);
-        await WhatsAppDiagnosticLogger.log('INFO', 'OCR', `[OCR_TRIGGER] run_vault_ocr_indexing result: ${JSON.stringify(ocrRes).substring(0, 300)}`);
+        const ocrRes = await this.callGasWorkerRpc(ocrTargetUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2);
+        await WhatsAppDiagnosticLogger.log('INFO', 'OCR', `[OCR_TRIGGER] run_vault_ocr_indexing (via ${ocrTargetUrl === webAppUrl ? 'school worker' : 'master worker'}) result: ${JSON.stringify(ocrRes).substring(0, 300)}`);
       } catch (ocrErr: any) {
         await WhatsAppDiagnosticLogger.log('WARN', 'OCR', `[OCR_TRIGGER_FAILED] run_vault_ocr_indexing failed: ${ocrErr?.message || String(ocrErr)}`);
       }
     } else {
-      await WhatsAppDiagnosticLogger.log('WARN', 'OCR', '[OCR_TRIGGER_SKIPPED] No webAppUrl available to trigger vault OCR indexing.');
+      await WhatsAppDiagnosticLogger.log('WARN', 'OCR', '[OCR_TRIGGER_SKIPPED] No master or school worker URL available to trigger vault OCR indexing.');
     }
 
     // Persist recent attachment-sync diagnostic logs to Drive so they're inspectable directly

@@ -6834,12 +6834,16 @@ var PortalIngester = {
           });
         }
 
-        // Trigger vault OCR indexing directly on the worker that actually holds this child's data.
-        // (triggerMasterVaultOcrIndexing only works when a separate master worker URL is registered;
-        // single-worker deployments have no such URL, so that call silently no-ops.) The worker's own
-        // run_vault_ocr_indexing handler self-schedules a continuation trigger if a backlog remains.
-        if (webAppUrl) {
-          PersonalDriveService.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', {
+        // The vault folder (targetFolderId) lives in the PARENT's own Drive. Only a worker
+        // authorized under the parent's identity can access it via DriveApp — pointing this at
+        // webAppUrl (the school/student worker) produces a real "Access denied: DriveApp."
+        // exception, confirmed via the extension_sync_diagnostics_log.json this same session.
+        // Prefer the Master Worker; fall back to webAppUrl only when no separate master exists.
+        // The worker's own run_vault_ocr_indexing handler self-schedules a continuation trigger
+        // if a backlog remains.
+        const ocrTargetUrl = (await PersonalDriveService.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
+        if (ocrTargetUrl) {
+          PersonalDriveService.callGasWorkerRpc(ocrTargetUrl, 'run_vault_ocr_indexing', {
             targetFolderId,
             maxBatch: 15
           }, 2).catch((ocrErr: any) => {
