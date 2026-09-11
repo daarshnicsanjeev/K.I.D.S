@@ -995,6 +995,11 @@ export class PersonalDriveService {
       };
     }
 
+    // resObj.error carries the actual reason (e.g. "Unable to retrieve file X" from
+    // handleGetFileBlob exhausting all 3 retrieval strategies server-side, or an HTTP/network
+    // failure from callGasWorkerRpc) — previously discarded here, leaving the caller with nothing
+    // but a generic "could not retrieve" to log, no matter what actually went wrong.
+    await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `[GET_FILE_BLOB_FAILED] fileId=${fileId}: ${resObj?.error || 'no base64 in response, no error message provided'}`);
     return null;
   }
 
@@ -1042,6 +1047,9 @@ export class PersonalDriveService {
       };
     }
 
+    // See the matching comment in downloadDriveFileContent: resObj.error carries the actual
+    // reason and was previously discarded, leaving callers with no way to log what went wrong.
+    await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `[GET_GMAIL_ATTACHMENT_FAILED] messageId=${messageId} filename=${fileName}: ${resObj?.error || 'no base64 in response, no error message provided'}`);
     return null;
   }
 

@@ -1371,6 +1371,10 @@ function handleGetFileBlob(params) {
   var name = 'attachment_' + fid;
   var mime = 'application/octet-stream';
   var tok = ScriptApp.getOAuthToken();
+  // Collects one short note per strategy attempted, whether it threw or just returned a non-200,
+  // so the final failure message actually says what was tried instead of a bare "unable to
+  // retrieve" that gives the caller nothing to act on.
+  var notes = [];
 
   // Strategy A: Drive REST API v3 with ScriptApp.getOAuthToken() & supportsAllDrives=true
   try {
@@ -1408,8 +1412,12 @@ function handleGetFileBlob(params) {
           base64: Utilities.base64Encode(blob.getBytes())
         };
       }
+      notes.push('A:download HTTP ' + dlRes.getResponseCode());
+    } else {
+      notes.push('A:meta HTTP ' + metaRes.getResponseCode());
     }
   } catch (errA) {
+    notes.push('A:exception ' + errA.toString());
     McpLogger.log('WARN', 'GET_BLOB_V3_WARN', 'REST API v3 fetch error for ' + fid + ': ' + errA.toString());
   }
 
@@ -1439,10 +1447,18 @@ function handleGetFileBlob(params) {
               base64: Utilities.base64Encode(advRes.getBlob().getBytes())
             };
           }
+          notes.push('B:download HTTP ' + advRes.getResponseCode());
+        } else {
+          notes.push('B:no downloadUrl/exportLink on file resource');
         }
+      } else {
+        notes.push('B:Drive.Files.get returned nothing');
       }
+    } else {
+      notes.push('B:Advanced Drive service not enabled');
     }
   } catch (errB) {
+    notes.push('B:exception ' + errB.toString());
     McpLogger.log('WARN', 'GET_BLOB_V2_WARN', 'Advanced Drive v2 fetch error for ' + fid + ': ' + errB.toString());
   }
 
@@ -1471,14 +1487,17 @@ function handleGetFileBlob(params) {
         base64: Utilities.base64Encode(b.getBytes())
       };
     }
+    notes.push('C:DriveApp.getFileById returned nothing');
   } catch (errC) {
+    notes.push('C:exception ' + errC.toString());
     McpLogger.log('WARN', 'GET_BLOB_DRIVEAPP_WARN', 'DriveApp fetch error for ' + fid + ': ' + errC.toString());
   }
 
-  McpLogger.log('WARN', 'GET_FILE_BLOB_FAILED', 'All strategies failed to retrieve file ' + fid + ' (last known name: ' + name + ', mime: ' + mime + ')');
+  var noteSummary = notes.join(' | ');
+  McpLogger.log('WARN', 'GET_FILE_BLOB_FAILED', 'All strategies failed to retrieve file ' + fid + ' (last known name: ' + name + ', mime: ' + mime + '): ' + noteSummary);
   return {
     success: false,
-    error: 'Unable to retrieve file ' + fid
+    error: 'Unable to retrieve file ' + fid + ' [' + noteSummary + ']'
   };
 }
 
