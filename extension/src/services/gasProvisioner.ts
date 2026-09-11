@@ -2427,7 +2427,28 @@ function mergeClassroomData(existing, incoming) {
 function runAutonomousVaultOcr() {
   var props = PropertiesService.getScriptProperties();
   var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return { skipped: true, reason: 'OCR indexing already in progress' };
+  if (!lock.tryLock(5000)) {
+    // Check if quiet hours is active (11 PM to 6 AM IST)
+    var nowCheck = new Date();
+    var istHourCheck = new Date(nowCheck.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHourCheck < 23 && istHourCheck >= 6) {
+      try {
+        var existingTrigs = ScriptApp.getProjectTriggers();
+        var hasTrigger = false;
+        for (var t = 0; t < existingTrigs.length; t++) {
+          if (existingTrigs[t].getHandlerFunction() === 'runAutonomousVaultOcr') {
+            hasTrigger = true;
+            break;
+          }
+        }
+        if (!hasTrigger) {
+          ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(45000).create();
+          McpLogger.log('INFO', 'OCR_LOCK_BUSY_RESCHEDULED', 'Script lock busy (sync in progress); rescheduled OCR continuation in 45s.');
+        }
+      } catch (rErr) {}
+    }
+    return { skipped: true, reason: 'Script lock busy; continuation rescheduled' };
+  }
 
   try {
     // Delete any existing OCR continuation triggers to avoid duplicate queues
