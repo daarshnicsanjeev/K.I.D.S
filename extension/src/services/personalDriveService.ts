@@ -1178,9 +1178,29 @@ export class PersonalDriveService {
       }
     }
 
+    // Trigger vault OCR indexing directly on the worker that holds this child's data.
+    // (triggerMasterVaultOcrIndexing only works when a separate master worker URL is registered;
+    // single-worker deployments have none, so that call silently no-ops.)
+    // AWAITED, not fire-and-forget: an un-awaited call as the last thing in this function is a
+    // real MV3 reliability risk — the service worker can be torn down before the underlying
+    // fetch() even completes once there's no other pending work keeping it alive. And its outcome
+    // is logged via WhatsAppDiagnosticLogger (not just console.warn), so it actually shows up in
+    // the Drive-persisted log below instead of being invisible outside the browser console.
+    if (webAppUrl) {
+      try {
+        const ocrRes = await this.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2);
+        await WhatsAppDiagnosticLogger.log('INFO', 'OCR', `[OCR_TRIGGER] run_vault_ocr_indexing result: ${JSON.stringify(ocrRes).substring(0, 300)}`);
+      } catch (ocrErr: any) {
+        await WhatsAppDiagnosticLogger.log('WARN', 'OCR', `[OCR_TRIGGER_FAILED] run_vault_ocr_indexing failed: ${ocrErr?.message || String(ocrErr)}`);
+      }
+    } else {
+      await WhatsAppDiagnosticLogger.log('WARN', 'OCR', '[OCR_TRIGGER_SKIPPED] No webAppUrl available to trigger vault OCR indexing.');
+    }
+
     // Persist recent attachment-sync diagnostic logs to Drive so they're inspectable directly
     // (chrome.storage.local, where WhatsAppDiagnosticLogger normally lives, isn't reachable outside
-    // the browser). Written unconditionally so a partial/failed pass is visible too, not just success.
+    // the browser). Written unconditionally so a partial/failed pass is visible too, not just
+    // success — and written AFTER the OCR trigger above so its outcome is actually captured here.
     try {
       const recentLogs = await WhatsAppDiagnosticLogger.getLogs(60);
       await this.saveJsonFileInFolder(token, kidInfo.id, 'extension_sync_diagnostics_log.json', {
@@ -1189,15 +1209,6 @@ export class PersonalDriveService {
       });
     } catch (logSaveErr) {
       console.warn('[PersonalDriveService] Could not persist diagnostics log to Drive:', logSaveErr);
-    }
-
-    // Trigger vault OCR indexing directly on the worker that holds this child's data.
-    // (triggerMasterVaultOcrIndexing only works when a separate master worker URL is registered;
-    // single-worker deployments have none, so that call silently no-ops.)
-    if (webAppUrl) {
-      this.callGasWorkerRpc(webAppUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2).catch((ocrErr) => {
-        console.warn('[PersonalDriveService] Background vault OCR indexing trigger deferred:', ocrErr);
-      });
     }
   }
 
