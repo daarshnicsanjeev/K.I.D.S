@@ -227,7 +227,14 @@ export class GasProvisionerService {
       webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${masterAccessKey}` : `${webAppUrl}?accessKey=${masterAccessKey}`;
     }
 
-    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId, undefined, 'master');
+    // Functionally verify Drive/Classroom/Gmail/Calendar scopes are actually granted for this
+    // (possibly brand-new) Master Worker project - matching the check already done for School
+    // Worker projects below. Without this, a newly created Master Worker's authorization popup was
+    // decided purely by a GET ping heuristic that could conclude "already authorized" when nothing
+    // had ever been granted, leaving every DriveApp call - including OCR indexing, which routes to
+    // the Master Worker specifically - failing with "Access denied: DriveApp." indefinitely.
+    const masterTestAuth = await this.runTestAuth(scriptId, parentToken);
+    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId, undefined, 'master', !masterTestAuth.authorized);
 
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
       await chrome.storage.local.set({
@@ -403,10 +410,10 @@ export class GasProvisionerService {
     // Pre-warm Google Services & Bind Scopes via Execution API
     this.reportProgress(94, 'Phase 5 of 5 (94%)', 'Pre-warming Google Workspace services...');
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
-    await this.runTestAuth(scriptId, token);
+    const schoolTestAuth = await this.runTestAuth(scriptId, token);
 
     // Interactive Authorization Check if required by Google Apps Script runtime
-    await this.ensureScriptAuthorized(webAppUrl, token, scriptId, activeChild?.accountEmail);
+    await this.ensureScriptAuthorized(webAppUrl, token, scriptId, activeChild?.accountEmail, 'school', !schoolTestAuth.authorized);
 
     // Verify Server Execution via authenticated Web App ping & Execution API
     this.reportProgress(98, 'Phase 5 of 5 (98%)', 'Verifying live MCP Server tools...');
@@ -6019,7 +6026,7 @@ var PortalIngester = {
   /**
    * Automatically executes testAuth() via Google Apps Script Execution API to pre-warm and verify all scopes.
    */
-  private static async runTestAuth(scriptId: string, token: string): Promise<any> {
+  private static async runTestAuth(scriptId: string, token: string): Promise<{ authorized: boolean; raw: any }> {
     try {
       const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}:run`, {
         method: 'POST',
@@ -6032,13 +6039,23 @@ var PortalIngester = {
         })
       });
       if (response.ok) {
-        console.log('[School MCP] Automated testAuth executed and pre-warmed successfully.');
-        return await response.json();
+        const json = await response.json();
+        // scripts.run returns HTTP 200 even when the target function itself failed (e.g. a scope
+        // like Drive was never interactively granted for this script project) - the failure shows
+        // up as a populated `error` field, not as a non-2xx status. Treating response.ok alone as
+        // "authorized" (the old behavior) is exactly the gap that let DriveApp calls fail silently
+        // forever for a brand-new project that never got its one-time consent popup.
+        if (!json.error) {
+          console.log('[School MCP] Automated testAuth executed and pre-warmed successfully.');
+          return { authorized: true, raw: json };
+        }
+        console.warn('[School MCP] testAuth ran but reported an error (scopes likely not yet authorized):', json.error);
+        return { authorized: false, raw: json };
       }
     } catch (e) {
       console.warn('[School MCP] Automated testAuth warning:', e);
     }
-    return null;
+    return { authorized: false, raw: null };
   }
 
   /**
@@ -6132,7 +6149,7 @@ var PortalIngester = {
    * Proactively detects if Google requires 1-time interactive script authorization.
    * Prompts the clean Google consent dialog (Review Permissions -> Allow) routed to the student account.
    */
-  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string, workerType: 'master' | 'school' = 'school'): Promise<void> {
+  public static async ensureScriptAuthorized(webAppUrl: string, token: string, scriptId?: string, studentEmail?: string, workerType: 'master' | 'school' = 'school', knownUnauthorized: boolean = false): Promise<void> {
     const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
     try {
       const pingRes = await fetch(cleanUrl, {
@@ -6142,7 +6159,12 @@ var PortalIngester = {
 
       const responseText = await pingRes.text();
 
-      if (responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403 || !responseText.includes('online')) {
+      // knownUnauthorized comes from an actual functional probe (testAuth via the Execution API,
+      // which really invokes DriveApp/Classroom/Gmail/Calendar) rather than guessing from this GET
+      // ping's response text alone - the ping-only heuristic previously missed cases where the ping
+      // "looked fine" but the underlying scopes were never actually granted, so the popup was never
+      // shown and every subsequent DriveApp call failed with "Access denied" indefinitely.
+      if (knownUnauthorized || responseText.includes('Authorization needed') || responseText.includes('Authorization Required') || pingRes.status === 401 || pingRes.status === 403 || !responseText.includes('online')) {
         // Resolve student email to avoid /u/0/ multi-account conflict
         let targetEmail = studentEmail;
         if (!targetEmail) {
