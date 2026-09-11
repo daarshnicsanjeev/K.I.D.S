@@ -178,7 +178,9 @@ var GmailIngester = {
             try {
               var exEmIt = emailsFolder.getFilesByName('school_emails.json');
               if (exEmIt.hasNext()) {
-                var exEmData = JSON.parse(exEmIt.next().getContent());
+                var exEmFile = exEmIt.next();
+                var rawEmContent = (typeof exEmFile.getBlob === 'function') ? exEmFile.getBlob().getDataAsString() : (typeof exEmFile.getContent === 'function' ? exEmFile.getContent() : '');
+                var exEmData = JSON.parse(rawEmContent);
                 if (exEmData && exEmData.emails) {
                   var emMap = {};
                   var combEmails = [];

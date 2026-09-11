@@ -181,24 +181,33 @@ function doPost(e) {
     } else if (method === "index_whatsapp_media") {
       result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
     } else if (method === "run_vault_ocr_indexing") {
-      var kidFolder = null;
-      var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
-      if (targetFolderId) {
-        try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
-      }
-      result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
-      if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+      var ocrLock = LockService.getScriptLock();
+      if (!ocrLock.tryLock(5000)) {
+        result = { success: false, error: 'Lock busy: sync or OCR already running', locked: true };
+      } else {
         try {
-          var ocrTrigs = ScriptApp.getProjectTriggers();
-          for (var ot = 0; ot < ocrTrigs.length; ot++) {
-            if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
-              ScriptApp.deleteTrigger(ocrTrigs[ot]);
-            }
+          var kidFolder = null;
+          var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+          if (targetFolderId) {
+            try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
           }
-          ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
-          result.continuationScheduled = true;
-          McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
-        } catch (ocrContErr) {}
+          result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
+          if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+            try {
+              var ocrTrigs = ScriptApp.getProjectTriggers();
+              for (var ot = 0; ot < ocrTrigs.length; ot++) {
+                if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+                  ScriptApp.deleteTrigger(ocrTrigs[ot]);
+                }
+              }
+              ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
+              result.continuationScheduled = true;
+              McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
+            } catch (ocrContErr) {}
+          }
+        } finally {
+          ocrLock.releaseLock();
+        }
       }
     } else if (method === "run_autonomous_vault_ocr") {
       result = runAutonomousVaultOcr();
@@ -1082,7 +1091,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           if (fIt.hasNext()) {
             exFile = fIt.next();
             try {
-              exClassroomContent = exFile.getContent();
+              exClassroomContent = (typeof exFile.getBlob === 'function') ? exFile.getBlob().getDataAsString() : (typeof exFile.getContent === 'function' ? exFile.getContent() : '');
               var exData = JSON.parse(exClassroomContent);
               if (exData && exData.courses && syncRes.classroom && syncRes.classroom.courses) {
                 finalClassroom = mergeClassroomData(exData, syncRes.classroom);
@@ -1197,7 +1206,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
               if (emailFileIt.hasNext()) {
                 exEmailFile = emailFileIt.next();
                 try {
-                  exEmailContent = exEmailFile.getContent();
+                  exEmailContent = (typeof exEmailFile.getBlob === 'function') ? exEmailFile.getBlob().getDataAsString() : (typeof exEmailFile.getContent === 'function' ? exEmailFile.getContent() : '');
                   var exEmailData = JSON.parse(exEmailContent);
                   if (exEmailData && exEmailData.emails) {
                     var eMap = {};
@@ -1266,7 +1275,8 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
             if (dIt.hasNext()) {
               var dFile = dIt.next();
               try {
-                if (dFile.getContent() !== dStr) {
+                var curDigestStr = (typeof dFile.getBlob === 'function') ? dFile.getBlob().getDataAsString() : (typeof dFile.getContent === 'function' ? dFile.getContent() : '');
+                if (curDigestStr !== dStr) {
                   dFile.setContent(dStr);
                 }
               } catch (dErr) {

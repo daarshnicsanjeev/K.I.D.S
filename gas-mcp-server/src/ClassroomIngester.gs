@@ -356,7 +356,9 @@ var ClassroomIngester = {
           try {
             var exFileIt = classroomFolder.getFilesByName('classroom_data.json');
             if (exFileIt.hasNext()) {
-              var exData = JSON.parse(exFileIt.next().getContent());
+              var exFile = exFileIt.next();
+              var rawContent = (typeof exFile.getBlob === 'function') ? exFile.getBlob().getDataAsString() : (typeof exFile.getContent === 'function' ? exFile.getContent() : '');
+              var exData = JSON.parse(rawContent);
               if (exData && exData.courses) {
                 finalPayload = this.mergeClassroomData(exData, manifestPayload);
               }

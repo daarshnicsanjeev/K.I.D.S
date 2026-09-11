@@ -893,7 +893,8 @@ var McpLogger = {
       var it = kidFolder.getFilesByName('sync_diagnostics_log.json');
       if (it.hasNext()) {
         var f = it.next();
-        if (f.getContent() !== payload) {
+        var curLog = (typeof f.getBlob === 'function') ? f.getBlob().getDataAsString() : (typeof f.getContent === 'function' ? f.getContent() : '');
+        if (curLog !== payload) {
           f.setContent(payload);
         }
       } else {
@@ -1100,24 +1101,33 @@ function doPost(e) {
     } else if (method === "index_whatsapp_media") {
       result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
     } else if (method === "run_vault_ocr_indexing") {
-      var kidFolder = null;
-      var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
-      if (targetFolderId) {
-        try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
-      }
-      result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
-      if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+      var ocrLock = LockService.getScriptLock();
+      if (!ocrLock.tryLock(5000)) {
+        result = { success: false, error: 'Lock busy: sync or OCR already running', locked: true };
+      } else {
         try {
-          var ocrTrigs = ScriptApp.getProjectTriggers();
-          for (var ot = 0; ot < ocrTrigs.length; ot++) {
-            if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
-              ScriptApp.deleteTrigger(ocrTrigs[ot]);
-            }
+          var kidFolder = null;
+          var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
+          if (targetFolderId) {
+            try { kidFolder = DriveApp.getFolderById(targetFolderId); } catch (e) {}
           }
-          ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
-          result.continuationScheduled = true;
-          McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
-        } catch (ocrContErr) {}
+          result = DocumentOcrService.runAutomatedVaultIndexing(kidFolder, params.maxBatch || 15);
+          if (result && result.totalPendingRemaining > 0 && params.scheduleContinuation !== false) {
+            try {
+              var ocrTrigs = ScriptApp.getProjectTriggers();
+              for (var ot = 0; ot < ocrTrigs.length; ot++) {
+                if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+                  ScriptApp.deleteTrigger(ocrTrigs[ot]);
+                }
+              }
+              ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(20000).create();
+              result.continuationScheduled = true;
+              McpLogger.log('INFO', 'OCR_CONTINUATION_TRIGGER_SET', 'Scheduled autonomous OCR continuation in 20s. Remaining: ' + result.totalPendingRemaining);
+            } catch (ocrContErr) {}
+          }
+        } finally {
+          ocrLock.releaseLock();
+        }
       }
     } else if (method === "run_autonomous_vault_ocr") {
       result = runAutonomousVaultOcr();
@@ -2001,7 +2011,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
           if (fIt.hasNext()) {
             exFile = fIt.next();
             try {
-              exClassroomContent = exFile.getContent();
+              exClassroomContent = (typeof exFile.getBlob === 'function') ? exFile.getBlob().getDataAsString() : (typeof exFile.getContent === 'function' ? exFile.getContent() : '');
               var exData = JSON.parse(exClassroomContent);
               if (exData && exData.courses && syncRes.classroom && syncRes.classroom.courses) {
                 finalClassroom = mergeClassroomData(exData, syncRes.classroom);
@@ -2116,7 +2126,7 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
               if (emailFileIt.hasNext()) {
                 exEmailFile = emailFileIt.next();
                 try {
-                  exEmailContent = exEmailFile.getContent();
+                  exEmailContent = (typeof exEmailFile.getBlob === 'function') ? exEmailFile.getBlob().getDataAsString() : (typeof exEmailFile.getContent === 'function' ? exEmailFile.getContent() : '');
                   var exEmailData = JSON.parse(exEmailContent);
                   if (exEmailData && exEmailData.emails) {
                     var eMap = {};
@@ -2185,7 +2195,8 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
             if (dIt.hasNext()) {
               var dFile = dIt.next();
               try {
-                if (dFile.getContent() !== dStr) {
+                var curDigestStr = (typeof dFile.getBlob === 'function') ? dFile.getBlob().getDataAsString() : (typeof dFile.getContent === 'function' ? dFile.getContent() : '');
+                if (curDigestStr !== dStr) {
                   dFile.setContent(dStr);
                 }
               } catch (dErr) {
@@ -3765,10 +3776,27 @@ var WorkspaceFetcher = {
         name: 'DocumentOcrService',
         type: 'SERVER_JS',
         source: `
+/**
+ * DocumentOcrService.gs - Intelligent Two-Tier OCR & Document Search Engine
+ * Automatically extracts, indexes, and enables full-text search across:
+ * - Google Classroom worksheets & assignment attachments
+ * - Gmail circulars & administrative notices
+ * - WhatsApp school chat images, blackboard photos, and scanned documents
+ *
+ * Smart Pre-Flight Filter:
+ * - Google Docs/Sheets/Slides & Text/CSV/JSON -> Native direct extraction (Zero OCR calls, 0ms)
+ * - Native Digital PDFs -> Native stream text extraction (Zero OCR calls)
+ * - Scanned Raster PDFs & Camera Images -> Google Drive Native OCR (copy?ocr=true)
+ */
+
 var DocumentOcrService = {
   INDEX_FILE_NAME: 'ocr_search_index.json',
   STATUS_FILE_NAME: 'ocr_job_status.json',
 
+  /**
+   * Fast Pre-Flight Check: Inspects PDF stream to detect if it has a native selectable text layer.
+   * Scanned PDFs contain only /XObject /Image bitmaps and lack text operators.
+   */
   hasNativeTextLayer: function(blob) {
     if (!blob) return { hasText: false, extractedText: '' };
     try {
@@ -3776,6 +3804,8 @@ var DocumentOcrService = {
       if (!rawString || rawString.length < 50) return { hasText: false, extractedText: '' };
 
       var textPieces = [];
+      
+      // 1. Check for standard PDF text showing operators: (text) Tj, (text)', (text)"
       var tjRegex = /\\(([^)]+)\\)\\s*(?:Tj|'|")/g;
       var match;
       var totalChars = 0;
@@ -3785,6 +3815,7 @@ var DocumentOcrService = {
         totalChars += str.length;
       }
 
+      // 2. Check for kerning array text operators: [(text) -20 (more)] TJ
       var arrayTjRegex = /\\[([^\\]]+)\\]\\s*TJ/g;
       while ((match = arrayTjRegex.exec(rawString)) !== null && totalChars < 5000) {
         var inner = match[1];
@@ -3798,17 +3829,25 @@ var DocumentOcrService = {
       }
 
       var extracted = textPieces.join(' ').replace(/\\s+/g, ' ').trim();
+      // Check if extracted text contains genuine legible words (not random binary noise from a compressed deflate stream)
       var words = extracted.match(/[a-zA-Z0-9\\u0900-\\u097F]{2,}/g) || [];
       var readableChars = words.join('').length;
       var ratio = readableChars / Math.max(1, extracted.length);
 
+      // If we find 50+ legible characters AND at least 50% readable text ratio, it's a genuine native digital PDF!
       if (readableChars >= 50 && ratio >= 0.50) {
         return { hasText: true, extractedText: extracted };
       }
-    } catch (e) {}
+    } catch (e) {
+      // Stream parsing error; fallback to safe scan check
+    }
     return { hasText: false, extractedText: '' };
   },
 
+  /**
+   * Executes Drive Native OCR on raster images or scanned PDFs.
+   * Zero cost, zero external API keys.
+   */
   performDriveOcr: function(fileId, fileName) {
     if (!fileId) return null;
     var maxChars = 8000;
@@ -3821,6 +3860,7 @@ var DocumentOcrService = {
         mimeType: 'application/vnd.google-apps.document'
       };
 
+      // Strategy 1: Drive API v2 Copy with ocr=true
       if (typeof Drive !== 'undefined' && Drive.Files && Drive.Files.copy) {
         var copy = Drive.Files.copy(resource, fileId, { ocr: true, ocrLanguage: 'en,hi', supportsAllDrives: true });
         if (copy && copy.id) copyId = copy.id;
@@ -3841,11 +3881,13 @@ var DocumentOcrService = {
       }
 
       if (copyId) {
+        // Read plain text directly via DocumentApp or export
         var text = '';
         try {
           var doc = DocumentApp.openById(copyId);
           text = doc.getBody().getText();
         } catch (docErr) {
+          // Fallback to plain text export endpoint
           try {
             var exportRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + copyId + '/export?mimeType=text/plain', {
               headers: { 'Authorization': 'Bearer ' + token },
@@ -3879,6 +3921,10 @@ var DocumentOcrService = {
     return null;
   },
 
+  /**
+   * Smart Text Extractor:
+   * Extracts text from any document with optimal routing (skipping OCR for searchable files).
+   */
   extractDocumentText: function(file) {
     if (!file) return { text: '', isOcr: false };
 
@@ -3886,6 +3932,7 @@ var DocumentOcrService = {
     var fileName = (file.getName ? file.getName() : file.name || '').toLowerCase();
     var mime = (file.getMimeType ? file.getMimeType() : file.mimeType || '').toLowerCase();
 
+    // 1. Google Workspace Native Docs / Sheets / Slides -> Zero OCR
     if (mime === 'application/vnd.google-apps.document') {
       try {
         var docText = DocumentApp.openById(fileId).getBody().getText();
@@ -3907,6 +3954,7 @@ var DocumentOcrService = {
       } catch (e) {}
     }
 
+    // 2. Plain Text / CSV / JSON / HTML -> Zero OCR
     if (mime.indexOf('text/') === 0 || mime === 'application/json' || mime === 'application/csv' || /\\.(txt|csv|json|html|md)$/i.test(fileName)) {
       try {
         var rawText = file.getBlob().getDataAsString();
@@ -3914,18 +3962,22 @@ var DocumentOcrService = {
       } catch (e) {}
     }
 
+    // 3. PDF Documents -> Pre-flight text inspection
     if (mime === 'application/pdf' || fileName.endsWith('.pdf')) {
       try {
         var blob = file.getBlob();
         var pdfCheck = this.hasNativeTextLayer(blob);
         if (pdfCheck.hasText) {
+          // Native text layer exists! Zero OCR needed!
           return { text: pdfCheck.extractedText.substring(0, 8000), isOcr: false };
         }
       } catch (e) {}
+      // Scanned raster PDF without selectable text layer -> Run Drive OCR
       var ocrPdfText = this.performDriveOcr(fileId, fileName);
       return { text: ocrPdfText || '', isOcr: true };
     }
 
+    // 4. Raster Images -> Run Drive OCR
     if (mime.indexOf('image/') === 0 || /\\.(jpg|jpeg|png|webp|heic|bmp|tiff)$/i.test(fileName)) {
       var ocrImgText = this.performDriveOcr(fileId, fileName);
       return { text: ocrImgText || '', isOcr: true };
@@ -3934,6 +3986,9 @@ var DocumentOcrService = {
     return { text: '', isOcr: false };
   },
 
+  /**
+   * Loads or creates the unified ocr_search_index.json for a child's vault folder.
+   */
   getOrCreateIndexFile: function(kidFolder) {
     if (!kidFolder) return null;
     var fIt = kidFolder.getFilesByName(this.INDEX_FILE_NAME);
@@ -3949,43 +4004,65 @@ var DocumentOcrService = {
     return kidFolder.createFile(this.INDEX_FILE_NAME, initialPayload, 'application/json');
   },
 
+  /**
+   * Safe file text reader: works with real DriveApp.File (getBlob().getDataAsString())
+   * and test mocks (getContent()).
+   */
+  readFileText: function(file) {
+    if (!file) return '';
+    try {
+      if (typeof file.getBlob === 'function') return file.getBlob().getDataAsString();
+      if (typeof file.getContent === 'function') return file.getContent();
+    } catch (e) {}
+    return '';
+  },
+
+  /**
+   * Indexes a single document into ocr_search_index.json in real-time.
+   */
   indexDocument: function(kidFolder, file, sourceContext) {
     if (!kidFolder || !file) return null;
+
+    var acquiredLock = false;
+    var lock = null;
+    try {
+      if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+        lock = LockService.getScriptLock();
+        if (lock && !lock.hasLock()) {
+          if (lock.tryLock(30000)) {
+            acquiredLock = true;
+          }
+        }
+      }
+    } catch (lErr) {}
 
     try {
       var fileId = file.getId ? file.getId() : file.id;
       var fileName = file.getName ? file.getName() : file.name;
       var fileUrl = file.getUrl ? file.getUrl() : ('https://drive.google.com/file/d/' + fileId + '/view');
 
-      // Multiple triggers can call into OCR indexing within seconds of each other (the extension's
-      // own initial-sync call, the self-scheduled 20s continuation, and a freshly-created incremental
-      // sync trigger) with no other serialization between them. Without a lock, two concurrent
-      // executions each do their own read -> modify -> write of the single shared
-      // ocr_search_index.json, and whichever one writes last silently discards every document the
-      // other one just indexed. Confirmed live: 17 DOC_INDEXED successes logged in one run, only 1
-      // document survived on disk. LockService.getScriptLock() serializes the check below.
-      var checkLock = LockService.getScriptLock();
-      if (!checkLock.tryLock(30000)) {
-        McpLogger.log('WARN', 'DOC_INDEX_LOCK_BUSY', 'Could not acquire lock to check index for ' + fileName);
-        return null;
+      var indexFile = this.getOrCreateIndexFile(kidFolder);
+      var indexData = { documents: [] };
+      var raw = this.readFileText(indexFile);
+      if (raw) {
+        try { indexData = JSON.parse(raw); } catch (e) {}
       }
-      var cached = null;
-      try {
-        var checkFile = this.getOrCreateIndexFile(kidFolder);
-        var checkData = { documents: [] };
-        try { checkData = JSON.parse(checkFile.getContent()); } catch (e) {}
-        var checkDocs = checkData.documents || [];
-        for (var i = 0; i < checkDocs.length; i++) {
-          if (checkDocs[i].fileId === fileId) { cached = checkDocs[i]; break; }
+
+      var docs = indexData.documents || [];
+      var existingIdx = -1;
+      for (var i = 0; i < docs.length; i++) {
+        if (docs[i].fileId === fileId) {
+          existingIdx = i;
+          break;
         }
-      } finally {
-        checkLock.releaseLock();
       }
 
-      if (cached && cached.text && cached.text.length > 0) {
-        return cached;
+      // If already indexed and has non-empty text, return cached entry
+      if (existingIdx !== -1 && docs[existingIdx].text && docs[existingIdx].text.length > 0) {
+        return docs[existingIdx];
       }
 
+      // Extract text via Smart Pre-Flight routing
       var extraction = this.extractDocumentText(file);
       var text = extraction.text || '';
       var wordCount = text ? text.split(/\\s+/).filter(Boolean).length : 0;
@@ -4004,45 +4081,46 @@ var DocumentOcrService = {
         indexedAt: new Date().toISOString()
       };
 
-      // Re-acquire the lock for the write and re-read the CURRENT file content here (not the
-      // possibly-now-stale copy from the check above, and not carried across the slow OCR call
-      // above, which is deliberately done outside the lock) so this write merges onto whatever any
-      // concurrent execution wrote in the meantime instead of overwriting it.
-      var writeLock = LockService.getScriptLock();
-      if (!writeLock.tryLock(30000)) {
-        McpLogger.log('WARN', 'DOC_INDEX_LOCK_BUSY', 'Could not acquire lock to write index for ' + fileName);
-        return null;
+      // Re-read fresh index right before writing to merge safely
+      var freshRaw = this.readFileText(indexFile);
+      if (freshRaw) {
+        try { indexData = JSON.parse(freshRaw); } catch (e) {}
       }
-      try {
-        var indexFile = this.getOrCreateIndexFile(kidFolder);
-        var indexData = { documents: [] };
-        try { indexData = JSON.parse(indexFile.getContent()); } catch (e) {}
-        var docs = indexData.documents || [];
-        var existingIdx = -1;
-        for (var j = 0; j < docs.length; j++) {
-          if (docs[j].fileId === fileId) { existingIdx = j; break; }
+      docs = indexData.documents || [];
+      existingIdx = -1;
+      for (var j = 0; j < docs.length; j++) {
+        if (docs[j].fileId === fileId) {
+          existingIdx = j;
+          break;
         }
-        if (existingIdx !== -1) {
-          docs[existingIdx] = docRecord;
-        } else {
-          docs.push(docRecord);
-        }
-        indexData.lastUpdatedAt = new Date().toISOString();
-        indexData.totalIndexed = docs.length;
-        indexData.documents = docs;
-        indexFile.setContent(JSON.stringify(indexData, null, 2));
-      } finally {
-        writeLock.releaseLock();
       }
 
+      if (existingIdx !== -1) {
+        docs[existingIdx] = docRecord;
+      } else {
+        docs.push(docRecord);
+      }
+
+      indexData.lastUpdatedAt = new Date().toISOString();
+      indexData.totalIndexed = docs.length;
+      indexData.documents = docs;
+
+      indexFile.setContent(JSON.stringify(indexData, null, 2));
       McpLogger.log('INFO', 'DOC_INDEXED', 'Indexed ' + fileName + ' (' + sourceContext + ', OCR=' + extraction.isOcr + ', words=' + wordCount + ')');
       return docRecord;
     } catch (err) {
       McpLogger.log('WARN', 'DOC_INDEX_ERROR', 'Failed to index document: ' + err.toString());
       return null;
+    } finally {
+      if (acquiredLock && lock) {
+        try { lock.releaseLock(); } catch (relErr) {}
+      }
     }
   },
 
+  /**
+   * Helper to index by file ID (used by WhatsApp media RPC).
+   */
   indexDocumentById: function(fileId, childName, sourceContext) {
     if (!fileId) return { success: false, error: 'Missing fileId' };
     try {
@@ -4050,6 +4128,7 @@ var DocumentOcrService = {
       var parents = file.getParents();
       var kidFolder = parents.hasNext() ? parents.next() : null;
 
+      // If parent is a subfolder (e.g. attachments/ or whatsapp/), climb up to kid folder
       if (kidFolder && (kidFolder.getName() === 'attachments' || kidFolder.getName() === 'whatsapp')) {
         var grandParents = kidFolder.getParents();
         if (grandParents.hasNext()) {
@@ -4074,15 +4153,22 @@ var DocumentOcrService = {
     }
   },
 
+  /**
+   * Automated 1-Time Clean Vault Indexer:
+   * Scans all attachments across classroom, emails, and whatsapp.
+   * Processes unindexed files in safe chunks without timeouts.
+   */
   runAutomatedVaultIndexing: function(kidFolder, maxBatch) {
     if (!kidFolder) return { count: 0, status: 'no_folder' };
     maxBatch = maxBatch || 12;
+    var startTime = new Date().getTime();
 
     var indexFile = this.getOrCreateIndexFile(kidFolder);
     var indexData = { documents: [] };
-    try {
-      indexData = JSON.parse(indexFile.getContent());
-    } catch (e) {}
+    var raw = this.readFileText(indexFile);
+    if (raw) {
+      try { indexData = JSON.parse(raw); } catch (e) {}
+    }
 
     var indexedMap = {};
     (indexData.documents || []).forEach(function(d) {
@@ -4091,7 +4177,9 @@ var DocumentOcrService = {
 
     var pendingFiles = [];
 
+    // 1. Discover unindexed files
     try {
+      // Classroom attachments
       var cIt = kidFolder.getFoldersByName('classroom');
       if (cIt.hasNext()) {
         var caIt = cIt.next().getFoldersByName('attachments');
@@ -4104,6 +4192,7 @@ var DocumentOcrService = {
         }
       }
 
+      // Email attachments
       var eIt = kidFolder.getFoldersByName('emails');
       if (eIt.hasNext()) {
         var eaIt = eIt.next().getFoldersByName('attachments');
@@ -4116,6 +4205,7 @@ var DocumentOcrService = {
         }
       }
 
+      // WhatsApp media
       var wIt = kidFolder.getFoldersByName('whatsapp');
       if (wIt.hasNext()) {
         var wfIt = wIt.next().getFiles();
@@ -4133,19 +4223,22 @@ var DocumentOcrService = {
 
     var processed = 0;
     for (var p = 0; p < pendingFiles.length && p < maxBatch; p++) {
+      // 4-minute time budget guard (240,000ms) to ensure clean exit and continuation trigger scheduling
+      if (new Date().getTime() - startTime > 240000) {
+        McpLogger.log('INFO', 'OCR_TIME_BUDGET', 'Approaching 4m time budget; deferring remaining ' + (pendingFiles.length - processed) + ' files to next batch.');
+        break;
+      }
       var item = pendingFiles[p];
       var docRecord = this.indexDocument(kidFolder, item.file, item.source);
       if (docRecord) processed++;
     }
 
-    // Re-read the index fresh rather than trusting the snapshot captured before the loop plus a
-    // guessed "+ processed" — that arithmetic assumes every attempt in this loop succeeded and that
-    // nothing else touched the file meanwhile, neither of which actually held (see indexDocument's
-    // per-call file error handling, and the lock added there for concurrent-execution safety).
-    // indexDocument's own writes are the only source of truth for what's actually persisted.
     var finalIndexFile = this.getOrCreateIndexFile(kidFolder);
     var finalIndexData = { documents: [] };
-    try { finalIndexData = JSON.parse(finalIndexFile.getContent()); } catch (e) {}
+    var finalRaw = this.readFileText(finalIndexFile);
+    if (finalRaw) {
+      try { finalIndexData = JSON.parse(finalRaw); } catch (e) {}
+    }
 
     return {
       success: true,
@@ -4155,6 +4248,9 @@ var DocumentOcrService = {
     };
   },
 
+  /**
+   * Search Vault Documents Tool (Exposed to Gemini Spark & Parent Dashboard).
+   */
   searchVaultDocuments: function(kidFolder, query) {
     if (!kidFolder || !query) return { results: [], count: 0 };
     var cleanQuery = query.toLowerCase().trim();
@@ -4162,10 +4258,13 @@ var DocumentOcrService = {
 
     var indexFile = this.getOrCreateIndexFile(kidFolder);
     var indexData = { documents: [] };
-    try {
-      indexData = JSON.parse(indexFile.getContent());
-    } catch (e) {
-      return { results: [], count: 0 };
+    var raw = this.readFileText(indexFile);
+    if (raw) {
+      try {
+        indexData = JSON.parse(raw);
+      } catch (e) {
+        return { results: [], count: 0 };
+      }
     }
 
     var docs = indexData.documents || [];
@@ -4199,6 +4298,7 @@ var DocumentOcrService = {
       }
 
       if (matchScore > 0) {
+        // Extract relevant excerpt around matching term
         var excerpt = d.snippet || '';
         if (d.text && terms.length > 0) {
           var firstIdx = textLower.indexOf(terms[0]);
@@ -4398,6 +4498,11 @@ var DriveContentExtractor = {
         name: 'ClassroomIngester',
         type: 'SERVER_JS',
         source: `
+/**
+ * ClassroomIngester.gs - Autonomous Google Classroom Ingestion Engine
+ * Crawls active courses, coursework, student submissions, grades,
+ * teacher comments, meet links, and downloads all attached worksheets/PDFs.
+ */
 var ClassroomIngester = {
   sync: function(targetFolderId, childName, academicYear, isIncremental, extractOnly) {
     var startTime = new Date();
@@ -4445,7 +4550,7 @@ var ClassroomIngester = {
           classroomFolder = this.getOrCreateSubfolder(parentFolder, 'classroom');
           attachFolder = this.getOrCreateSubfolder(classroomFolder, 'attachments');
         } catch (fErr) {
-          addLog('⚠️ Target folder access notice (read-only mode active): ' + fErr.toString());
+          McpLogger.log('WARN', 'CLASSROOM_FOLDER_WARN', 'Could not access parent targetFolderId: ' + fErr);
         }
       }
 
@@ -4746,25 +4851,23 @@ var ClassroomIngester = {
       };
 
       if (classroomFolder) {
-        try {
-          var finalPayload = manifestPayload;
-          if (isIncremental) {
-            try {
-              var exFileIt = classroomFolder.getFilesByName('classroom_data.json');
-              if (exFileIt.hasNext()) {
-                var exData = JSON.parse(exFileIt.next().getContent());
-                if (exData && exData.courses) {
-                  finalPayload = this.mergeClassroomData(exData, manifestPayload);
-                }
+        var finalPayload = manifestPayload;
+        if (isIncremental) {
+          try {
+            var exFileIt = classroomFolder.getFilesByName('classroom_data.json');
+            if (exFileIt.hasNext()) {
+              var exFile = exFileIt.next();
+              var rawContent = (typeof exFile.getBlob === 'function') ? exFile.getBlob().getDataAsString() : (typeof exFile.getContent === 'function' ? exFile.getContent() : '');
+              var exData = JSON.parse(rawContent);
+              if (exData && exData.courses) {
+                finalPayload = this.mergeClassroomData(exData, manifestPayload);
               }
-            } catch (mErr) {}
-          }
-          this.saveJsonFile(classroomFolder, 'classroom_data.json', finalPayload);
-          this.saveJsonFile(classroomFolder, 'classroom_sync_deep_log.json', deepLog);
-          this.saveTextFile(classroomFolder, 'classroom_sync_deep_log.txt', deepLogText);
-        } catch (sErr) {
-          addLog('⚠️ Notice saving files to Drive: ' + sErr.toString());
+            }
+          } catch (mErr) {}
         }
+        this.saveJsonFile(classroomFolder, 'classroom_data.json', finalPayload);
+        this.saveJsonFile(classroomFolder, 'classroom_sync_deep_log.json', deepLog);
+        this.saveTextFile(classroomFolder, 'classroom_sync_deep_log.txt', deepLogText);
       }
       McpLogger.log('SUCCESS', 'CLASSROOM_SYNC_COMPLETE', 'Successfully crawled ' + allCourseData.length + ' courses and extracted ' + totalAttachments + ' attachments for ' + childName);
 
@@ -4773,78 +4876,6 @@ var ClassroomIngester = {
       McpLogger.log('ERROR', 'CLASSROOM_SYNC_ERROR', 'Google Classroom sync failed: ' + err.toString());
       throw err;
     }
-  },
-
-  formatDeepLogReport: function(deepLog, allCourseData) {
-    var lines = [];
-    lines.push('================================================================================');
-    lines.push('       K.I.D.S. GOOGLE CLASSROOM DEEP DIAGNOSTIC AUDIT & CRAWL LOG');
-    lines.push('================================================================================');
-    lines.push('Generated At    : ' + deepLog.timestamp);
-    lines.push('Student / Child : ' + deepLog.childName);
-    lines.push('Academic Year   : ' + deepLog.academicYear);
-    lines.push('Sync Execution  : ' + (deepLog.extractOnly ? 'Direct Read-Only Gateway (0 student drive files)' : 'Full Sync'));
-    lines.push('Execution Time  : ' + (deepLog.executionTimeMs || 0) + ' ms');
-    lines.push('');
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push('1. EXECUTIVE AUDIT SUMMARY');
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push('• Active Courses In Account : ' + deepLog.summary.totalCoursesFound);
-    lines.push('• Current-Year Ingested     : ' + deepLog.summary.coursesIngested);
-    lines.push('• Announcements Extracted   : ' + deepLog.summary.totalAnnouncements);
-    lines.push('• CourseWork Assignments    : ' + deepLog.summary.totalCourseWork);
-    lines.push('• Course Reference Materials: ' + deepLog.summary.totalMaterials);
-    lines.push('• Total Detected Attachments: ' + deepLog.summary.totalAttachments);
-    lines.push('    ├─ Downloadable Drive Files : ' + deepLog.summary.driveFilesCount + ' unique');
-    lines.push('    ├─ YouTube Video Links      : ' + deepLog.summary.youtubeVideosCount + ' (streamed in browser)');
-    lines.push('    ├─ External Web Links       : ' + deepLog.summary.webLinksCount);
-    lines.push('    ├─ Google Forms             : ' + deepLog.summary.formsCount);
-    lines.push('    └─ Duplicate Attachments    : ' + deepLog.summary.duplicateAttachmentsCount + ' (shared across notices)');
-    lines.push('');
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push('2. COURSE BREAKDOWN & PAGINATION AUDIT');
-    lines.push('--------------------------------------------------------------------------------');
-    for (var c = 0; c < allCourseData.length; c++) {
-      var course = allCourseData[c];
-      lines.push('[' + (c + 1) + '] Course: ' + course.name + (course.section ? ' (' + course.section + ')' : ''));
-      lines.push('    Course ID    : ' + course.id);
-      lines.push('    Course State : ' + course.courseState);
-      lines.push('    Class Link   : ' + (course.alternateLink || 'N/A'));
-      lines.push('    Content Audit: ' + (course.announcements ? course.announcements.length : 0) + ' announcements, ' +
-        (course.courseWork ? course.courseWork.length : 0) + ' coursework items, ' +
-        (course.materials ? course.materials.length : 0) + ' materials.');
-      lines.push('');
-    }
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push('3. ITEMIZED ATTACHMENT INVENTORY (ALL ' + deepLog.inventory.length + ' DETECTED ITEMS)');
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push(this.padRight('#', 4) + ' | ' + this.padRight('TYPE', 15) + ' | ' + this.padRight('TITLE / TARGET NAME', 40) + ' | ' + 'FILE ID / URL');
-    lines.push('--------------------------------------------------------------------------------');
-    for (var i = 0; i < deepLog.inventory.length; i++) {
-      var item = deepLog.inventory[i];
-      var idxStr = this.padRight(String(item.index), 4);
-      var typeStr = this.padRight(item.type, 15);
-      var titleStr = this.padRight((item.title || item.targetName || '').substring(0, 38), 40);
-      var idStr = (item.fileId || item.url || '').substring(0, 45);
-      lines.push(idxStr + ' | ' + typeStr + ' | ' + titleStr + ' | ' + idStr);
-    }
-    lines.push('');
-    lines.push('--------------------------------------------------------------------------------');
-    lines.push('4. DETAILED EXECUTION TIMELINE');
-    lines.push('--------------------------------------------------------------------------------');
-    for (var t = 0; t < deepLog.logTimeline.length; t++) {
-      lines.push(deepLog.logTimeline[t]);
-    }
-    lines.push('================================================================================');
-    lines.push('                    END OF CLASSROOM DEEP DIAGNOSTIC AUDIT LOG');
-    lines.push('================================================================================');
-    return lines.join('\\n');
-  },
-
-  padRight: function(str, len) {
-    str = String(str || '');
-    while (str.length < len) str += ' ';
-    return str;
   },
 
   fetchAllCourses: function(academicYear, deepLog) {
@@ -4880,10 +4911,6 @@ var ClassroomIngester = {
     var filtered = courses.filter(function(c) {
       return self.isCurrentClass(c, academicYear);
     });
-    if (filtered.length === 0 && courses.length > 0) {
-      McpLogger.log('WARN', 'CLASSROOM_FILTER_FALLBACK', 'No courses matched current academic year filter; falling back to all ' + courses.length + ' active courses.');
-      filtered = courses;
-    }
 
     McpLogger.log('INFO', 'CLASSROOM_COURSES_FILTERED', 'Found ' + courses.length + ' active courses in account; filtered to ' + filtered.length + ' current-year classes.');
     if (deepLog) {
@@ -4910,7 +4937,7 @@ var ClassroomIngester = {
     var fullName = ((course.name || '') + ' ' + (course.section || '') + ' ' + (course.descriptionHeading || '')).toLowerCase();
 
     if (targetAcademicYear) {
-      var yearMatch = targetAcademicYear.match(/(\d{4})\s*-\s*(\d{4})/);
+      var yearMatch = targetAcademicYear.match(/(\\d{4})\\s*-\\s*(\\d{4})/);
       if (yearMatch) {
         var startYear = parseInt(yearMatch[1], 10);
         var endYear = parseInt(yearMatch[2], 10);
@@ -5019,6 +5046,7 @@ var ClassroomIngester = {
           };
         }
       } else {
+        // Direct Drive v3 API Export/Download
         var token2 = ScriptApp.getOAuthToken();
         var dlRes = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + fileId + '?alt=media', {
           headers: { 'Authorization': 'Bearer ' + token2 },
@@ -5109,6 +5137,78 @@ var ClassroomIngester = {
     return folder.createFile(fileName, content, 'text/plain');
   },
 
+  formatDeepLogReport: function(deepLog, allCourseData) {
+    var lines = [];
+    lines.push('================================================================================');
+    lines.push('       K.I.D.S. GOOGLE CLASSROOM DEEP DIAGNOSTIC AUDIT & CRAWL LOG');
+    lines.push('================================================================================');
+    lines.push('Generated At    : ' + deepLog.timestamp);
+    lines.push('Student / Child : ' + deepLog.childName);
+    lines.push('Academic Year   : ' + deepLog.academicYear);
+    lines.push('Sync Execution  : ' + (deepLog.extractOnly ? 'Direct Read-Only Gateway (0 student drive files)' : 'Full Sync'));
+    lines.push('Execution Time  : ' + (deepLog.executionTimeMs || 0) + ' ms');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('1. EXECUTIVE AUDIT SUMMARY');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('• Active Courses In Account : ' + deepLog.summary.totalCoursesFound);
+    lines.push('• Current-Year Ingested     : ' + deepLog.summary.coursesIngested);
+    lines.push('• Announcements Extracted   : ' + deepLog.summary.totalAnnouncements);
+    lines.push('• CourseWork Assignments    : ' + deepLog.summary.totalCourseWork);
+    lines.push('• Course Reference Materials: ' + deepLog.summary.totalMaterials);
+    lines.push('• Total Detected Attachments: ' + deepLog.summary.totalAttachments);
+    lines.push('    ├─ Downloadable Drive Files : ' + deepLog.summary.driveFilesCount + ' unique');
+    lines.push('    ├─ YouTube Video Links      : ' + deepLog.summary.youtubeVideosCount + ' (streamed in browser)');
+    lines.push('    ├─ External Web Links       : ' + deepLog.summary.webLinksCount);
+    lines.push('    ├─ Google Forms             : ' + deepLog.summary.formsCount);
+    lines.push('    └─ Duplicate Attachments    : ' + deepLog.summary.duplicateAttachmentsCount + ' (shared across notices)');
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('2. COURSE BREAKDOWN & PAGINATION AUDIT');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var c = 0; c < allCourseData.length; c++) {
+      var course = allCourseData[c];
+      lines.push('[' + (c + 1) + '] Course: ' + course.name + (course.section ? ' (' + course.section + ')' : ''));
+      lines.push('    Course ID    : ' + course.id);
+      lines.push('    Course State : ' + course.courseState);
+      lines.push('    Class Link   : ' + (course.alternateLink || 'N/A'));
+      lines.push('    Content Audit: ' + (course.announcements ? course.announcements.length : 0) + ' announcements, ' +
+        (course.courseWork ? course.courseWork.length : 0) + ' coursework items, ' +
+        (course.materials ? course.materials.length : 0) + ' materials.');
+      lines.push('');
+    }
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('3. ITEMIZED ATTACHMENT INVENTORY (ALL ' + deepLog.inventory.length + ' DETECTED ITEMS)');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push(this.padRight('#', 4) + ' | ' + this.padRight('TYPE', 15) + ' | ' + this.padRight('TITLE / TARGET NAME', 40) + ' | ' + 'FILE ID / URL');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var i = 0; i < deepLog.inventory.length; i++) {
+      var item = deepLog.inventory[i];
+      var idxStr = this.padRight(String(item.index), 4);
+      var typeStr = this.padRight(item.type, 15);
+      var titleStr = this.padRight((item.title || item.targetName || '').substring(0, 38), 40);
+      var idStr = (item.fileId || item.url || '').substring(0, 45);
+      lines.push(idxStr + ' | ' + typeStr + ' | ' + titleStr + ' | ' + idStr);
+    }
+    lines.push('');
+    lines.push('--------------------------------------------------------------------------------');
+    lines.push('4. DETAILED EXECUTION TIMELINE');
+    lines.push('--------------------------------------------------------------------------------');
+    for (var t = 0; t < deepLog.logTimeline.length; t++) {
+      lines.push(deepLog.logTimeline[t]);
+    }
+    lines.push('================================================================================');
+    lines.push('                    END OF CLASSROOM DEEP DIAGNOSTIC AUDIT LOG');
+    lines.push('================================================================================');
+    return lines.join('\\n');
+  },
+
+  padRight: function(str, len) {
+    str = String(str || '');
+    while (str.length < len) str += ' ';
+    return str;
+  },
+
   mergeClassroomData: function(existing, incoming) {
     if (!existing || !existing.courses) return incoming;
     if (!incoming || !incoming.courses) return existing;
@@ -5186,6 +5286,11 @@ var ClassroomIngester = {
         name: 'GmailIngester',
         type: 'SERVER_JS',
         source: `
+/**
+ * GmailIngester.gs - School Domain Gmail Ingestion Engine
+ * Queries genuine school-domain circulars, newsletters, and teacher messages.
+ * Strictly excludes automated Google Classroom alert notifications.
+ */
 var GmailIngester = {
   sync: function(targetFolderId, childName, academicYear, schoolDomain, isIncremental, extractOnly) {
     try {
@@ -5204,7 +5309,7 @@ var GmailIngester = {
         }
       }
 
-      var cleanDomain = (schoolDomain || '').trim().replace(new RegExp('^@'), '').toLowerCase();
+      var cleanDomain = (schoolDomain || '').trim().replace(/^@/, '').toLowerCase();
       var isGenericDomain = !cleanDomain || new RegExp('^(gmail|googlemail|google|yahoo|hotmail|outlook)[.]com$', 'i').test(cleanDomain);
       var domainFilter = (!isGenericDomain) ? 'from:' + cleanDomain : '';
       var classroomExclusion = '-from:(classroom.google.com) -from:(no-reply-classroom@google.com) -from:(notifications.google.com) -subject:("New assignment" OR "Graded" OR "Due tomorrow")';
@@ -5279,11 +5384,11 @@ var GmailIngester = {
             attachments: []
           };
 
-          var atts = msg.getAttachments();
-          for (var a = 0; a < atts.length; a++) {
-            var att = atts[a];
-            var cleanSubj = subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-            var attName = cleanSubj + '_' + att.getName();
+          var attachments = msg.getAttachments();
+          for (var a = 0; a < attachments.length; a++) {
+            var att = attachments[a];
+            var cleanSubject = subject.replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+            var attName = cleanSubject + '_' + att.getName();
             var attSize = att.getSize();
             var base64Payload = null;
 
@@ -5307,6 +5412,7 @@ var GmailIngester = {
                 }
               } catch (attErr) {}
             }
+
             item.attachments.push({
               name: att.getName(),
               targetName: attName,
@@ -5323,6 +5429,7 @@ var GmailIngester = {
             }
           }
 
+          // Scan email body for embedded Google Drive links
           var emailBody = msg.getPlainBody();
           if (emailBody) {
             var linkedDocs = this.scanTextForDriveFiles(emailBody, attachFolder, 'EmailNotice', subject);
@@ -5331,7 +5438,7 @@ var GmailIngester = {
                 name: linkedDocs[ld].title || 'Linked Circular',
                 fileId: linkedDocs[ld].fileId,
                 driveUrl: linkedDocs[ld].driveUrl,
-                mimeType: 'application/pdf',
+                mimeType: linkedDocs[ld].mimeType || 'application/pdf',
                 size: 0
               });
               totalAttachments++;
@@ -5342,7 +5449,7 @@ var GmailIngester = {
         }
       }
 
-      var resultPayload = {
+      var manifestPayload = {
         kidName: childName,
         academicYear: academicYear,
         schoolDomain: schoolDomain || '',
@@ -5354,12 +5461,14 @@ var GmailIngester = {
 
       if (emailsFolder && !extractOnly) {
         try {
-          var finalEmails = resultPayload;
+          var finalEmails = manifestPayload;
           if (isIncremental) {
             try {
               var exEmIt = emailsFolder.getFilesByName('school_emails.json');
               if (exEmIt.hasNext()) {
-                var exEmData = JSON.parse(exEmIt.next().getContent());
+                var exEmFile = exEmIt.next();
+                var rawEmContent = (typeof exEmFile.getBlob === 'function') ? exEmFile.getBlob().getDataAsString() : (typeof exEmFile.getContent === 'function' ? exEmFile.getContent() : '');
+                var exEmData = JSON.parse(rawEmContent);
                 if (exEmData && exEmData.emails) {
                   var emMap = {};
                   var combEmails = [];
@@ -5392,7 +5501,7 @@ var GmailIngester = {
       } catch (pErr) {}
 
       McpLogger.log('SUCCESS', 'GMAIL_SYNC_COMPLETE', 'Successfully captured ' + emailList.length + ' emails and ' + totalAttachments + ' attachments for ' + childName);
-      return resultPayload;
+      return manifestPayload;
     } catch (err) {
       McpLogger.log('ERROR', 'GMAIL_SYNC_ERROR', 'Gmail sync failed: ' + err.toString());
       if (extractOnly) {
@@ -5462,7 +5571,7 @@ var GmailIngester = {
               }
             } catch (e) {}
           }
-          // If attachFolder is null or student cannot write, return fileId for Parent Vault sync
+          // If attachFolder is null or cannot be written (student read-only), return fileId for Parent Vault sync
           results.push({
             title: targetName,
             fileId: fId,

@@ -227,10 +227,36 @@ var DocumentOcrService = {
   },
 
   /**
+   * Safe file text reader: works with real DriveApp.File (getBlob().getDataAsString())
+   * and test mocks (getContent()).
+   */
+  readFileText: function(file) {
+    if (!file) return '';
+    try {
+      if (typeof file.getBlob === 'function') return file.getBlob().getDataAsString();
+      if (typeof file.getContent === 'function') return file.getContent();
+    } catch (e) {}
+    return '';
+  },
+
+  /**
    * Indexes a single document into ocr_search_index.json in real-time.
    */
   indexDocument: function(kidFolder, file, sourceContext) {
     if (!kidFolder || !file) return null;
+
+    var acquiredLock = false;
+    var lock = null;
+    try {
+      if (typeof LockService !== 'undefined' && LockService.getScriptLock) {
+        lock = LockService.getScriptLock();
+        if (lock && !lock.hasLock()) {
+          if (lock.tryLock(30000)) {
+            acquiredLock = true;
+          }
+        }
+      }
+    } catch (lErr) {}
 
     try {
       var fileId = file.getId ? file.getId() : file.id;
@@ -239,9 +265,10 @@ var DocumentOcrService = {
 
       var indexFile = this.getOrCreateIndexFile(kidFolder);
       var indexData = { documents: [] };
-      try {
-        indexData = JSON.parse(indexFile.getContent());
-      } catch (e) {}
+      var raw = this.readFileText(indexFile);
+      if (raw) {
+        try { indexData = JSON.parse(raw); } catch (e) {}
+      }
 
       var docs = indexData.documents || [];
       var existingIdx = -1;
@@ -276,6 +303,20 @@ var DocumentOcrService = {
         indexedAt: new Date().toISOString()
       };
 
+      // Re-read fresh index right before writing to merge safely
+      var freshRaw = this.readFileText(indexFile);
+      if (freshRaw) {
+        try { indexData = JSON.parse(freshRaw); } catch (e) {}
+      }
+      docs = indexData.documents || [];
+      existingIdx = -1;
+      for (var j = 0; j < docs.length; j++) {
+        if (docs[j].fileId === fileId) {
+          existingIdx = j;
+          break;
+        }
+      }
+
       if (existingIdx !== -1) {
         docs[existingIdx] = docRecord;
       } else {
@@ -292,6 +333,10 @@ var DocumentOcrService = {
     } catch (err) {
       McpLogger.log('WARN', 'DOC_INDEX_ERROR', 'Failed to index document: ' + err.toString());
       return null;
+    } finally {
+      if (acquiredLock && lock) {
+        try { lock.releaseLock(); } catch (relErr) {}
+      }
     }
   },
 
@@ -338,12 +383,14 @@ var DocumentOcrService = {
   runAutomatedVaultIndexing: function(kidFolder, maxBatch) {
     if (!kidFolder) return { count: 0, status: 'no_folder' };
     maxBatch = maxBatch || 12;
+    var startTime = new Date().getTime();
 
     var indexFile = this.getOrCreateIndexFile(kidFolder);
     var indexData = { documents: [] };
-    try {
-      indexData = JSON.parse(indexFile.getContent());
-    } catch (e) {}
+    var raw = this.readFileText(indexFile);
+    if (raw) {
+      try { indexData = JSON.parse(raw); } catch (e) {}
+    }
 
     var indexedMap = {};
     (indexData.documents || []).forEach(function(d) {
@@ -398,16 +445,28 @@ var DocumentOcrService = {
 
     var processed = 0;
     for (var p = 0; p < pendingFiles.length && p < maxBatch; p++) {
+      // 4-minute time budget guard (240,000ms) to ensure clean exit and continuation trigger scheduling
+      if (new Date().getTime() - startTime > 240000) {
+        McpLogger.log('INFO', 'OCR_TIME_BUDGET', 'Approaching 4m time budget; deferring remaining ' + (pendingFiles.length - processed) + ' files to next batch.');
+        break;
+      }
       var item = pendingFiles[p];
-      this.indexDocument(kidFolder, item.file, item.source);
-      processed++;
+      var docRecord = this.indexDocument(kidFolder, item.file, item.source);
+      if (docRecord) processed++;
+    }
+
+    var finalIndexFile = this.getOrCreateIndexFile(kidFolder);
+    var finalIndexData = { documents: [] };
+    var finalRaw = this.readFileText(finalIndexFile);
+    if (finalRaw) {
+      try { finalIndexData = JSON.parse(finalRaw); } catch (e) {}
     }
 
     return {
       success: true,
       processed: processed,
       totalPendingRemaining: Math.max(0, pendingFiles.length - processed),
-      totalIndexed: (indexData.documents || []).length + processed
+      totalIndexed: (finalIndexData.documents || []).length
     };
   },
 
@@ -421,10 +480,13 @@ var DocumentOcrService = {
 
     var indexFile = this.getOrCreateIndexFile(kidFolder);
     var indexData = { documents: [] };
-    try {
-      indexData = JSON.parse(indexFile.getContent());
-    } catch (e) {
-      return { results: [], count: 0 };
+    var raw = this.readFileText(indexFile);
+    if (raw) {
+      try {
+        indexData = JSON.parse(raw);
+      } catch (e) {
+        return { results: [], count: 0 };
+      }
     }
 
     var docs = indexData.documents || [];

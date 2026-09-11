@@ -551,4 +551,91 @@ describe('Fully Automated Document OCR & Search Engine', () => {
     expect(res2.totalRemaining).toBe(0);
     expect(triggerCreated).toBe(false);
   });
+
+  it('preserves all indexed documents across multiple calls using native getBlob().getDataAsString() without wiping', () => {
+    let persistedIndexString = JSON.stringify({
+      version: '1.0.0',
+      totalIndexed: 0,
+      documents: []
+    });
+
+    // Real DriveApp.File object: NO getContent() method, only getBlob().getDataAsString() and setContent()
+    const mockRealDriveFile = {
+      getBlob: () => ({
+        getDataAsString: () => persistedIndexString
+      }),
+      setContent: (c: string) => { persistedIndexString = c; }
+    };
+
+    const mockFolder = {
+      getFilesByName: vi.fn((name: string) => {
+        if (name === 'ocr_search_index.json') {
+          return { hasNext: () => true, next: () => mockRealDriveFile };
+        }
+        return { hasNext: () => false, next: () => null };
+      }),
+      createFile: vi.fn(() => mockRealDriveFile)
+    };
+
+    // Index Document 1
+    const doc1 = ocrService.indexDocument(mockFolder, {
+      getId: () => 'file_doc_1',
+      getName: () => 'Worksheet_Math_Addition.pdf',
+      getMimeType: () => 'application/pdf',
+      getUrl: () => 'https://drive.google.com/file_doc_1',
+      getBlob: () => ({
+        getDataAsString: () => `(Grade 3 Math Worksheet: 12 + 15 = 27) Tj (Practice basic addition) Tj`
+      })
+    }, 'classroom');
+
+    expect(doc1).not.toBeNull();
+    let parsedIndex = JSON.parse(persistedIndexString);
+    expect(parsedIndex.documents.length).toBe(1);
+    expect(parsedIndex.documents[0].fileId).toBe('file_doc_1');
+
+    // Index Document 2: MUST NOT wipe Document 1!
+    const doc2 = ocrService.indexDocument(mockFolder, {
+      getId: () => 'file_doc_2',
+      getName: () => 'Circular_Holiday_Notice.pdf',
+      getMimeType: () => 'application/pdf',
+      getUrl: () => 'https://drive.google.com/file_doc_2',
+      getBlob: () => ({
+        getDataAsString: () => `(School Notice: School remains closed on Friday for festival) Tj`
+      })
+    }, 'email');
+
+    expect(doc2).not.toBeNull();
+    parsedIndex = JSON.parse(persistedIndexString);
+    expect(parsedIndex.documents.length).toBe(2);
+    expect(parsedIndex.documents.map((d: any) => d.fileId)).toEqual(['file_doc_1', 'file_doc_2']);
+
+    // Index Document 3: MUST NOT wipe Document 1 and 2!
+    const doc3 = ocrService.indexDocument(mockFolder, {
+      getId: () => 'file_doc_3',
+      getName: () => 'Science_Circuits.pdf',
+      getMimeType: () => 'application/pdf',
+      getUrl: () => 'https://drive.google.com/file_doc_3',
+      getBlob: () => ({
+        getDataAsString: () => `(Electric circuits and switches: series and parallel) Tj`
+      })
+    }, 'classroom');
+
+    expect(doc3).not.toBeNull();
+    parsedIndex = JSON.parse(persistedIndexString);
+    expect(parsedIndex.documents.length).toBe(3);
+    expect(parsedIndex.totalIndexed).toBe(3);
+    expect(parsedIndex.documents.map((d: any) => d.fileId)).toEqual(['file_doc_1', 'file_doc_2', 'file_doc_3']);
+
+    // Re-indexing Document 1 returns cached entry with 0 duplicate additions
+    const doc1Cached = ocrService.indexDocument(mockFolder, {
+      getId: () => 'file_doc_1',
+      getName: () => 'Worksheet_Math_Addition.pdf',
+      getMimeType: () => 'application/pdf',
+      getUrl: () => 'https://drive.google.com/file_doc_1'
+    }, 'classroom');
+
+    expect(doc1Cached.fileId).toBe('file_doc_1');
+    parsedIndex = JSON.parse(persistedIndexString);
+    expect(parsedIndex.documents.length).toBe(3);
+  });
 });
