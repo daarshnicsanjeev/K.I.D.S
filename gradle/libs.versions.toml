@@ -12,13 +12,15 @@ room = "2.6.1"
 ksp = "2.0.20-1.0.25"
 workManager = "2.9.1"
 mlkitTextRecognition = "19.0.0"
+credentials = "1.3.0"
+googleId = "1.1.1"
 playServicesAuth = "21.2.0"
 googleApiClient = "2.6.0"
 googleApiDrive = "v3-rev20240722-2.0.0"
-googleApiSheets = "v4-rev20240722-2.0.0"
 kotlinxCoroutines = "1.8.1"
 kotlinxSerialization = "1.7.2"
 okhttp = "4.12.0"
+documentFile = "1.0.1"
 junit5 = "5.11.0"
 mockk = "1.13.12"
 robolectric = "4.13"
@@ -40,7 +42,7 @@ androidx-compose-material3 = { group = "androidx.compose.material3", name = "mat
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-compose-google-fonts = { group = "androidx.compose.ui", name = "ui-text-google-fonts", version.ref = "googleFonts" }
 
-# Room Database
+# Room Database + SQLite FTS4
 androidx-room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
 androidx-room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
 androidx-room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
@@ -52,19 +54,26 @@ androidx-work-testing = { group = "androidx.work", name = "work-testing", versio
 # On-Device ML Kit OCR
 play-services-mlkit-text-recognition = { group = "com.google.android.gms", name = "play-services-mlkit-text-recognition", version.ref = "mlkitTextRecognition" }
 
-# Auth & Google Drive/Sheets Client
+# Google Credential Manager (2026 Android Standard) + Fallback
+androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }
+androidx-credentials-play-services = { group = "androidx.credentials", name = "credentials-play-services-auth", version.ref = "credentials" }
+google-id = { group = "com.google.android.libraries.identity.googleid", name = "googleid", version.ref = "googleId" }
 play-services-auth = { group = "com.google.android.gms", name = "play-services-auth", version.ref = "playServicesAuth" }
+
+# Google Drive Vault (Pure drive.file scope - No Sheets API needed)
 google-api-client-android = { group = "com.google.api-client", name = "google-api-client-android", version.ref = "googleApiClient" }
 google-api-services-drive = { group = "com.google.apis", name = "google-api-services-drive", version.ref = "googleApiDrive" }
-google-api-services-sheets = { group = "com.google.apis", name = "google-api-services-sheets", version.ref = "googleApiSheets" }
 
-# Coroutines & Serialization
+# DocumentFile for Chat / Attachment Import
+androidx-documentfile = { group = "androidx.documentfile", name = "documentfile", version.ref = "documentFile" }
+
+# Coroutines, Serialization & Networking
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "kotlinxCoroutines" }
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttp" }
 
-# Testing
+# Testing Pyramid
 junit-jupiter = { group = "org.junit.jupiter", name = "junit-jupiter", version.ref = "junit5" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }

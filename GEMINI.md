@@ -8,15 +8,16 @@ Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.) Android Collector*
 
 1. **Zero-Backend Architecture (\$0 Cloud Infrastructure Cost)**
    - Student data MUST NEVER be routed through, persisted on, or mirrored to external cloud servers, third-party databases, or proxy relays.
-   - All network synchronizations flow strictly between the local Android device and the parent's authenticated personal **Google Drive Vault** and **Google Sheets**.
+   - All network synchronizations flow strictly between the local Android device and the parent's authenticated personal **Google Drive Vault** in **AI-native file formats** (`notices.jsonl`, `MASTER_DIGEST.md`, `_system/knowledge_graph.json`, `graph.html`).
 
 2. **100% On-Device Machine Learning (Google ML Kit)**
-   - Optical Character Recognition (OCR) on circular images and timetable PDFs MUST run locally on-device using `play-services-mlkit-text-recognition`.
+   - Optical Character Recognition (OCR) on circular images and multi-page PDFs MUST run locally on-device using `play-services-mlkit-text-recognition` with streaming `PdfRenderer`.
+   - In-memory Bitmaps must be recycled immediately to avoid Out-Of-Memory (OOM) conditions.
    - Never call external cloud vision or OCR APIs that incur billing or send educational media off-device.
 
 3. **Restricted Privacy Scope (`drive.file`)**
-   - OAuth scope MUST strictly be `https://www.googleapis.com/auth/drive.file` and `https://www.googleapis.com/auth/spreadsheets`.
-   - Never request full Google Drive access (`drive` or `drive.readonly`). The application only accesses files and directories it has created under `K.I.D.S. Data/`.
+   - OAuth scope MUST strictly be `https://www.googleapis.com/auth/drive.file`.
+   - Never request full Google Drive access (`drive` or `drive.readonly`) or unnecessary Google Sheets scopes. The application only accesses files and directories it has created under `K.I.D.S. Data/`.
 
 4. **Strict Privacy Filtering at Memory Boundary**
    - Push notifications intercepted via `NotificationListenerService` MUST be evaluated against whitelisted package names and chat groups BEFORE disk persistence or network transmission.
@@ -26,6 +27,10 @@ Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.) Android Collector*
    - All interactive touch targets MUST enforce minimum dimensions of **48dp × 48dp**.
    - Contrast ratios MUST meet or exceed 4.5:1 for standard body text and 7:1 for headings.
    - All UI elements in Jetpack Compose MUST provide semantic descriptions for screen readers (Google TalkBack).
+
+6. **Sequential Onboarding Flow**
+   - The parent completes the full 4-step wizard for child #1 first. Once completed, the child is displayed on the Children Grid Dashboard.
+   - Children cannot be switched midway through the 4-step setup.
 
 ---
 
@@ -40,8 +45,9 @@ Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.) Android Collector*
 | **Typography** | Kanit (Headings) & Poppins (Body) | `androidx.compose.ui:ui-text-google-fonts` |
 | **Local Persistence**| Jetpack Room + SQLite FTS4 | Room 2.6.1 with KSP annotation processing |
 | **Background Sync**| AndroidX WorkManager | Expedited Work & Periodic Work with constraints |
-| **On-Device OCR** | Google ML Kit Text Recognition | `com.google.android.gms:play-services-mlkit-text-recognition:19.0.0` |
-| **Cloud Services** | Google API Client Library | Drive REST API v3, Sheets REST API v4 |
+| **On-Device OCR** | Google ML Kit Text Recognition | `com.google.android.gms:play-services-mlkit-text-recognition:19.0.0` + `PdfRenderer` |
+| **Auth** | Google Credential Manager API | `androidx.credentials:credentials:1.3.0` |
+| **Cloud Services** | Google API Client Library | Drive REST API v3 (`drive.file` scope only) |
 | **Testing** | Multi-Tier Testing Pyramid | JUnit 5, MockK, Robolectric, Truth, Compose Test Rule |
 | **Knowledge Graph**| Local Kotlin Graphify Engine | On-device graph generator (`knowledge_graph.json`, `graph.html`) |
 
@@ -60,19 +66,21 @@ c:\K.I.D.S\
 │   │   ├── main/
 │   │   │   ├── AndroidManifest.xml
 │   │   │   ├── java/com/kids/collector/
-│   │   │   │   ├── data/              # Room DB, Google Drive/Sheets client, ML Kit parser
-│   │   │   │   │   ├── db/            # Entities (Child, Notice, Attachment), DAOs, TypeConverters
-│   │   │   │   │   ├── drive/         # Resumable uploaders, folder provisioning, Sheets append
-│   │   │   │   │   └── ocr/           # ML Kit offline text recognizer
+│   │   │   │   ├── data/              # Room DB, Google Drive client, ML Kit parser
+│   │   │   │   │   ├── db/            # Entities, DAOs, TypeConverters, FTS4 tables
+│   │   │   │   │   ├── drive/         # Resumable uploaders, folder provisioning, JSONL stream
+│   │   │   │   │   └── ocr/           # ML Kit offline text recognizer & PdfRenderer
 │   │   │   │   ├── domain/            # Core business logic, routing, hashing, Graphify
 │   │   │   │   │   ├── classifier/    # Rule-based tagger (CIRCULAR, HOMEWORK, ATTENDANCE, FEES)
 │   │   │   │   │   ├── filter/        # PrivacyFilter (whitelisting, instant drops)
 │   │   │   │   │   ├── router/        # MultiChildRouter (attribution by handle, email, grade)
 │   │   │   │   │   ├── dedupe/        # SHA-256 fingerprint deduplication
+│   │   │   │   │   ├── importer/      # WhatsAppChatExportParser (.txt / .zip fallback)
 │   │   │   │   │   └── graph/         # KotlinGraphifyEngine (nodes, edges, GraphRAG, Markdown)
 │   │   │   │   ├── presentation/      # Jetpack Compose UI
 │   │   │   │   │   ├── theme/         # KidsTheme, Color tokens, Kanit & Poppins Typography
 │   │   │   │   │   ├── wizard/        # 4-Step Onboarding Wizard
+│   │   │   │   │   ├── dashboard/     # Multi-child grid dashboard
 │   │   │   │   │   └── telemetry/     # Live diagnostic feed & 5-point probe UI
 │   │   │   │   ├── service/           # Android System Services
 │   │   │   │   │   ├── KidsNotificationListenerService.kt
@@ -112,13 +120,3 @@ c:\K.I.D.S\
   - Text Secondary: `Color(0xFF475569)` (5.5:1 contrast on canvas)
 - Always specify `minHeight = 48.dp, minWidth = 48.dp` on touch targets.
 - Headings must use `KanitFontFamily`; body copy and controls must use `PoppinsFontFamily`.
-
----
-
-## 5. Agent Workflow & Verification Requirements
-
-When making modifications to this codebase:
-1. **Never break build script configurations**: Always update `gradle/libs.versions.toml` when adding dependencies.
-2. **Execute Unit Tests**: Run `./gradlew test` (or Gradle test tasks) to verify classifiers, hashing, and privacy filters.
-3. **Keep Knowledge Graph Synchronized**: When altering architecture or introducing new modules, run `/graphify` to refresh `graphify-out/` artifacts.
-4. **Preserve PRD Documentation Integrity**: Do not remove requirements from `prd.md`.

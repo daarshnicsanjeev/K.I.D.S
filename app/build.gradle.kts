@@ -65,6 +65,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.documentfile)
 
     // Jetpack Compose & Material 3
     implementation(platform(libs.androidx.compose.bom))
@@ -77,7 +78,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 
-    // Room Database
+    // Room Database + SQLite FTS4
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
@@ -88,11 +89,15 @@ dependencies {
     // Google ML Kit Text Recognition (On-Device OCR)
     implementation(libs.play.services.mlkit.text.recognition)
 
-    // Play Services Auth & Google Drive/Sheets Client
+    // Google Credential Manager (2026 Android Standard) + Fallback
+    implementation(libs.androidx.credentials)
+    implementation(libs.androidx.credentials.play.services)
+    implementation(libs.google.id)
     implementation(libs.play.services.auth)
+
+    // Google Drive Vault (Pure drive.file scope - No Sheets API)
     implementation(libs.google.api.client.android)
     implementation(libs.google.api.services.drive)
-    implementation(libs.google.api.services.sheets)
 
     // Serialization & Networking
     implementation(libs.kotlinx.coroutines.android)

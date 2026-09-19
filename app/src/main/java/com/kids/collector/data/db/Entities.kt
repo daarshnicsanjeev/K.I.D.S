@@ -1,10 +1,10 @@
 package com.kids.collector.data.db
 
 import androidx.room.Entity
+import androidx.room.Fts4
 import androidx.room.Index
 import androidx.room.PrimaryKey
-import com.kids.collector.domain.model.ContentCategory
-import com.kids.collector.domain.model.SyncStatus
+import com.kids.collector.domain.model.ChannelConfig
 
 @Entity(tableName = "child_profiles")
 data class ChildProfileEntity(
@@ -15,7 +15,9 @@ data class ChildProfileEntity(
     val schoolName: String,
     val accountEmail: String?,
     val disambiguationTag: String?,
-    val photoUri: String?
+    val photoUri: String?,
+    val channels: List<ChannelConfig> = emptyList(),
+    val createdAtMs: Long = System.currentTimeMillis()
 )
 
 @Entity(
@@ -23,6 +25,7 @@ data class ChildProfileEntity(
     indices = [
         Index(value = ["hashSha256"], unique = true),
         Index(value = ["childId"]),
+        Index(value = ["category"]),
         Index(value = ["timestampMs"])
     ]
 )
@@ -37,14 +40,16 @@ data class NoticeEntity(
     val timestampMs: Long,
     val hashSha256: String,
     val syncStatus: String,
-    val driveFileId: String?
+    val driveFileId: String? = null,
+    val attachmentCount: Int = 0
 )
 
 @Entity(
     tableName = "attachments",
     indices = [
         Index(value = ["noticeId"]),
-        Index(value = ["fileHash"])
+        Index(value = ["fileHash"]),
+        Index(value = ["syncStatus"])
     ]
 )
 data class AttachmentEntity(
@@ -55,7 +60,16 @@ data class AttachmentEntity(
     val mimeType: String,
     val sizeBytes: Long,
     val fileHash: String,
-    val ocrText: String?,
-    val driveFileId: String?,
+    val ocrText: String? = null,
+    val pageCount: Int = 1,
+    val driveFileId: String? = null,
     val syncStatus: String
+)
+
+@Entity(tableName = "notices_fts")
+@Fts4(contentEntity = NoticeEntity::class)
+data class NoticeFtsEntity(
+    val title: String,
+    val body: String,
+    val sender: String
 )
