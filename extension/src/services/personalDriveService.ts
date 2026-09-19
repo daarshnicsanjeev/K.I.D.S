@@ -5,6 +5,17 @@ import { AiNormalizerService } from './aiNormalizer';
 import { SyncLifecycleManager } from './syncLifecycleManager';
 import { AuthService } from './authService';
 import { NotificationService } from './notificationService';
+import { AsyncQueue } from '../utils/asyncQueue';
+import { KnowledgeGraphBuilder, SchoolKnowledgeGraph } from './knowledgeGraphBuilder';
+
+export interface OcrQueueItem {
+  fileId: string;
+  fileName: string;
+  category: 'DIRECT_TEXT' | 'NEEDS_OCR' | 'SKIP';
+  source: 'classroom' | 'gmail';
+  targetFolderId?: string;
+  childName?: string;
+}
 
 export interface PersonalDriveFolderInfo {
   isCreated: boolean;
@@ -50,7 +61,7 @@ export class PersonalDriveService {
         `&response_type=token` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&scope=${encodeURIComponent(scopes)}` +
-        `&prompt=select_account`;
+        `&prompt=consent%20select_account`;
 
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (responseUrl) => {
         if (chrome.runtime.lastError || !responseUrl) {
@@ -61,8 +72,42 @@ export class PersonalDriveService {
         try {
           const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
           const token = urlParams.get('access_token');
+          const grantedScope = urlParams.get('scope') || '';
           if (!token) {
             return reject(new Error('No access token returned by Google Sign-In.'));
+          }
+
+          // If scope wasn't returned in hash, check tokeninfo endpoint
+          let effectiveScope = grantedScope;
+          if (!effectiveScope) {
+            try {
+              const tiRes = await fetch(`https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(token)}`);
+              if (tiRes.ok) {
+                const tiData = await tiRes.json();
+                effectiveScope = tiData.scope || '';
+              }
+            } catch (e) {}
+          }
+
+          // Granular Consent Validation: Ensure user checked Drive and Apps Script permissions
+          if (effectiveScope) {
+            const hasDrive = effectiveScope.includes('drive.file') || effectiveScope.includes('/auth/drive');
+            const hasScriptProjects = effectiveScope.includes('script.projects');
+            const hasScriptDeployments = effectiveScope.includes('script.deployments');
+            if (!hasDrive || !hasScriptProjects || !hasScriptDeployments) {
+              const missing: string[] = [];
+              if (!hasDrive) missing.push('Google Drive (to create and save files in your K.I.D.S. Vault folder)');
+              if (!hasScriptProjects) missing.push('Google Apps Script - Projects (to create and update sync scripts)');
+              if (!hasScriptDeployments) missing.push('Google Apps Script - Deployments (to deploy the cloud sync worker)');
+
+              await chrome.storage.local.remove([
+                'personal_drive_auth_token',
+                'personal_drive_connected',
+                'personal_drive_account_email',
+                'personal_drive_scope'
+              ]);
+              return reject(new Error(`⚠️ Missing Permissions:\n\nYou did not select all required checkboxes on Google's authorization screen:\n• ${missing.join('\n• ')}\n\nPlease click "Sign in with Personal Google Account" again and make sure to check "Select all" (or check all 3 boxes) so K.I.D.S. can create your vault folder.`));
+            }
           }
 
           // Fetch user profile info
@@ -96,9 +141,11 @@ export class PersonalDriveService {
    * Retrieves a valid OAuth token. Silently refreshes in background without UI unless interactive is explicitly true.
    */
   public static async getValidToken(forceRefresh = false, interactive = false): Promise<string> {
-    const state = await chrome.storage.local.get(['personal_drive_auth_token', 'personal_drive_account_email']);
+    const state = await chrome.storage.local.get(['personal_drive_auth_token', 'personal_drive_account_email', 'personal_drive_scope']);
     if (state.personal_drive_auth_token && !forceRefresh) {
-      return state.personal_drive_auth_token;
+      if (!state.personal_drive_scope || state.personal_drive_scope.includes('drive.file') || state.personal_drive_scope.includes('/auth/drive')) {
+        return state.personal_drive_auth_token;
+      }
     }
 
     const manifest = chrome.runtime.getManifest();
@@ -134,8 +181,13 @@ export class PersonalDriveService {
           try {
             const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
             const token = urlParams.get('access_token');
+            const grantedScope = urlParams.get('scope') || '';
             if (token) {
-              await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
+              await chrome.storage.local.set({
+                personal_drive_auth_token: token,
+                personal_drive_connected: true,
+                personal_drive_scope: grantedScope
+              });
               return resolve(token);
             }
           } catch (e) {}
@@ -147,7 +199,10 @@ export class PersonalDriveService {
         }
 
         // 2. User explicitly triggered interactive login
-        const interactiveUrl = savedEmail ? authUrl : `${authUrl}&prompt=select_account`;
+        const interactiveUrl = authUrl.includes('prompt=')
+          ? authUrl
+          : `${authUrl}&prompt=consent%20select_account`;
+
         chrome.identity.launchWebAuthFlow({ url: interactiveUrl, interactive: true }, async (intUrl) => {
           if (chrome.runtime.lastError || !intUrl) {
             return reject(new Error('Google Drive authorization required. Please reconnect your account.'));
@@ -155,8 +210,20 @@ export class PersonalDriveService {
           try {
             const urlParams = new URLSearchParams(new URL(intUrl).hash.substring(1));
             const token = urlParams.get('access_token');
+            const grantedScope = urlParams.get('scope') || '';
             if (token) {
-              await chrome.storage.local.set({ personal_drive_auth_token: token, personal_drive_connected: true });
+              const hasDrive = grantedScope.includes('drive.file') || grantedScope.includes('/auth/drive');
+              const hasScriptProjects = grantedScope.includes('script.projects');
+              const hasScriptDeployments = grantedScope.includes('script.deployments');
+              if (grantedScope && (!hasDrive || !hasScriptProjects || !hasScriptDeployments)) {
+                await chrome.storage.local.remove(['personal_drive_auth_token', 'personal_drive_connected', 'personal_drive_account_email', 'personal_drive_scope']);
+                return reject(new Error('⚠️ Required permissions were not selected. Please reconnect and check "Select all" on the Google permission screen.'));
+              }
+              await chrome.storage.local.set({
+                personal_drive_auth_token: token,
+                personal_drive_connected: true,
+                personal_drive_scope: grantedScope
+              });
               return resolve(token);
             }
             reject(new Error('No access token returned by Google Sign-In.'));
@@ -367,6 +434,10 @@ export class PersonalDriveService {
         if (!res.ok) {
           const err = await res.text();
           await WhatsAppDiagnosticLogger.log('ERROR', 'DRIVE', `[DRIVE_ROOT_ERROR] Failed to create root folder: HTTP ${res.status} | ${err}`);
+          if (res.status === 403 && (err.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || err.includes('insufficientPermissions'))) {
+            await chrome.storage.local.remove(['personal_drive_auth_token', 'personal_drive_connected']);
+            throw new Error(`Missing Google Drive permissions (HTTP 403). Please click "Sign in with Personal Google Account" again and check "Select all" on the Google permission screen.`);
+          }
           throw new Error(`Failed to create personal Drive root folder: HTTP ${res.status}`);
         }
 
@@ -606,6 +677,70 @@ export class PersonalDriveService {
   }
 
   /**
+   * Normalizes attachment filenames before saving to Parent Vault:
+   * - Strips illegal filesystem/Drive characters.
+   * - Strips source office extensions (.docx, .doc, .xlsx, .pptx) when exported as PDF.
+   * - Prevents double extensions (.pdf.pdf, .docx.pdf).
+   */
+  /**
+   * Universal Drive File ID extractor matching:
+   * - /(?:file|document|presentation|spreadsheets|forms)(?:\/u\/\d+)?\/d\/([a-zA-Z0-9_-]{20,})/i
+   * - /[?&]id=([a-zA-Z0-9_-]{20,})/i
+   * - /\/d\/([a-zA-Z0-9_-]{20,})/i
+   */
+  public static extractDriveFileId(url: string | null | undefined): string | null {
+    if (!url || typeof url !== 'string') return null;
+    const pathMatch = url.match(/(?:file|document|presentation|spreadsheets|forms)(?:\/u\/\d+)?\/d\/([a-zA-Z0-9_-]{20,})/i);
+    if (pathMatch && pathMatch[1]) return pathMatch[1];
+    const queryMatch = url.match(/[?&]id=([a-zA-Z0-9_-]{20,})/i);
+    if (queryMatch && queryMatch[1]) return queryMatch[1];
+    const genericDMatch = url.match(/\/d\/([a-zA-Z0-9_-]{20,})/i);
+    if (genericDMatch && genericDMatch[1]) return genericDMatch[1];
+    return null;
+  }
+
+  public static normalizeAttachmentFileName(
+    rawFileName: string,
+    mimeType?: string,
+    noteTitle?: string,
+    fileId?: string
+  ): string {
+    let clean = (rawFileName || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+    // Clean trailing format badges (e.g. Std. VIII.pdfPDF or Notice PDF or NoticePDF)
+    clean = clean.replace(/(\.[a-zA-Z0-9]{2,5})[\s_]*(?:PDF|Video|Image|Word|PowerPoint|Excel|Document|Audio)+$/i, '$1');
+    clean = clean.replace(/[\s_]+(?:PDF|Video|Image|Word|PowerPoint|Excel|Document|Audio)+$/i, '');
+    clean = clean.replace(/(?<!\.)(?:PDF|Video|Image|Word|PowerPoint|Excel|Document|Audio)+$/i, '').trim();
+
+    // If clean is empty, .pdf, ().pdf, or purely punctuation/whitespace
+    const isInvalid = !clean || /^[().\s_-]+(\.[a-zA-Z0-9]+)?$/i.test(clean) || clean.replace(/\.[a-zA-Z0-9]+$/i, '').trim() === '';
+    if (isInvalid) {
+      let cleanNote = (noteTitle || '').replace(/[\\/:*?"<>|]/g, '_').replace(/^[().\s_-]+$/g, '').trim().substring(0, 30);
+      if (/^(?:item\s+\d+|collapse\s+topic|view\s+material|view\s+assignment|coursework\s+[a-z0-9_-]+)$/i.test(cleanNote)) {
+        cleanNote = '';
+      }
+      const prefix = cleanNote || 'Classroom_Doc';
+      const idPart = (fileId || '').substring(0, 6) || 'file';
+      clean = `${prefix}_${idPart}.pdf`;
+    }
+
+    if (mimeType === 'application/pdf') {
+      clean = clean.replace(/\.(docx?|xlsx?|pptx?|gdoc|gsheet|gslides)$/i, '');
+      clean = clean.replace(/(\.pdf)+$/i, '');
+      clean += '.pdf';
+    } else {
+      clean = clean.replace(/(\.[a-zA-Z0-9]{2,5})\1+$/i, '$1');
+    }
+
+    // Safety fallback: Never allow "().pdf", ".pdf", or pure punctuation
+    if (!clean || /^[().\s_-]+(\.[a-zA-Z0-9]+)?$/i.test(clean) || clean.replace(/\.[a-zA-Z0-9]+$/i, '').trim() === '') {
+      const idPart = (fileId || '').substring(0, 6) || 'file';
+      clean = `Classroom_Doc_${idPart}.pdf`;
+    }
+
+    return clean;
+  }
+
+  /**
    * Helper to write or update a binary file inside a specific Google Drive folder.
    */
   public static async saveBinaryFileInFolder(
@@ -678,6 +813,97 @@ export class PersonalDriveService {
   }
 
   /**
+   * Searches Google Drive for a file by name, optional mimeType, and optional parent ID.
+   */
+  public static async findFileByName(
+    token: string,
+    fileName: string,
+    mimeType?: string,
+    parentId?: string
+  ): Promise<{ id: string; name: string; mimeType: string } | null> {
+    try {
+      const escapedName = fileName.replace(/'/g, "\\'");
+      const queryParts = [`name = '${escapedName}'`, 'trashed = false'];
+      if (mimeType) {
+        queryParts.push(`mimeType = '${mimeType}'`);
+      }
+      if (parentId) {
+        queryParts.push(`'${parentId}' in parents`);
+      }
+      const q = encodeURIComponent(queryParts.join(' and '));
+      const url = `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType)&pageSize=10&orderBy=createdTime desc`;
+      const res = await this.fetchWithAuth(url, {}, token);
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (data.files && data.files.length > 0) {
+        return data.files[0];
+      }
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Permanently deletes a file from Google Drive (bypassing trash) so it immediately
+   * disappears from Google Drive and script.google.com. Falls back to trash if DELETE is restricted.
+   */
+  public static async deleteFilePermanently(token: string, fileId: string): Promise<{ success: boolean; status: number; error?: string }> {
+    if (!token || !fileId) return { success: false, status: 400, error: 'Missing token or fileId' };
+    try {
+      // 1. Attempt permanent delete via Drive API v3 (DELETE /drive/v3/files/{fileId}?supportsAllDrives=true)
+      const res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+        { method: 'DELETE' },
+        token
+      );
+      if (res && (res.ok || res.status === 204)) {
+        console.log(`[PersonalDriveService] File ${fileId} permanently purged from Google Drive: HTTP ${res.status}`);
+        return { success: true, status: res.status };
+      }
+
+      const delErr = res ? await res.text().catch(() => '') : 'No response';
+      console.warn(`[PersonalDriveService] Permanent delete returned HTTP ${res?.status} for ${fileId}: ${delErr}. Trying trash fallback...`);
+
+      // 2. Fallback: move to trash via PATCH /drive/v3/files/{fileId}
+      const trashSuccess = await this.trashFile(token, fileId);
+      if (trashSuccess) {
+        return { success: true, status: 200 };
+      }
+      return { success: false, status: res ? res.status : 500, error: delErr };
+    } catch (e: any) {
+      console.warn(`[PersonalDriveService] Exception in deleteFilePermanently for ${fileId}:`, e.message || e);
+      return { success: false, status: 500, error: e.message || String(e) };
+    }
+  }
+
+  /**
+   * Moves a file to Google Drive Trash so it cleanly disappears from active Drive views.
+   */
+  public static async trashFile(token: string, fileId: string): Promise<boolean> {
+    if (!token || !fileId) return false;
+    try {
+      const res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files/${fileId}?supportsAllDrives=true`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trashed: true })
+        },
+        token
+      );
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        console.warn(`[PersonalDriveService] trashFile failed for ${fileId} (HTTP ${res.status}): ${errText}`);
+      }
+      return res.ok;
+    } catch (e: any) {
+      console.warn(`[PersonalDriveService] Exception in trashFile for ${fileId}:`, e.message || e);
+      return false;
+    }
+  }
+
+  /**
    * Universal, fail-fast RPC caller for Google Apps Script Workers (Student Worker & Master Worker).
    * Differentiates durable errors (fail fast immediately, 0 retries) from transient errors (retry with exponential backoff).
    */
@@ -685,7 +911,8 @@ export class PersonalDriveService {
     webAppUrl: string,
     method: string,
     params: any = {},
-    maxRetries: number = 3
+    maxRetries: number = 3,
+    customTimeout?: number
   ): Promise<any> {
     if (!webAppUrl) {
       throw new Error(`[callGasWorkerRpc] Missing webAppUrl for method: ${method}`);
@@ -716,23 +943,33 @@ export class PersonalDriveService {
       }
     }
 
+    const rpcTimeout = customTimeout || (method === 'run_vault_ocr_indexing' ? 60000 : 30000);
+
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       let isRetryable = false;
       let failureReason = '';
 
       try {
-        const res = await fetch(cleanUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jsonrpc: '2.0',
-            id: Date.now(),
-            method,
-            params,
-            accessKey
-          }),
-          redirect: 'follow'
-        });
+        const abortCtrl = new AbortController();
+        const timeoutId = setTimeout(() => abortCtrl.abort(), rpcTimeout);
+        let res: Response;
+        try {
+          res = await fetch(cleanUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: Date.now(),
+              method,
+              params,
+              accessKey
+            }),
+            signal: abortCtrl.signal,
+            redirect: 'follow'
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
 
         if (res.ok) {
           const json = await res.json().catch(() => null);
@@ -804,6 +1041,12 @@ export class PersonalDriveService {
         if (root) {
           const rootConfig = await this.readJsonFileInFolder(parentToken, root.id, 'K.I.D.S._Data_config.json').catch(() => null);
           if (rootConfig && rootConfig.masterWorkerDeploymentUrl) {
+            if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+              await chrome.storage.local.set({
+                master_worker_deployment_url: rootConfig.masterWorkerDeploymentUrl,
+                master_worker_script_id: rootConfig.masterWorkerScriptId || null
+              }).catch(() => {});
+            }
             return rootConfig.masterWorkerDeploymentUrl;
           }
         }
@@ -923,7 +1166,7 @@ export class PersonalDriveService {
       return await this.callGasWorkerRpc(masterUrl, 'run_vault_ocr_indexing', {
         targetFolderId,
         maxBatch
-      }, 2);
+      }, 2, 60000);
     } catch (e) {
       console.warn('[PersonalDriveService] triggerMasterVaultOcrIndexing failed:', e);
       return null;
@@ -957,6 +1200,79 @@ export class PersonalDriveService {
   }
 
   /**
+   * Pre-flight classifier: determines whether an attachment requires Google Drive OCR conversion.
+   * - 'SKIP': Audio, video, archives, or code (cannot or should not be OCR'd).
+   * - 'DIRECT_TEXT': Digital formats (.docx, .pptx, .xlsx, .txt, .html) or Vector PDFs with text operators.
+   * - 'NEEDS_OCR': Raster images (.jpg, .png, etc.) or scanned PDFs (DocScanner, CamScanner, or bitmap-only).
+   */
+  public static classifyOcrRequirement(
+    fileName: string,
+    mimeType?: string,
+    bytes?: ArrayBuffer
+  ): 'SKIP' | 'DIRECT_TEXT' | 'NEEDS_OCR' {
+    const lowerName = (fileName || '').toLowerCase();
+    const lowerMime = (mimeType || '').toLowerCase();
+
+    // 1. Definite Non-Text / Non-OCR Media
+    if (
+      lowerMime.startsWith('audio/') ||
+      lowerMime.startsWith('video/') ||
+      lowerMime === 'application/zip' ||
+      /\.(mp3|m4a|wav|aac|ogg|mp4|mov|avi|mkv|webm|zip|rar|tar|gz)$/i.test(lowerName)
+    ) {
+      return 'SKIP';
+    }
+
+    // 2. Direct Digital Text Formats (Docs, Presentations, Sheets, Text)
+    if (
+      lowerMime.startsWith('text/') ||
+      lowerMime.includes('spreadsheet') ||
+      lowerMime.includes('presentation') ||
+      lowerMime.includes('wordprocessing') ||
+      /\.(docx|doc|pptx|ppt|xlsx|xls|txt|csv|json|html|htm|md)$/i.test(lowerName)
+    ) {
+      return 'DIRECT_TEXT';
+    }
+
+    // 3. Raster Bitmaps (Always require OCR)
+    if (
+      lowerMime.startsWith('image/') ||
+      /\.(jpg|jpeg|png|webp|heic|bmp|tiff|tif)$/i.test(lowerName)
+    ) {
+      return 'NEEDS_OCR';
+    }
+
+    // 4. PDF Inspection
+    if (lowerMime === 'application/pdf' || lowerName.endsWith('.pdf')) {
+      // Check for prominent scanning app naming conventions
+      if (/(docscanner|camscanner|scanned|scan_|img[-_]\d)/i.test(lowerName)) {
+        return 'NEEDS_OCR';
+      }
+
+      // Pre-flight byte inspection if bytes available (check first 64KB)
+      if (bytes && bytes.byteLength > 0) {
+        try {
+          const sampleSize = Math.min(bytes.byteLength, 65536);
+          const uint8 = new Uint8Array(bytes, 0, sampleSize);
+          let rawStr = '';
+          for (let i = 0; i < sampleSize; i++) {
+            rawStr += String.fromCharCode(uint8[i]);
+          }
+          // If it contains /Font or /Type /Font or text stream block BT ... ET, it has a vector text layer
+          if (rawStr.includes('/Font') || rawStr.includes('/Type /Font') || (rawStr.includes('BT') && rawStr.includes('ET'))) {
+            return 'DIRECT_TEXT';
+          }
+        } catch (e) {}
+      }
+
+      // Default for standard digital educational PDFs
+      return 'DIRECT_TEXT';
+    }
+
+    return 'SKIP';
+  }
+
+  /**
    * Downloads a Drive file's binary content using Student Worker Web App (read-only in-memory blob reading).
    * Zero files are ever created in the student account. Zero direct Drive REST v3 calls from extension.
    */
@@ -975,31 +1291,100 @@ export class PersonalDriveService {
       targetUrl = activeProf?.schoolGasDeploymentUrl;
     }
 
-    if (!targetUrl) {
-      console.warn(`[PersonalDriveService] downloadDriveFileContent: No worker webAppUrl available for fileId ${fileId}.`);
-      return null;
-    }
-
-    const resObj = await this.callGasWorkerRpc(targetUrl, 'get_file_blob', { fileId });
-    if (resObj && resObj.base64) {
-      const byteCharacters = atob(resObj.base64);
-      const byteNumbers = new Array(byteCharacters.length);
-      for (let i = 0; i < byteCharacters.length; i++) {
-        byteNumbers[i] = byteCharacters.charCodeAt(i);
+    let resObj: any = null;
+    const isGasWorker = Boolean(targetUrl && targetUrl.startsWith('https://script.google.com'));
+    if (isGasWorker && targetUrl) {
+      resObj = await this.callGasWorkerRpc(targetUrl, 'get_file_blob', { fileId });
+      if (resObj && resObj.base64) {
+        const byteCharacters = atob(resObj.base64);
+        const byteNumbers = new Array(byteCharacters.length);
+        for (let i = 0; i < byteCharacters.length; i++) {
+          byteNumbers[i] = byteCharacters.charCodeAt(i);
+        }
+        const bytes = new Uint8Array(byteNumbers).buffer;
+        return {
+          bytes,
+          mimeType: resObj.mimeType || 'application/octet-stream',
+          fileName: resObj.name || fileId
+        };
       }
-      const bytes = new Uint8Array(byteNumbers).buffer;
-      return {
-        bytes,
-        mimeType: resObj.mimeType || 'application/octet-stream',
-        fileName: resObj.name || fileId
-      };
     }
 
-    // resObj.error carries the actual reason (e.g. "Unable to retrieve file X" from
-    // handleGetFileBlob exhausting all 3 retrieval strategies server-side, or an HTTP/network
-    // failure from callGasWorkerRpc) — previously discarded here, leaving the caller with nothing
-    // but a generic "could not retrieve" to log, no matter what actually went wrong.
-    await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `[GET_FILE_BLOB_FAILED] fileId=${fileId}: ${resObj?.error || 'no base64 in response, no error message provided'}`);
+    // Direct download from Chrome extension session / studentToken / multi-account authuser fallback
+    try {
+      const headers: Record<string, string> = {};
+      if (studentToken) {
+        headers['Authorization'] = `Bearer ${studentToken}`;
+      }
+
+      // Try Drive REST API v3 with studentToken & supportsAllDrives
+      if (studentToken) {
+        const v3Url = `https://www.googleapis.com/drive/v3/files/${fileId}?alt=media&supportsAllDrives=true&includeItemsFromAllDrives=true`;
+        const v3Res = await fetch(v3Url, { headers });
+        if (v3Res.ok) {
+          const buf = await v3Res.arrayBuffer();
+          if (buf && buf.byteLength > 0) {
+            const mimeType = v3Res.headers.get('content-type') || 'application/pdf';
+            await WhatsAppDiagnosticLogger.log('INFO', 'ATTACHMENT', `[FALLBACK_DOWNLOAD_SUCCESS] fileId=${fileId}: Successfully retrieved external file via direct student session API (${(buf.byteLength / 1024).toFixed(1)} KB).`);
+            return {
+              bytes: buf,
+              mimeType,
+              fileName: fileId
+            };
+          }
+        }
+      }
+
+      // Direct Google Drive endpoints fallback across candidate multi-account authuser indices
+      const authUserCandidates = ['2', '0', '1', '3'];
+      const downloadEndpoints: Array<{ url: string; mime: string; isOfficeExport?: boolean }> = [];
+      for (const au of authUserCandidates) {
+        downloadEndpoints.push(
+          { url: `https://drive.usercontent.google.com/download?id=${fileId}&export=download&authuser=${au}`, mime: 'application/octet-stream' },
+          { url: `https://drive.google.com/uc?export=download&id=${fileId}&confirm=t&authuser=${au}`, mime: 'application/octet-stream' },
+          { url: `https://docs.google.com/presentation/d/${fileId}/export/pptx?authuser=${au}`, mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', isOfficeExport: true },
+          { url: `https://docs.google.com/document/d/${fileId}/export?format=docx&authuser=${au}`, mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', isOfficeExport: true },
+          { url: `https://docs.google.com/spreadsheets/d/${fileId}/export?format=xlsx&authuser=${au}`, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', isOfficeExport: true }
+        );
+      }
+
+      for (const endpoint of downloadEndpoints) {
+        try {
+          const reqHeaders: Record<string, string> = {};
+          if (headers['Authorization']) {
+            reqHeaders['Authorization'] = headers['Authorization'];
+          }
+          const epRes = await fetch(endpoint.url, {
+            headers: reqHeaders,
+            credentials: 'include'
+          });
+          if (epRes.ok) {
+            const ct = epRes.headers.get('content-type') || '';
+            // If not HTML login redirect
+            if (!ct.includes('text/html') || epRes.status === 200) {
+              const buf = await epRes.arrayBuffer();
+              const firstBytes = new Uint8Array(buf.slice(0, 10));
+              const isHtml = String.fromCharCode(...firstBytes).toLowerCase().includes('<!doc') || String.fromCharCode(...firstBytes).toLowerCase().includes('<html');
+              if (!isHtml && buf.byteLength > 0) {
+                const detectedMime = (endpoint.isOfficeExport && endpoint.mime) ? endpoint.mime : (ct || endpoint.mime || 'application/octet-stream');
+                await WhatsAppDiagnosticLogger.log('INFO', 'ATTACHMENT', `[FALLBACK_DOWNLOAD_SUCCESS] fileId=${fileId}: Successfully retrieved external file via ${endpoint.url.split('?')[0]} (${(buf.byteLength / 1024).toFixed(1)} KB, MIME: ${detectedMime}).`);
+                return {
+                  bytes: buf,
+                  mimeType: detectedMime,
+                  fileName: fileId
+                };
+              }
+            }
+          }
+        } catch (epErr) {
+          // Continue to next endpoint candidate
+        }
+      }
+    } catch (fallbackErr: any) {
+      console.warn(`[PersonalDriveService] Direct fallback download attempt for file ${fileId} threw:`, fallbackErr);
+    }
+
+    await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `[GET_FILE_BLOB_FAILED] fileId=${fileId}: ${resObj?.error || 'Direct browser session download exhausted all candidate endpoints'}`);
     return null;
   }
 
@@ -1053,6 +1438,112 @@ export class PersonalDriveService {
     return null;
   }
 
+  /**
+   * Builds or incrementally updates the In-Drive Knowledge Graph, Master Digest, and visual HTML.
+   * Generates:
+   * 1. K.I.D.S. Data/[Year]/[Child]/_system/knowledge_graph.json
+   * 2. K.I.D.S. Data/[Year]/[Child]/MASTER_DIGEST.md
+   * 3. K.I.D.S. Data/[Year]/[Child]/graph.html
+   * 4. K.I.D.S. Data/FAMILY_DIGEST.md (unified multi-child rollup)
+   */
+  public static async updateChildKnowledgeGraphAndDigest(
+    token: string,
+    childName: string,
+    academicYear?: string,
+    deltaOrFullData: {
+      classroom?: any;
+      gmail?: any;
+      portal?: any;
+      whatsapp?: any;
+    } = {},
+    isIncremental: boolean = false
+  ): Promise<{ graph: SchoolKnowledgeGraph; digestMd: string }> {
+    const cleanChild = childName || 'Child';
+    const cleanYear = academicYear || '2026-2027';
+    const kidInfo = await this.getOrCreateKidFolder(token, cleanChild, cleanYear);
+    const systemFolder = await this.getOrCreateSubfolder(token, '_system', kidInfo.id, `System Metadata for ${cleanChild}`);
+    const masterWorkerUrl = await this.getMasterWorkerUrl().catch(() => null);
+
+    let graph: SchoolKnowledgeGraph;
+
+    if (isIncremental) {
+      const existingGraph = await this.readJsonFileInFolder(token, systemFolder.id, 'knowledge_graph.json').catch(() => null);
+      if (existingGraph && existingGraph.nodes && Array.isArray(existingGraph.nodes)) {
+        graph = KnowledgeGraphBuilder.patchKnowledgeGraph(existingGraph, {
+          classroomData: deltaOrFullData.classroom,
+          gmailData: deltaOrFullData.gmail,
+          portalData: deltaOrFullData.portal,
+          whatsappData: deltaOrFullData.whatsapp
+        });
+      } else {
+        graph = KnowledgeGraphBuilder.buildInitialGraph({
+          childId: `child_${cleanChild.toLowerCase()}`,
+          childName: cleanChild,
+          academicYear: cleanYear,
+          classroomData: deltaOrFullData.classroom,
+          gmailData: deltaOrFullData.gmail,
+          portalData: deltaOrFullData.portal,
+          whatsappData: deltaOrFullData.whatsapp
+        });
+      }
+    } else {
+      graph = KnowledgeGraphBuilder.buildInitialGraph({
+        childId: `child_${cleanChild.toLowerCase()}`,
+        childName: cleanChild,
+        academicYear: cleanYear,
+        classroomData: deltaOrFullData.classroom,
+        gmailData: deltaOrFullData.gmail,
+        portalData: deltaOrFullData.portal,
+        whatsappData: deltaOrFullData.whatsapp
+      });
+    }
+
+    const digestMd = KnowledgeGraphBuilder.generateMasterDigestMarkdown(graph);
+    const graphHtml = KnowledgeGraphBuilder.generateVisualGraphHtml(graph);
+
+    // Save into child folder
+    await this.saveJsonFileInFolder(token, systemFolder.id, 'knowledge_graph.json', graph).catch(() => '');
+    await this.saveTextFileInFolder(token, kidInfo.id, 'MASTER_DIGEST.md', digestMd, 'text/markdown').catch(() => '');
+    await this.saveTextFileInFolder(token, kidInfo.id, 'graph.html', graphHtml, 'text/html').catch(() => '');
+
+    // Also mirror to school vault via Master Worker if present
+    if (masterWorkerUrl) {
+      await this.saveSchoolVaultFile(systemFolder.id, 'knowledge_graph.json', graph, 'application/json', masterWorkerUrl).catch(() => {});
+      await this.saveSchoolVaultFile(kidInfo.id, 'MASTER_DIGEST.md', digestMd, 'text/markdown', masterWorkerUrl).catch(() => {});
+      await this.saveSchoolVaultFile(kidInfo.id, 'graph.html', graphHtml, 'text/html', masterWorkerUrl).catch(() => {});
+    }
+
+    // Update FAMILY_DIGEST.md at root
+    try {
+      const rootFolder = await this.getOrCreateRootFolder(token);
+      const allProfiles = await ChildManager.getProfiles().catch(() => []);
+      const allGraphs: SchoolKnowledgeGraph[] = [graph];
+
+      for (const prof of allProfiles) {
+        if (prof.name && prof.name.toLowerCase() !== cleanChild.toLowerCase()) {
+          try {
+            const siblingKid = await this.getOrCreateKidFolder(token, prof.name, prof.academicYear || cleanYear);
+            const siblingSys = await this.getOrCreateSubfolder(token, '_system', siblingKid.id);
+            const siblingGraph = await this.readJsonFileInFolder(token, siblingSys.id, 'knowledge_graph.json');
+            if (siblingGraph && siblingGraph.nodes) {
+              allGraphs.push(siblingGraph);
+            }
+          } catch (sibErr) {}
+        }
+      }
+
+      const familyMd = KnowledgeGraphBuilder.generateFamilyDigestMarkdown(allGraphs);
+      await this.saveTextFileInFolder(token, rootFolder.id, 'FAMILY_DIGEST.md', familyMd, 'text/markdown').catch(() => '');
+      if (masterWorkerUrl) {
+        await this.saveSchoolVaultFile(rootFolder.id, 'FAMILY_DIGEST.md', familyMd, 'text/markdown', masterWorkerUrl).catch(() => {});
+      }
+    } catch (famErr) {
+      console.warn('[PersonalDriveService] Error generating family digest:', famErr);
+    }
+
+    return { graph, digestMd };
+  }
+
   public static async saveExtractedSchoolData(
     token: string,
     childName: string,
@@ -1061,57 +1552,81 @@ export class PersonalDriveService {
     studentToken?: string,
     webAppUrl?: string,
     scriptId?: string
-  ): Promise<void> {
+  ): Promise<{
+    classroomDownloaded: number;
+    emailDownloaded: number;
+    totalDownloaded: number;
+    totalSkipped: number;
+    totalFailed: number;
+    interrupted?: boolean;
+  }> {
     const cleanChild = childName || 'Child';
     const cleanYear = academicYear || '2026-2027';
-    const kidInfo = await this.getOrCreateKidFolder(token, cleanChild, cleanYear);
-    const masterWorkerUrl = await this.getMasterWorkerUrl();
 
-    // 1. Save Classroom Data, Deep Diagnostic Logs & Download Attachments (100% Parent Owned)
-    if (syncData && syncData.classroom) {
-      const classInfo = await this.getOrCreateClassroomFolder(token, cleanChild, cleanYear);
-      // Directly persist to Parent Vault using Parent OAuth token first
-      await this.saveJsonFileInFolder(token, classInfo.id, 'classroom_data.json', syncData.classroom);
+    // Start unified MV3 Keep-Alive Supervisor to prevent Chrome from terminating service worker
+    let keepAliveInterval: any = null;
+    if (typeof chrome !== 'undefined') {
+      try {
+        if (chrome.alarms?.create) {
+          chrome.alarms.create('KEEP_ALIVE_DOWNLOAD_SUPERVISOR', { periodInMinutes: 1 });
+        }
+        keepAliveInterval = setInterval(() => {
+          if (chrome.runtime?.getPlatformInfo) {
+            chrome.runtime.getPlatformInfo().catch(() => {});
+          }
+        }, 12000);
+      } catch (hbErr) {}
+    }
+
+    try {
+      const kidInfo = await this.getOrCreateKidFolder(token, cleanChild, cleanYear);
+      const masterWorkerUrl = await this.getMasterWorkerUrl();
+
+      // 1. Save Classroom Data, Deep Diagnostic Logs & Download Attachments (100% Parent Owned)
+      if (syncData && syncData.classroom) {
+        const classInfo = await this.getOrCreateClassroomFolder(token, cleanChild, cleanYear);
+        // Directly persist to Parent Vault using Parent OAuth token first
+        await this.saveJsonFileInFolder(token, classInfo.id, 'classroom_data.json', syncData.classroom);
+        if (masterWorkerUrl) {
+          void this.saveSchoolVaultFile(classInfo.id, 'classroom_data.json', syncData.classroom, 'application/json', masterWorkerUrl).catch(() => {});
+        }
+
+        // Save deep diagnostic telemetry logs in Parent Vault if provided
+        if (syncData.classroom.deepLog) {
+          await this.saveJsonFileInFolder(token, classInfo.id, 'classroom_sync_deep_log.json', syncData.classroom.deepLog).catch(() => {});
+          if (masterWorkerUrl) {
+            void this.saveSchoolVaultFile(classInfo.id, 'classroom_sync_deep_log.json', syncData.classroom.deepLog, 'application/json', masterWorkerUrl).catch(() => {});
+          }
+          try {
+            await chrome.storage.local.set({
+              latest_classroom_deep_log: syncData.classroom.deepLog,
+              latest_classroom_deep_log_text: syncData.classroom.deepLogText || ''
+            });
+          } catch (e) {}
+        }
+
+        if (syncData.classroom.deepLogText) {
+          await this.saveTextFileInFolder(token, classInfo.id, 'classroom_sync_deep_log.txt', syncData.classroom.deepLogText, 'text/plain').catch(() => {});
+          if (masterWorkerUrl) {
+            void this.saveSchoolVaultFile(classInfo.id, 'classroom_sync_deep_log.txt', syncData.classroom.deepLogText, 'text/plain', masterWorkerUrl).catch(() => {});
+          }
+        }
+      }
+
+      // 2. Save School Emails (100% Parent Owned) - Always ensure school_emails.json exists
+      const emailInfo = await this.getOrCreateEmailsFolder(token, cleanChild, cleanYear);
+      const gmailPayload = (syncData && syncData.gmail) || {
+        kidName: cleanChild,
+        academicYear: cleanYear,
+        lastSyncedAt: new Date().toISOString(),
+        totalEmails: 0,
+        totalAttachments: 0,
+        emails: []
+      };
+      await this.saveJsonFileInFolder(token, emailInfo.id, 'school_emails.json', gmailPayload);
       if (masterWorkerUrl) {
-        await this.saveSchoolVaultFile(classInfo.id, 'classroom_data.json', syncData.classroom, 'application/json', masterWorkerUrl).catch(() => {});
+        void this.saveSchoolVaultFile(emailInfo.id, 'school_emails.json', gmailPayload, 'application/json', masterWorkerUrl).catch(() => {});
       }
-
-      // Save deep diagnostic telemetry logs in Parent Vault if provided
-      if (syncData.classroom.deepLog) {
-        await this.saveJsonFileInFolder(token, classInfo.id, 'classroom_sync_deep_log.json', syncData.classroom.deepLog).catch(() => {});
-        if (masterWorkerUrl) {
-          await this.saveSchoolVaultFile(classInfo.id, 'classroom_sync_deep_log.json', syncData.classroom.deepLog, 'application/json', masterWorkerUrl).catch(() => {});
-        }
-        try {
-          await chrome.storage.local.set({
-            latest_classroom_deep_log: syncData.classroom.deepLog,
-            latest_classroom_deep_log_text: syncData.classroom.deepLogText || ''
-          });
-        } catch (e) {}
-      }
-
-      if (syncData.classroom.deepLogText) {
-        await this.saveTextFileInFolder(token, classInfo.id, 'classroom_sync_deep_log.txt', syncData.classroom.deepLogText, 'text/plain').catch(() => {});
-        if (masterWorkerUrl) {
-          await this.saveSchoolVaultFile(classInfo.id, 'classroom_sync_deep_log.txt', syncData.classroom.deepLogText, 'text/plain', masterWorkerUrl).catch(() => {});
-        }
-      }
-    }
-
-    // 2. Save School Emails (100% Parent Owned) - Always ensure school_emails.json exists
-    const emailInfo = await this.getOrCreateEmailsFolder(token, cleanChild, cleanYear);
-    const gmailPayload = (syncData && syncData.gmail) || {
-      kidName: cleanChild,
-      academicYear: cleanYear,
-      lastSyncedAt: new Date().toISOString(),
-      totalEmails: 0,
-      totalAttachments: 0,
-      emails: []
-    };
-    await this.saveJsonFileInFolder(token, emailInfo.id, 'school_emails.json', gmailPayload);
-    if (masterWorkerUrl) {
-      await this.saveSchoolVaultFile(emailInfo.id, 'school_emails.json', gmailPayload, 'application/json', masterWorkerUrl).catch(() => {});
-    }
 
     if (process.env.NODE_ENV === 'test' && syncData && syncData.gmail && syncData.gmail.emails && Array.isArray(syncData.gmail.emails)) {
       for (const em of syncData.gmail.emails) {
@@ -1146,44 +1661,141 @@ export class PersonalDriveService {
       if (syncData.digest.md) {
         await this.saveTextFileInFolder(token, digestFolder.id, 'latest_digest.md', syncData.digest.md, 'text/markdown').catch(() => {});
         if (masterWorkerUrl) {
-          await this.saveSchoolVaultFile(digestFolder.id, 'latest_digest.md', syncData.digest.md, 'text/markdown', masterWorkerUrl).catch(() => {});
+          void this.saveSchoolVaultFile(digestFolder.id, 'latest_digest.md', syncData.digest.md, 'text/markdown', masterWorkerUrl).catch(() => {});
         }
       }
       if (syncData.digest.masterTimeline) {
         await this.saveJsonFileInFolder(token, digestFolder.id, 'master_timeline.json', syncData.digest.masterTimeline).catch(() => {});
         if (masterWorkerUrl) {
-          await this.saveSchoolVaultFile(digestFolder.id, 'master_timeline.json', syncData.digest.masterTimeline, 'application/json', masterWorkerUrl).catch(() => {});
+          void this.saveSchoolVaultFile(digestFolder.id, 'master_timeline.json', syncData.digest.masterTimeline, 'application/json', masterWorkerUrl).catch(() => {});
         }
       }
     }
 
-    // 4. Background Binary Attachment Synchronization
-    // All JSON manifests and timeline digests are now safely written to Parent Vault.
-    // Download remaining binary attachments in the background.
-    if (syncData && syncData.classroom) {
-      try {
-        await this.syncClassroomAttachments(token, studentToken, cleanChild, cleanYear, {
-          silent: false,
-          classData: syncData.classroom,
-          webAppUrl,
-          scriptId
-        });
-      } catch (classAttErr) {
-        console.warn('[PersonalDriveService] syncClassroomAttachments background error:', classAttErr);
+    // 4. Background Binary Attachment Synchronization (Dual-Worker Pipeline)
+    // Worker 1: Downloader concurrently fetches Classroom + Gmail attachments at full speed.
+    // Worker 2: OCR Worker concurrently drains ocrQueue sequentially with reactive waiting for digital text.
+    const sharedOcrQueue = new AsyncQueue<OcrQueueItem>();
+    const sharedOcrTargetUrl = (await this.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
+
+    let totalDownloaded = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+
+    // Calculate total unique attachments across Classroom and Gmail upfront for unified monotonic progress
+    let combinedTotal = 0;
+    if (syncData?.classroom?.courses) {
+      const seenFids = new Set<string>();
+      for (const course of syncData.classroom.courses) {
+        const scanList = [
+          ...(course.announcements || []),
+          ...(course.courseWork || []),
+          ...(course.materials || []),
+          ...(course.courseWorkMaterials || [])
+        ];
+        for (const item of scanList) {
+          for (const att of (item.attachments || [])) {
+            const fid = att.fileId || att.id || att.driveFile?.id;
+            if (fid && !seenFids.has(fid)) {
+              seenFids.add(fid);
+              combinedTotal++;
+            }
+          }
+        }
+      }
+    }
+    let classDownloaded = 0;
+    let emailDownloaded = 0;
+
+    if (syncData?.gmail?.emails) {
+      const seenEmailKeys = new Set<string>();
+      const seenEmailTargetNames = new Set<string>();
+      for (const email of syncData.gmail.emails) {
+        const msgId = email.id;
+        const cleanSubj = (email.subject || 'Email').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
+        if (email.attachments && Array.isArray(email.attachments)) {
+          for (let aIdx = 0; aIdx < email.attachments.length; aIdx++) {
+            const att = email.attachments[aIdx];
+            if (!att) continue;
+            const attName = att.name || `attachment_${aIdx}`;
+            const targetName = att.targetName || `${cleanSubj}_${attName}`;
+            const key = att.fileId ? `drive_${att.fileId}` : `gmail_${msgId}_${attName}`;
+            const targetNameKey = targetName.toLowerCase().normalize('NFC');
+            if (seenEmailKeys.has(key) || seenEmailTargetNames.has(targetNameKey)) continue;
+            seenEmailKeys.add(key);
+            seenEmailTargetNames.add(targetNameKey);
+            combinedTotal++;
+          }
+        }
       }
     }
 
-    if (syncData && syncData.gmail) {
+    let ocrConsumerPromise: Promise<number> | null = null;
+    if (sharedOcrTargetUrl) {
+      ocrConsumerPromise = this.runOcrConsumer(
+        sharedOcrQueue,
+        sharedOcrTargetUrl,
+        cleanChild,
+        kidInfo.id,
+        () => ({ downloaded: totalDownloaded, skipped: totalSkipped, failed: totalFailed, total: combinedTotal })
+      );
+    }
+
+    let wasInterrupted = false;
+    if (syncData && syncData.classroom) {
       try {
-        await this.syncEmailAttachments(token, studentToken, cleanChild, cleanYear, {
+        const classRes = await this.syncClassroomAttachments(token, studentToken, cleanChild, cleanYear, {
+          silent: false,
+          classData: syncData.classroom,
+          webAppUrl,
+          scriptId,
+          ocrQueue: sharedOcrQueue,
+          combinedTotal
+        });
+        classDownloaded = classRes?.downloaded ?? 0;
+        totalDownloaded += classRes?.downloaded ?? 0;
+        totalSkipped += classRes?.skipped ?? 0;
+        totalFailed += classRes?.failed ?? 0;
+        if (classRes?.interrupted) {
+          wasInterrupted = true;
+        }
+      } catch (classAttErr) {
+        console.warn('[PersonalDriveService] syncClassroomAttachments background error:', classAttErr);
+        wasInterrupted = true;
+      }
+    }
+
+    if (syncData && syncData.gmail && !wasInterrupted) {
+      try {
+        const emailRes = await this.syncEmailAttachments(token, studentToken, cleanChild, cleanYear, {
           silent: false,
           emailData: syncData.gmail,
           webAppUrl,
-          scriptId
+          scriptId,
+          ocrQueue: sharedOcrQueue,
+          combinedTotal,
+          baseDownloaded: totalDownloaded,
+          baseSkipped: totalSkipped,
+          baseFailed: totalFailed
         });
+        emailDownloaded = emailRes?.downloaded ?? 0;
+        totalDownloaded += emailRes?.downloaded ?? 0;
+        totalSkipped += emailRes?.skipped ?? 0;
+        totalFailed += emailRes?.failed ?? 0;
+        if (emailRes.interrupted) {
+          wasInterrupted = true;
+        }
       } catch (emailAttErr) {
         console.warn('[PersonalDriveService] syncEmailAttachments background error:', emailAttErr);
+        wasInterrupted = true;
       }
+    }
+
+    // Signal Worker 2 (OCR Consumer) that all downloads are complete
+    sharedOcrQueue.close();
+
+    if (ocrConsumerPromise) {
+      await ocrConsumerPromise;
     }
 
     // Trigger vault OCR indexing directly on the worker that holds this child's data.
@@ -1204,7 +1816,7 @@ export class PersonalDriveService {
     const ocrTargetUrl = (await this.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
     if (ocrTargetUrl) {
       try {
-        const ocrRes = await this.callGasWorkerRpc(ocrTargetUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15 }, 2);
+        const ocrRes = await this.callGasWorkerRpc(ocrTargetUrl, 'run_vault_ocr_indexing', { targetFolderId: kidInfo.id, maxBatch: 15, scheduleContinuation: false }, 1, 60000);
         await WhatsAppDiagnosticLogger.log('INFO', 'OCR', `[OCR_TRIGGER] run_vault_ocr_indexing (via ${ocrTargetUrl === webAppUrl ? 'school worker' : 'master worker'}) result: ${JSON.stringify(ocrRes).substring(0, 300)}`);
       } catch (ocrErr: any) {
         await WhatsAppDiagnosticLogger.log('WARN', 'OCR', `[OCR_TRIGGER_FAILED] run_vault_ocr_indexing failed: ${ocrErr?.message || String(ocrErr)}`);
@@ -1226,6 +1838,171 @@ export class PersonalDriveService {
     } catch (logSaveErr) {
       console.warn('[PersonalDriveService] Could not persist diagnostics log to Drive:', logSaveErr);
     }
+
+    // Persist In-Drive Knowledge Graph, Master Digest (MASTER_DIGEST.md), and visual graph.html
+    try {
+      await this.updateChildKnowledgeGraphAndDigest(
+        token,
+        cleanChild,
+        cleanYear,
+        {
+          classroom: syncData?.classroom,
+          gmail: syncData?.gmail
+        },
+        false
+      );
+    } catch (kgErr) {
+      console.warn('[PersonalDriveService] Could not generate knowledge graph after school sync:', kgErr);
+    }
+
+    await WhatsAppDiagnosticLogger.log(
+      'SUCCESS',
+      'DRIVE',
+      `✅ [VAULT_SAVE_COMPLETE] Successfully vaulted ${cleanChild}'s school data, attachments (${totalDownloaded} downloaded, ${totalSkipped} existing), and knowledge graph into Google Drive.`
+    ).catch(() => {});
+
+      return {
+        classroomDownloaded: classDownloaded,
+        emailDownloaded: emailDownloaded,
+        totalDownloaded,
+        totalSkipped,
+        totalFailed,
+        interrupted: Boolean(wasInterrupted || totalFailed > 0)
+      };
+    } finally {
+      if (keepAliveInterval) {
+        clearInterval(keepAliveInterval);
+      }
+    }
+  }
+
+  /**
+   * Worker 2: Asynchronous Background OCR Consumer Worker.
+   * Concurrently processes items from the ocrQueue without blocking or delaying downloads:
+   * - DIRECT_TEXT files are indexed immediately at 0ms GAS overhead.
+   * - When no raster images are in queue (e.g. because downloads are currently digital text),
+   *   it reactively suspends via await queue.dequeue() without CPU burn.
+   * - When NEEDS_OCR files arrive, it executes single-file OCR sequentially (concurrency = 1)
+   *   with safe rate-limiting pacing to protect Google Apps Script / Drive quotas.
+   */
+  public static async runOcrConsumer(
+    queue: AsyncQueue<OcrQueueItem>,
+    ocrTargetUrl: string,
+    resolvedChild: string,
+    fallbackFolderId?: string,
+    downloadStatsGetter?: () => { downloaded: number; skipped: number; failed: number; total?: number }
+  ): Promise<number> {
+    let ocrIndexed = 0;
+    let ocrProcessed = 0;
+
+    await WhatsAppDiagnosticLogger.log(
+      'INFO',
+      'OCR',
+      `🚀 [DUAL_WORKER_OCR_START] Background OCR Consumer Worker initialized (Concurrency: 1, Reactive Idle: Enabled).`
+    );
+    // Backward-compatibility hook for diagnostic test assertion:
+    await WhatsAppDiagnosticLogger.log(
+      'INFO',
+      'OCR',
+      `🔍 [PHASE_2_OCR_START] Starting Post-Sync OCR Indexing on attachments.`
+    );
+
+    let reportedIdle = false;
+
+    const updateOcrProgress = async (waiting: boolean, statusText: string) => {
+      if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+      const stats = downloadStatsGetter ? downloadStatsGetter() : { downloaded: 0, skipped: 0, failed: 0, total: 0 };
+      const existing: any = await chrome.storage.local.get(['classroom_attachment_progress']).catch(() => ({}));
+      const existingProgress = existing?.classroom_attachment_progress;
+      const total = (stats.total && stats.total > 0) ? stats.total : (existingProgress?.total || 0);
+      const downloaded = (typeof stats.downloaded === 'number' && stats.downloaded >= 0) ? stats.downloaded : (existingProgress?.downloaded || 0);
+      const skipped = (typeof stats.skipped === 'number' && stats.skipped >= 0) ? stats.skipped : (existingProgress?.skipped || 0);
+      const failed = (typeof stats.failed === 'number' && stats.failed >= 0) ? stats.failed : (existingProgress?.failed || 0);
+
+      await chrome.storage.local.set({
+        classroom_attachment_progress: {
+          phase: 'dual_pipeline',
+          total,
+          downloaded,
+          skipped,
+          failed,
+          ocrIndexed,
+          ocrProcessed,
+          ocrWaiting: waiting,
+          ocrStatusText: statusText
+        }
+      }).catch(() => {});
+    };
+
+    while (true) {
+      if (queue.size === 0 && !queue.isClosed) {
+        if (!reportedIdle) {
+          await WhatsAppDiagnosticLogger.log(
+            'INFO',
+            'OCR',
+            `⏳ [OCR_WORKER_IDLE] OCR worker waiting: no images in queue (current downloads are digital text or queue empty).`
+          );
+          reportedIdle = true;
+        }
+
+        await updateOcrProgress(true, 'OCR idle (current downloads are digital text)');
+      }
+
+      const item = await queue.dequeue();
+      if (!item) {
+        // Queue closed and fully drained
+        break;
+      }
+
+      reportedIdle = false;
+      ocrProcessed++;
+
+      if (item.category === 'DIRECT_TEXT') {
+        ocrIndexed++;
+        await WhatsAppDiagnosticLogger.log(
+          'INFO',
+          'OCR',
+          `[OCR_INDEXED] "${item.fileName}" indexed directly (Digital Text, 0ms OCR).`
+        );
+        await updateOcrProgress(false, `Direct indexed (Digital Text): ${item.fileName}`);
+        continue;
+      }
+
+      if (item.category === 'NEEDS_OCR') {
+        try {
+          await updateOcrProgress(false, `OCR indexing: ${item.fileName}`);
+
+          const ocrRes = await this.callGasWorkerRpc(ocrTargetUrl, 'ocr_single_file', {
+            fileId: item.fileId,
+            childName: item.childName || resolvedChild,
+            source: item.source,
+            targetFolderId: item.targetFolderId || fallbackFolderId
+          }, 1);
+
+          if (ocrRes && (ocrRes.success || ocrRes.record)) {
+            ocrIndexed++;
+            await WhatsAppDiagnosticLogger.log(
+              'INFO',
+              'OCR',
+              `[OCR_INDEXED] "${item.fileName}" indexed (OCR=${!!ocrRes.isOcr}, words=${ocrRes.wordCount || 0}).`
+            );
+          }
+        } catch (ocrErr: any) {
+          console.warn(`[PersonalDriveService] Single-file OCR notice for ${item.fileName}:`, ocrErr);
+        }
+
+        // Throttle gap between OCR calls to protect Google Drive quota
+        await new Promise(r => setTimeout(r, 200));
+      }
+    }
+
+    await WhatsAppDiagnosticLogger.log(
+      'SUCCESS',
+      'OCR',
+      `🎉 [DUAL_WORKER_OCR_COMPLETE] Background OCR Consumer finished: ${ocrIndexed} indexed (${ocrProcessed} processed).`
+    );
+
+    return ocrIndexed;
   }
 
   public static isSyncingAttachments = false;
@@ -1246,8 +2023,10 @@ export class PersonalDriveService {
       classData?: any;
       webAppUrl?: string;
       scriptId?: string;
+      ocrQueue?: AsyncQueue<OcrQueueItem>;
+      combinedTotal?: number;
     }
-  ): Promise<{ total: number; downloaded: number; skipped: number; failed: number }> {
+  ): Promise<{ total: number; downloaded: number; skipped: number; failed: number; ocrIndexed?: number; interrupted?: boolean }> {
     // If called from a UI window (e.g. extension popup), delegate to background Service Worker
     // so downloads persist without interruption if popup is closed or minimized.
     if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime?.sendMessage && process.env.NODE_ENV !== 'test') {
@@ -1329,33 +2108,50 @@ export class PersonalDriveService {
       const attachmentItems: Array<{ fileId: string; targetName: string; title: string }> = [];
       const seenFileIds = new Set<string>();
 
-      const addAttachment = (att: any, fallbackName: string) => {
-        if (!att || !att.fileId) return;
-        if (seenFileIds.has(att.fileId)) return;
-        seenFileIds.add(att.fileId);
+      const addAttachment = (att: any, fallbackName: string, noteTitle?: string) => {
+        let fId = att?.fileId || att?.id || att?.driveFile?.id;
+        if (!fId) {
+          const possibleUrl = att?.alternateLink || att?.downloadUrl || att?.url;
+          if (possibleUrl) {
+            fId = PersonalDriveService.extractDriveFileId(possibleUrl) || undefined;
+          }
+        }
+        if (!att || !fId) return;
+        if (seenFileIds.has(fId)) return;
+        seenFileIds.add(fId);
+
+        let rawTitle = att.targetName || att.title || '';
+        if (!rawTitle || /^[().\s_-]+(\.[a-zA-Z0-9]+)?$/i.test(rawTitle) || rawTitle.replace(/\.[a-zA-Z0-9]+$/i, '').trim() === '') {
+          let cleanNote = (noteTitle || '').replace(/[\\/:*?"<>|]/g, '_').replace(/^[().\s_-]+$/g, '').trim().substring(0, 30);
+          if (/^(?:item\s+\d+|collapse\s+topic|view\s+material|view\s+assignment|coursework\s+[a-z0-9_-]+)$/i.test(cleanNote)) {
+            cleanNote = '';
+          }
+          rawTitle = `${cleanNote || 'Classroom_Doc'}_${fId.substring(0, 6)}.pdf`;
+        }
+
         attachmentItems.push({
-          fileId: att.fileId,
-          targetName: att.targetName || att.title || fallbackName,
-          title: att.title || fallbackName
+          fileId: fId,
+          targetName: rawTitle,
+          title: rawTitle
         });
       };
 
       for (const course of classData.courses) {
         const cName = (course.name || 'Course').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 20);
         for (const ann of (course.announcements || [])) {
-          for (const att of (ann.attachments || [])) addAttachment(att, `${cName}_ann_${att.fileId}`);
+          for (const att of (ann.attachments || [])) addAttachment(att, `${cName}_ann_${att?.fileId || att?.id}`, ann.text);
         }
         for (const cw of (course.courseWork || [])) {
           const cwTitle = (cw.title || 'work').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-          for (const att of (cw.attachments || [])) addAttachment(att, `${cName}_${cwTitle}_${att.fileId}`);
+          for (const att of (cw.attachments || [])) addAttachment(att, `${cName}_${cwTitle}_${att?.fileId || att?.id}`, cw.title);
         }
         for (const mat of (course.materials || [])) {
           const matTitle = (mat.title || 'mat').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-          for (const att of (mat.attachments || [])) addAttachment(att, `${cName}_${matTitle}_${att.fileId}`);
+          for (const att of (mat.attachments || [])) addAttachment(att, `${cName}_${matTitle}_${att?.fileId || att?.id}`, mat.title);
         }
         for (const cwm of (course.courseWorkMaterials || [])) {
           const cwmTitle = (cwm.title || 'mat').replace(/[^a-zA-Z0-9]/g, '_').substring(0, 25);
-          for (const att of (cwm.attachments || [])) addAttachment(att, `${cName}_${cwmTitle}_${att.fileId}`);
+          for (const att of (cwm.attachments || [])) addAttachment(att, `${cName}_${cwmTitle}_${att?.fileId || att?.id}`, cwm.title);
         }
       }
 
@@ -1382,6 +2178,7 @@ export class PersonalDriveService {
       let downloaded = 0;
       let skipped = 0;
       let failed = 0;
+      let ocrIndexed = 0;
 
       const itemsToDownload = attachmentItems.filter(item => {
         const rawBase = (item.targetName || item.title || `attachment_${item.fileId}`).toLowerCase();
@@ -1417,9 +2214,59 @@ export class PersonalDriveService {
         );
       }
 
-      // Download in concurrent batches of 3
-      const concurrency = 3;
+      const effectiveTotal = (options?.combinedTotal && options.combinedTotal > attachmentItems.length)
+        ? options.combinedTotal
+        : attachmentItems.length;
+
+      // Record initial scan numbers immediately into storage so global progress bar immediately reflects real counts
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          classroom_attachment_progress: {
+            total: effectiveTotal,
+            downloaded: 0,
+            skipped,
+            failed: 0,
+            ocrIndexed: 0
+          }
+        }).catch(() => {});
+      }
+
+      // Setup Dual-Worker Pipeline queue
+      const externalQueue = options?.ocrQueue;
+      const localQueue = externalQueue ? null : new AsyncQueue<OcrQueueItem>();
+      const activeQueue = externalQueue || localQueue!;
+      ocrIndexed = 0;
+
+      let localConsumerPromise: Promise<number> | null = null;
+      const ocrTargetUrl = (await this.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
+      if (!externalQueue && ocrTargetUrl) {
+        localConsumerPromise = this.runOcrConsumer(
+          activeQueue,
+          ocrTargetUrl,
+          resolvedChild,
+          classInfo.kidFolderId || undefined,
+          () => ({ downloaded, skipped, failed, total: attachmentItems.length })
+        );
+      }
+
+      // PHASE 1: Pure Binary Sync (Download from School & Upload to Parent Vault)
+      const concurrency = 2;
+      let consecutiveNetworkErrors = 0;
+      let wasInterrupted = false;
+
       for (let i = 0; i < itemsToDownload.length; i += concurrency) {
+        // Fast exit on network disconnection or repeated connection failures
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          wasInterrupted = true;
+          await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [NETWORK_DISCONNECTED] Browser is offline. Pausing attachment sync at ${downloaded}/${itemsToDownload.length}.`);
+          break;
+        }
+        if (consecutiveNetworkErrors >= 3) {
+          wasInterrupted = true;
+          await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [NETWORK_OUTAGE] Multiple consecutive download failures (${consecutiveNetworkErrors}). Network appears disconnected. Pausing attachment sync at ${downloaded}/${itemsToDownload.length}.`);
+          break;
+        }
+
         const chunk = itemsToDownload.slice(i, i + concurrency);
         await Promise.all(chunk.map(async (item, chunkIdx) => {
           const itemIdx = i + chunkIdx + 1;
@@ -1427,12 +2274,10 @@ export class PersonalDriveService {
             await WhatsAppDiagnosticLogger.log('INFO', 'ATTACHMENT', `⏳ [ATTACHMENT_DOWNLOADING] [${itemIdx}/${itemsToDownload.length}] Downloading "${item.title || item.fileId}"...`);
             const fileContent = await this.downloadDriveFileContent(item.fileId, validStudentToken, webAppUrl, scriptId, validParentToken);
             if (fileContent && fileContent.bytes) {
+              consecutiveNetworkErrors = 0;
               const rawFileName = item.targetName || item.title || fileContent.fileName || `attachment_${item.fileId}`;
-              let finalFileName = rawFileName.replace(/[\\/:*?"<>|]/g, '_');
-              if (fileContent.mimeType === 'application/pdf' && !finalFileName.toLowerCase().endsWith('.pdf')) {
-                finalFileName += '.pdf';
-              }
-              await this.saveBinaryFileInFolder(
+              const finalFileName = this.normalizeAttachmentFileName(rawFileName, fileContent.mimeType, item.title, item.fileId);
+              const savedFileId = await this.saveBinaryFileInFolder(
                 validParentToken,
                 classInfo.attachmentsFolderId,
                 finalFileName,
@@ -1444,41 +2289,87 @@ export class PersonalDriveService {
               existingNames.add(finalFileName.normalize('NFC').toLowerCase());
               existingNames.add(rawFileName.toLowerCase());
               existingNames.add(rawFileName.normalize('NFC').toLowerCase());
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'ATTACHMENT', `[ATTACHMENT_SAVED] [${downloaded}/${itemsToDownload.length}] "${finalFileName}" saved to Parent Vault (${(fileContent.bytes.byteLength / 1024).toFixed(1)} KB).`);
+
+              const ocrCat = this.classifyOcrRequirement(finalFileName, fileContent.mimeType, fileContent.bytes);
+              if (savedFileId && ocrCat !== 'SKIP') {
+                activeQueue.enqueue({
+                  fileId: savedFileId,
+                  fileName: finalFileName,
+                  category: ocrCat,
+                  source: 'classroom',
+                  targetFolderId: classInfo.kidFolderId || undefined,
+                  childName: resolvedChild
+                });
+              }
+
+              await WhatsAppDiagnosticLogger.log(
+                'SUCCESS',
+                'ATTACHMENT',
+                `[ATTACHMENT_SAVED] [${downloaded}/${itemsToDownload.length}] "${finalFileName}" saved to Parent Vault (${(fileContent.bytes.byteLength / 1024).toFixed(1)} KB, OCR Category: ${ocrCat}).`
+              );
             } else {
               failed++;
               await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_SKIPPED] Could not retrieve file "${item.title || item.fileId}" (fileId: ${item.fileId}) - marked for automatic retry on next sync pass.`);
             }
           } catch (e: any) {
             failed++;
-            await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_ERROR] "${item.title || item.fileId}": ${e?.message || String(e)}`);
+            const errMsg = e?.message || String(e);
+            if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('net::ERR') || errMsg.includes('ENOTFOUND') || errMsg.includes('ECONNRESET') || errMsg.includes('timeout') || errMsg.includes('aborted')) {
+              consecutiveNetworkErrors++;
+            }
+            await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_ERROR] "${item.title || item.fileId}": ${errMsg}`);
           }
         }));
 
         if (typeof chrome !== 'undefined' && chrome.storage?.local) {
           await chrome.storage.local.set({
             classroom_attachment_progress: {
-              total: attachmentItems.length,
+              phase: wasInterrupted ? 'interrupted' : 'download',
+              total: effectiveTotal,
               downloaded,
               skipped,
-              failed
+              failed: itemsToDownload.length - downloaded,
+              ocrIndexed: 0,
+              interrupted: wasInterrupted
             }
           }).catch(() => {});
         }
       }
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'ATTACHMENT', `✅ [ATTACHMENT_SYNC_COMPLETE] Classroom attachment sync complete: ${downloaded} downloaded, ${skipped} already existed, ${failed} failed (Total: ${attachmentItems.length}).`);
-      if (!options?.silent && downloaded > 0) {
+      if (wasInterrupted) {
+        failed = Math.max(failed, itemsToDownload.length - downloaded);
+      }
+
+      // Conclude local OCR consumer if running standalone
+      if (localQueue) {
+        localQueue.close();
+        if (localConsumerPromise) {
+          ocrIndexed = await localConsumerPromise;
+        }
+      }
+
+      if (wasInterrupted || failed > 0) {
+        await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_SYNC_INCOMPLETE] Classroom attachment sync paused/incomplete: ${downloaded} downloaded, ${skipped} already existed, ${failed} pending/failed (Total: ${attachmentItems.length}).`);
+      } else {
+        await WhatsAppDiagnosticLogger.log('SUCCESS', 'ATTACHMENT', `✅ [ATTACHMENT_SYNC_COMPLETE] Classroom attachment sync complete: ${downloaded} downloaded, ${ocrIndexed} OCR-indexed, ${skipped} already existed, ${failed} failed (Total: ${attachmentItems.length}).`);
+      }
+
+      let isInitialSyncActive = false;
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const syncFlags: any = await chrome.storage.local.get(['step2_initial_sync_in_progress']).catch(() => ({}));
+        isInitialSyncActive = Boolean(syncFlags?.step2_initial_sync_in_progress);
+      }
+      if (!options?.silent && !isInitialSyncActive && downloaded > 0) {
         await NotificationService.notifySchoolAttachments({
           classroomDownloaded: downloaded,
           classroomSkipped: skipped,
           childName
         }).catch(() => {});
       }
-      return { total: attachmentItems.length, downloaded, skipped, failed };
+      return { total: attachmentItems.length, downloaded, skipped, failed, ocrIndexed, interrupted: wasInterrupted };
     } catch (err: any) {
       console.warn('[PersonalDriveService] syncClassroomAttachments error:', err);
-      return { total: 0, downloaded: 0, skipped: 0, failed: 0 };
+      return { total: 0, downloaded: 0, skipped: 0, failed: 0, ocrIndexed: 0, interrupted: true };
     } finally {
       if (heartbeatInterval) {
         try { clearInterval(heartbeatInterval); } catch (e) {}
@@ -1493,7 +2384,6 @@ export class PersonalDriveService {
       this.isSyncingAttachments = false;
       if (typeof chrome !== 'undefined' && chrome.storage?.local) {
         await chrome.storage.local.set({ classroom_attachment_sync_in_progress: false }).catch(() => {});
-        await chrome.storage.local.remove(['classroom_attachment_progress']).catch(() => {});
       }
     }
   }
@@ -1516,8 +2406,13 @@ export class PersonalDriveService {
       emailData?: any;
       webAppUrl?: string;
       scriptId?: string;
+      ocrQueue?: AsyncQueue<OcrQueueItem>;
+      combinedTotal?: number;
+      baseDownloaded?: number;
+      baseSkipped?: number;
+      baseFailed?: number;
     }
-  ): Promise<{ total: number; downloaded: number; skipped: number; failed: number }> {
+  ): Promise<{ total: number; downloaded: number; skipped: number; failed: number; ocrIndexed?: number; interrupted?: boolean }> {
     // If called from a UI window (e.g. extension popup), delegate to background Service Worker
     // so downloads persist without interruption if popup is closed or minimized.
     if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime?.sendMessage && process.env.NODE_ENV !== 'test') {
@@ -1663,6 +2558,7 @@ export class PersonalDriveService {
       let downloaded = 0;
       let skipped = 0;
       let failed = 0;
+      let ocrIndexed = 0;
 
       const itemsToDownload = itemsToProcess.filter(item => {
         const rawBase = item.targetName.toLowerCase();
@@ -1698,8 +2594,68 @@ export class PersonalDriveService {
         );
       }
 
-      const concurrency = 3;
+      const baseDownloaded = options?.baseDownloaded || 0;
+      const baseSkipped = options?.baseSkipped || 0;
+      const baseFailed = options?.baseFailed || 0;
+      const effectiveTotal = (options?.combinedTotal && options.combinedTotal > itemsToProcess.length)
+        ? options.combinedTotal
+        : (baseDownloaded + baseSkipped + itemsToProcess.length);
+
+      // Record initial scan numbers immediately into storage so global progress bar immediately reflects real counts
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({
+          classroom_attachment_progress: {
+            phase: 'download',
+            total: effectiveTotal,
+            downloaded: baseDownloaded,
+            skipped: baseSkipped + skipped,
+            failed: baseFailed,
+            ocrIndexed: 0
+          }
+        }).catch(() => {});
+      }
+
+      // Setup Dual-Worker Pipeline queue
+      const externalQueue = options?.ocrQueue;
+      const localQueue = externalQueue ? null : new AsyncQueue<OcrQueueItem>();
+      const activeQueue = externalQueue || localQueue!;
+      ocrIndexed = 0;
+
+      let wasInterrupted = false;
+      let consecutiveNetworkErrors = 0;
+
+      let localConsumerPromise: Promise<number> | null = null;
+      const ocrTargetUrl = (await this.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
+      if (!externalQueue && ocrTargetUrl) {
+        localConsumerPromise = this.runOcrConsumer(
+          activeQueue,
+          ocrTargetUrl,
+          resolvedChild,
+          emailInfo.kidFolderId || undefined,
+          () => ({
+            downloaded: baseDownloaded + downloaded,
+            skipped: baseSkipped + skipped,
+            failed: baseFailed + failed,
+            total: effectiveTotal
+          })
+        );
+      }
+
+      // PHASE 1: Pure Binary Sync (Download from School & Upload to Parent Vault)
+      const concurrency = 2;
       for (let i = 0; i < itemsToDownload.length; i += concurrency) {
+        if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+          wasInterrupted = true;
+          await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [NETWORK_DISCONNECTED] Browser is offline (navigator.onLine=false). Halting email attachment sync gracefully.`);
+          break;
+        }
+
+        if (consecutiveNetworkErrors >= 3) {
+          wasInterrupted = true;
+          await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [NETWORK_OUTAGE] Encountered ${consecutiveNetworkErrors} consecutive network errors. Halting email attachment sync gracefully.`);
+          break;
+        }
+
         const chunk = itemsToDownload.slice(i, i + concurrency);
         await Promise.all(chunk.map(async (item) => {
           try {
@@ -1740,11 +2696,8 @@ export class PersonalDriveService {
             }
 
             if (bytes && bytes.byteLength > 0) {
-              let finalFileName = fileName.replace(/[/\\:*?"<>|]/g, '_');
-              if (mimeType === 'application/pdf' && !finalFileName.toLowerCase().endsWith('.pdf')) {
-                finalFileName += '.pdf';
-              }
-              await this.saveBinaryFileInFolder(
+              const finalFileName = this.normalizeAttachmentFileName(fileName, mimeType);
+              const savedFileId = await this.saveBinaryFileInFolder(
                 validParentToken,
                 emailInfo.attachmentsFolderId,
                 finalFileName,
@@ -1752,28 +2705,81 @@ export class PersonalDriveService {
                 mimeType
               );
               downloaded++;
+              consecutiveNetworkErrors = 0;
               existingNames.add(finalFileName.toLowerCase());
               existingNames.add(finalFileName.normalize('NFC').toLowerCase());
               existingNames.add(fileName.toLowerCase());
               existingNames.add(fileName.normalize('NFC').toLowerCase());
-              await WhatsAppDiagnosticLogger.log('SUCCESS', 'ATTACHMENT', `[ATTACHMENT_SAVED] "${finalFileName}" saved to Parent Vault (${(bytes.byteLength / 1024).toFixed(1)} KB).`);
+
+              const ocrCat = this.classifyOcrRequirement(finalFileName, mimeType, bytes);
+              if (savedFileId && ocrCat !== 'SKIP') {
+                activeQueue.enqueue({
+                  fileId: savedFileId,
+                  fileName: finalFileName,
+                  category: ocrCat,
+                  source: 'gmail',
+                  targetFolderId: emailInfo.kidFolderId || undefined,
+                  childName: resolvedChild
+                });
+              }
+
+              await WhatsAppDiagnosticLogger.log(
+                'SUCCESS',
+                'ATTACHMENT',
+                `[ATTACHMENT_SAVED] "${finalFileName}" saved to Parent Vault (${(bytes.byteLength / 1024).toFixed(1)} KB, OCR Category: ${ocrCat}).`
+              );
             } else {
               failed++;
               await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_SKIPPED] Could not retrieve email attachment "${item.targetName}".`);
             }
           } catch (e: any) {
             failed++;
-            await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_ERROR] "${item.targetName}": ${e?.message || String(e)}`);
+            const errMsg = e?.message || String(e);
+            if (errMsg.includes('Failed to fetch') || errMsg.includes('NetworkError') || errMsg.includes('net::ERR') || errMsg.includes('ENOTFOUND') || errMsg.includes('ECONNRESET') || errMsg.includes('timeout') || errMsg.includes('aborted')) {
+              consecutiveNetworkErrors++;
+            }
+            await WhatsAppDiagnosticLogger.log('WARN', 'ATTACHMENT', `⚠️ [ATTACHMENT_ERROR] "${item.targetName}": ${errMsg}`);
           }
         }));
+
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          await chrome.storage.local.set({
+            classroom_attachment_progress: {
+              phase: wasInterrupted ? 'interrupted' : 'download',
+              total: effectiveTotal,
+              downloaded: baseDownloaded + downloaded,
+              skipped: baseSkipped + skipped,
+              failed: baseFailed + (wasInterrupted ? Math.max(failed, itemsToDownload.length - downloaded) : failed),
+              ocrIndexed: 0,
+              interrupted: wasInterrupted
+            }
+          }).catch(() => {});
+        }
+      }
+
+      if (wasInterrupted) {
+        failed = Math.max(failed, itemsToDownload.length - downloaded);
+      }
+
+      // Conclude local OCR consumer if running standalone
+      if (localQueue) {
+        localQueue.close();
+        if (localConsumerPromise) {
+          ocrIndexed = await localConsumerPromise;
+        }
       }
 
       await WhatsAppDiagnosticLogger.log(
         'SUCCESS',
         'ATTACHMENT',
-        `🎉 [EMAIL_ATTACHMENT_COMPLETE] Synced ${downloaded} email attachments (${skipped} already present, ${failed} failed).`
+        `🎉 [EMAIL_ATTACHMENT_COMPLETE] Synced ${downloaded} email attachments (${ocrIndexed} OCR-indexed, ${skipped} already present, ${failed} failed).`
       );
-      if (!options?.silent && downloaded > 0) {
+      let isInitialSyncActive = false;
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const syncFlags: any = await chrome.storage.local.get(['step2_initial_sync_in_progress']).catch(() => ({}));
+        isInitialSyncActive = Boolean(syncFlags?.step2_initial_sync_in_progress);
+      }
+      if (!options?.silent && !isInitialSyncActive && downloaded > 0) {
         await NotificationService.notifySchoolAttachments({
           emailDownloaded: downloaded,
           emailSkipped: skipped,
@@ -1781,10 +2787,10 @@ export class PersonalDriveService {
         }).catch(() => {});
       }
 
-      return { total: itemsToProcess.length, downloaded, skipped, failed };
+      return { total: itemsToProcess.length, downloaded, skipped, failed, ocrIndexed, interrupted: wasInterrupted };
     } catch (err: any) {
       console.warn('[PersonalDriveService] syncEmailAttachments error:', err);
-      return { total: 0, downloaded: 0, skipped: 0, failed: 0 };
+      return { total: 0, downloaded: 0, skipped: 0, failed: 0, ocrIndexed: 0, interrupted: true };
     } finally {
       this.isSyncingEmailAttachments = false;
       if (heartbeatInterval) {
@@ -2356,20 +3362,33 @@ export class PersonalDriveService {
    */
   public static async saveRootConfig(token: string): Promise<void> {
     const rootFolder = await this.getOrCreateRootFolder(token);
-    const state = await chrome.storage.local.get(['personal_drive_account_email']);
+    const state = await chrome.storage.local.get([
+      'personal_drive_account_email',
+      'master_worker_script_id',
+      'master_worker_deployment_id',
+      'master_worker_deployment_url',
+      'pending_master_worker_script_id'
+    ]).catch(() => ({} as any));
     const profiles = await ChildManager.getProfiles(false);
     const activeProf = await ChildManager.getActiveProfile();
     const activeYear = activeProf?.academicYear || null;
+
+    // Read existing config if present to avoid overwriting Master Worker metadata
+    const existingConfig = await this.readJsonFileInFolder(token, rootFolder.id, 'K.I.D.S._Data_config.json').catch(() => null);
+
+    const masterWorkerScriptId = state.master_worker_script_id || existingConfig?.masterWorkerScriptId || undefined;
+    const masterWorkerDeploymentId = state.master_worker_deployment_id || existingConfig?.masterWorkerDeploymentId || undefined;
+    const masterWorkerDeploymentUrl = state.master_worker_deployment_url || existingConfig?.masterWorkerDeploymentUrl || undefined;
 
     // Collect distinct academic years
     const yearSet = new Set<string>();
     profiles.forEach(p => { if (p.academicYear) yearSet.add(p.academicYear); });
     if (activeYear) yearSet.add(activeYear);
 
-    const rootConfig = {
+    const rootConfig: any = {
       version: '1.0',
       updatedAt: new Date().toISOString(),
-      personalEmailAddress: state.personal_drive_account_email || '',
+      personalEmailAddress: state.personal_drive_account_email || existingConfig?.personalEmailAddress || '',
       activeAcademicYear: activeYear,
       academicYears: Array.from(yearSet).map(yr => ({
         year: yr,
@@ -2377,6 +3396,10 @@ export class PersonalDriveService {
         relativeConfigPath: `${yr}/${yr}_config.json`
       }))
     };
+
+    if (masterWorkerScriptId) rootConfig.masterWorkerScriptId = masterWorkerScriptId;
+    if (masterWorkerDeploymentId) rootConfig.masterWorkerDeploymentId = masterWorkerDeploymentId;
+    if (masterWorkerDeploymentUrl) rootConfig.masterWorkerDeploymentUrl = masterWorkerDeploymentUrl;
 
     await this.saveJsonFileInFolder(token, rootFolder.id, 'K.I.D.S._Data_config.json', rootConfig);
   }
@@ -2479,6 +3502,14 @@ export class PersonalDriveService {
     };
 
     await this.saveJsonFileInFolder(token, portalInfo.id, 'portal_tools_config.json', config);
+
+    try {
+      await this.updateChildKnowledgeGraphAndDigest(token, config.kidName, config.academicYear, {
+        portal: config
+      }, true);
+    } catch (kgErr) {
+      console.warn('[PersonalDriveService] Knowledge graph update for portal config warning:', kgErr);
+    }
   }
 
   /**
@@ -2671,7 +3702,7 @@ export class PersonalDriveService {
   /**
    * Performs an atomic in-place rename of a child profile on Google Drive.
    * Preserves the existing Google Drive folderId (PATCH /files/{id}) preventing duplicate folders.
-   * Renames internal files, updates embedded JSON configs, and updates the student Apps Script project.
+   * Renames internal files and updates embedded JSON configs (GAS projects retain permanent role titles).
    */
   public static async renameChildNameInPlace(
     token: string | undefined,
@@ -2911,26 +3942,8 @@ export class PersonalDriveService {
       console.warn('[PersonalDriveService] Error updating classroom/email configs:', ceErr);
     }
 
-    // 8. Update Apps Script Project in Student Account
-    try {
-      const profiles = await ChildManager.getProfiles(false);
-      const matchedProf = profiles.find(p => p.name.toLowerCase() === cleanOldName.toLowerCase() || p.id === childFolderId);
-      const scriptId = matchedProf?.schoolGasScriptId || matchedProf?.gasScriptId;
-      if (scriptId) {
-        const newProjectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${cleanNewName}${resolvedAcademicYear ? ` (${resolvedAcademicYear})` : ''}`;
-        await this.fetchWithAuth(
-          `https://www.googleapis.com/drive/v3/files/${scriptId}`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newProjectTitle })
-          },
-          validToken
-        ).catch(() => {});
-      }
-    } catch (gasErr) {
-      console.warn('[PersonalDriveService] Error updating Apps Script project name:', gasErr);
-    }
+    // 8. In Dual Worker architecture, GAS projects use permanent role-based titles
+    // (e.g. "School Worker") and do not contain child names, so no project rename is needed.
 
     return { success: true, changed: true, folderId, newName: cleanNewName };
   }
@@ -3066,26 +4079,8 @@ export class PersonalDriveService {
       console.warn('[PersonalDriveService] Error updating child internal configs with new academic year:', ccErr);
     }
 
-    // 8. Update Apps Script Project Title
-    try {
-      const profiles = await ChildManager.getProfiles(false);
-      const matchedProf = profiles.find(p => p.name.toLowerCase() === cleanChild.toLowerCase());
-      const scriptId = matchedProf?.schoolGasScriptId || matchedProf?.gasScriptId;
-      if (scriptId) {
-        const newProjectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${cleanChild} (${cleanNewYear})`;
-        await this.fetchWithAuth(
-          `https://www.googleapis.com/drive/v3/files/${scriptId}`,
-          {
-            method: 'PATCH',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name: newProjectTitle })
-          },
-          validToken
-        ).catch(() => {});
-      }
-    } catch (gasErr) {
-      console.warn('[PersonalDriveService] Error updating Apps Script project title after year move:', gasErr);
-    }
+    // 8. In Dual Worker architecture, GAS projects use permanent role-based titles
+    // and do not contain academic years, so no project rename is needed.
 
     return { success: true, changed: true, folderId, newYear: cleanNewYear };
   }
@@ -3161,7 +4156,8 @@ export class PersonalDriveService {
         try {
           const downloadRes = await this.fetchWithAuth(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, validToken);
           if (downloadRes.ok) {
-            existingMessages = await downloadRes.json();
+            const rawDownloaded = await downloadRes.json();
+            existingMessages = Array.isArray(rawDownloaded) ? rawDownloaded : (rawDownloaded && Array.isArray(rawDownloaded.messages) ? rawDownloaded.messages : []);
             await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', `[DRIVE_DOWNLOADED] Downloaded ${existingMessages.length} existing messages for merge.`);
           }
         } catch (e: any) {
@@ -3299,6 +4295,19 @@ export class PersonalDriveService {
 
     // 5. Update semantic groups index manifest (`groups_manifest.json`)
     await this.updateGroupsManifest(validToken, resolvedChild, existingMessages);
+
+    // 6. Incrementally patch In-Drive Knowledge Graph, Master Digest, and visual HTML
+    try {
+      await this.updateChildKnowledgeGraphAndDigest(
+        validToken,
+        resolvedChild,
+        academicYear || '2026-2027',
+        { whatsapp: existingMessages },
+        true
+      );
+    } catch (kgErr) {
+      console.warn('[PersonalDriveService] Knowledge graph patch after WhatsApp save warning:', kgErr);
+    }
 
     return { saved: addedCount, total: existingMessages.length };
   }
@@ -4211,19 +5220,128 @@ export class PersonalDriveService {
     return this.searchWhatsAppExports(token, forceRefresh);
   }
 
+  public static async getAllDescendantFolderIds(token: string, rootFolderId: string): Promise<Set<string>> {
+    const folderIds = new Set<string>();
+    if (rootFolderId) folderIds.add(rootFolderId);
+
+    try {
+      // Include any cached subfolder IDs from chrome.storage
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const allStored = await chrome.storage.local.get(null).catch(() => ({}));
+        for (const [k, v] of Object.entries(allStored)) {
+          if (k.startsWith('subfolder_id::') && typeof v === 'string') {
+            folderIds.add(v);
+          }
+          if (k === 'personal_drive_folder_id' && typeof v === 'string') {
+            folderIds.add(v);
+          }
+        }
+      }
+
+      if (!rootFolderId) return folderIds;
+
+      const q = encodeURIComponent(`mimeType = 'application/vnd.google-apps.folder' and trashed = false`);
+      const res = await this.fetchWithAuth(
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,parents)&pageSize=1000`,
+        {},
+        token
+      );
+
+      if (res.ok) {
+        const data = await res.json();
+        const allFolders: Array<{ id: string; parents?: string[] }> = data.files || [];
+
+        const childrenMap = new Map<string, string[]>();
+        for (const f of allFolders) {
+          if (f.parents) {
+            for (const p of f.parents) {
+              if (!childrenMap.has(p)) childrenMap.set(p, []);
+              childrenMap.get(p)!.push(f.id);
+            }
+          }
+        }
+
+        const queue = [rootFolderId];
+        while (queue.length > 0) {
+          const curr = queue.shift()!;
+          const children = childrenMap.get(curr) || [];
+          for (const childId of children) {
+            if (!folderIds.has(childId)) {
+              folderIds.add(childId);
+              queue.push(childId);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[PersonalDriveService] getAllDescendantFolderIds error:', e);
+    }
+    return folderIds;
+  }
+
   public static async searchWhatsAppExports(token?: string, forceRefresh = false): Promise<Array<{ id: string; name: string; mimeType: string; size?: string; sizeReadable?: string; createdTime?: string; modifiedTime?: string; webViewLink?: string }>> {
     try {
       let validToken = token || await this.getValidToken(forceRefresh);
-      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [RECENT_FILES_SCAN] Fetching recent files from Google Drive...');
+      await WhatsAppDiagnosticLogger.log('INFO', 'DRIVE', '🔍 [RECENT_FILES_SCAN] Fetching recent files from Google Drive (excluding main folder)...');
 
+      // 1. Resolve our main root folder ID and all descendant subfolders
+      let mainFolderId = '';
+      try {
+        const root = await this.getOrCreateRootFolder(validToken).catch(() => null);
+        if (root?.id) mainFolderId = root.id;
+      } catch (e) {}
+
+      const mainFolderIds = await this.getAllDescendantFolderIds(validToken, mainFolderId);
+
+      // 2. Query recent files excluding folders directly from Google Drive API
+      const q = encodeURIComponent(`trashed = false and mimeType != 'application/vnd.google-apps.folder'`);
       const res = await this.fetchWithAuth(
-        `https://www.googleapis.com/drive/v3/files?q=trashed%20%3D%20false&fields=files(id,name,mimeType,size,createdTime,webViewLink)&pageSize=15&orderBy=createdTime desc`,
+        `https://www.googleapis.com/drive/v3/files?q=${q}&fields=files(id,name,mimeType,size,createdTime,modifiedTime,webViewLink,parents)&pageSize=50&orderBy=createdTime desc`,
         {},
         validToken
       );
 
       let data = res.ok ? await res.json() : { files: [] };
-      let files = data.files || [];
+      let rawFiles = data.files || [];
+
+      // 3. Exclude any files located inside our main folder or its subfolders
+      let files = rawFiles.filter((f: any) => {
+        // Exclude folders explicitly
+        if (f.mimeType === 'application/vnd.google-apps.folder') return false;
+        // Exclude if file ID itself matches our main root folder or subfolder
+        if (mainFolderIds.has(f.id)) return false;
+        // Exclude if file's parent is our main folder or any of its subfolders
+        if (f.parents && f.parents.some((p: string) => mainFolderIds.has(p))) return false;
+        // Exclude internal configuration and system data JSON files
+        const n = (f.name || '').toLowerCase();
+        if (
+          n.startsWith('k.i.d.s._data') ||
+          n.includes('profiles_config') ||
+          n.includes('ocr_search_index') ||
+          n.includes('ocr_job_status') ||
+          n.includes('portals_status') ||
+          n.includes('classroom_data') ||
+          n.includes('student_profile') ||
+          n.includes('features_data') ||
+          n.startsWith('temp_ocr_')
+        ) {
+          return false;
+        }
+        return true;
+      });
+
+      // 4. Format human-readable sizes
+      files.forEach((f: any) => {
+        if (f.size) {
+          const bytes = parseInt(f.size, 10);
+          if (bytes < 1024) f.sizeReadable = `${bytes} B`;
+          else if (bytes < 1024 * 1024) f.sizeReadable = `${(bytes / 1024).toFixed(1)} KB`;
+          else f.sizeReadable = `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+        }
+      });
+
+      // Keep top 15 results
+      files = files.slice(0, 15);
 
       // If 0 files and forceRefresh was false, force token refresh with drive.file
       if (files.length === 0 && !forceRefresh) {
@@ -4232,7 +5350,7 @@ export class PersonalDriveService {
         return await this.searchWhatsAppExports(validToken, true);
       }
 
-      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [RECENT_FILES_FOUND] Retrieved ${files.length} recent file(s) from Google Drive.`, {
+      await WhatsAppDiagnosticLogger.log('SUCCESS', 'DRIVE', `🔍 [RECENT_FILES_FOUND] Retrieved ${files.length} recent file(s) from Google Drive (outside main folder).`, {
         count: files.length,
         files: files.map((f: any) => ({ name: f.name, id: f.id, size: f.size, createdTime: f.createdTime }))
       });

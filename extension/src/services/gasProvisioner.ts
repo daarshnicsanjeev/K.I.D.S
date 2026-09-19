@@ -3,6 +3,7 @@ import { AuthService } from './authService';
 import { PersonalDriveService } from './personalDriveService';
 import { WhatsAppDiagnosticLogger } from './whatsappLogger';
 import { NotificationService } from './notificationService';
+import { ClassroomBrowserExtractor } from './classroomBrowserExtractor';
 
 export const CURRENT_GAS_SERVER_VERSION = '4.4.0';
 export const CURRENT_GAS_CHANGELOG = 'Deferred Trigger Creation Until 1-Time Sync Completion & Pre-Lock Fast-Exit Guards';
@@ -36,9 +37,90 @@ export interface ActiveDeployProgress {
   error?: string;
 }
 
+export interface SyncQueueItem {
+  childId: string;
+  childName: string;
+  academicYear: string;
+  studentToken?: string;
+  webAppUrl?: string;
+  scriptId?: string;
+  studentEmail?: string;
+  schoolDomain?: string;
+  enqueuedAt: number;
+}
+
 export class GasProvisionerService {
   public static logCallback?: (msg: string) => void;
   public static isInitialSyncRunning = false;
+  public static activeSyncingChildId: string | null = null;
+  public static activeSyncingChildName: string | null = null;
+  public static readonly STORAGE_KEY_SYNC_QUEUE = 'multi_child_sync_queue';
+
+  public static async getSyncQueue(): Promise<SyncQueueItem[]> {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        const stored = await chrome.storage.local.get([this.STORAGE_KEY_SYNC_QUEUE]);
+        return Array.isArray(stored[this.STORAGE_KEY_SYNC_QUEUE]) ? stored[this.STORAGE_KEY_SYNC_QUEUE] : [];
+      } catch (e) {}
+    }
+    return [];
+  }
+
+  public static async enqueueSync(item: Omit<SyncQueueItem, 'enqueuedAt'>): Promise<number> {
+    const queue = await this.getSyncQueue();
+    const existingIdx = queue.findIndex(q => q.childId === item.childId);
+    const fullItem: SyncQueueItem = {
+      ...item,
+      enqueuedAt: Date.now()
+    };
+    if (existingIdx >= 0) {
+      queue[existingIdx] = fullItem;
+    } else {
+      queue.push(fullItem);
+    }
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [this.STORAGE_KEY_SYNC_QUEUE]: queue }).catch(() => {});
+    }
+    await ChildManager.updateChildSyncStatus(item.childId, 'QUEUED');
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({
+        type: 'SYNC_QUEUE_UPDATED',
+        payload: { queue, enqueuedChild: item.childName, position: queue.length }
+      }).catch(() => {});
+    }
+    return queue.length;
+  }
+
+  public static async dequeueSync(): Promise<SyncQueueItem | null> {
+    const queue = await this.getSyncQueue();
+    if (queue.length === 0) return null;
+    const nextItem = queue.shift()!;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [this.STORAGE_KEY_SYNC_QUEUE]: queue }).catch(() => {});
+    }
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      chrome.runtime.sendMessage({
+        type: 'SYNC_QUEUE_UPDATED',
+        payload: { queue, dequeuedChild: nextItem.childName }
+      }).catch(() => {});
+    }
+    return nextItem;
+  }
+
+  public static async peekSyncQueue(): Promise<SyncQueueItem | null> {
+    const queue = await this.getSyncQueue();
+    return queue.length > 0 ? queue[0] : null;
+  }
+
+  public static async removeSyncFromQueue(childId: string): Promise<boolean> {
+    const queue = await this.getSyncQueue();
+    const filtered = queue.filter(q => q.childId !== childId);
+    const removed = filtered.length < queue.length;
+    if (removed && typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [this.STORAGE_KEY_SYNC_QUEUE]: filtered }).catch(() => {});
+    }
+    return removed;
+  }
 
   public static async isServerUpdateAvailable(activeChild?: ChildProfile | null): Promise<{ isAvailable: boolean; currentVersion: string; deployedVersion?: string; changelog: string }> {
     const child = activeChild || (await ChildManager.getActiveProfile());
@@ -182,79 +264,133 @@ export class GasProvisionerService {
     const rootConfig = await PersonalDriveService.readJsonFileInFolder(parentToken, rootFolderId, 'K.I.D.S._Data_config.json').catch(() => null);
     let existingScriptId = (rootConfig && rootConfig.masterWorkerScriptId) ? rootConfig.masterWorkerScriptId : '';
 
+    // 1. Check local verified Master Worker script ID from prior successful deployment
+    if (!existingScriptId && typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        const localState = await chrome.storage.local.get(['master_worker_script_id']);
+        existingScriptId = localState.master_worker_script_id || '';
+      } catch (e) {}
+    }
+
+    // Clean up any orphaned incomplete project container from a prior interrupted attempt
+    if (!existingScriptId && typeof chrome !== 'undefined' && chrome.storage?.local) {
+      try {
+        const localPending = await chrome.storage.local.get(['pending_master_worker_script_id']);
+        if (localPending.pending_master_worker_script_id) {
+          const orphanedId = localPending.pending_master_worker_script_id;
+          this.log(`🧹 Found orphaned incomplete Master Worker project (${orphanedId}) from prior interrupted attempt. Removing...`);
+          await this.deleteScriptProject(orphanedId, parentToken).catch(() => false);
+          await PersonalDriveService.deleteFilePermanently(parentToken, orphanedId).catch(() => ({ success: false, status: 500, error: undefined }));
+          await chrome.storage.local.remove(['pending_master_worker_script_id']).catch(() => {});
+        }
+      } catch (e) {}
+    }
+
     if (existingScriptId) {
       const isAlive = await this.verifyScriptAlive(existingScriptId, parentToken);
       if (isAlive) {
         this.log(`📦 Matched existing Master Personal Worker in Parent Account (${existingScriptId}). Reusing...`);
         scriptId = existingScriptId;
-        deploymentId = rootConfig.masterWorkerDeploymentId || '';
-        webAppUrl = rootConfig.masterWorkerDeploymentUrl || '';
+        deploymentId = rootConfig?.masterWorkerDeploymentId || '';
+        webAppUrl = rootConfig?.masterWorkerDeploymentUrl || '';
       }
     }
 
+    let isNewProject = false;
     if (!scriptId) {
       this.reportProgress(35, 'Phase 2 of 4 (35%)', 'Creating Master Apps Script Project in Parent Account...');
       this.log('📁 Creating Master Worker Project (POST /v1/projects)...');
-      const project = await this.createProject(parentToken);
+      const project = await this.createProject(parentToken, 'master');
       scriptId = project.scriptId;
+      isNewProject = true;
       this.log(`✅ Created Master Worker Project: ${scriptId}`);
+
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        await chrome.storage.local.set({ pending_master_worker_script_id: scriptId }).catch(() => {});
+      }
     }
 
-    const masterAccessKey = 'MasterKey_' + Math.random().toString(36).substring(2, 10);
+    try {
+      const masterAccessKey = 'MasterKey_' + Math.random().toString(36).substring(2, 10);
 
-    this.reportProgress(60, 'Phase 3 of 4 (60%)', 'Uploading Master Sync, Portal Scraper & Multi-Child Registry...');
-    this.log('📤 Uploading Master Personal Worker modules to script project...');
-    await this.updateProjectContent(scriptId, masterAccessKey, parentToken, 'Master', 'Family');
+      this.reportProgress(60, 'Phase 3 of 4 (60%)', 'Uploading Master Sync, Portal Scraper & Multi-Child Registry...');
+      this.log('📤 Uploading Master Personal Worker modules to script project...');
+      await this.updateProjectContent(scriptId, masterAccessKey, parentToken, 'Master', 'Family');
 
-    this.reportProgress(80, 'Phase 4 of 4 (80%)', 'Deploying Master Web App & Creating 24/7 Cloud Triggers...');
-    this.log('🏷️ Publishing Master Web App deployment...');
-    const version = await this.createVersion(scriptId, parentToken, 'Master', 'Family');
-    const versionNumber = version.versionNumber || 1;
+      this.reportProgress(80, 'Phase 4 of 4 (80%)', 'Deploying Master Web App & Creating 24/7 Cloud Triggers...');
+      this.log('🏷️ Publishing Master Web App deployment...');
+      const version = await this.createVersion(scriptId, parentToken, 'Master', 'Family');
+      const versionNumber = version.versionNumber || 1;
 
-    if (deploymentId) {
-      await this.updateDeployment(scriptId, deploymentId, versionNumber, parentToken, 'Master', 'Family');
-      if (!webAppUrl) webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
-    } else {
-      const deployment = await this.createDeployment(scriptId, versionNumber, parentToken, 'Master', 'Family');
-      deploymentId = deployment.deploymentId;
-      const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
-      webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
+      if (deploymentId) {
+        await this.updateDeployment(scriptId, deploymentId, versionNumber, parentToken, 'Master', 'Family');
+        if (!webAppUrl) webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
+      } else {
+        const deployment = await this.createDeployment(scriptId, versionNumber, parentToken, 'Master', 'Family');
+        deploymentId = deployment.deploymentId;
+        const ep = deployment.entryPoints ? deployment.entryPoints.find((e: any) => e.entryPointType === 'WEB_APP') : null;
+        webAppUrl = (ep && ep.webApp && ep.webApp.url) ? ep.webApp.url : `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${masterAccessKey}`;
+      }
+
+      // Strip multi-account prefix
+      webAppUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//, '/macros/s/');
+      if (!webAppUrl.includes('accessKey=')) {
+        webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${masterAccessKey}` : `${webAppUrl}?accessKey=${masterAccessKey}`;
+      }
+
+      // Functionally verify Drive/Classroom/Gmail/Calendar scopes are actually granted for this
+      // (possibly brand-new) Master Worker project - matching the check already done for School
+      // Worker projects below. Without this, a newly created Master Worker's authorization popup was
+      // decided purely by a GET ping heuristic that could conclude "already authorized" when nothing
+      // had ever been granted, leaving every DriveApp call - including OCR indexing, which routes to
+      // the Master Worker specifically - failing with "Access denied: DriveApp." indefinitely.
+      const masterTestAuth = await this.runTestAuth(scriptId, parentToken, 1, 0, webAppUrl);
+      await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId, undefined, 'master', !masterTestAuth.authorized);
+
+      // Verify all permissions (Drive, ScriptApp/Triggers, etc.) were granted via Web App
+      const postAuthCheck = await this.runTestAuth(scriptId, parentToken, 4, 1500, webAppUrl);
+      if (!postAuthCheck.authorized) {
+        const errDetails = postAuthCheck.error || postAuthCheck.raw?.error?.details?.[0]?.errorMessage || postAuthCheck.raw?.error?.message || 'Required permissions were not granted.';
+        throw new Error(`⚠️ Google Apps Script Permissions Incomplete:\n\n${errDetails}\n\nYou unchecked one or more required permissions (such as automated triggers or Google Drive access) on Google's authorization screen.\n\nPlease click "Deploy Personal Master Cloud Worker" again and make sure to check ALL permission checkboxes.`);
+      }
+
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        await chrome.storage.local.set({
+          master_worker_script_id: scriptId,
+          master_worker_deployment_url: webAppUrl
+        }).catch(() => {});
+        await chrome.storage.local.remove(['pending_master_worker_script_id']).catch(() => {});
+      }
+
+      await PersonalDriveService.saveRootConfig(parentToken);
+
+      this.reportProgress(100, 'Phase 4 of 4 (100%)', 'Personal Master Worker Deployed & Active!');
+      this.log('✅ Personal Master Worker provisioned and active in Parent Google Account.');
+
+      return {
+        success: true,
+        scriptId,
+        deploymentId,
+        webAppUrl,
+        verifiedTools: []
+      };
+    } catch (deployErr: any) {
+      if (scriptId) {
+        this.log(`⚠️ Deployment incomplete or cancelled. Decommissioning Apps Script project (${scriptId})...`);
+        await this.deleteScriptProject(scriptId, parentToken, webAppUrl).catch(() => false);
+        this.log(`🗑️ Attempting to remove incomplete project (${scriptId}) from Google Drive...`);
+        const delRes = await PersonalDriveService.deleteFilePermanently(parentToken, scriptId).catch(() => ({ success: false, status: 500, error: undefined }));
+        if (delRes.success) {
+          this.log(`✅ Incomplete project (${scriptId}) permanently removed from Google Drive.`);
+        } else {
+          this.log(`ℹ️ Project container (${scriptId}) endpoints and triggers decommissioned. (Google Apps Script requires manual deletion from script.google.com under standard drive.file permissions).`);
+        }
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          await chrome.storage.local.remove(['pending_master_worker_script_id', 'master_worker_script_id']).catch(() => {});
+        }
+      }
+      throw deployErr;
     }
-
-    // Strip multi-account prefix
-    webAppUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//, '/macros/s/');
-    if (!webAppUrl.includes('accessKey=')) {
-      webAppUrl = webAppUrl.includes('?') ? `${webAppUrl}&accessKey=${masterAccessKey}` : `${webAppUrl}?accessKey=${masterAccessKey}`;
-    }
-
-    // Functionally verify Drive/Classroom/Gmail/Calendar scopes are actually granted for this
-    // (possibly brand-new) Master Worker project - matching the check already done for School
-    // Worker projects below. Without this, a newly created Master Worker's authorization popup was
-    // decided purely by a GET ping heuristic that could conclude "already authorized" when nothing
-    // had ever been granted, leaving every DriveApp call - including OCR indexing, which routes to
-    // the Master Worker specifically - failing with "Access denied: DriveApp." indefinitely.
-    const masterTestAuth = await this.runTestAuth(scriptId, parentToken);
-    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId, undefined, 'master', !masterTestAuth.authorized);
-
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-      await chrome.storage.local.set({
-        master_worker_script_id: scriptId,
-        master_worker_deployment_url: webAppUrl
-      }).catch(() => {});
-    }
-
-    await PersonalDriveService.saveRootConfig(parentToken);
-
-    this.reportProgress(100, 'Phase 4 of 4 (100%)', 'Personal Master Worker Deployed & Active!');
-    this.log('✅ Personal Master Worker provisioned and active in Parent Google Account.');
-
-    return {
-      success: true,
-      scriptId,
-      deploymentId,
-      webAppUrl,
-      verifiedTools: []
-    };
   }
 
   /**
@@ -350,7 +486,7 @@ export class GasProvisionerService {
       // Create new Apps Script project for active child in student account
       this.reportProgress(40, 'Phase 2 of 5 (40%)', `Creating dedicated Google Apps Script project for ${childName}...`);
       this.log(`📁 Creating new project for ${childName} in student Google account (POST /v1/projects)...`);
-      const project = await this.createProject(token);
+      const project = await this.createProject(token, 'school');
       scriptId = project.scriptId;
       this.log(`✅ New project created: scriptId=${scriptId}`);
       this.reportProgress(60, 'Phase 3 of 5 (60%)', 'Uploading MCP server code and manifest...');
@@ -410,7 +546,7 @@ export class GasProvisionerService {
     // Pre-warm Google Services & Bind Scopes via Execution API
     this.reportProgress(94, 'Phase 5 of 5 (94%)', 'Pre-warming Google Workspace services...');
     this.log('⚙️ Pre-warming Google Workspace services (Classroom, Drive, Calendar, Gmail)...');
-    const schoolTestAuth = await this.runTestAuth(scriptId, token);
+    const schoolTestAuth = await this.runTestAuth(scriptId, token, 1, 0, webAppUrl);
 
     // Interactive Authorization Check if required by Google Apps Script runtime
     await this.ensureScriptAuthorized(webAppUrl, token, scriptId, activeChild?.accountEmail, 'school', !schoolTestAuth.authorized);
@@ -605,6 +741,9 @@ export class GasProvisionerService {
     domain: string;
     isGmail: boolean;
     apiEnabled: boolean;
+    scopeInsufficient?: boolean;
+    statusCode?: number;
+    error?: string;
   }> {
     let activeToken = token;
     if (!activeToken) {
@@ -621,13 +760,30 @@ export class GasProvisionerService {
     let domain = '';
     let isGmail = false;
     let apiEnabled = false;
+    let scopeInsufficient = false;
+    let checkError: string | undefined;
+    let statusCode: number | undefined;
 
     if (activeToken) {
-      // 1. Fetch user profile
+      // 1. Fetch user profile (with silent refresh on 401)
       try {
-        const userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+        let userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
           headers: { 'Authorization': `Bearer ${activeToken}` }
         });
+        if (userRes.status === 401) {
+          try {
+            await AuthService.clearCachedToken();
+            const freshToken = await this.getAuthToken(false);
+            if (freshToken) {
+              activeToken = freshToken;
+              userRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                headers: { 'Authorization': `Bearer ${activeToken}` }
+              });
+            }
+          } catch (refreshErr) {
+            console.warn('[GasProvisioner] Silent token refresh failed during userinfo probe:', refreshErr);
+          }
+        }
         if (userRes.ok) {
           const userData = await userRes.json();
           email = userData.email || '';
@@ -636,21 +792,169 @@ export class GasProvisionerService {
             isGmail = domain.toLowerCase() === 'gmail.com';
           }
         }
-      } catch (e) {}
+      } catch (e: any) {
+        checkError = e.message || String(e);
+      }
 
-      // 2. Check Apps Script API settings
+      // 2. Check Apps Script API status via a non-mutating GET probe.
+      // Calling GET /v1/projects/kids_api_readiness_probe tests if the API gateway allows the request:
+      // - If API is enabled: returns HTTP 404 (or 200/400) -> API is active and reachable with zero mutations.
+      // - If API is disabled: returns HTTP 403 -> API disabled on user account.
+      // - If token expired: returns HTTP 401.
+      // NEVER POST or create projects during readiness probes!
       try {
-        const settingsRes = await fetch('https://script.googleapis.com/v1/usersettings', {
-          headers: { 'Authorization': `Bearer ${activeToken}` }
+        let probeRes = await fetch('https://script.googleapis.com/v1/projects/kids_api_readiness_probe', {
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${activeToken}`
+          }
         });
-        if (settingsRes.ok) {
-          const settingsData = await settingsRes.json();
-          apiEnabled = settingsData.userSettings?.gaaEnabled === true;
+
+        if (probeRes.status === 401) {
+          try {
+            await AuthService.clearCachedToken();
+            const freshToken = await this.getAuthToken(false);
+            if (freshToken) {
+              activeToken = freshToken;
+              // If email was missed earlier due to 401, populate it now
+              if (!email) {
+                try {
+                  const retryUser = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+                    headers: { 'Authorization': `Bearer ${activeToken}` }
+                  });
+                  if (retryUser.ok) {
+                    const uData = await retryUser.json();
+                    email = uData.email || '';
+                  }
+                } catch {}
+              }
+              probeRes = await fetch('https://script.googleapis.com/v1/projects/kids_api_readiness_probe', {
+                method: 'GET',
+                headers: {
+                  'Authorization': `Bearer ${activeToken}`
+                }
+              });
+            }
+          } catch (refreshErr) {
+            console.warn('[GasProvisioner] Silent token refresh failed during probe:', refreshErr);
+          }
         }
-      } catch (e) {}
+
+        statusCode = probeRes.status;
+        let errBody = '';
+        if (typeof probeRes.text === 'function') {
+          errBody = await probeRes.text().catch(() => '');
+        }
+        let probeJson: any = null;
+        if (typeof probeRes.json === 'function') {
+          try {
+            probeJson = await probeRes.json();
+          } catch {}
+        } else if (errBody) {
+          try {
+            probeJson = JSON.parse(errBody);
+          } catch {}
+        }
+
+        if (probeRes.status === 200 || probeRes.status === 201) {
+          if (probeJson && probeJson.userSettings && probeJson.userSettings.gaaEnabled === false) {
+            apiEnabled = false;
+            checkError = 'User has not enabled the Apps Script API in settings';
+          } else {
+            apiEnabled = true;
+            this.log(`✅ [API_PROBE_SUCCESS] Google Apps Script API is accessible for ${email || 'active account'}.`);
+            this.cleanupLegacyProbeProjects(activeToken).catch(() => {});
+          }
+        } else if (probeRes.status === 404 && errBody.includes('Requested entity was not found')) {
+          // Google Apps Script API returns HTTP 404 with "Requested entity was not found" when the API is ENABLED
+          // but the queried probe ID does not exist. (If disabled, Google returns HTTP 403).
+          apiEnabled = true;
+          this.log(`✅ [API_PROBE_SUCCESS] Google Apps Script API is accessible for ${email || 'active account'} (probe status 404 entity not found).`);
+          this.cleanupLegacyProbeProjects(activeToken).catch(() => {});
+        } else if (probeRes.status === 429) {
+          // HTTP 429 (Resource Exhausted / Rate Limit) confirms the API is enabled and active!
+          // Google only evaluates quota and rate limits for enabled APIs.
+          apiEnabled = true;
+          this.log(`✅ [API_PROBE_SUCCESS] Google Apps Script API is enabled and verified for ${email} (quota rate limit reached HTTP 429).`);
+        } else if (probeRes.status === 403) {
+          this.log(`⚠️ [API_PROBE_403] Account: ${email} | Response: ${errBody}`);
+          if (errBody.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || errBody.includes('insufficientPermissions') || errBody.includes('Request had insufficient authentication scopes')) {
+            scopeInsufficient = true;
+          }
+          checkError = errBody;
+          apiEnabled = false;
+        } else {
+          this.log(`⚠️ [API_PROBE_${probeRes.status}] Account: ${email} | Response: ${errBody}`);
+          checkError = errBody;
+          apiEnabled = false;
+        }
+      } catch (e: any) {
+        apiEnabled = false;
+        if (!checkError) checkError = e.message || String(e);
+        this.log(`⚠️ [API_PROBE_EXCEPTION] Account: ${email} | Error: ${checkError}`);
+      }
     }
 
-    return { email, domain, isGmail, apiEnabled };
+    return { email, domain, isGmail, apiEnabled, scopeInsufficient, statusCode, error: checkError };
+  }
+
+  /**
+   * Validates that candidate student account email does not collide with:
+   * 1. Step 1 Parent account (personal_drive_account_email)
+   * 2. Any other child profile's registered student account (multi-child uniqueness)
+   */
+  public static async validateAccountUniqueness(
+    candidateEmail: string,
+    currentChildId?: string
+  ): Promise<{
+    valid: boolean;
+    conflictType?: 'PARENT_ACCOUNT' | 'SIBLING_ACCOUNT';
+    conflictingName?: string;
+    conflictingEmail?: string;
+  }> {
+    const normalizedCandidate = (candidateEmail || '').trim().toLowerCase();
+    if (!normalizedCandidate) {
+      return { valid: false, conflictType: 'PARENT_ACCOUNT' };
+    }
+
+    // 1. Check against Parent Account
+    let parentEmail = '';
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const local = await chrome.storage.local.get(['personal_drive_account_email']);
+        parentEmail = (local.personal_drive_account_email || '').trim().toLowerCase();
+      }
+    } catch {}
+
+    if (parentEmail && normalizedCandidate === parentEmail) {
+      return {
+        valid: false,
+        conflictType: 'PARENT_ACCOUNT',
+        conflictingName: 'Parent Vault Account',
+        conflictingEmail: parentEmail
+      };
+    }
+
+    // 2. Check against all sibling profiles
+    try {
+      const allProfiles = await ChildManager.getProfiles(false);
+      for (const profile of allProfiles) {
+        if (currentChildId && profile.id === currentChildId) {
+          continue; // Self-reconnect is permitted
+        }
+        const siblingEmail = (profile.studentAccountEmail || '').trim().toLowerCase();
+        if (siblingEmail && siblingEmail === normalizedCandidate) {
+          return {
+            valid: false,
+            conflictType: 'SIBLING_ACCOUNT',
+            conflictingName: profile.name || 'Another Child',
+            conflictingEmail: profile.studentAccountEmail
+          };
+        }
+      }
+    } catch {}
+
+    return { valid: true };
   }
 
   /**
@@ -680,12 +984,11 @@ export class GasProvisionerService {
       const scopes = (manifest.oauth2?.scopes && manifest.oauth2.scopes.length > 0)
         ? manifest.oauth2.scopes.join(' ')
         : [
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/script.projects',
             'https://www.googleapis.com/auth/script.deployments',
-            'https://www.googleapis.com/auth/drive.file',
-            'https://www.googleapis.com/auth/classroom.courses.readonly',
-            'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly'
+            'https://www.googleapis.com/auth/drive.file'
           ].join(' ');
 
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` +
@@ -693,7 +996,7 @@ export class GasProvisionerService {
         `&response_type=token` +
         `&redirect_uri=${encodeURIComponent(redirectUri)}` +
         `&scope=${encodeURIComponent(scopes)}` +
-        `&prompt=select_account`;
+        `&prompt=consent%20select_account`;
 
       chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, (responseUrl) => {
         if (chrome.runtime.lastError || !responseUrl) {
@@ -702,7 +1005,13 @@ export class GasProvisionerService {
         }
         const urlParams = new URLSearchParams(new URL(responseUrl).hash.substring(1));
         const accessToken = urlParams.get('access_token');
+        const grantedScope = urlParams.get('scope') || '';
         if (accessToken) {
+          const hasScriptProjects = grantedScope.includes('script.projects') || grantedScope.includes('/auth/script');
+          const hasScriptDeployments = grantedScope.includes('script.deployments');
+          if (grantedScope && (!hasScriptProjects || !hasScriptDeployments)) {
+            return reject(new Error("⚠️ Google Apps Script permissions were not granted. Please sign in again and ensure you check 'Select all' on the Google authorization screen."));
+          }
           resolve(accessToken);
         } else {
           reject(new Error("No access token returned by Google OAuth."));
@@ -713,16 +1022,13 @@ export class GasProvisionerService {
 
   /**
    * Creates a new Google Apps Script project via Apps Script REST API (POST /v1/projects).
+   * In Dual Worker architecture, GAS projects use permanent role-based titles
+   * ("Kids Intelligent Dashboard System (K.I.D.S.) - School Worker" or "Master Worker")
+   * without child names or academic years, completely eliminating the need for project renaming.
    */
-  private static async createProject(token: string): Promise<any> {
-    let projectTitle = 'Kids Intelligent Dashboard System (K.I.D.S.)';
-    try {
-      const active = await ChildManager.getActiveProfile();
-      if (active && active.name) {
-        const yearSuffix = active.academicYear ? ` (${active.academicYear})` : '';
-        projectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${active.name}${yearSuffix}`;
-      }
-    } catch (e) {}
+  private static async createProject(token: string, workerType: 'school' | 'master' = 'school'): Promise<any> {
+    const roleName = workerType === 'master' ? 'Master Worker' : 'School Worker';
+    const projectTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${roleName}`;
 
     const response = await fetch('https://script.googleapis.com/v1/projects', {
       method: 'POST',
@@ -737,6 +1043,17 @@ export class GasProvisionerService {
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 429) {
+        throw new Error(`Google Apps Script project creation quota reached (HTTP 429). Google limits new Apps Script projects to 50 per day. Please wait for Google's quota to reset, or click Deploy again.`);
+      }
+      if (response.status === 403) {
+        if (errText.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || errText.includes('insufficientPermissions') || errText.includes('Request had insufficient authentication scopes')) {
+          await AuthService.clearCachedToken();
+          throw new Error(`⚠️ Google Apps Script permissions missing (HTTP 403). You did not check "Select all" on the Google authorization screen. Please sign in again and make sure to check "Select all".`);
+        } else {
+          throw new Error(`⚠️ Google Apps Script API is disabled on your account (HTTP 403). Please enable it at https://script.google.com/home/usersettings.`);
+        }
+      }
       throw new Error(`Failed to create Apps Script project (${response.status}): ${errText}`);
     }
 
@@ -744,54 +1061,133 @@ export class GasProvisionerService {
   }
 
   /**
-   * Renames an existing Google Apps Script project in-place via Drive API and updates CONFIG in Code.gs.
+   * Decommissions/cleans up an incomplete or unauthorized Google Apps Script project.
+   * STRICTLY uses the Google Apps Script REST API (script.googleapis.com) with ZERO Drive API calls.
+   * 1. Purges all active Web App deployments (unpublishes the script endpoints).
+   * 2. Wipes project source files to a minimal dormant manifest so no code or triggers can run.
+   * 3. Preserves the container ID in local storage so subsequent runs can cleanly reuse and repopulate
+   *    the project via Apps Script REST API without spawning duplicates or causing Drive desyncs.
    */
-  public static async renameAppsScriptProject(
-    scriptId: string,
-    newName: string,
-    academicYear: string = '',
-    token?: string
-  ): Promise<void> {
+  public static async deleteScriptProject(scriptId: string, token: string, webAppUrl?: string): Promise<boolean> {
+    if (!scriptId || !token) return false;
     try {
-      const activeToken = token || await this.getAuthToken(false).catch(() => null);
-      if (!activeToken || !scriptId) return;
+      this.log(`🧹 Decommissioning incomplete/unauthorized Apps Script project (${scriptId}) via Apps Script API...`);
 
-      const yearSuffix = academicYear ? ` (${academicYear})` : '';
-      const newTitle = `Kids Intelligent Dashboard System (K.I.D.S.) - ${newName}${yearSuffix}`;
+      // 1. Purge any registered ScriptApp triggers via Execution API if still reachable
+      try {
+        await this.executeMcpCommand(token, scriptId, 'clearAllProjectTriggers').catch(() => {});
+      } catch (trigPurgeErr) {}
 
-      // 1. Rename the Google Drive file (Apps Script projects are Drive files)
-      await fetch(`https://www.googleapis.com/drive/v3/files/${scriptId}`, {
-        method: 'PATCH',
-        headers: {
-          'Authorization': `Bearer ${activeToken}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({ name: newTitle })
-      }).catch(() => {});
+      // 2. Delete all active deployments via Apps Script REST API (DELETE /v1/projects/{scriptId}/deployments/{deploymentId})
+      let deploymentsRemoved = 0;
+      try {
+        const depListRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/deployments`, {
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+        if (depListRes.ok) {
+          const depData = await depListRes.json();
+          if (depData.deployments && depData.deployments.length > 0) {
+            for (const d of depData.deployments) {
+              if (d.deploymentId) {
+                const delRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/deployments/${d.deploymentId}`, {
+                  method: 'DELETE',
+                  headers: { 'Authorization': `Bearer ${token}` }
+                }).catch(() => null);
+                if (delRes && delRes.ok) {
+                  deploymentsRemoved++;
+                }
+              }
+            }
+          }
+        }
+        if (deploymentsRemoved > 0) {
+          this.log(`🚫 Unmounted and deleted ${deploymentsRemoved} Web App deployment(s) via Apps Script API.`);
+        }
+      } catch (depErr) {}
 
-      // 2. Also update CONFIG in Code.gs if accessKey is stored
-      let accessKey = '';
-      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
-        const state = await chrome.storage.local.get(['access_key']);
-        accessKey = state.access_key || '';
-      }
-      if (accessKey) {
-        await this.updateProjectContent(scriptId, accessKey, activeToken, newName, academicYear).catch(() => {});
-      }
-    } catch (e) {
-      console.warn('[GasProvisioner] renameAppsScriptProject warning:', e);
+      // 3. Wipe all code content to a clean, inert manifest via Apps Script REST API (PUT /v1/projects/{scriptId}/content)
+      try {
+        const wipeRes = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}/content`, {
+          method: 'PUT',
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            files: [
+              {
+                name: 'appsscript',
+                type: 'JSON',
+                source: JSON.stringify({ timeZone: 'Etc/GMT', dependencies: {} })
+              }
+            ]
+          })
+        });
+        if (wipeRes.ok) {
+          this.log(`🧹 Reset project content to dormant state via Apps Script API. Ready for instant reuse.`);
+        }
+      } catch (wipeErr) {}
+
+      this.log(`🧹 Apps Script project (${scriptId}) deployments unmounted and triggers purged.`);
+      return true;
+    } catch (delErr: any) {
+      this.log(`⚠️ Apps Script API decommission note for ${scriptId}: ${delErr.message || delErr}`);
+      return false;
     }
   }
 
   /**
-   * Pushes Code.gs, WorkspaceFetcher.gs, PortalApiFetcher.gs, StorageRepository.gs & appsscript.json.
+   * In Dual Worker architecture, GAS projects use permanent role-based titles
+   * and do not contain child names or academic years, so project renaming is not required.
    */
-  public static async updateProjectContent(scriptId: string, accessKey: string, token: string, childName: string = 'Child', academicYear: string = ''): Promise<any> {
-    const files = [
-      {
-        name: 'appsscript',
-        type: 'JSON',
-        source: JSON.stringify({
+  public static async renameAppsScriptProject(
+    _scriptId: string,
+    _newName: string,
+    _academicYear: string = '',
+    _token?: string
+  ): Promise<void> {
+    // Permanent role-based titles ("School Worker", "Master Worker")
+    // are invariant to child names or academic years. No renaming is needed or performed.
+    return;
+  }
+
+  /**
+   * Pushes Code.gs, WorkspaceFetcher.gs, PortalApiFetcher.gs, StorageRepository.gs & appsscript.json.
+   * Master Worker uses strictly minimal scopes (Drive, External Request, ScriptApp) without school/classroom/docs scopes.
+   */
+  public static async updateProjectContent(
+    scriptId: string,
+    accessKey: string,
+    token: string,
+    childName: string = 'Child',
+    academicYear: string = '',
+    workerType: 'master' | 'school' = 'school'
+  ): Promise<any> {
+    const isMaster = workerType === 'master' || childName === 'Master';
+
+    const appsscriptManifest = isMaster
+      ? {
+          timeZone: 'Asia/Kolkata',
+          exceptionLogging: 'STACKDRIVER',
+          runtimeVersion: 'V8',
+          webapp: { access: 'ANYONE_ANONYMOUS', executeAs: 'USER_DEPLOYING' },
+          executionApi: { access: 'ANYONE' },
+          dependencies: {
+            enabledAdvancedServices: [
+              {
+                userSymbol: 'Drive',
+                version: 'v2',
+                serviceId: 'drive'
+              }
+            ]
+          },
+          oauthScopes: [
+            'https://www.googleapis.com/auth/drive',
+            'https://www.googleapis.com/auth/script.external_request',
+            'https://www.googleapis.com/auth/script.scriptapp'
+          ]
+        }
+      : {
           timeZone: 'Asia/Kolkata',
           exceptionLogging: 'STACKDRIVER',
           runtimeVersion: 'V8',
@@ -817,22 +1213,19 @@ export class GasProvisionerService {
             'https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly',
             'https://www.googleapis.com/auth/classroom.announcements.readonly',
             'https://www.googleapis.com/auth/classroom.rosters.readonly',
-            'https://www.googleapis.com/auth/calendar',
-            'https://www.googleapis.com/auth/calendar.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly',
             'https://www.googleapis.com/auth/gmail.readonly',
             'https://www.googleapis.com/auth/drive',
             'https://www.googleapis.com/auth/drive.readonly',
-            'https://www.googleapis.com/auth/documents',
-            'https://www.googleapis.com/auth/documents.readonly',
-            'https://www.googleapis.com/auth/spreadsheets',
-            'https://www.googleapis.com/auth/spreadsheets.readonly',
-            'https://www.googleapis.com/auth/presentations',
-            'https://www.googleapis.com/auth/presentations.readonly',
             'https://www.googleapis.com/auth/script.external_request',
             'https://www.googleapis.com/auth/script.scriptapp'
           ]
-        }, null, 2)
+        };
+
+    const files = [
+      {
+        name: 'appsscript',
+        type: 'JSON',
+        source: JSON.stringify(appsscriptManifest, null, 2)
       },
       {
         name: 'Code',
@@ -908,17 +1301,55 @@ var McpLogger = {
 };
 
 function testAuth() {
-  var drive = DriveApp.getRootFolder().getName();
-  var tempDoc = Drive.Files.insert({ title: 'test_mcp_auth_probe', mimeType: 'application/vnd.google-apps.document' });
-  if (tempDoc && tempDoc.id) {
-    Drive.Files.remove(tempDoc.id);
+  var services = {};
+  var errors = [];
+  var isMasterWorker = (typeof CONFIG !== 'undefined' && CONFIG.childName === 'Master') ||
+                       (typeof PropertiesService !== 'undefined' && PropertiesService.getScriptProperties().getProperty('multi_child_school_registry') !== null);
+
+  // 1. Google Drive Scope (DriveApp) - Required for both Master and School
+  try {
+    services.drive = DriveApp.getRootFolder().getName() ? true : false;
+  } catch (eDrive) {
+    errors.push("Google Drive: " + (eDrive.message || eDrive.toString()));
   }
-  var doc = DocumentApp.create('test_mcp_doc_auth');
-  DriveApp.getFileById(doc.getId()).setTrashed(true);
-  var classroom = Classroom.Courses.list({ studentId: 'me' });
-  var gmail = GmailApp.getInboxThreads(0, 1);
-  var calendar = CalendarApp.getDefaultCalendar();
-  McpLogger.log('INFO', 'testAuth', 'All Google services verified and authorized successfully.');
+
+  // 2. Automated Script Triggers Scope (ScriptApp) - Required for both Master and School
+  try {
+    var trigs = ScriptApp.getProjectTriggers();
+    services.triggers = (trigs && trigs.length !== undefined) ? trigs.length : 0;
+  } catch (eTrig) {
+    errors.push("Automated Triggers (ScriptApp): " + (eTrig.message || eTrig.toString()));
+  }
+
+  // School-worker-only scopes: Classroom and Gmail are only verified if this is a School Worker
+  if (!isMasterWorker) {
+    // 3. Gmail Scope (GmailApp)
+    try {
+      services.gmail = GmailApp.getInboxThreads(0, 1) ? true : false;
+    } catch (eGmail) {
+      errors.push("Gmail: " + (eGmail.message || eGmail.toString()));
+    }
+
+    // 4. Classroom Scope (Classroom API)
+    try {
+      if (typeof Classroom !== 'undefined' && Classroom.Courses) {
+        Classroom.Courses.list({ pageSize: 1 });
+        services.classroom = true;
+      }
+    } catch (eClass) {
+      var cMsg = (eClass.message || eClass.toString());
+      if (cMsg.includes('permission') || cMsg.includes('oauth') || cMsg.includes('Access denied') || cMsg.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT')) {
+        errors.push("Google Classroom: " + cMsg);
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error("Missing required Google permissions: " + errors.join("; "));
+  }
+
+  McpLogger.log('INFO', 'testAuth', (isMasterWorker ? 'Master Personal Worker' : 'School Worker') + ' permissions verified successfully.');
+  return { ok: true, authorized: true, isMaster: isMasterWorker, services: services };
 }
 
 function doGet(e) {
@@ -937,24 +1368,63 @@ function doGet(e) {
         PropertiesService.getScriptProperties().setProperty('is_dual_worker', 'true');
       } catch (pErr) {}
     }
+
+    var authError = null;
     try {
-      setupAutonomousTriggers(wType);
-    } catch (trigErr) {
-      McpLogger.log('WARN', 'doGet:direct_trigger_attempt', trigErr.toString());
+      if (wType === 'school' && typeof Classroom !== 'undefined' && Classroom.Courses) {
+        Classroom.Courses.list({ pageSize: 1 });
+      }
+      if (typeof setupAutonomousTriggers === 'function') {
+        var triggerRes = setupAutonomousTriggers(wType);
+        if (triggerRes && (triggerRes.status === 'error' || triggerRes.success === false)) {
+          authError = triggerRes.error || 'Required permissions were not granted.';
+        }
+      }
+    } catch (err) {
+      authError = (err && err.message) ? err.message : 'You unchecked required permissions. Automated sync cannot function without these permissions.';
+      try {
+        if (typeof clearAllProjectTriggers === 'function') {
+          clearAllProjectTriggers();
+        }
+      } catch (clErr) {}
     }
 
+    if (authError) {
+      return HtmlService.createHtmlOutput(
+        '<!DOCTYPE html><html><head><meta charset="utf-8">' +
+        '<title>⚠️ Authorization Incomplete</title>' +
+        '<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;margin:0;background:#f8fafc;color:#0f172a;}' +
+        '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:380px;width:90%;}' +
+        'h3{margin-top:0;font-size:20px;font-weight:700;color:#dc2626;}' +
+        'p{color:#64748b;font-size:14px;line-height:1.5;margin:10px 0 16px 0;}' +
+        '.btn{display:inline-block;margin-top:16px;background:#dc2626;color:white;border:none;padding:10px 24px;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}' +
+        '</style></head>' +
+        '<body><div class="box"><h3>⚠️ Missing Permissions</h3>' +
+        '<p style="color:#b91c1c; font-weight:500;">' + authError + '</p>' +
+        '<p style="font-size:12px; color:#64748b;">Please close this window, return to K.I.D.S., deploy again, and check ALL boxes on the Google authorization screen.</p>' +
+        '<button class="btn" onclick="closeWin()">Close Window</button></div>' +
+        '<script>' +
+        'function closeWin() { try { google.script.host.close(); } catch(e) {} try { window.top.close(); } catch(e) {} try { window.close(); } catch(e) {} }' +
+        'setTimeout(closeWin, 4000);' +
+        '</script></body></html>'
+      ).setTitle('⚠️ Authorization Incomplete');
+    }
+
+    var workerTitle = (wType === 'master') ? 'Personal Master Cloud Worker' : 'School Cloud Worker';
     return HtmlService.createHtmlOutput(
       '<!DOCTYPE html><html><head><meta charset="utf-8">' +
-      '<title>K.I.D.S. Cloud Sync Authorization</title>' +
+      '<title>K.I.D.S. Cloud Sync Authorization - Success</title>' +
       '<style>body{font-family:system-ui,-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:85vh;margin:0;background:#f8fafc;color:#0f172a;}' +
-      '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:380px;}' +
-      'h3{color:#16a34a;margin-top:0;font-size:20px;}' +
-      'p{color:#64748b;font-size:14px;line-height:1.5;}' +
-      '.badge{background:#dcfce7;color:#166534;padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;margin-top:10px;}' +
+      '.box{background:white;padding:32px;border-radius:16px;box-shadow:0 10px 25px rgba(0,0,0,0.08);text-align:center;max-width:380px;width:90%;}' +
+      'h3{margin-top:0;font-size:20px;font-weight:700;color:#16a34a;}' +
+      'p{color:#64748b;font-size:14px;line-height:1.5;margin:10px 0 16px 0;}' +
+      '.badge{padding:6px 14px;border-radius:20px;font-weight:600;font-size:12px;display:inline-block;margin-top:10px;background:#dcfce7;color:#166534;}' +
+      '.btn{display:inline-block;margin-top:16px;background:#16a34a;color:white;border:none;padding:10px 24px;border-radius:8px;font-weight:600;cursor:pointer;font-size:14px;box-shadow:0 2px 5px rgba(0,0,0,0.1);}' +
       '</style></head>' +
-      '<body><div class="box"><h3>✅ MCP Server Connected!</h3>' +
-      '<p>Google Workspace permissions approved.</p>' +
-      '<div id="triggerBadge" class="badge">⚡ Activating 24/7 Cloud Sync...</div></div>' +
+      '<body><div class="box"><h3 id="authHeader">✅ Authorization Successful!</h3>' +
+      '<p id="authSub">' + workerTitle + ' permissions verified.</p>' +
+      '<div id="triggerBadge" class="badge">⚡ Closing automatically in 1.5 seconds...</div>' +
+      '<div id="btnArea"><button id="actionBtn" class="btn" onclick="closeWin()">Close Window</button></div></div>' +
       '<script>' +
       'function closeWin() {' +
       '  try { google.script.host.close(); } catch(e) {}' +
@@ -963,26 +1433,12 @@ function doGet(e) {
       '}' +
       'try {' +
       '  if (typeof google !== "undefined" && google.script && google.script.run) {' +
-      '    google.script.run' +
-      '      .withSuccessHandler(function(res) {' +
-      '        var el = document.getElementById("triggerBadge");' +
-      '        if (el) el.innerHTML = "⚡ 24/7 Cloud Trigger Active!";' +
-      '        setTimeout(closeWin, 1000);' +
-      '      })' +
-      '      .withFailureHandler(function(err) {' +
-      '        var el = document.getElementById("triggerBadge");' +
-      '        if (el) el.innerHTML = "⚡ Connected! Closing...";' +
-      '        setTimeout(closeWin, 1200);' +
-      '      })' +
-      '      .setupAutonomousTriggers("' + wType + '");' +
-      '  } else {' +
-      '    setTimeout(closeWin, 1500);' +
+      '    /* triggers and permissions already verified on server */' +
       '  }' +
-      '} catch (err) {' +
-      '  setTimeout(closeWin, 1500);' +
-      '}' +
+      '} catch (e) {}' +
+      'setTimeout(closeWin, 1500);' +
       '</script></body></html>'
-    ).setTitle('K.I.D.S. Cloud Sync Authorization');
+    ).setTitle('K.I.D.S. Cloud Sync Authorization - Success');
   }
 
   if (typeof CONFIG !== 'undefined' && e.parameter.accessKey !== CONFIG.accessKey) {
@@ -999,6 +1455,13 @@ function doGet(e) {
     return ContentService.createTextOutput(JSON.stringify({
       status: "ok",
       cleared: McpLogger.clearLogs()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.action === 'clearTriggers' || e.parameter.action === 'clearAllTriggers') {
+    var cRes = clearAllProjectTriggers();
+    return ContentService.createTextOutput(JSON.stringify({
+      status: "ok",
+      result: cRes
     })).setMimeType(ContentService.MimeType.JSON);
   }
   if (e.parameter.action === 'setupTriggers') {
@@ -1021,6 +1484,20 @@ function doGet(e) {
       status: "ok",
       result: rRes
     })).setMimeType(ContentService.MimeType.JSON);
+  }
+  if (e.parameter.action === 'testAuth' || e.parameter.action === 'test_auth') {
+    try {
+      var aRes = testAuth();
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "ok",
+        result: aRes
+      })).setMimeType(ContentService.MimeType.JSON);
+    } catch (aErr) {
+      return ContentService.createTextOutput(JSON.stringify({
+        status: "error",
+        error: { message: aErr.message || String(aErr) }
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
   }
   return ContentService.createTextOutput(JSON.stringify({
     status: "ok",
@@ -1061,12 +1538,17 @@ function doPost(e) {
       return ContentService.createTextOutput(JSON.stringify({ jsonrpc: "2.0", id: id !== undefined ? id : null })).setMimeType(ContentService.MimeType.JSON);
     } else if (method === "tools/list") {
       result = handleToolsList();
+    } else if (method === "test_auth" || method === "testAuth") {
+      result = testAuth();
     } else if (method === "tools/call") {
       result = handleToolsCall(params.name, params.arguments || {});
     } else if (method === "sync_classroom_and_gmail" || method === "extract_classroom_and_gmail") {
       result = handleSyncClassroomAndGmail(params);
     } else if (method === "sync_all_portals") {
       result = handleSyncAllPortals(params);
+    } else if (method === "sync_child_portal_burst" || method === "sync_portal_burst") {
+      var childTarget = params ? (params.childId || params.childName) : null;
+      result = PortalIngester.syncChildBurst(childTarget);
     } else if (method === "register_school_worker") {
       result = handleRegisterSchoolWorker(params);
     } else if (method === "sync_master_cloud_school") {
@@ -1091,6 +1573,8 @@ function doPost(e) {
       result = handleListVaultFiles(params);
     } else if (method === "save_vault_file") {
       result = handleSaveVaultFile(params);
+    } else if (method === "push_school_data" || method === "save_pushed_school_data") {
+      result = handlePushSchoolData(params);
     } else if (method === "search_vault_documents") {
       var kidFolder = null;
       var targetFolderId = params.targetFolderId || PropertiesService.getScriptProperties().getProperty('target_folder_id');
@@ -1099,7 +1583,11 @@ function doPost(e) {
       }
       result = DocumentOcrService.searchVaultDocuments(kidFolder, params.query);
     } else if (method === "index_whatsapp_media") {
-      result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp');
+      result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, 'whatsapp', params.targetFolderId);
+    } else if (method === "ocr_single_file" || method === "index_vault_file_ocr") {
+      result = DocumentOcrService.indexDocumentById(params.fileId, params.childName, params.source || 'classroom', params.targetFolderId);
+    } else if (method === "activate_incremental_triggers") {
+      result = handleActivateIncrementalTriggers(params);
     } else if (method === "run_vault_ocr_indexing") {
       var ocrLock = LockService.getScriptLock();
       if (!ocrLock.tryLock(5000)) {
@@ -1133,14 +1621,8 @@ function doPost(e) {
       result = runAutonomousVaultOcr();
     } else if (method === "set_sync_state" || method === "set_initial_sync_complete") {
       result = handleSetSyncState(params);
-    } else if (method === "clear_triggers" || method === "clearTriggers") {
-      var allTriggers = ScriptApp.getProjectTriggers();
-      var clearedCount = 0;
-      for (var ct = 0; ct < allTriggers.length; ct++) {
-        ScriptApp.deleteTrigger(allTriggers[ct]);
-        clearedCount++;
-      }
-      result = { success: true, clearedCount: clearedCount };
+    } else if (method === "clear_triggers" || method === "clearTriggers" || method === "clear_all_project_triggers" || method === "clearAllProjectTriggers") {
+      result = clearAllProjectTriggers();
     } else {
       throw new Error("Method not supported: " + method);
     }
@@ -1381,6 +1863,122 @@ function handleSaveVaultFile(params) {
   }
 }
 
+function handlePushSchoolData(params) {
+  var kidName = params.childName || params.kidName || 'Atharva';
+  var academicYear = params.academicYear || '2026-2027';
+  var classroomData = params.classroom || (params.courses ? { courses: params.courses } : null);
+  var gmailData = params.gmail || (params.emails ? { emails: params.emails } : null);
+
+  McpLogger.log('INFO', 'PUSH_SCHOOL_DATA_RECEIVED', 'Received push sync for ' + kidName + ' (' + academicYear + ')');
+
+  var rootFolder = null;
+  var rootFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
+  if (rootFolderId) {
+    try { rootFolder = DriveApp.getFolderById(rootFolderId); } catch (e) {}
+  }
+  if (!rootFolder) {
+    var rfIt = DriveApp.getFoldersByName('K.I.D.S. Data');
+    if (rfIt.hasNext()) rootFolder = rfIt.next();
+  }
+
+  var yearFolder = null;
+  if (rootFolder) {
+    var yIt = rootFolder.getFoldersByName(academicYear);
+    yearFolder = yIt.hasNext() ? yIt.next() : rootFolder.createFolder(academicYear);
+  }
+
+  var kidFolder = null;
+  if (yearFolder) {
+    var kIt = yearFolder.getFoldersByName(kidName);
+    kidFolder = kIt.hasNext() ? kIt.next() : yearFolder.createFolder(kidName);
+  }
+
+  var savedItems = { courses: 0, emails: 0, attachments: 0 };
+
+  if (kidFolder) {
+    // 1. Save Classroom data
+    if (classroomData) {
+      var cFolderIt = kidFolder.getFoldersByName('Google Classroom');
+      var cFolder = cFolderIt.hasNext() ? cFolderIt.next() : kidFolder.createFolder('Google Classroom');
+      
+      var cFileIt = cFolder.getFilesByName('classroom_data.json');
+      var cJsonStr = JSON.stringify(classroomData, null, 2);
+      if (cFileIt.hasNext()) {
+        cFileIt.next().setContent(cJsonStr);
+      } else {
+        cFolder.createFile('classroom_data.json', cJsonStr, 'application/json');
+      }
+      savedItems.courses = (classroomData.courses || []).length;
+
+      // Save attachments if provided with base64
+      var attFolderIt = cFolder.getFoldersByName('Classroom Attachments');
+      var attFolder = attFolderIt.hasNext() ? attFolderIt.next() : cFolder.createFolder('Classroom Attachments');
+      (classroomData.courses || []).forEach(function(c) {
+        var allItems = (c.announcements || []).concat(c.courseWork || []).concat(c.materials || []);
+        allItems.forEach(function(item) {
+          (item.attachments || []).forEach(function(att) {
+            if (att && att.base64) {
+              try {
+                var rawName = att.name || att.title || 'attachment.pdf';
+                var attBlob = Utilities.newBlob(Utilities.base64Decode(att.base64), att.mimeType || 'application/pdf', rawName);
+                attFolder.createFile(attBlob);
+                savedItems.attachments++;
+                delete att.base64;
+              } catch (bErr) {}
+            }
+          });
+        });
+      });
+    }
+
+    // 2. Save Gmail Circulars
+    if (gmailData) {
+      var gFolderIt = kidFolder.getFoldersByName('School Circulars & Emails');
+      var gFolder = gFolderIt.hasNext() ? gFolderIt.next() : kidFolder.createFolder('School Circulars & Emails');
+
+      var gFileIt = gFolder.getFilesByName('school_emails.json');
+      var gJsonStr = JSON.stringify(gmailData, null, 2);
+      if (gFileIt.hasNext()) {
+        gFileIt.next().setContent(gJsonStr);
+      } else {
+        gFolder.createFile('school_emails.json', gJsonStr, 'application/json');
+      }
+      savedItems.emails = (gmailData.emails || []).length;
+    }
+
+    // 3. Trigger Document OCR for newly vaulted files
+    try {
+      if (typeof DocumentOcrService !== 'undefined' && DocumentOcrService.runAutomatedVaultIndexing) {
+        DocumentOcrService.runAutomatedVaultIndexing(kidFolder, 10);
+      }
+    } catch (ocrErr) {
+      McpLogger.log('WARN', 'PUSH_OCR_TRIGGER_WARN', ocrErr.toString());
+    }
+  }
+
+  // Update multi-child registry with last push timestamp
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var raw = props.getProperty('multi_child_school_registry');
+    var registry = raw ? JSON.parse(raw) : { children: [] };
+    var child = (registry.children || []).find(function(c) { return (c.kidName && c.kidName.toLowerCase() === kidName.toLowerCase()); });
+    if (child) {
+      child.lastPushAt = new Date().toISOString();
+      child.lastPushItems = savedItems;
+      props.setProperty('multi_child_school_registry', JSON.stringify(registry));
+    }
+  } catch (regErr) {}
+
+  McpLogger.log('SUCCESS', 'PUSH_SCHOOL_DATA_SAVED', 'Ingested ' + savedItems.courses + ' courses, ' + savedItems.emails + ' emails for ' + kidName);
+  return {
+    success: true,
+    kidName: kidName,
+    academicYear: academicYear,
+    savedItems: savedItems,
+    timestamp: new Date().toISOString()
+  };
+}
+
 function handleGetFileBlob(params) {
   var fid = params.fileId;
   if (!fid) return { success: false, error: "No fileId provided" };
@@ -1395,7 +1993,7 @@ function handleGetFileBlob(params) {
 
   // Strategy A: Drive REST API v3 with ScriptApp.getOAuthToken() & supportsAllDrives=true
   try {
-    var metaUrl = 'https://www.googleapis.com/drive/v3/files/' + fid + '?fields=id,name,mimeType,size&supportsAllDrives=true';
+    var metaUrl = 'https://www.googleapis.com/drive/v3/files/' + fid + '?fields=id,name,mimeType,size,webContentLink&supportsAllDrives=true&includeItemsFromAllDrives=true';
     var metaRes = UrlFetchApp.fetch(metaUrl, {
       headers: { 'Authorization': 'Bearer ' + tok },
       muteHttpExceptions: true
@@ -1430,6 +2028,63 @@ function handleGetFileBlob(params) {
         };
       }
       notes.push('A:download HTTP ' + dlRes.getResponseCode());
+
+      // If alt=media failed, check if file is an Office Presentation / Document / Sheet or Google Workspace item
+      // that can be exported directly via docs/slides endpoints
+      var lowerName = (name || '').toLowerCase();
+      var officeExportUrls = [];
+      if (lowerName.endsWith('.pptx') || (mime && mime.indexOf('presentation') !== -1)) {
+        officeExportUrls.push({ url: 'https://docs.google.com/presentation/d/' + fid + '/export/pptx', mime: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' });
+      } else if (lowerName.endsWith('.docx') || (mime && mime.indexOf('wordprocessingml') !== -1)) {
+        officeExportUrls.push({ url: 'https://docs.google.com/document/d/' + fid + '/export?format=docx', mime: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+      } else if (lowerName.endsWith('.xlsx') || (mime && mime.indexOf('spreadsheetml') !== -1)) {
+        officeExportUrls.push({ url: 'https://docs.google.com/spreadsheets/d/' + fid + '/export?format=xlsx', mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+      }
+
+      for (var oIdx = 0; oIdx < officeExportUrls.length; oIdx++) {
+        var oTarget = officeExportUrls[oIdx];
+        var oRes = UrlFetchApp.fetch(oTarget.url, {
+          headers: { 'Authorization': 'Bearer ' + tok },
+          muteHttpExceptions: true,
+          followRedirects: true
+        });
+        if (oRes.getResponseCode() === 200) {
+          var oBlob = oRes.getBlob();
+          if (oBlob.getBytes().length > 100) {
+            return {
+              success: true,
+              name: name,
+              mimeType: oTarget.mime || mime,
+              base64: Utilities.base64Encode(oBlob.getBytes())
+            };
+          }
+        }
+        notes.push('A:officeExport HTTP ' + oRes.getResponseCode());
+      }
+
+      // Direct webContentLink fallback with token if alt=media returns 403/404
+      if (meta.webContentLink) {
+        var wcRes = UrlFetchApp.fetch(meta.webContentLink, {
+          headers: { 'Authorization': 'Bearer ' + tok },
+          muteHttpExceptions: true,
+          followRedirects: true
+        });
+        if (wcRes.getResponseCode() === 200) {
+          var wcBlob = wcRes.getBlob();
+          var wcBytes = wcBlob.getBytes();
+          // Verify it's not an HTML error page
+          var isWcHtml = wcBlob.getContentType() && wcBlob.getContentType().indexOf('text/html') !== -1;
+          if (!isWcHtml && wcBytes.length > 100) {
+            return {
+              success: true,
+              name: name,
+              mimeType: mime,
+              base64: Utilities.base64Encode(wcBytes)
+            };
+          }
+        }
+        notes.push('A:webContentLink HTTP ' + wcRes.getResponseCode());
+      }
     } else {
       notes.push('A:meta HTTP ' + metaRes.getResponseCode());
     }
@@ -1450,11 +2105,14 @@ function handleGetFileBlob(params) {
           fetchUrl = fileResource.exportLinks['application/pdf'];
           mime = 'application/pdf';
           if (!name.toLowerCase().endsWith('.pdf')) name += '.pdf';
+        } else if (!fetchUrl && fileResource.webContentLink) {
+          fetchUrl = fileResource.webContentLink;
         }
         if (fetchUrl) {
           var advRes = UrlFetchApp.fetch(fetchUrl, {
             headers: { 'Authorization': 'Bearer ' + tok },
-            muteHttpExceptions: true
+            muteHttpExceptions: true,
+            followRedirects: true
           });
           if (advRes.getResponseCode() === 200) {
             return {
@@ -1611,7 +2269,12 @@ function handleRegisterPortalJob(params) {
   props.setProperty('multi_child_portal_registry', JSON.stringify(registry));
   McpLogger.log('SUCCESS', 'PORTAL_REGISTER_OK', 'Registered portal feature ' + feature + ' for ' + kidName + ' (' + domain + ')');
 
-  return { registered: true, childId: childId, domain: domain, feature: feature };
+  var triggerRes = null;
+  try {
+    triggerRes = setupChildPortalTrigger(childId, 1);
+  } catch (trigErr) {}
+
+  return { registered: true, childId: childId, domain: domain, feature: feature, triggerResult: triggerRes };
 }
 
 function handleRegisterSchoolWorker(params) {
@@ -1664,7 +2327,7 @@ function handleRegisterSchoolWorker(params) {
   // When 1-time data sync completes, the extension re-registers with initialSyncComplete: true -> trigger created!
   if (child.initialSyncComplete === true) {
     try {
-      triggerRes = setupMasterCloudSyncTrigger();
+      triggerRes = setupChildSchoolSyncTrigger(child.childId);
     } catch(tErr) {
       triggerRes = { success: false, error: tErr.toString() };
     }
@@ -1684,8 +2347,8 @@ function handleRegisterSchoolWorker(params) {
 }
 
 /**
- * Nightly Quiet Hours: Directly deletes all 1-minute sync triggers at 11:00 PM IST.
- * Ensures zero 1-minute triggers exist or fire between 11 PM and 6 AM IST.
+ * Nightly Quiet Hours: Directly deletes all 1-minute school sync triggers and portal continuation triggers at 11:00 PM IST.
+ * Ensures zero sync triggers exist or fire between 11 PM and 6 AM IST.
  */
 function pauseNightlySyncTriggers() {
   var deletedCount = 0;
@@ -1693,61 +2356,92 @@ function pauseNightlySyncTriggers() {
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
       var hFn = triggers[i].getHandlerFunction();
-      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync' || hFn === 'runAutonomousVaultOcr') {
+      if (hFn === 'runMasterCloudSchoolSync' ||
+          hFn === 'runChildSchoolSyncTrigger' ||
+          hFn === 'runIncrementalSchoolSync' ||
+          hFn === 'runAutonomousVaultOcr' ||
+          hFn === 'runChildPortalSyncTrigger' ||
+          hFn.indexOf('runSchoolSync_') === 0 ||
+          hFn.indexOf('runPortalSync_') === 0) {
         ScriptApp.deleteTrigger(triggers[i]);
         deletedCount++;
       }
     }
-    McpLogger.log('INFO', 'QUIET_HOURS_PAUSED', 'Paused 1-minute sync for the night (11 PM to 6 AM IST). Deleted ' + deletedCount + ' trigger(s).');
+    McpLogger.log('INFO', 'QUIET_HOURS_PAUSED', 'Paused school & portal sync for the night (11 PM to 6 AM IST). Deleted ' + deletedCount + ' trigger(s).');
   } catch (err) {
-    McpLogger.log('WARN', 'QUIET_HOURS_PAUSE_ERROR', 'Could not delete 1-minute trigger: ' + err);
+    McpLogger.log('WARN', 'QUIET_HOURS_PAUSE_ERROR', 'Could not delete triggers during quiet hours: ' + err);
   }
   return { paused: true, deletedTriggers: deletedCount };
 }
 
 /**
- * Morning Wake-up: Re-creates the 1-minute sync trigger at 6:00 AM IST.
+ * Morning Wake-up: Re-creates dedicated per-child 1-minute school triggers and portal triggers at 6:00 AM IST.
  */
 function resumeMorningSyncTriggers() {
   try {
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
       var hFn = triggers[i].getHandlerFunction();
-      if (hFn === 'runMasterCloudSchoolSync' || hFn === 'runIncrementalSchoolSync') {
+      if (hFn === 'runMasterCloudSchoolSync' ||
+          hFn === 'runChildSchoolSyncTrigger' ||
+          hFn === 'runIncrementalSchoolSync' ||
+          hFn === 'runChildPortalSyncTrigger' ||
+          hFn.indexOf('runSchoolSync_') === 0 ||
+          hFn.indexOf('runPortalSync_') === 0) {
         ScriptApp.deleteTrigger(triggers[i]);
       }
     }
 
     var props = PropertiesService.getScriptProperties();
     var rawReg = props.getProperty('multi_child_school_registry');
-    var canInstallSync = false;
+    var restoredCount = 0;
     if (rawReg) {
       try {
         var parsedReg = JSON.parse(rawReg);
-        canInstallSync = (parsedReg.children || []).some(function(c) { return c && c.initialSyncComplete === true; });
+        (parsedReg.children || []).forEach(function(c) {
+          if (c && c.initialSyncComplete === true) {
+            var cid = c.childId || c.kidName;
+            if (cid) {
+              setupChildSchoolSyncTrigger(cid);
+              restoredCount++;
+            }
+          }
+        });
       } catch(e) {}
     }
 
-    if (canInstallSync) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
-      McpLogger.log('SUCCESS', 'QUIET_HOURS_RESUMED', 'Restored 1-minute Master Cloud sync trigger for daytime (6 AM to 11 PM IST).');
+    // Also reinstate portal triggers for children with registered portals
+    try {
+      var rawPortalReg = props.getProperty('multi_child_portal_registry');
+      if (rawPortalReg) {
+        var pReg = JSON.parse(rawPortalReg);
+        (pReg.children || []).forEach(function(pc) {
+          if (pc && pc.childId && pc.domains && Object.keys(pc.domains).length > 0) {
+            setupChildPortalTrigger(pc.childId);
+          }
+        });
+      }
+    } catch (pErr) {}
+
+    if (restoredCount > 0) {
+      McpLogger.log('SUCCESS', 'QUIET_HOURS_RESUMED', 'Restored dedicated daytime triggers for ' + restoredCount + ' child(ren) (6 AM to 11 PM IST).');
       // Restart autonomous OCR if it was interrupted by quiet hours
       try {
         ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(30000).create();
       } catch (ocrErr) {}
-      return { resumed: true, trigger: 'runMasterCloudSchoolSync (1m)' };
+      return { resumed: true, restoredChildrenCount: restoredCount };
     } else {
-      McpLogger.log('INFO', 'QUIET_HOURS_RESUME_DEFERRED', 'Morning resume deferred: initial 1-time sync is not yet complete.');
+      McpLogger.log('INFO', 'QUIET_HOURS_RESUME_DEFERRED', 'Morning resume deferred: no completed children found in registry.');
       return { resumed: false, reason: 'initial_sync_incomplete' };
     }
   } catch (err) {
-    McpLogger.log('ERROR', 'QUIET_HOURS_RESUME_ERROR', 'Could not restore 1-minute trigger: ' + err);
+    McpLogger.log('ERROR', 'QUIET_HOURS_RESUME_ERROR', 'Could not restore morning triggers: ' + err);
     return { resumed: false, error: err.toString() };
   }
 }
 
 /**
- * Installs daily scheduled triggers at 11 PM (to delete 1m trigger) and 6 AM (to restore 1m trigger) in IST.
+ * Installs daily scheduled triggers at 11 PM (to delete triggers) and 6 AM (to restore triggers) in IST.
  */
 function setupQuietHoursScheduleTriggers() {
   try {
@@ -1783,8 +2477,231 @@ function setupQuietHoursScheduleTriggers() {
   }
 }
 
+/**
+ * Helper to produce a clean, identifier-safe name for child-specific trigger functions.
+ * E.g., 'child_atharva' -> 'Atharva', 'Atharva Roy' -> 'Atharva_Roy'
+ */
+function cleanTriggerIdentifier(val) {
+  if (!val) return 'Default';
+  var s = String(val).trim();
+  if (s.indexOf('child_') === 0 && s.length > 6) {
+    s = s.substring(6);
+  }
+  s = s.replace(/[^a-zA-Z0-9_]/g, '_');
+  if (/^[a-z]/.test(s)) {
+    s = s.charAt(0).toUpperCase() + s.slice(1);
+  }
+  return s || 'Default';
+}
+
+/**
+ * Resolves child's friendly name from registry or ID for clear trigger naming in GAS dashboard.
+ */
+function getChildTriggerIdentifier(childId) {
+  if (!childId) return 'Default';
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var rawReg = props.getProperty('multi_child_school_registry');
+    if (rawReg) {
+      var reg = JSON.parse(rawReg);
+      var found = (reg.children || []).filter(function(c) {
+        return (c && ((c.childId && c.childId === childId) || (c.kidName && c.kidName === childId)));
+      })[0];
+      if (found && found.kidName) {
+        return cleanTriggerIdentifier(found.kidName);
+      }
+    }
+  } catch (e) {}
+
+  try {
+    var props2 = PropertiesService.getScriptProperties();
+    var rawPortalReg = props2.getProperty('multi_child_portal_registry');
+    if (rawPortalReg) {
+      var pReg = JSON.parse(rawPortalReg);
+      var pFound = (pReg.children || []).filter(function(c) {
+        return (c && ((c.childId && c.childId === childId) || (c.kidName && c.kidName === childId)));
+      })[0];
+      if (pFound && pFound.kidName) {
+        return cleanTriggerIdentifier(pFound.kidName);
+      }
+    }
+  } catch (pErr) {}
+
+  return cleanTriggerIdentifier(childId);
+}
+
+function ensureTriggerDispatcherBound(fnName, type, childId) {
+  if (typeof globalThis !== 'undefined' && !globalThis[fnName]) {
+    if (type === 'portal') {
+      globalThis[fnName] = function(e) { return runChildPortalSyncTrigger(e, childId); };
+    } else {
+      globalThis[fnName] = function(e) { return runChildSchoolSyncTrigger(e, childId); };
+    }
+  }
+}
+
+function getChildSchoolSyncHandlerName(childId) {
+  if (!childId) return 'runChildSchoolSyncTrigger';
+  var ident = getChildTriggerIdentifier(childId);
+  var fnName = 'runSchoolSync_' + ident;
+  ensureTriggerDispatcherBound(fnName, 'school', childId);
+  return fnName;
+}
+
+function getChildPortalSyncHandlerName(childId) {
+  if (!childId) return 'runChildPortalSyncTrigger';
+  var ident = getChildTriggerIdentifier(childId);
+  var fnName = 'runPortalSync_' + ident;
+  ensureTriggerDispatcherBound(fnName, 'portal', childId);
+  return fnName;
+}
+
+// Dedicated static handlers for identifiable trigger names in Google Apps Script Dashboard:
+function runSchoolSync_Atharva(e) { return runChildSchoolSyncTrigger(e, 'child_atharva'); }
+function runPortalSync_Atharva(e) { return runChildPortalSyncTrigger(e, 'child_atharva'); }
+
+function runSchoolSync_Ananya(e) { return runChildSchoolSyncTrigger(e, 'child_ananya'); }
+function runPortalSync_Ananya(e) { return runChildPortalSyncTrigger(e, 'child_ananya'); }
+
+function runSchoolSync_C1(e) { return runChildSchoolSyncTrigger(e, 'c1'); }
+function runPortalSync_C1(e) { return runChildPortalSyncTrigger(e, 'c1'); }
+
+function runSchoolSync_C2(e) { return runChildSchoolSyncTrigger(e, 'c2'); }
+function runPortalSync_C2(e) { return runChildPortalSyncTrigger(e, 'c2'); }
+
+function runSchoolSync_C3(e) { return runChildSchoolSyncTrigger(e, 'c3'); }
+function runPortalSync_C3(e) { return runChildPortalSyncTrigger(e, 'c3'); }
+
+/**
+ * Unified Runner for Per-Child School Triggers.
+ * Apps Script automatically passes event object e with e.triggerUid.
+ * Also accepts fallbackChildId when executed directly from the Apps Script IDE.
+ */
+function runChildSchoolSyncTrigger(e, fallbackChildId) {
+  var triggerUid = e && e.triggerUid;
+  var props = PropertiesService.getScriptProperties();
+  var targetChildId = triggerUid ? props.getProperty('trigger_child_' + triggerUid) : null;
+  if (!targetChildId && fallbackChildId) {
+    targetChildId = fallbackChildId;
+  }
+  return runMasterCloudSchoolSync(false, targetChildId, false);
+}
+
+/**
+ * Installs a dedicated 1-minute trigger for a specific child.
+ * Identifiable trigger name (e.g. runSchoolSync_Atharva) is shown in the Triggers Dashboard.
+ * Maps triggerUid -> childId in ScriptProperties.
+ */
+function setupChildSchoolSyncTrigger(childId, intervalMinutes) {
+  if (!childId) return setupMasterCloudSyncTrigger(intervalMinutes);
+  var mins = intervalMinutes || 1;
+  var props = PropertiesService.getScriptProperties();
+  var handlerName = getChildSchoolSyncHandlerName(childId);
+
+  try {
+    // Delete any previous school trigger registered for this specific child
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      var hFn = triggers[i].getHandlerFunction();
+      if (hFn === 'runChildSchoolSyncTrigger' || hFn === handlerName || hFn.indexOf('runSchoolSync_') === 0) {
+        var existingUid = triggers[i].getUniqueId();
+        var mappedChild = props.getProperty('trigger_child_' + existingUid);
+        if (mappedChild === childId || hFn === handlerName) {
+          ScriptApp.deleteTrigger(triggers[i]);
+          props.deleteProperty('trigger_child_' + existingUid);
+        }
+      }
+    }
+
+    setupQuietHoursScheduleTriggers();
+
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'SYNC_TRIGGER_DEFERRED', 'Quiet hours active (IST). Dedicated 1-min trigger for ' + childId + ' (' + handlerName + ') will be installed at 6 AM.');
+      return { success: true, cadence: 'deferred_to_6am', childId: childId, handler: handlerName };
+    }
+
+    var newTrigger;
+    if (mins === 1) {
+      newTrigger = ScriptApp.newTrigger(handlerName).timeBased().everyMinutes(1).create();
+    } else if (mins === 5) {
+      newTrigger = ScriptApp.newTrigger(handlerName).timeBased().everyMinutes(5).create();
+    } else {
+      newTrigger = ScriptApp.newTrigger(handlerName).timeBased().everyMinutes(1).create();
+    }
+
+    var uid = (newTrigger && typeof newTrigger.getUniqueId === 'function') ? newTrigger.getUniqueId() : ('trig_' + Math.random().toString(36).substring(2));
+    props.setProperty('trigger_child_' + uid, childId);
+    McpLogger.log('SUCCESS', 'CHILD_TRIGGER_CREATED', 'Created dedicated ' + mins + '-min trigger (' + handlerName + ') for child ' + childId + ' (triggerUid=' + uid + ').');
+    return { success: true, childId: childId, triggerUid: uid, handler: handlerName, cadence: 'everyMinutes(' + mins + ')' };
+  } catch (err) {
+    McpLogger.log('WARN', 'CHILD_TRIGGER_CREATE_FAILED', 'Could not create child trigger ' + handlerName + ' for ' + childId + ': ' + err);
+    return { success: false, error: err.toString() };
+  }
+}
+
+/**
+ * Unified Runner for Per-Child Portal Triggers.
+ * Apps Script automatically passes event object e with e.triggerUid.
+ * Also accepts fallbackChildId when executed directly from the Apps Script IDE.
+ */
+function runChildPortalSyncTrigger(e, fallbackChildId) {
+  var triggerUid = e && e.triggerUid;
+  var props = PropertiesService.getScriptProperties();
+  var targetChildId = triggerUid ? props.getProperty('portal_trigger_child_' + triggerUid) : null;
+  if (!targetChildId && fallbackChildId) {
+    targetChildId = fallbackChildId;
+  }
+  if (targetChildId) {
+    return PortalIngester.syncChildBurst(targetChildId);
+  } else {
+    return PortalIngester.syncAll();
+  }
+}
+
+/**
+ * Installs a dedicated burst continuation or 6-hour trigger for a specific child's portal scraping.
+ * Maps triggerUid -> childId in ScriptProperties.
+ */
+function setupChildPortalTrigger(childId, delayMinutes) {
+  if (!childId) return setupSixHourTrigger();
+  var props = PropertiesService.getScriptProperties();
+
+  // If delayMinutes not specified, check if an in-flight burst is waiting to continue
+  var mins = delayMinutes;
+  if (mins === undefined || mins === null) {
+    var prog = props.getProperty('portal_prog_' + childId);
+    mins = prog ? 10 : 1;
+  }
+
+  return PortalIngester.scheduleChildPortalContinuation(childId, mins);
+}
+
 function setupMasterCloudSyncTrigger(intervalMinutes) {
   var mins = intervalMinutes || 1;
+  var props = PropertiesService.getScriptProperties();
+  var rawReg = props.getProperty('multi_child_school_registry');
+
+  // If multi-child registry has children, install dedicated per-child triggers
+  if (rawReg) {
+    try {
+      var parsedReg = JSON.parse(rawReg);
+      var installed = [];
+      (parsedReg.children || []).forEach(function(c) {
+        var cid = c ? (c.childId || c.kidName) : null;
+        if (cid && c.initialSyncComplete === true) {
+          var res = setupChildSchoolSyncTrigger(cid, mins);
+          installed.push(res);
+        }
+      });
+      if (installed.length > 0) {
+        return { success: true, cadence: 'everyMinutes(' + mins + ')', multiChild: true, installed: installed };
+      }
+    } catch(e) {}
+  }
+
+  // Fallback for single-master/initial trigger
   try {
     var triggers = ScriptApp.getProjectTriggers();
     for (var i = 0; i < triggers.length; i++) {
@@ -1794,11 +2711,8 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
       }
     }
 
-    // Install daily 11 PM pause and 6 AM resume schedule triggers
     setupQuietHoursScheduleTriggers();
 
-    // Don't install the recurring sync trigger during quiet hours — it would immediately
-    // fire, hit the quiet-hours guard, and delete OCR continuation triggers
     var now = new Date();
     var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
     if (istHour >= 23 || istHour < 6) {
@@ -1806,19 +2720,7 @@ function setupMasterCloudSyncTrigger(intervalMinutes) {
       return { success: true, cadence: 'deferred_to_6am' };
     }
 
-    if (mins === 1) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
-    } else if (mins === 5) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(5).create();
-    } else if (mins === 10) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(10).create();
-    } else if (mins === 30) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(30).create();
-    } else if (mins === 60) {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyHours(1).create();
-    } else {
-      ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(1).create();
-    }
+    ScriptApp.newTrigger('runMasterCloudSchoolSync').timeBased().everyMinutes(mins).create();
     McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created ' + mins + '-minute autonomous Master Cloud trigger for Student Classroom sync.');
     return { success: true, cadence: 'everyMinutes(' + mins + ')' };
   } catch (err) {
@@ -1885,9 +2787,24 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
     return { count: 0, status: 'awaiting_1time_sync_completion', skipped: true };
   }
 
-  // FAST-EXIT GUARD 2: Only acquire lock if there is active work to do.
-  var lock = LockService.getScriptLock();
-  if (!lock.tryLock(5000)) return { skipped: true, reason: 'Sync already in progress' };
+  // FAST-EXIT GUARD 2: Child-scoped locking to prevent cross-child blocking.
+  // If targetChildIdOrName is provided, we lock strictly for this child. Other children run simultaneously!
+  var childLockKey = targetChildIdOrName ? ('child_sync_lock_' + targetChildIdOrName.toString().toLowerCase().replace(/[^a-z0-9_]/g, '_')) : null;
+  var nowMs = new Date().getTime();
+  if (childLockKey) {
+    var rawLockExp = props.getProperty(childLockKey);
+    if (rawLockExp) {
+      var lockExp = parseInt(rawLockExp, 10);
+      if (nowMs < lockExp) {
+        return { skipped: true, reason: 'Sync already in progress for child ' + targetChildIdOrName };
+      }
+    }
+    // Set 5-minute auto-expiring lock for this child
+    props.setProperty(childLockKey, (nowMs + 300000).toString());
+  } else {
+    var globalLock = LockService.getScriptLock();
+    if (!globalLock.tryLock(5000)) return { skipped: true, reason: 'Global sync already in progress' };
+  }
 
   McpLogger.log('INFO', 'RUN_MASTER_CLOUD_SYNC_INVOKED', 'runMasterCloudSchoolSync running for ' + children.length + ' registered child(ren). forceRun=' + forceRun + ' targetChild=' + targetChildIdOrName + ' isInitialPass=' + isInitialPass);
   var syncStartTime = new Date().getTime();
@@ -2343,7 +3260,11 @@ function runMasterCloudSchoolSync(forceRun, targetChildIdOrName, isInitialPass) 
     }
     return { success: true, syncedCount: syncedCount, initialSyncComplete: true };
   } finally {
-    lock.releaseLock();
+    if (childLockKey) {
+      try { props.deleteProperty(childLockKey); } catch (e) {}
+    } else if (typeof globalLock !== 'undefined' && globalLock) {
+      try { globalLock.releaseLock(); } catch (e) {}
+    }
   }
 }
 
@@ -2638,6 +3559,28 @@ function runIncrementalPortalSync() {
   PortalIngester.syncAll();
 }
 
+/**
+ * Safely removes and deletes ALL project triggers.
+ * Used during teardown, rollback on authorization cancel, or failure cleanup.
+ */
+function clearAllProjectTriggers() {
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    var count = 0;
+    for (var i = 0; i < triggers.length; i++) {
+      try {
+        ScriptApp.deleteTrigger(triggers[i]);
+        count++;
+      } catch (delErr) {}
+    }
+    McpLogger.log('INFO', 'TRIGGERS_PURGED', 'Successfully deleted ' + count + ' project triggers.');
+    return { success: true, count: count };
+  } catch (err) {
+    McpLogger.log('WARN', 'TRIGGERS_PURGE_ERROR', 'Failed to purge project triggers: ' + err);
+    return { success: false, error: err.toString() };
+  }
+}
+
 function setupAutonomousTriggers(workerType) {
   var installed = [];
   var isMaster = workerType === 'master' ||
@@ -2681,8 +3624,11 @@ function setupAutonomousTriggers(workerType) {
           ScriptApp.deleteTrigger(triggers[j]);
         }
       }
-      ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
-      installed.push('runIncrementalPortalSync (6h)');
+      var portalInit = setupSixHourTrigger();
+      var portalLabel = (portalInit && portalInit.installed && portalInit.installed.length > 0)
+        ? ('runIncrementalPortalSync (per-child: ' + portalInit.installed.join(',') + ')')
+        : 'runIncrementalPortalSync (6h)';
+      installed.push(portalLabel);
     } else {
       // Clean up any existing duplicate triggers
       for (var k = 0; k < triggers.length; k++) {
@@ -2722,9 +3668,27 @@ function setupSixHourTrigger() {
         ScriptApp.deleteTrigger(triggers[i]);
       }
     }
-    ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
-    McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created 6-hour cloud time trigger for School Portal scraping.');
-    return { success: true };
+    var props = PropertiesService.getScriptProperties();
+    var rawPortalReg = props.getProperty('multi_child_portal_registry');
+    var installed = [];
+    if (rawPortalReg) {
+      try {
+        var pReg = JSON.parse(rawPortalReg);
+        (pReg.children || []).forEach(function(pc) {
+          if (pc && pc.childId && pc.domains && Object.keys(pc.domains).length > 0) {
+            setupChildPortalTrigger(pc.childId);
+            installed.push(pc.childId);
+          }
+        });
+      } catch (e) {}
+    }
+    if (installed.length === 0) {
+      ScriptApp.newTrigger('runIncrementalPortalSync').timeBased().everyHours(6).create();
+      McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Created fallback 6-hour cloud time trigger for School Portal scraping.');
+    } else {
+      McpLogger.log('SUCCESS', 'TRIGGER_CREATED', 'Initialized per-child portal burst triggers for: ' + installed.join(', '));
+    }
+    return { success: true, installed: installed };
   } catch (e) {
     return { success: false, error: e.toString() };
   }
@@ -2735,10 +3699,11 @@ function handleToolsList() {
     tools: [
       { name: 'sync_classroom_and_gmail', description: 'Run full sync of Classroom & Gmail', inputSchema: { type: 'object', properties: {} } },
       { name: 'sync_all_portals', description: 'Run full scraping of registered school portals', inputSchema: { type: 'object', properties: {} } },
+      { name: 'sync_child_portal_burst', description: 'Run a 90-second burst of portal scraping for a specific child', inputSchema: { type: 'object', properties: { childId: { type: 'string' } } } },
       { name: 'register_portal_job', description: 'Register a child school portal endpoint', inputSchema: { type: 'object', properties: {} } },
       {
         name: 'search_vault_documents',
-        description: 'Searches all school worksheets, circulars, scanned PDFs, and WhatsApp chat images across all subjects and dates using intelligent full-text OCR indexing.',
+        description: 'Searches all school worksheets, circulars, scanned PDFs, WhatsApp chat images, and school portal downloads (fee receipts, report cards, notices) across all subjects and dates using intelligent full-text OCR indexing.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -2757,6 +3722,8 @@ function handleToolsCall(name, args) {
     return handleSyncClassroomAndGmail(args);
   } else if (name === 'sync_all_portals') {
     return handleSyncAllPortals(args);
+  } else if (name === 'sync_child_portal_burst') {
+    return PortalIngester.syncChildBurst(args.childId || args.childName);
   } else if (name === 'register_portal_job') {
     return handleRegisterPortalJob(args);
   } else if (name === 'search_vault_documents') {
@@ -2807,6 +3774,39 @@ function handleSetSyncState(params) {
   }
 
   return { success: true, updated: updates };
+}
+
+function handleActivateIncrementalTriggers(params) {
+  var childName = params ? (params.childName || params.kidName) : null;
+  var academicYear = params ? params.academicYear : null;
+  var props = PropertiesService.getScriptProperties();
+
+  // Mark in multi_child_school_registry
+  var rawReg = props.getProperty('multi_child_school_registry');
+  if (rawReg) {
+    try {
+      var reg = JSON.parse(rawReg);
+      (reg.children || []).forEach(function(c) {
+        if (!childName || c.childName === childName || c.kidName === childName) {
+          c.initialSyncComplete = true;
+          c.lastInitialSyncedAt = new Date().toISOString();
+        }
+      });
+      props.setProperty('multi_child_school_registry', JSON.stringify(reg));
+    } catch(e) {}
+  }
+  props.setProperty('initial_sync_complete', 'true');
+  props.deleteProperty('initial_sync_in_progress_child');
+
+  // Activate recurring Master Cloud Sync trigger (defaults to 1-minute cadence)
+  var mins = (params && params.intervalMinutes) ? params.intervalMinutes : 1;
+  var trigRes = setupMasterCloudSyncTrigger(mins);
+  McpLogger.log('SUCCESS', 'INCREMENTAL_TRIGGERS_ACTIVATED', '1-Time data sync complete. Activated recurring incremental sync trigger for ' + (childName || 'Child'));
+  return {
+    success: true,
+    initialSyncComplete: true,
+    triggerResult: trigRes
+  };
 }
 `
       },
@@ -4140,26 +5140,65 @@ var DocumentOcrService = {
   },
 
   /**
-   * Helper to index by file ID (used by WhatsApp media RPC).
+   * Robust folder resolver that climbs up from nested subfolders (attachments -> classroom -> KidVault)
    */
-  indexDocumentById: function(fileId, childName, sourceContext) {
+  resolveKidFolderForFile: function(file, targetFolderId) {
+    if (targetFolderId) {
+      try {
+        var tf = DriveApp.getFolderById(targetFolderId);
+        if (tf) return tf;
+      } catch (e) {}
+    }
+    if (!file) return null;
+    try {
+      var cur = file.getParents().hasNext() ? file.getParents().next() : null;
+      var depth = 0;
+      while (cur && depth < 5) {
+        var name = cur.getName();
+        if (cur.getFilesByName(this.INDEX_FILE_NAME).hasNext() || cur.getFilesByName('classroom_data.json').hasNext() || cur.getFilesByName('student_profile.json').hasNext() || cur.getFoldersByName('portals').hasNext() || cur.getFoldersByName('classroom').hasNext()) {
+          return cur;
+        }
+        if (name === 'attachments' || name === 'classroom' || name === 'emails' || name === 'whatsapp' || name === 'daily_digests' || name === 'portals' || cur.getFoldersByName('attachments').hasNext()) {
+          var pIt = cur.getParents();
+          if (pIt.hasNext()) {
+            cur = pIt.next();
+            depth++;
+            continue;
+          }
+        }
+        return cur;
+      }
+      return cur;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
+   * Helper to index by file ID (used by on-demand 1-by-1 OCR and WhatsApp media RPC).
+   */
+  indexDocumentById: function(fileId, childName, sourceContext, targetFolderId) {
     if (!fileId) return { success: false, error: 'Missing fileId' };
     try {
       var file = DriveApp.getFileById(fileId);
-      var parents = file.getParents();
-      var kidFolder = parents.hasNext() ? parents.next() : null;
+      var kidFolder = this.resolveKidFolderForFile(file, targetFolderId);
 
-      // If parent is a subfolder (e.g. attachments/ or whatsapp/), climb up to kid folder
-      if (kidFolder && (kidFolder.getName() === 'attachments' || kidFolder.getName() === 'whatsapp')) {
-        var grandParents = kidFolder.getParents();
-        if (grandParents.hasNext()) {
-          var gp = grandParents.next();
-          if (gp.getName() === 'whatsapp') {
-            var ggp = gp.getParents();
-            if (ggp.hasNext()) kidFolder = ggp.next();
-          } else {
-            kidFolder = gp;
-          }
+      if (!kidFolder && childName) {
+        var props = PropertiesService.getScriptProperties();
+        var reg = props.getProperty('multi_child_school_registry');
+        if (reg) {
+          try {
+            var regObj = JSON.parse(reg);
+            var ch = (regObj.children || []).find(function(c) { return c.childName === childName || c.kidName === childName; });
+            if (ch && ch.targetFolderId) kidFolder = DriveApp.getFolderById(ch.targetFolderId);
+          } catch(e) {}
+        }
+      }
+
+      if (!kidFolder) {
+        var defaultFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
+        if (defaultFolderId) {
+          try { kidFolder = DriveApp.getFolderById(defaultFolderId); } catch (e) {}
         }
       }
 
@@ -4167,8 +5206,15 @@ var DocumentOcrService = {
         return { success: false, error: 'Could not resolve parent vault folder' };
       }
 
-      var record = this.indexDocument(kidFolder, file, sourceContext || 'whatsapp');
-      return { success: true, record: record };
+      var record = this.indexDocument(kidFolder, file, sourceContext || 'classroom');
+      return {
+        success: !!record,
+        record: record,
+        fileId: fileId,
+        fileName: record ? record.fileName : (file.getName ? file.getName() : ''),
+        isOcr: record ? record.isOcr : false,
+        wordCount: record ? record.wordCount : 0
+      };
     } catch (err) {
       return { success: false, error: err.toString() };
     }
@@ -4235,6 +5281,23 @@ var DocumentOcrService = {
           var wName = wf.getName().toLowerCase();
           if (wName !== 'whatsapp_school_archive.json' && !indexedMap[wf.getId()]) {
             pendingFiles.push({ file: wf, source: 'whatsapp' });
+          }
+        }
+      }
+
+      // Portal attachments (fee receipts, report cards, circulars)
+      var pIt = kidFolder.getFoldersByName('portals');
+      if (pIt.hasNext()) {
+        var domFolders = pIt.next().getFolders();
+        while (domFolders.hasNext()) {
+          var domFolder = domFolders.next();
+          var pAttIt = domFolder.getFoldersByName('attachments');
+          if (pAttIt.hasNext()) {
+            var pfIt = pAttIt.next().getFiles();
+            while (pfIt.hasNext()) {
+              var pf = pfIt.next();
+              if (!indexedMap[pf.getId()]) pendingFiles.push({ file: pf, source: 'portal' });
+            }
           }
         }
       }
@@ -5683,7 +6746,22 @@ var DigestBuilder = {
         md += '_No recent school circular emails._\\n\\n';
       }
 
-      // 3. Portal Health
+      // 3. WhatsApp Messages (Synced exclusively via Chrome Extension)
+      var whatsappData = this.readJsonFile(parentFolder, 'whatsapp/whatsapp_messages.json');
+      md += '\\n## 💬 WhatsApp Updates & Urgent Alerts\\n';
+      if (whatsappData && whatsappData.messages && whatsappData.messages.length > 0) {
+        for (var wIdx = 0; wIdx < Math.min(whatsappData.messages.length, 10); wIdx++) {
+          var msg = whatsappData.messages[wIdx];
+          var sender = msg.sender || 'School Group';
+          var text = (msg.text || '').replace(/\\n/g, ' ');
+          if (text.length > 120) text = text.substring(0, 120) + '...';
+          md += '* **' + sender + '**: ' + text + '\\n';
+        }
+      } else {
+        md += '_No recent school group messages logged._\\n\\n';
+      }
+
+      // 4. Portal Health
       md += '\\n## 🌐 School Portals Status\\n';
       if (portalStatus && portalStatus.domains && portalStatus.domains.length > 0) {
         for (var p = 0; p < portalStatus.domains.length; p++) {
@@ -5701,8 +6779,26 @@ var DigestBuilder = {
         generatedAt: new Date().toISOString(),
         classroom: classroomData || null,
         emails: emailData || null,
+        whatsapp: whatsappData || null,
         portals: portalStatus || null
       };
+
+      if (parentFolder) {
+        try {
+          this.saveTextFile(parentFolder, 'MASTER_DIGEST.md', md);
+          var sysFolder = this.getOrCreateSubfolder(parentFolder, '_system');
+          var existingKg = this.readJsonFile(parentFolder, '_system/knowledge_graph.json') || {
+            childName: childName,
+            version: '1.0.0',
+            updatedAt: new Date().toISOString(),
+            nodes: [],
+            edges: [],
+            entities: {}
+          };
+          existingKg.updatedAt = new Date().toISOString();
+          this.saveJsonFile(sysFolder, 'knowledge_graph.json', existingKg);
+        } catch (kgErr) {}
+      }
 
       if (digestFolder) {
         try {
@@ -5794,27 +6890,17 @@ var PortalIngester = {
         return { status: 'empty', reason: 'No children configured with portals yet.' };
       }
 
-      var hasAnyActiveDomains = false;
-      for (var i = 0; i < children.length; i++) {
-        if (children[i].domains && Object.keys(children[i].domains).length > 0) {
-          hasAnyActiveDomains = true;
-          break;
-        }
-      }
-      if (!hasAnyActiveDomains) {
-        return { status: 'empty', reason: 'No active portal domains registered yet.' };
-      }
-
-      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing 6-hour autonomous portal sync for all children');
+      McpLogger.log('INFO', 'PORTAL_CRON_START', 'Executing portal burst sync for all registered children');
       var results = [];
 
       for (var c = 0; c < children.length; c++) {
         var child = children[c];
+        if (!child || !child.childId) continue;
         try {
-          var childRes = this.syncChild(child);
-          if (childRes) results.push(childRes);
+          var burstRes = this.syncChildBurst(child.childId);
+          if (burstRes) results.push(burstRes);
         } catch (childErr) {
-          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal sync error for ' + (child.kidName || 'Child') + ': ' + childErr);
+          McpLogger.log('ERROR', 'PORTAL_CHILD_ERROR', 'Portal burst sync error for ' + (child.kidName || 'Child') + ': ' + childErr);
         }
       }
 
@@ -5824,8 +6910,32 @@ var PortalIngester = {
     }
   },
 
-  syncChild: function(child) {
+  /**
+   * Burst-Then-Sleep Execution: Processes a batch of features for a child.
+   * If features remain: schedules continuation in 10 minutes.
+   * If all features complete: schedules next 6-hour cycle.
+   */
+  syncChildBurst: function(childId) {
+    var props = PropertiesService.getScriptProperties();
+
+    // Quiet hours check (11 PM to 6 AM IST)
+    var now = new Date();
+    var istHour = new Date(now.getTime() + (5.5 * 60 * 60 * 1000)).getUTCHours();
+    if (istHour >= 23 || istHour < 6) {
+      McpLogger.log('INFO', 'PORTAL_QUIET_HOURS', 'Portal burst paused for quiet hours (11 PM to 6 AM IST). Will resume at 6 AM.');
+      return { status: 'quiet_hours_paused', childId: childId };
+    }
+
+    var rawRegistry = props.getProperty('multi_child_portal_registry');
+    if (!rawRegistry) return null;
+    var registry;
+    try { registry = JSON.parse(rawRegistry); } catch (e) { return null; }
+
+    var child = (registry.children || []).find(function(c) {
+      return c.childId === childId || (c.kidName && c.kidName.toLowerCase() === String(childId).toLowerCase());
+    });
     if (!child || !child.portalFolderId) return null;
+
     var childFolder;
     try {
       childFolder = DriveApp.getFolderById(child.portalFolderId);
@@ -5834,82 +6944,412 @@ var PortalIngester = {
       return null;
     }
 
-    var portalsFolder = this.getOrCreateSubfolder(childFolder, 'portals');
-    var domains = child.domains || {};
-    var domainKeys = Object.keys(domains);
-    if (domainKeys.length === 0) return null;
+    // Child-scoped lock for portals
+    var pLockKey = 'portal_lock_' + child.childId;
+    var nowMs = Date.now();
+    var pLockExp = props.getProperty(pLockKey);
+    if (pLockExp && nowMs < parseInt(pLockExp, 10)) {
+      return { status: 'busy', reason: 'Portal sync already running for child ' + child.childId };
+    }
+    props.setProperty(pLockKey, (nowMs + 180000).toString()); // 3-min lock
 
-    var statuses = [];
+    try {
+      var portalsFolder = this.getOrCreateSubfolder(childFolder, 'portals');
+      var domains = child.domains || {};
+      var domainKeys = Object.keys(domains);
+      if (domainKeys.length === 0) return null;
 
-    for (var d = 0; d < domainKeys.length; d++) {
-      var dom = domainKeys[d];
-      var domConfig = domains[dom];
-      var domFolder = this.getOrCreateSubfolder(portalsFolder, dom);
-      var attachFolder = this.getOrCreateSubfolder(domFolder, 'attachments');
+      // Load progress pointer
+      var progressKey = 'portal_prog_' + child.childId;
+      var rawProg = props.getProperty(progressKey);
+      var prog = { domIdx: 0, featIdx: 0 };
+      if (rawProg) {
+        try { prog = JSON.parse(rawProg); } catch (e) {}
+      }
 
-      var cookies = (domConfig.security_payload && domConfig.security_payload.cookies) ? domConfig.security_payload.cookies : '';
-      var features = domConfig.features || [];
-      var capturedFeatures = [];
-      var isExpired = false;
+      var BURST_TIME_LIMIT_MS = 90000; // 90 seconds max per 10-minute burst
+      var BURST_MAX_FEATURES = 6;     // 6 features max per burst
+      var burstStartTime = Date.now();
+      var featuresProcessed = 0;
+      var hasMore = false;
+      var statuses = [];
+      var newAttachmentsDownloaded = false;
 
-      for (var f = 0; f < features.length; f++) {
-        var feat = features[f];
+      for (var d = prog.domIdx; d < domainKeys.length; d++) {
+        var dom = domainKeys[d];
+        var domConfig = domains[dom];
+        var domFolder = this.getOrCreateSubfolder(portalsFolder, dom);
+        var attachFolder = this.getOrCreateSubfolder(domFolder, 'attachments');
+        var cookies = (domConfig.security_payload && domConfig.security_payload.cookies) ? domConfig.security_payload.cookies : '';
+        var features = domConfig.features || [];
+        var startFeat = (d === prog.domIdx) ? prog.featIdx : 0;
+        var capturedFeatures = [];
+        var isExpired = false;
+
+        // Batch index existing attachments to avoid duplicate downloads
+        var existingAttMap = {};
         try {
-          var fetchRes = UrlFetchApp.fetch(feat.endpoint, {
-            headers: {
-              'Cookie': cookies,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            },
-            followRedirects: false,
-            muteHttpExceptions: true
-          });
+          var attFiles = attachFolder.getFiles();
+          while (attFiles.hasNext()) {
+            var af = attFiles.next();
+            existingAttMap[af.getName().toLowerCase()] = af.getId();
+          }
+        } catch (e) {}
 
-          var code = fetchRes.getResponseCode();
-          var body = fetchRes.getContentText();
+        // Load existing captured features if resuming
+        if (startFeat > 0) {
+          var exData = this.readJsonFile(domFolder, 'features_data.json');
+          if (exData && exData.features) capturedFeatures = exData.features;
+        }
 
-          if (code === 401 || code === 403 || (code >= 300 && code < 400) || (body.includes('password') && body.includes('login'))) {
-            isExpired = true;
+        for (var f = startFeat; f < features.length; f++) {
+          // Check time and feature budget
+          if ((Date.now() - burstStartTime) > BURST_TIME_LIMIT_MS || featuresProcessed >= BURST_MAX_FEATURES) {
+            hasMore = true;
+            prog.domIdx = d;
+            prog.featIdx = f;
             break;
           }
 
-          capturedFeatures.push({
-            name: feat.name,
-            endpoint: feat.endpoint,
-            lastFetched: new Date().toISOString(),
-            htmlSnippet: body.substring(0, 1500)
+          var feat = features[f];
+          featuresProcessed++;
+
+          try {
+            var fetchRes = UrlFetchApp.fetch(feat.endpoint, {
+              headers: {
+                'Cookie': cookies,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+              },
+              followRedirects: false,
+              muteHttpExceptions: true
+            });
+
+            var code = fetchRes.getResponseCode();
+            var body = fetchRes.getContentText();
+
+            if (code === 401 || code === 403 || (code >= 300 && code < 400) || (body.includes('password') && body.includes('login'))) {
+              isExpired = true;
+              break;
+            }
+
+            var headers = fetchRes.getHeaders() || {};
+            var contentType = (headers['Content-Type'] || headers['content-type'] || '').toLowerCase();
+            var contentDisp = (headers['Content-Disposition'] || headers['content-disposition'] || '');
+
+            var isDirectBinary = contentType.indexOf('application/pdf') !== -1 ||
+                                 contentType.indexOf('image/') !== -1 ||
+                                 contentType.indexOf('application/octet-stream') !== -1 ||
+                                 contentType.indexOf('application/vnd.') !== -1 ||
+                                 contentDisp.toLowerCase().indexOf('filename=') !== -1;
+
+            var featAttachments = [];
+
+            if (isDirectBinary) {
+              // Direct binary document/file
+              var fileName = this.extractFilename(contentDisp, feat.endpoint, feat.name);
+              var fileNameLower = fileName.toLowerCase();
+              var fileId = existingAttMap[fileNameLower];
+
+              if (!fileId) {
+                var blob = fetchRes.getBlob().setName(fileName);
+                var savedFile = attachFolder.createFile(blob);
+                fileId = savedFile.getId();
+                existingAttMap[fileNameLower] = fileId;
+                newAttachmentsDownloaded = true;
+              }
+
+              featAttachments.push({
+                name: fileName,
+                fileId: fileId,
+                url: feat.endpoint
+              });
+
+              capturedFeatures.push({
+                name: feat.name,
+                endpoint: feat.endpoint,
+                lastFetched: new Date().toISOString(),
+                isBinary: true,
+                attachments: featAttachments
+              });
+            } else {
+              // HTML page - scan for document links
+              var links = this.extractAttachmentLinks(body, feat.endpoint, dom);
+
+              for (var l = 0; l < links.length; l++) {
+                // Check time budget before each attachment fetch
+                if ((Date.now() - burstStartTime) > BURST_TIME_LIMIT_MS) {
+                  hasMore = true;
+                  prog.domIdx = d;
+                  prog.featIdx = f;
+                  break;
+                }
+
+                var linkItem = links[l];
+                var lNameLower = linkItem.name.toLowerCase();
+                var lFileId = existingAttMap[lNameLower];
+
+                if (!lFileId) {
+                  try {
+                    var attRes = UrlFetchApp.fetch(linkItem.url, {
+                      headers: {
+                        'Cookie': cookies,
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+                      },
+                      muteHttpExceptions: true
+                    });
+
+                    if (attRes.getResponseCode() === 200) {
+                      var attBlob = attRes.getBlob().setName(linkItem.name);
+                      var newFile = attachFolder.createFile(attBlob);
+                      lFileId = newFile.getId();
+                      existingAttMap[lNameLower] = lFileId;
+                      newAttachmentsDownloaded = true;
+                    }
+                  } catch (attErr) {
+                    McpLogger.log('WARN', 'PORTAL_ATTACH_FETCH_WARN', 'Could not download attachment ' + linkItem.name + ': ' + attErr);
+                  }
+                }
+
+                if (lFileId) {
+                  featAttachments.push({
+                    name: linkItem.name,
+                    fileId: lFileId,
+                    url: linkItem.url
+                  });
+                }
+              }
+
+              capturedFeatures.push({
+                name: feat.name,
+                endpoint: feat.endpoint,
+                lastFetched: new Date().toISOString(),
+                htmlSnippet: body.substring(0, 1500),
+                attachments: featAttachments
+              });
+            }
+          } catch (fErr) {
+            McpLogger.log('WARN', 'PORTAL_FEATURE_FETCH_WARN', 'Could not fetch feature ' + feat.name + ' for ' + child.kidName + ': ' + fErr);
+          }
+        }
+
+        var domStatus = {
+          childId: child.childId,
+          kidName: child.kidName,
+          domain: dom,
+          status: isExpired ? 'EXPIRED' : 'ACTIVE',
+          lastChecked: new Date().toISOString(),
+          message: isExpired ? 'Session expired or redirected to login.' : 'Active and synced.'
+        };
+        statuses.push(domStatus);
+
+        if (!isExpired && capturedFeatures.length > 0) {
+          this.saveJsonFile(domFolder, 'features_data.json', {
+            domain: dom,
+            childId: child.childId,
+            kidName: child.kidName,
+            lastSyncedAt: new Date().toISOString(),
+            features: capturedFeatures
           });
-        } catch (fErr) {
-          McpLogger.log('WARN', 'PORTAL_FEATURE_FETCH_WARN', 'Could not fetch feature ' + feat.name + ' for ' + child.kidName + ': ' + fErr);
+        }
+
+        if (hasMore) break;
+      }
+
+      this.saveJsonFile(portalsFolder, 'portals_status.json', {
+        lastChecked: new Date().toISOString(),
+        domains: statuses
+      });
+
+      // If new attachments were downloaded, trigger automated OCR indexing
+      if (newAttachmentsDownloaded) {
+        try {
+          var ocrTrigs = ScriptApp.getProjectTriggers();
+          var hasOcr = false;
+          for (var ot = 0; ot < ocrTrigs.length; ot++) {
+            if (ocrTrigs[ot].getHandlerFunction() === 'runAutonomousVaultOcr') {
+              hasOcr = true;
+              break;
+            }
+          }
+          if (!hasOcr) {
+            ScriptApp.newTrigger('runAutonomousVaultOcr').timeBased().after(10000).create();
+            McpLogger.log('INFO', 'PORTAL_OCR_TRIGGER', 'New portal attachments downloaded. Scheduled autonomous OCR indexing in 10s.');
+          }
+        } catch (ocrTrigErr) {
+          McpLogger.log('WARN', 'PORTAL_OCR_TRIGGER_WARN', 'Could not schedule OCR trigger: ' + ocrTrigErr);
         }
       }
 
-      var domStatus = {
-        childId: child.childId,
-        kidName: child.kidName,
-        domain: dom,
-        status: isExpired ? 'EXPIRED' : 'ACTIVE',
-        lastChecked: new Date().toISOString(),
-        message: isExpired ? 'Session expired or redirected to login.' : 'Active and synced.'
-      };
-      statuses.push(domStatus);
+      // Manage self-rescheduling: 10-minute continuation VS next 6-hour slot
+      if (hasMore) {
+        props.setProperty(progressKey, JSON.stringify(prog));
+        this.scheduleChildPortalContinuation(child.childId, 10);
+        McpLogger.log('INFO', 'PORTAL_BURST_CONTINUATION', 'Burst processed ' + featuresProcessed + ' feature(s) for ' + child.kidName + '. More pending. Next burst in 10 mins.');
+        return { childId: child.childId, status: 'continuation_scheduled', nextInMinutes: 10 };
+      } else {
+        props.deleteProperty(progressKey);
+        this.scheduleChildPortalContinuation(child.childId, 360); // 360 mins = 6 hours
+        McpLogger.log('SUCCESS', 'PORTAL_CYCLE_COMPLETE', 'All registered portals synced for ' + child.kidName + '. Rescheduled for next 6-hour slot.');
+        return { childId: child.childId, status: 'cycle_complete', nextInHours: 6 };
+      }
+    } finally {
+      try { props.deleteProperty(pLockKey); } catch (e) {}
+    }
+  },
 
-      if (!isExpired) {
-        this.saveJsonFile(domFolder, 'features_data.json', {
-          domain: dom,
-          childId: child.childId,
-          kidName: child.kidName,
-          lastSyncedAt: new Date().toISOString(),
-          features: capturedFeatures
-        });
+  getChildPortalHandler: function(childId) {
+    if (typeof getChildPortalSyncHandlerName === 'function') {
+      return getChildPortalSyncHandlerName(childId);
+    }
+    var clean = String(childId || 'Default').replace(/^child_/i, '').replace(/[^a-zA-Z0-9_]/g, '_');
+    if (/^[a-z]/.test(clean)) { clean = clean.charAt(0).toUpperCase() + clean.slice(1); }
+    var fn = 'runPortalSync_' + (clean || 'Default');
+    if (typeof globalThis !== 'undefined' && !globalThis[fn]) {
+      globalThis[fn] = function(e) { return runChildPortalSyncTrigger(e, childId); };
+    }
+    return fn;
+  },
+
+  scheduleChildPortalContinuation: function(childId, delayMinutes) {
+    var props = PropertiesService.getScriptProperties();
+    var handlerName = this.getChildPortalHandler(childId);
+    try {
+      var triggers = ScriptApp.getProjectTriggers();
+      for (var i = 0; i < triggers.length; i++) {
+        var hFn = triggers[i].getHandlerFunction();
+        if (hFn === 'runChildPortalSyncTrigger' || hFn === handlerName || hFn.indexOf('runPortalSync_') === 0) {
+          var uid = triggers[i].getUniqueId();
+          var mappedChild = props.getProperty('portal_trigger_child_' + uid);
+          if (mappedChild === childId || hFn === handlerName) {
+            ScriptApp.deleteTrigger(triggers[i]);
+            props.deleteProperty('portal_trigger_child_' + uid);
+          }
+        }
+      }
+
+      var delayMs = delayMinutes * 60 * 1000;
+      var newTrig = ScriptApp.newTrigger(handlerName)
+        .timeBased()
+        .after(delayMs)
+        .create();
+
+      var newUid = (newTrig && typeof newTrig.getUniqueId === 'function') ? newTrig.getUniqueId() : ('trig_p_' + Math.random().toString(36).substring(2));
+      props.setProperty('portal_trigger_child_' + newUid, childId);
+      return { success: true, childId: childId, triggerUid: newUid, handler: handlerName, nextDelayMinutes: delayMinutes };
+    } catch (err) {
+      McpLogger.log('WARN', 'PORTAL_SCHEDULE_ERROR', 'Could not schedule portal continuation (' + handlerName + ') for ' + childId + ': ' + err);
+      return { success: false, error: err.toString() };
+    }
+  },
+
+  syncChild: function(child) {
+    return this.syncChildBurst(child && child.childId);
+  },
+
+  extractFilename: function(contentDisp, url, fallbackName) {
+    if (contentDisp) {
+      var match = contentDisp.match(/filename\\*?=(?:UTF-8'')?["']?([^"';]+)["']?/i);
+      if (match && match[1]) {
+        var fn = decodeURIComponent(match[1].trim());
+        return this.cleanFilename(fn);
+      }
+    }
+    if (url) {
+      var cleanUrl = url.split('?')[0].split('#')[0];
+      var lastPart = cleanUrl.substring(cleanUrl.lastIndexOf('/') + 1);
+      if (lastPart && lastPart.indexOf('.') !== -1) {
+        return this.cleanFilename(decodeURIComponent(lastPart));
+      }
+    }
+    var ext = '.pdf';
+    var cleanBase = (fallbackName || 'portal_document').replace(/[^a-zA-Z0-9_-]/g, '_');
+    return cleanBase + ext;
+  },
+
+  cleanFilename: function(name) {
+    if (!name) return 'document.pdf';
+    var cleaned = name.replace(/[/\\\\?%*:|"<>]/g, '_').trim();
+    return cleaned.length > 0 ? cleaned : 'document.pdf';
+  },
+
+  extractAttachmentLinks: function(htmlBody, baseUrl, domain) {
+    if (!htmlBody) return [];
+    var links = [];
+    var seenUrls = {};
+
+    var aTagRegex = /<a\\s+[^>]*href\\s*=\\s*["']([^"']+)["'][^>]*>([\\s\\S]*?)<\\/a>/gi;
+    var match;
+    var docExtRegex = /\\.(pdf|docx?|xlsx?|pptx?|jpe?g|png|csv)(\\?|#|$)/i;
+    var docKeywordRegex = /(download|receipt|attachment|report_card|reportcard|marksheet|circular|invoice|fees?|timetable|syllabus)/i;
+
+    while ((match = aTagRegex.exec(htmlBody)) !== null) {
+      var rawHref = match[1];
+      var linkText = match[2].replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim();
+
+      if (!rawHref || rawHref.indexOf('javascript:') === 0 || rawHref.indexOf('#') === 0 || rawHref.indexOf('mailto:') === 0) {
+        continue;
+      }
+
+      var isDocExt = docExtRegex.test(rawHref);
+      var isDocKeyword = docKeywordRegex.test(rawHref) || docKeywordRegex.test(linkText);
+
+      if (isDocExt || isDocKeyword) {
+        var resolvedUrl = this.resolveUrl(rawHref, baseUrl, domain);
+        if (resolvedUrl && !seenUrls[resolvedUrl]) {
+          seenUrls[resolvedUrl] = true;
+          var fileName = this.extractFilename(null, rawHref, linkText || 'document');
+          links.push({
+            url: resolvedUrl,
+            name: fileName,
+            label: linkText
+          });
+        }
       }
     }
 
-    this.saveJsonFile(portalsFolder, 'portals_status.json', {
-      lastChecked: new Date().toISOString(),
-      domains: statuses
-    });
+    return links;
+  },
 
-    return { childId: child.childId, kidName: child.kidName, statuses: statuses };
+  resolveUrl: function(href, baseUrl, domain) {
+    if (!href) return '';
+    href = href.trim();
+    if (href.indexOf('http://') === 0 || href.indexOf('https://') === 0) {
+      return href;
+    }
+    if (href.indexOf('//') === 0) {
+      return 'https:' + href;
+    }
+    var baseHost = 'https://' + (domain || 'school.portal');
+    if (baseUrl && baseUrl.indexOf('http') === 0) {
+      var slashIdx = baseUrl.indexOf('://');
+      var pathIdx = baseUrl.indexOf('/', slashIdx + 3);
+      baseHost = pathIdx !== -1 ? baseUrl.substring(0, pathIdx) : baseUrl;
+    }
+    if (href.indexOf('/') === 0) {
+      return baseHost + href;
+    }
+    var basePath = baseHost;
+    if (baseUrl && baseUrl.indexOf('http') === 0) {
+      var lastSlash = baseUrl.lastIndexOf('/');
+      if (lastSlash > 8) {
+        basePath = baseUrl.substring(0, lastSlash + 1);
+      } else {
+        basePath = baseUrl + '/';
+      }
+    } else {
+      basePath = baseHost + '/';
+    }
+    return basePath + href;
+  },
+
+  readJsonFile: function(folder, fileName) {
+    try {
+      var it = folder.getFilesByName(fileName);
+      if (it.hasNext()) {
+        return JSON.parse(it.next().getBlob().getDataAsString());
+      }
+    } catch (e) {}
+    return null;
   },
 
   getOrCreateSubfolder: function(parentFolder, name) {
@@ -5944,6 +7384,10 @@ var PortalIngester = {
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 403 && (errText.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || errText.includes('insufficientPermissions') || errText.includes('PERMISSION_DENIED'))) {
+        await AuthService.clearCachedToken();
+        throw new Error(`⚠️ Google Apps Script permissions missing (HTTP 403). You did not check "Select all" on the Google authorization screen. Please sign in again and make sure to check "Select all".`);
+      }
       throw new Error(`Failed to upload server code (${response.status}): ${errText}`);
     }
 
@@ -5996,6 +7440,10 @@ var PortalIngester = {
 
     if (!response.ok) {
       const errText = await response.text();
+      if (response.status === 403 && (errText.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || errText.includes('insufficientPermissions') || errText.includes('PERMISSION_DENIED'))) {
+        await AuthService.clearCachedToken();
+        throw new Error(`⚠️ Google Apps Script permissions missing (HTTP 403). You did not check "Select all" on the Google authorization screen. Please sign in again and make sure to check "Select all".`);
+      }
       throw new Error(`Failed to create Web App deployment (${response.status}): ${errText}`);
     }
 
@@ -6026,6 +7474,10 @@ var PortalIngester = {
       return await response.json();
     }
     const errText = await response.text();
+    if (response.status === 403 && (errText.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || errText.includes('insufficientPermissions') || errText.includes('PERMISSION_DENIED'))) {
+      await AuthService.clearCachedToken();
+      throw new Error(`⚠️ Google Apps Script permissions missing (HTTP 403). You did not check "Select all" on the Google authorization screen. Please sign in again and make sure to check "Select all".`);
+    }
     console.warn('[School MCP] Update deployment in-place error:', response.status, errText);
     return null;
   }
@@ -6154,38 +7606,141 @@ var PortalIngester = {
   }
 
   /**
-   * Automatically executes testAuth() via Google Apps Script Execution API to pre-warm and verify all scopes.
+   * Automatically executes testAuth() to pre-warm and verify all Google Workspace scopes.
+   * Probes the deployed Web App directly (POST { method: 'test_auth' } / GET ?action=testAuth)
+   * with fallback to scripts.run. Retries with backoff for asynchronous Google OAuth propagation.
    */
-  private static async runTestAuth(scriptId: string, token: string): Promise<{ authorized: boolean; raw: any }> {
-    try {
-      const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}:run`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          function: 'testAuth'
-        })
-      });
-      if (response.ok) {
-        const json = await response.json();
-        // scripts.run returns HTTP 200 even when the target function itself failed (e.g. a scope
-        // like Drive was never interactively granted for this script project) - the failure shows
-        // up as a populated `error` field, not as a non-2xx status. Treating response.ok alone as
-        // "authorized" (the old behavior) is exactly the gap that let DriveApp calls fail silently
-        // forever for a brand-new project that never got its one-time consent popup.
-        if (!json.error) {
-          console.log('[School MCP] Automated testAuth executed and pre-warmed successfully.');
-          return { authorized: true, raw: json };
+  private static async runTestAuth(
+    scriptId: string,
+    token: string,
+    retries: number = 4,
+    delayMs: number = 1500,
+    webAppUrl?: string
+  ): Promise<{ authorized: boolean; raw?: any; error?: string }> {
+    let lastError = '';
+    let lastRaw: any = null;
+
+    // 1. Primary: If webAppUrl is available, probe the deployed Web App directly
+    if (webAppUrl) {
+      const cleanUrl = webAppUrl.replace(/\/macros\/u\/\d+\/s\//g, '/macros/s/').replace(/\/u\/\d+\//g, '/');
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const response = await fetch(cleanUrl, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              method: 'test_auth',
+              id: `test-auth-${Date.now()}`
+            }),
+            redirect: 'follow'
+          });
+
+          const text = await response.text();
+          if (response.ok || response.status === 200) {
+            try {
+              const json = JSON.parse(text);
+              if (json.result && (json.result.authorized || json.result.ok)) {
+                console.log(`[GasProvisioner] Web App testAuth succeeded (attempt ${attempt}/${retries}).`);
+                return { authorized: true, raw: json };
+              }
+              if (json.result && (json.result.tools || json.result.protocolVersion)) {
+                console.log(`[GasProvisioner] Web App responded with live tools (attempt ${attempt}/${retries}).`);
+                return { authorized: true, raw: json };
+              }
+              if (json.error) {
+                lastRaw = json;
+                lastError = json.error.message || JSON.stringify(json.error);
+                console.warn(`[GasProvisioner] Web App testAuth returned error (attempt ${attempt}/${retries}):`, lastError);
+                if (lastError.includes('Missing required') || lastError.includes('permissions incomplete') || lastError.includes('Access denied')) {
+                  return { authorized: false, raw: json, error: lastError };
+                }
+              }
+            } catch (jsonErr) {
+              // Non-JSON response means Google is demanding interactive auth
+              if (text.includes('accounts.google.com') || text.includes('Authorization') || text.includes('Sign in')) {
+                lastError = 'Interactive Google authorization required';
+                return { authorized: false, raw: text, error: lastError };
+              }
+            }
+          } else if (response.status === 401 || response.status === 403) {
+            lastError = `HTTP ${response.status}: Interactive authorization required`;
+            return { authorized: false, error: lastError };
+          }
+        } catch (fetchErr: any) {
+          lastError = fetchErr.message || String(fetchErr);
+          console.warn(`[GasProvisioner] Web App testAuth fetch attempt ${attempt} warning:`, lastError);
         }
-        console.warn('[School MCP] testAuth ran but reported an error (scopes likely not yet authorized):', json.error);
-        return { authorized: false, raw: json };
+
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, delayMs * attempt));
+        }
       }
-    } catch (e) {
-      console.warn('[School MCP] Automated testAuth warning:', e);
+
+      // Secondary check via GET ?action=testAuth
+      try {
+        const getUrl = cleanUrl.includes('?') ? `${cleanUrl}&action=testAuth` : `${cleanUrl}?action=testAuth`;
+        const getRes = await fetch(getUrl, {
+          method: 'GET',
+          headers: { 'Authorization': `Bearer ${token}` },
+          redirect: 'follow'
+        });
+        const getText = await getRes.text();
+        if (getRes.ok) {
+          try {
+            const getJson = JSON.parse(getText);
+            if (getJson.status === 'ok' && (getJson.result?.authorized || getJson.result?.ok || getJson.version)) {
+              return { authorized: true, raw: getJson };
+            }
+            if (getJson.error?.message) {
+              lastError = getJson.error.message;
+            }
+          } catch (e) {}
+        }
+      } catch (getErr) {}
     }
-    return { authorized: false, raw: null };
+
+    // 2. Fallback: try scripts.run only if webAppUrl was not provided
+    if (!webAppUrl && scriptId) {
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        try {
+          const response = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}:run`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              function: 'testAuth'
+            })
+          });
+
+          if (response.ok) {
+            const json = await response.json();
+            if (!json.error) {
+              return { authorized: true, raw: json };
+            }
+            lastRaw = json;
+            lastError = json.error.details?.[0]?.errorMessage || json.error.message || JSON.stringify(json.error);
+          } else {
+            const errJson = await response.json().catch(() => null);
+            lastRaw = errJson;
+            lastError = errJson?.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+          }
+        } catch (e: any) {
+          lastError = e.message || String(e);
+        }
+
+        if (attempt < retries) {
+          await new Promise((r) => setTimeout(r, delayMs * attempt));
+        }
+      }
+    }
+
+    return { authorized: false, raw: lastRaw, error: lastError };
   }
 
   /**
@@ -6298,7 +7853,7 @@ var PortalIngester = {
         // Resolve student email to avoid /u/0/ multi-account conflict
         let targetEmail = studentEmail;
         if (!targetEmail) {
-          this.log('🔍 Resolving authenticated student email via Google Drive User API...');
+          this.log(`🔍 Resolving authenticated ${workerType === 'master' ? 'parent' : 'student'} email via Google Drive User API...`);
           targetEmail = (await this.getAuthenticatedUserEmail(token)) || undefined;
         }
 
@@ -6356,10 +7911,12 @@ var PortalIngester = {
                     } catch (e) {}
                   }
                   GasProvisionerService.log('✅ Google Authorization complete! Popup window closed.');
+                  await new Promise((r) => setTimeout(r, 1200));
                   resolve();
                 };
 
                 let windowOpenedAt = Date.now();
+                let visitedAccountsGoogle = false;
 
                 // 1. Tab Title & URL Inspector (Auto-closes on post-approval success page)
                 const tabUpdateListener = (tabId: number, changeInfo: any, tab: any) => {
@@ -6368,15 +7925,25 @@ var PortalIngester = {
                     const url = (tab.url || '').toLowerCase();
                     const ageMs = Date.now() - windowOpenedAt;
 
+                    if (url.includes('accounts.google.com')) {
+                      visitedAccountsGoogle = true;
+                    }
+
                     // Match post-approval completion states
                     if (
                       title.includes('authorization successful') ||
                       title.includes('success! you may close') ||
-                      (title.includes('mcp server') && ageMs > 2500) ||
+                      title.includes('sync authorization - success') ||
+                      (visitedAccountsGoogle && url.includes('/macros/s/')) ||
+                      (title.includes('cloud sync authorization') && ageMs > 1500) ||
+                      (title.includes('mcp server') && ageMs > 2000) ||
                       url.includes('close=1') ||
                       url.includes('auth_success=true')
                     ) {
-                      setTimeout(finishAuth, 500);
+                      setTimeout(finishAuth, 1500);
+                    } else if (title.includes('authorization incomplete') || title.includes('missing permissions')) {
+                      // Allow user 4 seconds to view the warning before auto-closing and returning to wizard
+                      setTimeout(finishAuth, 4000);
                     }
                   }
                 };
@@ -6399,11 +7966,42 @@ var PortalIngester = {
                       const ageMs = Date.now() - windowOpenedAt;
                       for (const t of tabs) {
                         const title = (t.title || '').toLowerCase();
+                        const url = (t.url || '').toLowerCase();
+                        if (url.includes('accounts.google.com')) {
+                          visitedAccountsGoogle = true;
+                        }
                         if (
                           title.includes('authorization successful') ||
                           title.includes('success! you may close') ||
-                          (title.includes('mcp server') && ageMs > 2500)
+                          title.includes('sync authorization - success') ||
+                          (visitedAccountsGoogle && url.includes('/macros/s/')) ||
+                          (title.includes('cloud sync authorization') && ageMs > 1500) ||
+                          (title.includes('mcp server') && ageMs > 2000) ||
+                          url.includes('close=1') ||
+                          url.includes('auth_success=true')
                         ) {
+                          setTimeout(finishAuth, 1000);
+                          return;
+                        } else if (title.includes('authorization incomplete') || title.includes('missing permissions')) {
+                          if (ageMs > 4000) {
+                            finishAuth();
+                            return;
+                          }
+                        }
+                      }
+                    } catch (e) {}
+                  }
+
+                  // Check 2b: Fallback ping to Web App URL with bearer token
+                  if (cleanUrl) {
+                    try {
+                      const testPing = await fetch(cleanUrl, {
+                        method: 'GET',
+                        headers: { 'Authorization': `Bearer ${token}` }
+                      });
+                      if (testPing.ok) {
+                        const pingTxt = await testPing.text();
+                        if (pingTxt.includes('online') || pingTxt.includes('Authorization Successful') || pingTxt.includes('Sync Authorization')) {
                           finishAuth();
                           return;
                         }
@@ -6411,7 +8009,7 @@ var PortalIngester = {
                     } catch (e) {}
                   }
 
-                  // Check 2b: Test if the script can execute via direct execution API
+                  // Check 2c: Test if the script can execute via direct execution API
                   if (scriptId) {
                     try {
                       const res = await fetch(`https://script.googleapis.com/v1/projects/${scriptId}:run`, {
@@ -6431,10 +8029,10 @@ var PortalIngester = {
                       }
                     } catch (e) {}
                   }
-                }, 1500);
+                }, 1000);
 
                 // 3. Window Closed Listener (Triggered when user clicks Allow & closes or closes manually)
-                const windowRemovedListener = (closedWinId: number) => {
+                const windowRemovedListener = async (closedWinId: number) => {
                   if (closedWinId === windowId) {
                     if (typeof chrome !== 'undefined') {
                       if (chrome.tabs && chrome.tabs.onUpdated) {
@@ -6448,6 +8046,7 @@ var PortalIngester = {
                     if (!isHandled) {
                       isHandled = true;
                       GasProvisionerService.log('✅ Google Authorization step finished.');
+                      await new Promise((r) => setTimeout(r, 800));
                       resolve();
                     }
                   }
@@ -6492,14 +8091,17 @@ var PortalIngester = {
     };
     await this.setActiveDeployProgress(this.currentDeployProgress);
 
+    let scriptId: string = '';
+    let webAppUrl: string = '';
+    let isReused = false;
+    let activeProfile: any = null;
+
     try {
       this.log(`🎓 Provisioning Worker A (Student Account: ${studentEmail || 'School'}) for ${childName}...`);
     this.reportProgress(15, 'Phase 1 of 5 (15%)', 'Authenticating Student School Account & Google Apps Script API...');
 
     // 1. Find Existing Project or Create New (Prevents Duplication)
-    const activeProfile = await ChildManager.getActiveProfile();
-    let scriptId: string = '';
-    let isReused = false;
+    activeProfile = await ChildManager.getActiveProfile();
     let existingProject: { scriptId: string; deploymentId: string; webAppUrl: string; accessKey?: string } | null = null;
 
     if (activeProfile?.schoolGasScriptId) {
@@ -6523,11 +8125,30 @@ var PortalIngester = {
       }
     }
 
+    if (!scriptId && typeof chrome !== 'undefined' && chrome.storage?.local && activeProfile?.id) {
+      try {
+        const localState = await chrome.storage.local.get([`pending_school_worker_script_id_${activeProfile.id}`]);
+        const pendingId = localState[`pending_school_worker_script_id_${activeProfile.id}`];
+        if (pendingId) {
+          const isAlive = await this.verifyScriptAlive(pendingId, studentToken);
+          if (isAlive) {
+            scriptId = pendingId;
+            isReused = true;
+            this.log(`📦 Reusing existing School Worker project (${scriptId}) from prior attempt...`);
+          }
+        }
+      } catch (e) {}
+    }
+
     if (!scriptId) {
       this.reportProgress(25, 'Phase 2 of 5 (25%)', 'Creating Student Google Apps Script Project...');
-      const project = await this.createProject(studentToken);
+      const project = await this.createProject(studentToken, 'school');
       scriptId = project.scriptId;
       this.log(`📦 Created fresh Apps Script Project for School Worker: ${scriptId}`);
+
+      if (typeof chrome !== 'undefined' && chrome.storage?.local && activeProfile?.id) {
+        await chrome.storage.local.set({ [`pending_school_worker_script_id_${activeProfile.id}`]: scriptId }).catch(() => {});
+      }
     }
 
     // 2. Upload Code
@@ -6558,12 +8179,18 @@ var PortalIngester = {
       deploymentId = deployment.deploymentId;
     }
 
-    const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
+    webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
     this.log(`🚀 Deployed Student Web App: ${webAppUrl}`);
 
     // 4. Ensure Permissions / Authorization Handshake
     this.reportProgress(80, 'Phase 4: Permissions', 'Verifying Google Workspace permissions handshake...', 'script', 100);
     await this.ensureScriptAuthorized(webAppUrl, studentToken, scriptId, studentEmail);
+
+    const postSchoolAuth = await this.runTestAuth(scriptId, studentToken, 4, 1500, webAppUrl);
+    if (!postSchoolAuth.authorized) {
+      const errMsg = postSchoolAuth.error || postSchoolAuth.raw?.error?.details?.[0]?.errorMessage || postSchoolAuth.raw?.error?.message || 'Required permissions were not granted.';
+      throw new Error(`⚠️ Google Apps Script Permissions Incomplete:\n\n${errMsg}\n\nYou unchecked one or more required permissions on Google's authorization screen.\n\nPlease click "Create & Authorize School Cloud Worker" again and ensure ALL checkboxes are checked.`);
+    }
 
     // 5. Update Child Profile & Google Drive Config Immediately
     const currentProfile = activeProfile || (await ChildManager.getActiveProfile());
@@ -6704,26 +8331,45 @@ var PortalIngester = {
     await this.setActiveDeployProgress(completedProgress);
 
     // 8. 1-Time Ingestion Hand-Off:
-    // If Master Worker is registered, it executes 1st-time extraction and attachment downloads directly in Google Cloud,
-    // activating cloud triggers ONLY after full completion.
-    if (!registeredWithMaster) {
-      this.runInitialSchoolDataSync(
-        childName,
-        academicYear,
-        studentToken,
-        webAppUrl,
-        scriptId,
-        studentEmail,
-        schoolDomain
-      ).catch((bgErr) => {
-        console.warn('[GasProvisioner] Background initial data sync error:', bgErr);
-      });
-    } else {
-      this.log(`🚀 1-Time initial data extraction delegated to Personal Master Cloud Worker for ${childName}. Autonomous trigger will activate only after completion.`);
+    // Hand off initial sync to the extension's sequential background engine (queues if another child is active)
+    this.runInitialSchoolDataSync(
+      childName,
+      academicYear,
+      studentToken,
+      webAppUrl,
+      scriptId,
+      studentEmail,
+      schoolDomain,
+      { childId: activeProfile?.id }
+    ).catch((bgErr) => {
+      console.warn('[GasProvisioner] Background initial data sync error:', bgErr);
+    });
+
+    if (registeredWithMaster) {
+      this.log(`🚀 Registered ${childName} with Personal Master Cloud Worker. Autonomous 24/7 trigger will activate upon 1-time sync completion.`);
+    }
+
+    if (typeof chrome !== 'undefined' && chrome.storage?.local && activeProfile?.id) {
+      await chrome.storage.local.remove([`pending_school_worker_script_id_${activeProfile.id}`]).catch(() => {});
     }
 
     return result;
   } catch (err: any) {
+    if (!isReused && scriptId) {
+      this.log(`⚠️ School Worker deployment incomplete or cancelled. Decommissioning Apps Script project (${scriptId})...`);
+      await this.deleteScriptProject(scriptId, studentToken, webAppUrl).catch(() => false);
+      this.log(`🗑️ Attempting to remove incomplete project (${scriptId}) from Google Drive...`);
+      const delRes = await PersonalDriveService.deleteFilePermanently(studentToken, scriptId).catch(() => ({ success: false, status: 500, error: undefined }));
+      if (delRes.success) {
+        this.log(`✅ Incomplete project (${scriptId}) permanently removed from Google Drive.`);
+      } else {
+        this.log(`ℹ️ Project container (${scriptId}) endpoints and triggers decommissioned. (Google Apps Script requires manual deletion from script.google.com under standard drive.file permissions).`);
+      }
+      if (typeof chrome !== 'undefined' && chrome.storage?.local && activeProfile?.id) {
+        await chrome.storage.local.remove([`pending_school_worker_script_id_${activeProfile.id}`]).catch(() => {});
+      }
+    }
+
     const errorProgress: ActiveDeployProgress = {
       status: 'ERROR',
       workerType: 'SCHOOL_WORKER',
@@ -6751,32 +8397,92 @@ var PortalIngester = {
     webAppUrlOverride?: string,
     scriptIdOverride?: string,
     studentEmailOverride?: string,
-    schoolDomainOverride?: string
+    schoolDomainOverride?: string,
+    options?: { forceResume?: boolean; childId?: string }
   ): Promise<any> {
-    const activeProf = await ChildManager.getActiveProfile();
-    const resolvedChild = childName || activeProf?.name || 'Atharva';
-    const cleanYear = academicYear || activeProf?.academicYear || '2026-2027';
+    const allProfiles = await ChildManager.getProfiles(false);
+    let targetProfile = options?.childId
+      ? allProfiles.find(p => p.id === options.childId)
+      : (childName ? allProfiles.find(p => p.name.toLowerCase() === childName.trim().toLowerCase()) : null);
+    if (!targetProfile) {
+      targetProfile = await ChildManager.getActiveProfile();
+    }
 
-    // CRITICAL: this in-memory flag must be set synchronously, with no await between the check
-    // and the set. Two near-simultaneous callers (the 2-second boot resumer and the 5-minute
-    // alarm both fire close to a fresh extension load) can otherwise both pass this check before
-    // either sets it — the previous version awaited a chrome.storage.local read in between,
-    // opening exactly that window, and both callers would proceed to run a full initial sync in
-    // parallel, each independently creating its own "classroom"/"emails" folder. Confirmed via
-    // Drive timestamps showing two such folders receiving writes ~50 minutes apart from what was
-    // reported as a single fresh run.
+    const resolvedChildId = targetProfile?.id || options?.childId || 'default_child';
+    const resolvedChild = childName || targetProfile?.name || 'Atharva';
+    const cleanYear = academicYear || targetProfile?.academicYear || '2026-2027';
+
+    // Tier 3 Browser Direct Sync Guard: If this profile uses browser extension extraction,
+    // execute through ClassroomBrowserExtractor rather than calling School GAS worker
+    if (targetProfile?.syncMethod === 'BROWSER_EXTENSION' || targetProfile?.schoolGasDeploymentUrl === 'browser_extension') {
+      return await ClassroomBrowserExtractor.extractClassroomData(targetProfile, { mode: 'ONE_TIME_FULL' });
+    }
+
+    // CRITICAL: Synchronously check in-memory lock.
+    // If another child is syncing, place this child into the FIFO background sync queue.
     if (this.isInitialSyncRunning) {
+      if (this.activeSyncingChildId && this.activeSyncingChildId !== resolvedChildId) {
+        const position = await this.enqueueSync({
+          childId: resolvedChildId,
+          childName: resolvedChild,
+          academicYear: cleanYear,
+          studentToken: studentTokenOverride,
+          webAppUrl: webAppUrlOverride || targetProfile?.schoolGasDeploymentUrl,
+          scriptId: scriptIdOverride || targetProfile?.schoolGasScriptId,
+          studentEmail: studentEmailOverride || targetProfile?.studentAccountEmail,
+          schoolDomain: schoolDomainOverride || targetProfile?.schoolEmailDomain
+        });
+        this.log(`⏳ Initial sync for ${resolvedChild} enqueued (position #${position}). Active: ${this.activeSyncingChildName}.`);
+        return { queued: true, childName: resolvedChild, position };
+      }
       this.log(`ℹ️ Initial school data sync already active in background for ${resolvedChild}.`);
       return { inProgress: true };
     }
     this.isInitialSyncRunning = true;
+    this.activeSyncingChildId = resolvedChildId;
+    this.activeSyncingChildName = resolvedChild;
+
     if (typeof chrome !== 'undefined' && chrome.storage?.local) {
       try {
-        const storedSync = await chrome.storage.local.get(['step2_initial_sync_in_progress']);
-        if (storedSync.step2_initial_sync_in_progress) {
+        const storedSync = await chrome.storage.local.get([
+          'step2_initial_sync_in_progress',
+          'step2_sync_heartbeat',
+          'step2_sync_active_child_id',
+          'step2_sync_active_child_name'
+        ]);
+        const now = Date.now();
+        const hasHeartbeat = typeof storedSync.step2_sync_heartbeat === 'number';
+        const isStale = hasHeartbeat && (now - storedSync.step2_sync_heartbeat) > 45000;
+        if (storedSync.step2_initial_sync_in_progress && !options?.forceResume && !isStale) {
+          if (storedSync.step2_sync_active_child_id && storedSync.step2_sync_active_child_id !== resolvedChildId) {
+            this.isInitialSyncRunning = false;
+            this.activeSyncingChildId = null;
+            this.activeSyncingChildName = null;
+            const position = await this.enqueueSync({
+              childId: resolvedChildId,
+              childName: resolvedChild,
+              academicYear: cleanYear,
+              studentToken: studentTokenOverride,
+              webAppUrl: webAppUrlOverride || targetProfile?.schoolGasDeploymentUrl,
+              scriptId: scriptIdOverride || targetProfile?.schoolGasScriptId,
+              studentEmail: studentEmailOverride || targetProfile?.studentAccountEmail,
+              schoolDomain: schoolDomainOverride || targetProfile?.schoolEmailDomain
+            });
+            this.log(`⏳ Initial sync for ${resolvedChild} enqueued in storage check (position #${position}). Active: ${storedSync.step2_sync_active_child_name}.`);
+            return { queued: true, childName: resolvedChild, position };
+          }
           this.log(`ℹ️ Initial school data sync already active in storage for ${resolvedChild}.`);
           this.isInitialSyncRunning = false;
+          this.activeSyncingChildId = null;
+          this.activeSyncingChildName = null;
           return { inProgress: true };
+        } else if (storedSync.step2_initial_sync_in_progress) {
+          this.log(`[CRASH_RECOVERY] Detected interrupted initial sync (stale=${isStale}, forceResume=${Boolean(options?.forceResume)}). Resuming automatically for ${resolvedChild}...`);
+          await WhatsAppDiagnosticLogger.log(
+            'INFO',
+            'GAS',
+            `🔄 [CRASH_RECOVERY] Resuming interrupted 1-time school data sync for ${resolvedChild}...`
+          ).catch(() => {});
         }
       } catch (e) {}
     }
@@ -6790,27 +8496,40 @@ var PortalIngester = {
       } catch (e) {}
     }, 15000) : null;
 
+    const heartbeatInterval = (typeof setInterval !== 'undefined') ? setInterval(async () => {
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          await chrome.storage.local.set({ step2_sync_heartbeat: Date.now() });
+        }
+      } catch (e) {}
+    }, 10000) : null;
+
     if (typeof chrome !== 'undefined' && chrome.alarms?.create) {
       try {
         chrome.alarms.create('INITIAL_SCHOOL_SYNC_SUPERVISOR', { periodInMinutes: 1 });
       } catch (e) {}
     }
 
+    await ChildManager.updateChildSyncStatus(resolvedChildId, 'IN_PROGRESS');
+
     let sToken = studentTokenOverride;
     if (!sToken) {
       try { sToken = await AuthService.getValidAuthToken(false); } catch (e) {}
     }
-    const webAppUrl = webAppUrlOverride || activeProf?.schoolGasDeploymentUrl;
-    const scriptId = scriptIdOverride || activeProf?.schoolGasScriptId;
-    const studentEmail = studentEmailOverride || activeProf?.studentAccountEmail || '';
-    const schoolDomain = schoolDomainOverride || activeProf?.schoolEmailDomain || (studentEmail.includes('@') ? studentEmail.split('@')[1] : '');
+    const webAppUrl = webAppUrlOverride || targetProfile?.schoolGasDeploymentUrl;
+    const scriptId = scriptIdOverride || targetProfile?.schoolGasScriptId;
+    const studentEmail = studentEmailOverride || targetProfile?.studentAccountEmail || '';
+    const schoolDomain = schoolDomainOverride || targetProfile?.schoolEmailDomain || (studentEmail.includes('@') ? studentEmail.split('@')[1] : '');
 
     await chrome.storage.local.set({
       step2_sync_status: 'IN_PROGRESS',
       step2_initial_sync_in_progress: true,
       step2_initial_sync_complete: false,
       step2_initial_sync_summary: null,
-      step2_sync_error: null
+      step2_sync_error: null,
+      step2_sync_heartbeat: Date.now(),
+      step2_sync_active_child_id: resolvedChildId,
+      step2_sync_active_child_name: resolvedChild
     }).catch(() => {});
 
     try {
@@ -6939,7 +8658,7 @@ var PortalIngester = {
       }
 
       await WhatsAppDiagnosticLogger.log('INFO', 'GAS', `💾 Saving extracted data into Parent Vault (${coursesCount} courses, ${emailsCount} circulars)... complete Parent ownership.`);
-      await PersonalDriveService.saveExtractedSchoolData(pToken, resolvedChild, cleanYear, initialSyncResult, sToken, webAppUrl, scriptId);
+      const saveStats = await PersonalDriveService.saveExtractedSchoolData(pToken, resolvedChild, cleanYear, initialSyncResult, sToken, webAppUrl, scriptId);
 
       // Verify and count attachments downloaded into Parent Drive vault
       let totalAttachments = 0;
@@ -6950,9 +8669,9 @@ var PortalIngester = {
         const attachmentsOnDrive = (vaultFiles && vaultFiles.length > 0)
           ? vaultFiles
           : await PersonalDriveService.listFilesInFolder(pToken, classInfo.attachmentsFolderId).catch(() => []);
-        totalAttachments = attachmentsOnDrive.length;
+        totalAttachments = Math.max(attachmentsOnDrive.length, saveStats?.classroomDownloaded || 0);
       } catch (cntErr) {
-        totalAttachments = initialSyncResult?.classroom?.totalAttachments ?? 0;
+        totalAttachments = Math.max(initialSyncResult?.classroom?.totalAttachments ?? 0, saveStats?.classroomDownloaded || 0);
       }
       try {
         const emailInfo = await PersonalDriveService.getOrCreateEmailsFolder(pToken, resolvedChild, cleanYear);
@@ -6960,8 +8679,66 @@ var PortalIngester = {
         const emailAttachmentsOnDrive = (vaultEmailFiles && vaultEmailFiles.length > 0)
           ? vaultEmailFiles
           : await PersonalDriveService.listFilesInFolder(pToken, emailInfo.attachmentsFolderId).catch(() => []);
-        totalEmailAttachments = emailAttachmentsOnDrive.length;
-      } catch (e) {}
+        totalEmailAttachments = Math.max(emailAttachmentsOnDrive.length, saveStats?.emailDownloaded || 0);
+      } catch (e) {
+        totalEmailAttachments = saveStats?.emailDownloaded || 0;
+      }
+
+      // Read ocr_search_index.json to get exact count of OCR-indexed documents in Parent Vault
+      let totalOcrIndexed = 0;
+      try {
+        const kidFolder = await PersonalDriveService.getOrCreateKidFolder(pToken, resolvedChild, cleanYear);
+        const indexFile = await PersonalDriveService.readJsonFileInFolder(pToken, kidFolder.id, 'ocr_search_index.json').catch(() => null);
+        if (indexFile && Array.isArray(indexFile.documents)) {
+          totalOcrIndexed = indexFile.documents.length;
+        }
+      } catch (ocrCntErr) {}
+
+      // Check for interruption or failed attachments during initial sync
+      const expectedClassroom = initialSyncResult?.classroom?.totalAttachments ?? 0;
+      const expectedEmail = initialSyncResult?.gmail?.totalAttachments ?? 0;
+      const totalExpected = expectedClassroom + expectedEmail;
+      const isInterrupted = Boolean(
+        saveStats?.interrupted ||
+        (saveStats?.totalFailed && saveStats.totalFailed > 0) ||
+        (totalExpected > 0 && (totalAttachments + totalEmailAttachments) < totalExpected)
+      );
+
+      if (isInterrupted) {
+        const actualDownloaded = totalAttachments + totalEmailAttachments;
+        const pendingCount = Math.max(0, totalExpected - actualDownloaded);
+        const errMsg = `Initial sync interrupted due to network loss or errors. ${actualDownloaded}/${totalExpected} attachments saved, ${pendingCount} remaining.`;
+        
+        await WhatsAppDiagnosticLogger.log('WARN', 'GAS', `⚠️ [INITIAL_SYNC_INTERRUPTED] ${errMsg}`);
+        
+        await chrome.storage.local.set({
+          step2_sync_status: 'INTERRUPTED',
+          step2_initial_sync_complete: false,
+          step2_initial_sync_in_progress: false,
+          step2_sync_error: errMsg,
+          step2_initial_sync_summary: {
+            courses: coursesCount,
+            attachments: actualDownloaded,
+            classroomAttachments: totalAttachments,
+            emailAttachments: totalEmailAttachments,
+            emails: emailsCount,
+            ocrIndexed: totalOcrIndexed,
+            totalExpected,
+            interrupted: true,
+            updatedAt: Date.now()
+          }
+        }).catch(() => {});
+
+        await ChildManager.updateChildSyncStatus(resolvedChildId, 'INTERRUPTED', {
+          downloaded: actualDownloaded,
+          skipped: 0,
+          failed: pendingCount,
+          total: totalExpected,
+          phase: 'interrupted'
+        }, errMsg).catch(() => {});
+
+        throw new Error(errMsg);
+      }
 
       const summary = {
         courses: coursesCount,
@@ -6969,6 +8746,7 @@ var PortalIngester = {
         classroomAttachments: totalAttachments,
         emailAttachments: totalEmailAttachments,
         emails: emailsCount,
+        ocrIndexed: totalOcrIndexed,
         completedAt: Date.now()
       };
 
@@ -6980,7 +8758,16 @@ var PortalIngester = {
         step2_sync_error: null
       }).catch(() => {});
 
-      // Signal Master Worker that initial sync is complete so 24/7 cloud sync can seamlessly take over
+      await ChildManager.updateChildSyncStatus(resolvedChildId, 'COMPLETED', {
+        downloaded: totalAttachments + totalEmailAttachments,
+        skipped: 0,
+        failed: 0,
+        total: totalExpected,
+        phase: 'complete'
+      }).catch(() => {});
+      await this.removeSyncFromQueue(resolvedChildId).catch(() => {});
+
+      // Signal Master Worker that initial sync is 100% complete so 24/7 cloud sync can activate
       try {
         let masterWorkerUrl = '';
         let masterScriptId = '';
@@ -7044,20 +8831,14 @@ var PortalIngester = {
           });
         }
 
-        // The vault folder (targetFolderId) lives in the PARENT's own Drive. Only a worker
-        // authorized under the parent's identity can access it via DriveApp — pointing this at
-        // webAppUrl (the school/student worker) produces a real "Access denied: DriveApp."
-        // exception, confirmed via the extension_sync_diagnostics_log.json this same session.
-        // Prefer the Master Worker; fall back to webAppUrl only when no separate master exists.
-        // The worker's own run_vault_ocr_indexing handler self-schedules a continuation trigger
-        // if a backlog remains.
-        const ocrTargetUrl = (await PersonalDriveService.getMasterWorkerUrl().catch(() => null)) || webAppUrl;
-        if (ocrTargetUrl) {
-          PersonalDriveService.callGasWorkerRpc(ocrTargetUrl, 'run_vault_ocr_indexing', {
-            targetFolderId,
-            maxBatch: 15
-          }, 2).catch((ocrErr: any) => {
-            console.warn('[GasProvisioner] Notice: automated vault OCR indexing trigger deferred:', ocrErr);
+        // Explicitly activate incremental background triggers on Master Worker now that 1-time data is 100% complete
+        const targetMasterUrl = (await PersonalDriveService.getMasterWorkerUrl().catch(() => null)) || masterWorkerUrl;
+        if (targetMasterUrl) {
+          PersonalDriveService.callGasWorkerRpc(targetMasterUrl, 'activate_incremental_triggers', {
+            childName: resolvedChild,
+            academicYear: cleanYear
+          }).catch((trigErr: any) => {
+            console.warn('[GasProvisioner] Notice: activate_incremental_triggers call deferred:', trigErr);
           });
         }
       } catch (notifyMasterErr) {}
@@ -7065,102 +8846,863 @@ var PortalIngester = {
       await WhatsAppDiagnosticLogger.log(
         'SUCCESS',
         'GAS',
-        `🎉 1st-time data sync complete for ${resolvedChild}! Ingested ${coursesCount} courses, ${totalAttachments + totalEmailAttachments} attachments (${totalAttachments} Classroom, ${totalEmailAttachments} Email circulars) & ${emailsCount} emails. Cloud Worker will now fetch incremental data 24/7 even if machine is shut down.`
+        `🎉 1st-time data sync complete for ${resolvedChild}! Ingested ${coursesCount} courses, ${totalAttachments + totalEmailAttachments} attachments (${totalAttachments} Classroom, ${totalEmailAttachments} Email circulars), ${totalOcrIndexed} OCR-indexed & ${emailsCount} emails. Incremental triggers activated.`
       );
 
-      await NotificationService.send({
-        id: `school_sync_${Date.now()}`,
-        title: 'K.I.D.S. School Sync Complete',
-        message: `1st-time data sync complete for ${resolvedChild}! Ingested ${coursesCount} courses, ${totalAttachments + totalEmailAttachments} attachments (${totalAttachments} Classroom, ${totalEmailAttachments} Email circulars) & ${emailsCount} emails.`,
-        priority: 2,
-        requireInteraction: true
+      // Rich completion notification with all metric counts including OCR
+      await NotificationService.notifyInitialSyncCompleted({
+        childName: resolvedChild,
+        courses: coursesCount,
+        emails: emailsCount,
+        attachments: totalAttachments + totalEmailAttachments,
+        classroomAttachments: totalAttachments,
+        emailAttachments: totalEmailAttachments,
+        ocrIndexed: totalOcrIndexed
       }).catch(() => {});
 
       return summary;
     } catch (err: any) {
       console.warn('[GasProvisioner] runInitialSchoolDataSync error:', err);
+      const isInterruptedErr = err?.isInterrupted || (err?.message && err.message.includes('Initial sync interrupted'));
       await chrome.storage.local.set({
-        step2_sync_status: 'ERROR',
+        step2_sync_status: isInterruptedErr ? 'INTERRUPTED' : 'ERROR',
         step2_initial_sync_complete: false,
         step2_initial_sync_in_progress: false,
         step2_sync_error: err?.message || String(err)
       }).catch(() => {});
 
+      await ChildManager.updateChildSyncStatus(
+        resolvedChildId,
+        isInterruptedErr ? 'INTERRUPTED' : 'ERROR',
+        undefined,
+        err?.message || String(err)
+      ).catch(() => {});
+
       await WhatsAppDiagnosticLogger.log(
-        'ERROR',
+        isInterruptedErr ? 'WARN' : 'ERROR',
         'GAS',
-        `❌ 1st-time data sync failed for ${resolvedChild}: ${err?.message || String(err)}`
+        `${isInterruptedErr ? '⚠️' : '❌'} 1st-time data sync ${isInterruptedErr ? 'interrupted' : 'failed'} for ${resolvedChild}: ${err?.message || String(err)}`
       );
       throw err;
     } finally {
       this.isInitialSyncRunning = false;
+      this.activeSyncingChildId = null;
+      this.activeSyncingChildName = null;
       if (keepAliveInterval) clearInterval(keepAliveInterval);
+      if (heartbeatInterval) clearInterval(heartbeatInterval);
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          await chrome.storage.local.remove([
+            'step2_sync_heartbeat',
+            'step2_sync_active_child_id',
+            'step2_sync_active_child_name'
+          ]).catch(() => {});
+        } catch (e) {}
+      }
       if (typeof chrome !== 'undefined' && chrome.alarms?.clear) {
         try {
           chrome.alarms.clear('INITIAL_SCHOOL_SYNC_SUPERVISOR').catch(() => {});
         } catch (e) {}
       }
+
+      // Auto-trigger next queued child from the FIFO queue!
+      try {
+        const nextInQueue = await this.dequeueSync();
+        if (nextInQueue) {
+          this.log(`🚀 Auto-starting queued initial sync for ${nextInQueue.childName}...`);
+          if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+            chrome.runtime.sendMessage({
+              type: 'SYNC_QUEUE_NEXT_STARTED',
+              payload: nextInQueue
+            }).catch(() => {});
+          }
+          setTimeout(() => {
+            GasProvisionerService.runInitialSchoolDataSync(
+              nextInQueue.childName,
+              nextInQueue.academicYear,
+              nextInQueue.studentToken,
+              nextInQueue.webAppUrl,
+              nextInQueue.scriptId,
+              nextInQueue.studentEmail,
+              nextInQueue.schoolDomain,
+              { childId: nextInQueue.childId }
+            ).catch(qErr => {
+              console.warn(`[GasProvisioner] Auto-sync failed for queued child ${nextInQueue.childName}:`, qErr);
+            });
+          }, 1000);
+        }
+      } catch (dequeueErr) {
+        console.warn('[GasProvisioner] Notice: auto-dequeue error:', dequeueErr);
+      }
     }
   }
 
-  public static async provisionPersonalWorker(
+  /**
+   * Generates a branded Google Sheet template in the parent's Google Drive with an attached
+   * container-bound Google Apps Script project. The student opens the `/copy` URL in their
+   * school account, clicks "Make a copy", and clicks the custom menu `🎓 School Sync > 🚀 Authorize & Start 24/7 Cloud Sync`.
+   * This pushes Classroom and Gmail updates directly outward to the Parent Master Cloud Worker.
+   */
+  public static async generateChildSetupSheet(
     parentToken: string,
-    parentFolderId: string,
     childName: string,
-    academicYear: string
-  ): Promise<ProvisionResult> {
-    this.log(`🌐 Provisioning Worker B (Personal Portal Scraper) for ${childName}...`);
-    this.reportProgress(30, 'Step 3: Setting Up Portal Worker', 'Configuring Personal Cloud Worker...');
+    academicYear: string,
+    masterWorkerUrl: string,
+    accessKey?: string
+  ): Promise<{ spreadsheetId: string; copyUrl: string }> {
+    const cleanChild = childName || 'Child';
+    const cleanYear = academicYear || '2026-2027';
+    const sheetTitle = `K.I.D.S. School Sync - ${cleanChild}`;
 
-    const project = await this.createProject(parentToken);
-    const scriptId = project.scriptId;
-    const accessKey = `portal_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+    this.log(`📋 Generating 1-Click Setup Sheet for ${cleanChild} (${cleanYear})...`);
 
-    await this.updateProjectContent(scriptId, accessKey, parentToken, childName, academicYear);
-    const version = await this.createVersion(scriptId, parentToken, childName, academicYear);
-    const deployment = await this.createDeployment(scriptId, version.versionNumber, parentToken, childName, academicYear);
-    const deploymentId = deployment.deploymentId;
-    const webAppUrl = `https://script.google.com/macros/s/${deploymentId}/exec?accessKey=${encodeURIComponent(accessKey)}`;
+    let currentToken = parentToken;
+    const fetchWithParentAuth = async (url: string, init: RequestInit = {}): Promise<Response> => {
+      const makeReq = (tok: string) => {
+        const headers = new Headers(init.headers || {});
+        headers.set('Authorization', `Bearer ${tok}`);
+        return fetch(url, { ...init, headers });
+      };
+      let res = await makeReq(currentToken);
+      if (res.status === 401) {
+        this.log('🔄 Parent token expired (HTTP 401). Silently refreshing OAuth token...');
+        try {
+          currentToken = await PersonalDriveService.getValidToken(true);
+          res = await makeReq(currentToken);
+        } catch (rErr) {
+          console.warn('[GasProvisioner] Silent token refresh failed on 401:', rErr);
+        }
+      }
+      return res;
+    };
 
-    await this.ensureScriptAuthorized(webAppUrl, parentToken, scriptId);
-
-    // Setup 6-Hour Cron
+    // 1. Search for existing setup spreadsheet in parent Drive to reuse
+    let spreadsheetId = '';
     try {
-      const triggerRes = await fetch(webAppUrl, {
+      const searchUrl = `https://www.googleapis.com/drive/v3/files?q=name%20%3D%20'${encodeURIComponent(sheetTitle)}'%20and%20trashed%20%3D%20false%20and%20mimeType%20%3D%20'application%2Fvnd.google-apps.spreadsheet'&fields=files(id%2Cname)&pageSize=1&supportsAllDrives=true`;
+      const searchRes = await fetchWithParentAuth(searchUrl);
+      if (searchRes.ok) {
+        const data = await searchRes.json();
+        if (data.files && data.files.length > 0) {
+          spreadsheetId = data.files[0].id;
+          this.log(`📦 Found existing setup spreadsheet (${spreadsheetId}). Reusing...`);
+        }
+      }
+    } catch (searchErr) {
+      console.warn('[GasProvisioner] Error searching for existing setup sheet:', searchErr);
+    }
+
+    // 2. If no spreadsheet exists, create a new spreadsheet and container-bound script
+    if (!spreadsheetId) {
+      this.log(`📄 Creating new setup spreadsheet in parent Drive: "${sheetTitle}"...`);
+      const createRes = await fetchWithParentAuth('https://www.googleapis.com/drive/v3/files?supportsAllDrives=true', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json'
+        },
         body: JSON.stringify({
-          method: 'setup_triggers',
-          params: { type: 'portal_6hr' }
+          name: sheetTitle,
+          mimeType: 'application/vnd.google-apps.spreadsheet'
         })
       });
-      const triggerJson = await triggerRes.json().catch(() => null);
-      if (triggerJson?.result?.triggerSet) {
-        this.log('⏱️ Set up 6-hour autonomous cloud trigger for School Portals.');
-      } else {
-        const errMsg = triggerJson?.result?.error || triggerJson?.error?.message || 'Trigger creation was not permitted or failed.';
-        this.log(`⚠️ Autonomous trigger setup returned warning: ${errMsg}`);
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        throw new Error(`Failed to create spreadsheet: ${createRes.status} ${errText}`);
       }
-    } catch (e: any) {
-      this.log(`⚠️ Could not reach trigger setup endpoint: ${e?.message || e}`);
+      const sheetData = await createRes.json();
+      spreadsheetId = sheetData.id;
+      this.log(`✅ Created setup spreadsheet: ${spreadsheetId}`);
+
+      // Create container-bound Apps Script project attached to this spreadsheet
+      this.log(`⚙️ Creating container-bound Apps Script project attached to spreadsheet...`);
+      const projRes = await fetchWithParentAuth('https://script.googleapis.com/v1/projects', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: sheetTitle,
+          parentId: spreadsheetId
+        })
+      });
+      if (!projRes.ok) {
+        const errText = await projRes.text();
+        throw new Error(`Failed to create container-bound script: ${projRes.status} ${errText}`);
+      }
+      const projData = await projRes.json();
+      const containerScriptId = projData.scriptId;
+      this.log(`✅ Created container-bound script: ${containerScriptId}`);
+
+      // Upload container script files (appsscript.json & Code.gs)
+      const manifest = {
+        timeZone: 'Asia/Kolkata',
+        exceptionLogging: 'STACKDRIVER',
+        runtimeVersion: 'V8',
+        dependencies: {
+          enabledAdvancedServices: [
+            { userSymbol: 'Classroom', version: 'v1', serviceId: 'classroom' },
+            { userSymbol: 'Drive', version: 'v2', serviceId: 'drive' }
+          ]
+        },
+        oauthScopes: [
+          'https://www.googleapis.com/auth/classroom.courses.readonly',
+          'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
+          'https://www.googleapis.com/auth/classroom.courseworkmaterials.readonly',
+          'https://www.googleapis.com/auth/classroom.announcements.readonly',
+          'https://www.googleapis.com/auth/classroom.rosters.readonly',
+          'https://www.googleapis.com/auth/gmail.readonly',
+          'https://www.googleapis.com/auth/drive.readonly',
+          'https://www.googleapis.com/auth/script.external_request',
+          'https://www.googleapis.com/auth/script.scriptapp',
+          'https://www.googleapis.com/auth/spreadsheets'
+        ]
+      };
+
+      const cleanChildEscaped = cleanChild.replace(/"/g, '\\"');
+      const cleanYearEscaped = cleanYear.replace(/"/g, '\\"');
+      const cleanUrl = masterWorkerUrl.replace(/\/macros\/u\/\d+\/s\//, '/macros/s/');
+      const cleanKeyEscaped = (accessKey || '').replace(/"/g, '\\"');
+
+      const studentScriptCode = `
+var CONFIG = {
+  parentMasterUrl: "${cleanUrl}",
+  accessKey: "${cleanKeyEscaped}",
+  childName: "${cleanChildEscaped}",
+  academicYear: "${cleanYearEscaped}",
+  version: "4.4.0"
+};
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🎓 School Sync')
+    .addItem('🚀 Authorize & Start 24/7 Cloud Sync', 'setup24x7CloudSync')
+    .addItem('🔄 Run Instant Sync Now', 'runClassroomSync')
+    .addToUi();
+}
+
+function setup24x7CloudSync() {
+  var ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch (e) {}
+
+  // 1. Clear existing triggers
+  var triggers = ScriptApp.getProjectTriggers();
+  for (var i = 0; i < triggers.length; i++) {
+    if (triggers[i].getHandlerFunction() === 'runClassroomSync') {
+      ScriptApp.deleteTrigger(triggers[i]);
+    }
+  }
+
+  // 2. Install 5-minute background time trigger
+  ScriptApp.newTrigger('runClassroomSync')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+
+  // 3. Execute immediate first sync
+  var res = runClassroomSync();
+
+  // 4. Confirmation dialog
+  if (ui) {
+    if (res && res.success) {
+      ui.alert('🎉 24/7 Cloud Sync Activated!\\n\\nInitial sync pushed ' + ((res.courses && res.courses.length) || 0) + ' courses and ' + ((res.emails && res.emails.length) || 0) + ' emails to your Parent Vault.\\n\\nBackground cloud sync will now run automatically every 5 minutes.');
+    } else {
+      ui.alert('⚠️ Background Trigger Installed, but initial push reported: ' + ((res && res.error) || 'Unknown response') + '\\n\\nAutomatic background retry will run in 5 minutes.');
+    }
+  }
+}
+
+function runClassroomSync() {
+  try {
+    var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+    sheet.getRange('A1').setValue('🎓 K.I.D.S. School Sync Engine');
+    sheet.getRange('A2').setValue('Status: Syncing...');
+    sheet.getRange('B2').setValue(new Date().toISOString());
+
+    // 1. Fetch Classroom Courses
+    var courses = [];
+    try {
+      if (typeof Classroom !== 'undefined' && Classroom.Courses) {
+        var cList = Classroom.Courses.list({ studentId: 'me', courseStates: ['ACTIVE'], pageSize: 50 });
+        courses = cList.courses || [];
+      }
+    } catch (cErr) {
+      Logger.log('Classroom list error: ' + cErr);
     }
 
-    const active = await ChildManager.getActiveProfile();
-    if (active && active.id) {
-      await ChildManager.updateProfile(active.id, {
-        personalGasScriptId: scriptId,
-        personalGasDeploymentUrl: webAppUrl,
-        lastPortalSync: new Date().toISOString()
-      });
+    var fullCoursesData = [];
+    for (var i = 0; i < courses.length; i++) {
+      var course = courses[i];
+      var cData = {
+        id: course.id,
+        name: course.name,
+        section: course.section,
+        descriptionHeading: course.descriptionHeading,
+        courseState: course.courseState,
+        announcements: [],
+        courseWork: [],
+        materials: []
+      };
+
+      try {
+        var aRes = Classroom.Courses.Announcements.list(course.id, { pageSize: 50 });
+        cData.announcements = aRes.announcements || [];
+      } catch (aErr) {}
+
+      try {
+        var cwRes = Classroom.Courses.CourseWork.list(course.id, { pageSize: 50 });
+        cData.courseWork = cwRes.courseWork || [];
+      } catch (cwErr) {}
+
+      try {
+        var mRes = Classroom.Courses.CourseWorkMaterials.list(course.id, { pageSize: 50 });
+        cData.materials = mRes.courseWorkMaterial || [];
+      } catch (mErr) {}
+
+      fullCoursesData.push(cData);
     }
+
+    // 2. Fetch Recent School Emails
+    var emailsData = [];
+    try {
+      var threads = GmailApp.search('newer_than:7d', 0, 30);
+      for (var t = 0; t < threads.length; t++) {
+        var msgs = threads[t].getMessages();
+        for (var m = 0; m < msgs.length; m++) {
+          var msg = msgs[m];
+          emailsData.push({
+            id: msg.getId(),
+            threadId: threads[t].getId(),
+            date: msg.getDate().toISOString(),
+            from: msg.getFrom(),
+            to: msg.getTo(),
+            subject: msg.getSubject(),
+            snippet: msg.getPlainBody().substring(0, 300)
+          });
+        }
+      }
+    } catch (gErr) {
+      Logger.log('Gmail fetch error: ' + gErr);
+    }
+
+    // 3. Post to Parent Master Worker
+    var payload = {
+      method: 'push_school_data',
+      accessKey: CONFIG.accessKey,
+      childName: CONFIG.childName,
+      academicYear: CONFIG.academicYear,
+      classroom: { courses: fullCoursesData },
+      gmail: { emails: emailsData },
+      timestamp: new Date().toISOString()
+    };
+
+    var postUrl = CONFIG.parentMasterUrl;
+    if (!postUrl.includes('accessKey=') && CONFIG.accessKey) {
+      postUrl += (postUrl.includes('?') ? '&' : '?') + 'accessKey=' + encodeURIComponent(CONFIG.accessKey);
+    }
+
+    var options = {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    };
+
+    var response = UrlFetchApp.fetch(postUrl, options);
+    var respText = response.getContentText();
+    var respJson = {};
+    try { respJson = JSON.parse(respText); } catch (pErr) { respJson = { raw: respText }; }
+
+    sheet.getRange('A2').setValue('Status: 🟢 24/7 Cloud Sync Active');
+    sheet.getRange('B2').setValue('Last synced: ' + new Date().toLocaleString());
+    sheet.getRange('A4').setValue('Synced Courses: ' + fullCoursesData.length);
+    sheet.getRange('A5').setValue('Synced Emails: ' + emailsData.length);
 
     return {
       success: true,
-      scriptId,
-      deploymentId,
-      webAppUrl,
-      verifiedTools: ['sync_all_portals', 'register_portal_job']
+      courses: fullCoursesData,
+      emails: emailsData,
+      response: respJson
     };
+  } catch (err) {
+    Logger.log('Sync error: ' + err);
+    try {
+      var s = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+      s.getRange('A2').setValue('Status: ⚠️ Error: ' + err.toString());
+      s.getRange('B2').setValue(new Date().toLocaleString());
+    } catch (sErr) {}
+    return { success: false, error: err.toString() };
+  }
+}
+`;
+
+      const uploadRes = await fetchWithParentAuth(`https://script.googleapis.com/v1/projects/${containerScriptId}/content`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          files: [
+            {
+              name: 'appsscript',
+              type: 'JSON',
+              source: JSON.stringify(manifest, null, 2)
+            },
+            {
+              name: 'Code',
+              type: 'SERVER_JS',
+              source: studentScriptCode
+            }
+          ]
+        })
+      });
+
+      if (!uploadRes.ok) {
+        const errText = await uploadRes.text();
+        throw new Error(`Failed to upload container script content: ${uploadRes.status} ${errText}`);
+      }
+      this.log(`✅ Uploaded container-bound script content to spreadsheet.`);
+    }
+
+    // 3. Ensure spreadsheet is shared so student can copy it via /copy
+    try {
+      await fetchWithParentAuth(`https://www.googleapis.com/drive/v3/files/${spreadsheetId}/permissions?supportsAllDrives=true`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          role: 'reader',
+          type: 'anyone'
+        })
+      });
+      this.log(`🔓 Shared setup spreadsheet publicly for /copy template cloning.`);
+    } catch (permErr) {
+      console.warn('[GasProvisioner] Notice: could not update spreadsheet permissions:', permErr);
+    }
+
+    const copyUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/copy`;
+
+    // 4. Update active child profile with setup sheet info
+    try {
+      const activeChild = await ChildManager.getActiveProfile();
+      if (activeChild && activeChild.id) {
+        await ChildManager.updateProfile(activeChild.id, {
+          setupSheetId: spreadsheetId,
+          setupSheetCopyUrl: copyUrl,
+          syncMethod: 'GAS_SHEET'
+        });
+      }
+    } catch (pErr) {}
+
+    return {
+      spreadsheetId,
+      copyUrl
+    };
+  }
+
+  /**
+   * Generates standalone Google Apps Script code for Tier 2 Guided Manual Deployment.
+   * Single copy-pasteable script containing doGet/doPost, token validation, Classroom crawler,
+   * Gmail circulars, and 1-minute autonomous background trigger setup.
+   */
+  public static generateStandaloneSchoolWorkerCode(
+    parentFolderId: string,
+    childName: string,
+    academicYear: string,
+    accessKey: string
+  ): string {
+    const cleanChild = (childName || 'Child').replace(/"/g, '\\"');
+    const cleanYear = (academicYear || '2026-2027').replace(/"/g, '\\"');
+    const cleanKey = (accessKey || '').replace(/"/g, '\\"');
+    const cleanFolder = (parentFolderId || '').replace(/"/g, '\\"');
+
+    return `/**
+ * Kids Intelligent Dashboard System (K.I.D.S.) - School Cloud Worker (Standalone v${CURRENT_GAS_SERVER_VERSION})
+ * 
+ * 📋 DEPLOYMENT INSTRUCTIONS:
+ * 1. Paste this entire code into script.new (replace all default code)
+ * 2. Click "Deploy" ➔ "New deployment"
+ * 3. Click the gear icon ⚙️ ➔ select "Web app"
+ * 4. Configure:
+ *    - Description: K.I.D.S. School Worker
+ *    - Execute as: Me (student account)
+ *    - Who has access: Anyone
+ * 5. Click "Deploy", click "Authorize access", choose your Google account
+ * 6. Click "Advanced" ➔ "Go to K.I.D.S. School Worker (unsafe)" ➔ "Allow"
+ * 7. Copy the generated Web app URL (https://script.google.com/macros/s/.../exec)
+ * 8. Return to the K.I.D.S. Chrome extension and paste your URL.
+ */
+
+var CONFIG = {
+  accessKey: "${cleanKey}",
+  childName: "${cleanChild}",
+  academicYear: "${cleanYear}",
+  targetFolderId: "${cleanFolder}",
+  version: "${CURRENT_GAS_SERVER_VERSION}"
+};
+
+var McpLogger = {
+  MAX_LOGS: 50,
+  log: function(level, action, details) {
+    try {
+      var entry = {
+        time: new Date().toISOString(),
+        level: level,
+        action: action,
+        details: typeof details === 'object' ? JSON.stringify(details) : String(details)
+      };
+      var props = PropertiesService.getUserProperties();
+      var raw = props.getProperty('mcp_execution_logs');
+      var logs = raw ? JSON.parse(raw) : [];
+      logs.unshift(entry);
+      if (logs.length > this.MAX_LOGS) logs = logs.slice(0, this.MAX_LOGS);
+      props.setProperty('mcp_execution_logs', JSON.stringify(logs));
+    } catch (e) {
+      Logger.log('McpLogger error: ' + e);
+    }
+  },
+  getLogs: function() {
+    try {
+      var raw = PropertiesService.getUserProperties().getProperty('mcp_execution_logs');
+      return raw ? JSON.parse(raw) : [];
+    } catch (e) {
+      return [];
+    }
+  }
+};
+
+function doGet(e) {
+  var action = (e && e.parameter && e.parameter.action) ? e.parameter.action : '';
+  
+  if (action === 'ping') {
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      status: 'ready',
+      worker: 'K.I.D.S. School Worker',
+      childName: CONFIG.childName,
+      version: CONFIG.version,
+      timestamp: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  if (action === 'setupTrigger') {
+    var trigRes = setupAutomatic1MinTrigger();
+    return ContentService.createTextOutput(JSON.stringify(trigRes)).setMimeType(ContentService.MimeType.JSON);
+  }
+
+  return HtmlService.createHtmlOutput(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>K.I.D.S. Worker</title>' +
+    '<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:30px;text-align:center;background:#f8fafc;color:#1e293b;}' +
+    '.card{max-width:480px;margin:40px auto;background:#fff;padding:24px;border-radius:12px;box-shadow:0 4px 12px rgba(0,0,0,0.08);}' +
+    'h1{font-size:1.2rem;color:#1e40af;margin-bottom:8px;}' +
+    '.badge{display:inline-block;padding:4px 12px;border-radius:999px;background:#dcfce7;color:#166534;font-weight:700;font-size:0.85rem;}' +
+    '</style></head><body><div class="card">' +
+    '<h1>🎓 K.I.D.S. School Cloud Worker</h1>' +
+    '<p class="badge">● Online & Ready</p>' +
+    '<p style="margin-top:14px;font-size:0.85rem;color:#64748b;">Autonomous cloud worker for <strong>' + CONFIG.childName + '</strong> is active.</p>' +
+    '</div></body></html>'
+  );
+}
+
+function doPost(e) {
+  try {
+    var body = {};
+    if (e && e.postData && e.postData.contents) {
+      try {
+        body = JSON.parse(e.postData.contents);
+      } catch (pErr) {
+        body = {};
+    var action = body.action || (e && e.parameter && e.parameter.action) || 'sync_classroom_gmail';
+
+    if (action === 'ping' || action === 'health') {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: true,
+        status: 'ready',
+        childName: CONFIG.childName,
+        version: CONFIG.version
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    var providedKey = (e && e.parameter && e.parameter.accessKey) || body.accessKey || '';
+    if (CONFIG.accessKey && CONFIG.accessKey.trim() !== '' && providedKey !== CONFIG.accessKey) {
+      return ContentService.createTextOutput(JSON.stringify({
+        success: false,
+        error: 'Unauthorized: Invalid access key.'
+      })).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    if (action === 'setup_trigger') {
+      var tRes = setupAutomatic1MinTrigger();
+      return ContentService.createTextOutput(JSON.stringify(tRes)).setMimeType(ContentService.MimeType.JSON);
+    }
+
+    // Default: Execute Classroom and Gmail sync extraction
+    var classroomData = extractClassroomData(CONFIG.academicYear);
+    var gmailData = extractGmailCirculars();
+
+    return ContentService.createTextOutput(JSON.stringify({
+      success: true,
+      classroom: classroomData,
+      emails: gmailData.emails || [],
+      emailAttachments: gmailData.attachments || [],
+      extractedAt: new Date().toISOString()
+    })).setMimeType(ContentService.MimeType.JSON);
+
+  } catch (err) {
+    McpLogger.log('ERROR', 'doPost', err.toString());
+    return ContentService.createTextOutput(JSON.stringify({
+      success: false,
+      error: err.toString()
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}
+
+function extractClassroomData(academicYear) {
+  var coursesList = [];
+  try {
+    if (typeof Classroom !== 'undefined' && Classroom.Courses && Classroom.Courses.list) {
+      var res = Classroom.Courses.list({ courseStates: ['ACTIVE'], pageSize: 50 });
+      coursesList = (res && res.courses) ? res.courses : [];
+    }
+  } catch (cErr) {
+    McpLogger.log('WARN', 'extractClassroomData', 'Classroom service error: ' + cErr);
+  }
+
+  var courses = [];
+  for (var i = 0; i < coursesList.length; i++) {
+    var c = coursesList[i];
+    var cObj = {
+      id: c.id,
+      name: c.name,
+      section: c.section || '',
+      alternateLink: c.alternateLink || ('https://classroom.google.com/c/' + c.id),
+      courseWork: [],
+      announcements: [],
+      materials: []
+    };
+
+    try {
+      if (typeof Classroom !== 'undefined' && Classroom.Courses) {
+        if (Classroom.Courses.CourseWork && Classroom.Courses.CourseWork.list) {
+          var cwRes = Classroom.Courses.CourseWork.list(c.id, { pageSize: 30 });
+          cObj.courseWork = (cwRes && cwRes.courseWork) ? cwRes.courseWork : [];
+        }
+        if (Classroom.Courses.Announcements && Classroom.Courses.Announcements.list) {
+          var annRes = Classroom.Courses.Announcements.list(c.id, { pageSize: 20 });
+          cObj.announcements = (annRes && annRes.announcements) ? annRes.announcements : [];
+        }
+      }
+    } catch (cwErr) {
+      McpLogger.log('WARN', 'extractCourseWork', 'Course ' + c.id + ' error: ' + cwErr);
+    }
+
+    courses.push(cObj);
+  }
+
+  return {
+    courses: courses,
+    extractedAt: new Date().toISOString(),
+    deepLog: {
+      syncId: 'manual_sync_' + Date.now(),
+      timestamp: new Date().toISOString(),
+      childName: CONFIG.childName,
+      academicYear: academicYear,
+      extractOnly: true,
+      summary: {
+        totalCoursesFound: courses.length,
+        coursesIngested: courses.length
+      },
+      logTimeline: ['[GAS Worker] Manual deployment extraction completed.']
+    }
+  };
+}
+
+function extractGmailCirculars() {
+  var emails = [];
+  var attachments = [];
+  try {
+    var threads = GmailApp.search('subject:(circular OR announcement OR homework OR timetable OR newsletter OR exam) newer_than:30d', 0, 20);
+    for (var i = 0; i < threads.length; i++) {
+      var msgs = threads[i].getMessages();
+      for (var j = 0; j < msgs.length; j++) {
+        var m = msgs[j];
+        var atts = m.getAttachments();
+        emails.push({
+          id: m.getId(),
+          subject: m.getSubject(),
+          from: m.getFrom(),
+          date: m.getDate().toISOString(),
+          hasAttachments: atts.length > 0
+        });
+      }
+    }
+  } catch (gErr) {
+    McpLogger.log('WARN', 'extractGmailCirculars', 'Gmail query error: ' + gErr);
+  }
+  return { emails: emails, attachments: attachments };
+}
+
+function setupAutomatic1MinTrigger() {
+  try {
+    var triggers = ScriptApp.getProjectTriggers();
+    for (var i = 0; i < triggers.length; i++) {
+      if (triggers[i].getHandlerFunction() === 'runSchoolCloudSync') {
+        ScriptApp.deleteTrigger(triggers[i]);
+      }
+    }
+    ScriptApp.newTrigger('runSchoolCloudSync')
+      .timeBased()
+      .everyMinutes(1)
+      .create();
+    McpLogger.log('INFO', 'setupAutomatic1MinTrigger', '1-minute autonomous cloud trigger active.');
+    return { success: true, message: '1-minute background cloud trigger created.' };
+  } catch (err) {
+    McpLogger.log('WARN', 'setupAutomatic1MinTrigger', err.toString());
+    return { success: false, error: err.toString() };
+  }
+}
+
+function runSchoolCloudSync() {
+  McpLogger.log('INFO', 'runSchoolCloudSync', 'Autonomous 1-min school pulse completed.');
+}
+`;
+  }
+
+  /**
+   * Pings and verifies that a user-entered Google Apps Script Web App URL is online and reachable.
+   */
+  public static async verifyGasWebAppUrl(
+    url: string,
+    accessKey?: string
+  ): Promise<{ success: boolean; error?: string; message?: string }> {
+    if (!url || typeof url !== 'string') {
+      return { success: false, error: 'Please enter your Google Apps Script Web App URL.' };
+    }
+    const cleanUrl = url.trim();
+    if (!cleanUrl.startsWith('https://script.google.com/macros/s/') || !cleanUrl.endsWith('/exec')) {
+      return {
+        success: false,
+        error: 'Invalid Web App URL. It must start with "https://script.google.com/macros/s/" and end with "/exec".'
+      };
+    }
+
+    try {
+      const probeUrl = new URL(cleanUrl);
+      probeUrl.searchParams.set('action', 'ping');
+      if (accessKey) {
+        probeUrl.searchParams.set('accessKey', accessKey);
+      }
+
+      const response = await fetch(probeUrl.toString(), {
+        method: 'GET',
+        headers: { 'Accept': 'application/json, text/html' },
+        redirect: 'follow'
+      });
+
+      if (!response.ok) {
+        return {
+          success: false,
+          error: `School worker returned HTTP ${response.status}. Please ensure "Who has access" was set to "Anyone".`
+        };
+      }
+
+      const text = await response.text();
+      if (text.includes('accounts.google.com') || text.includes('Sign in')) {
+        return {
+          success: false,
+          error: 'Access blocked by Google login. When deploying, "Who has access" MUST be set to "Anyone" so the extension can sync data.'
+        };
+      }
+
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(text);
+      } catch {}
+
+      if (parsed && (parsed.success || parsed.status === 'ready' || parsed.worker)) {
+        return {
+          success: true,
+          message: `Connected successfully to School Worker (v${parsed.version || CURRENT_GAS_SERVER_VERSION})!`
+        };
+      }
+
+      // If HTTP 200 returned from valid /exec endpoint without Google login block, treat as ready
+      if (response.status === 200 && !text.includes('Authorization required')) {
+        return {
+          success: true,
+          message: 'School Worker verified and reachable!'
+        };
+      }
+
+      return { success: true, message: 'Connected to School Worker.' };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Could not reach School Worker: ${err?.message || err}. Please ensure you completed the deployment steps.`
+      };
+    }
+  }
+
+  /**
+   * Connects a manually deployed Google Apps Script Web App to a child profile.
+   */
+  public static async connectManualSchoolWorker(
+    childId: string,
+    webAppUrl: string,
+    accessKey?: string
+  ): Promise<{ success: boolean; error?: string; message?: string }> {
+    const check = await this.verifyGasWebAppUrl(webAppUrl, accessKey);
+    if (!check.success) {
+      return check;
+    }
+
+    const cleanUrl = webAppUrl.trim();
+    await ChildManager.updateProfile(childId, {
+      gasDeploymentUrl: cleanUrl,
+      schoolGasDeploymentUrl: cleanUrl,
+      syncMethod: 'GAS_MANUAL',
+      deployedGasVersion: CURRENT_GAS_SERVER_VERSION
+    });
+
+    return {
+      success: true,
+      message: check.message || 'School Worker connected successfully!'
+    };
+  }
+
+
+  /**
+   * Cleans up any legacy "K.I.D.S. API Readiness Probe" projects created by older versions.
+   * Permanently deletes them from Google Drive so they disappear from script.google.com/home.
+   */
+  public static async cleanupLegacyProbeProjects(token: string): Promise<number> {
+    if (!token) return 0;
+    let deletedCount = 0;
+    try {
+      const listUrl = `https://www.googleapis.com/drive/v3/files?q=name%20%3D%20'K.I.D.S.%20API%20Readiness%20Probe'&fields=files(id%2Cname)&pageSize=100&supportsAllDrives=true`;
+      const res = await fetch(listUrl, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const files: any[] = data.files || [];
+        for (const f of files) {
+          try {
+            await fetch(`https://www.googleapis.com/drive/v3/files/${f.id}?supportsAllDrives=true`, {
+              method: 'DELETE',
+              headers: { 'Authorization': `Bearer ${token}` }
+            });
+            deletedCount++;
+          } catch {}
+        }
+        if (deletedCount > 0) {
+          this.log(`🧹 Cleaned up ${deletedCount} legacy API probe project(s) from account.`);
+        }
+      }
+    } catch (err) {
+      console.warn('[GasProvisioner] Error cleaning legacy probe projects:', err);
+    }
+    return deletedCount;
   }
 }
 

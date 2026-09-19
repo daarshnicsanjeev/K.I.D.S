@@ -202,7 +202,8 @@ export class AiNormalizerService {
           detectedSender = candidateSenders[candidateSenders.length - 1];
         }
 
-        const fullBody = cleanedLines.join('\n').trim();
+        let fullBody = cleanedLines.join('\n').trim();
+        fullBody = fullBody.replace(/(?:\.\.\.|…)?\s*read\s+more\s*$/i, '').trim();
 
         // Check for in-body teacher introduction (e.g. "I am Ms. Bhumika Parmar, the in-charge teacher")
         if (detectedSender.startsWith('+91') || detectedSender === 'School Teacher') {

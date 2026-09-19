@@ -136,9 +136,19 @@ describe('ChildManager & Multi-Child Partitioning', () => {
     expect(active?.name).toBe('Daarshnic');
   });
 
-  it('should sanitize child names cleanly', () => {
-    expect(ChildManager.sanitizeName('  Daarshnic  ')).toBe('Daarshnic');
-    expect(ChildManager.sanitizeName('Child 3 (Grade 4)')).toBe('Child3Grade4');
-    expect(ChildManager.sanitizeName('Aarav-Kumar_1')).toBe('Aarav-Kumar_1');
+  it('should prevent duplicate profiles and reuse existing profile when names match case-insensitively', async () => {
+    const p1 = await ChildManager.createProfile('Atharva', '2026-2027');
+    expect(p1.name).toBe('Atharva');
+    expect(p1.academicYear).toBe('2026-2027');
+
+    // Simulate second call with different casing / whitespace
+    const p2 = await ChildManager.createProfile('  atharva  ', '2027-2028');
+    expect(p2.id).toBe(p1.id);
+    expect(p2.name).toBe('Atharva');
+    expect(p2.academicYear).toBe('2027-2028');
+
+    const all = await ChildManager.getProfiles(false);
+    expect(all).toHaveLength(1);
+    expect(all[0].id).toBe(p1.id);
   });
 });

@@ -341,26 +341,65 @@ var DocumentOcrService = {
   },
 
   /**
-   * Helper to index by file ID (used by WhatsApp media RPC).
+   * Robust folder resolver that climbs up from nested subfolders (attachments -> classroom -> KidVault)
    */
-  indexDocumentById: function(fileId, childName, sourceContext) {
+  resolveKidFolderForFile: function(file, targetFolderId) {
+    if (targetFolderId) {
+      try {
+        var tf = DriveApp.getFolderById(targetFolderId);
+        if (tf) return tf;
+      } catch (e) {}
+    }
+    if (!file) return null;
+    try {
+      var cur = file.getParents().hasNext() ? file.getParents().next() : null;
+      var depth = 0;
+      while (cur && depth < 5) {
+        var name = cur.getName();
+        if (cur.getFilesByName(this.INDEX_FILE_NAME).hasNext() || cur.getFilesByName('classroom_data.json').hasNext() || cur.getFilesByName('student_profile.json').hasNext() || cur.getFoldersByName('portals').hasNext() || cur.getFoldersByName('classroom').hasNext()) {
+          return cur;
+        }
+        if (name === 'attachments' || name === 'classroom' || name === 'emails' || name === 'whatsapp' || name === 'daily_digests' || name === 'portals' || cur.getFoldersByName('attachments').hasNext()) {
+          var pIt = cur.getParents();
+          if (pIt.hasNext()) {
+            cur = pIt.next();
+            depth++;
+            continue;
+          }
+        }
+        return cur;
+      }
+      return cur;
+    } catch (e) {
+      return null;
+    }
+  },
+
+  /**
+   * Helper to index by file ID (used by on-demand 1-by-1 OCR and WhatsApp media RPC).
+   */
+  indexDocumentById: function(fileId, childName, sourceContext, targetFolderId) {
     if (!fileId) return { success: false, error: 'Missing fileId' };
     try {
       var file = DriveApp.getFileById(fileId);
-      var parents = file.getParents();
-      var kidFolder = parents.hasNext() ? parents.next() : null;
+      var kidFolder = this.resolveKidFolderForFile(file, targetFolderId);
 
-      // If parent is a subfolder (e.g. attachments/ or whatsapp/), climb up to kid folder
-      if (kidFolder && (kidFolder.getName() === 'attachments' || kidFolder.getName() === 'whatsapp')) {
-        var grandParents = kidFolder.getParents();
-        if (grandParents.hasNext()) {
-          var gp = grandParents.next();
-          if (gp.getName() === 'whatsapp') {
-            var ggp = gp.getParents();
-            if (ggp.hasNext()) kidFolder = ggp.next();
-          } else {
-            kidFolder = gp;
-          }
+      if (!kidFolder && childName) {
+        var props = PropertiesService.getScriptProperties();
+        var reg = props.getProperty('multi_child_school_registry');
+        if (reg) {
+          try {
+            var regObj = JSON.parse(reg);
+            var ch = (regObj.children || []).find(function(c) { return c.childName === childName || c.kidName === childName; });
+            if (ch && ch.targetFolderId) kidFolder = DriveApp.getFolderById(ch.targetFolderId);
+          } catch(e) {}
+        }
+      }
+
+      if (!kidFolder) {
+        var defaultFolderId = PropertiesService.getScriptProperties().getProperty('target_folder_id');
+        if (defaultFolderId) {
+          try { kidFolder = DriveApp.getFolderById(defaultFolderId); } catch (e) {}
         }
       }
 
@@ -368,8 +407,15 @@ var DocumentOcrService = {
         return { success: false, error: 'Could not resolve parent vault folder' };
       }
 
-      var record = this.indexDocument(kidFolder, file, sourceContext || 'whatsapp');
-      return { success: true, record: record };
+      var record = this.indexDocument(kidFolder, file, sourceContext || 'classroom');
+      return {
+        success: !!record,
+        record: record,
+        fileId: fileId,
+        fileName: record ? record.fileName : (file.getName ? file.getName() : ''),
+        isOcr: record ? record.isOcr : false,
+        wordCount: record ? record.wordCount : 0
+      };
     } catch (err) {
       return { success: false, error: err.toString() };
     }
@@ -436,6 +482,23 @@ var DocumentOcrService = {
           var wName = wf.getName().toLowerCase();
           if (wName !== 'whatsapp_school_archive.json' && !indexedMap[wf.getId()]) {
             pendingFiles.push({ file: wf, source: 'whatsapp' });
+          }
+        }
+      }
+
+      // Portal attachments (fee receipts, report cards, circulars)
+      var pIt = kidFolder.getFoldersByName('portals');
+      if (pIt.hasNext()) {
+        var domFolders = pIt.next().getFolders();
+        while (domFolders.hasNext()) {
+          var domFolder = domFolders.next();
+          var pAttIt = domFolder.getFoldersByName('attachments');
+          if (pAttIt.hasNext()) {
+            var pfIt = pAttIt.next().getFiles();
+            while (pfIt.hasNext()) {
+              var pf = pfIt.next();
+              if (!indexedMap[pf.getId()]) pendingFiles.push({ file: pf, source: 'portal' });
+            }
           }
         }
       }

@@ -528,7 +528,7 @@ var ClassroomIngester = {
             muteHttpExceptions: true
           });
           if (exportRes.getResponseCode() === 200) {
-            var cleanPdfTarget = targetName.replace(/(\.pdf)+$/i, '') + '.pdf';
+            var cleanPdfTarget = targetName.replace(/\.(docx?|xlsx?|pptx?|gdoc|gsheet|gslides)$/i, '').replace(/(\.pdf)+$/i, '') + '.pdf';
             var pdfBlob = exportRes.getBlob().setName(cleanPdfTarget);
             var createdPdf = attachFolder.createFile(pdfBlob);
             return {

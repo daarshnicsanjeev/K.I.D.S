@@ -16,8 +16,50 @@ export interface SchoolAttachmentNotificationStats {
   childName?: string;
 }
 
+export interface InitialSyncNotificationStats {
+  childName?: string;
+  courses?: number;
+  emails?: number;
+  attachments?: number;
+  classroomAttachments?: number;
+  emailAttachments?: number;
+  ocrIndexed?: number;
+  skipped?: number;
+}
+
 export class NotificationService {
   private static pendingAttachmentStats: SchoolAttachmentNotificationStats = {};
+
+  /**
+   * Dispatches a rich completion notification at the end of the 1-time historical onboarding data sync.
+   * Highlights counts for courses, emails/circulars, downloaded attachments, and OCR indexed documents.
+   */
+  public static async notifyInitialSyncCompleted(stats: InitialSyncNotificationStats): Promise<string | null> {
+    const child = stats.childName || 'Child';
+    const courses = stats.courses ?? 0;
+    const emails = stats.emails ?? 0;
+    const atts = stats.attachments ?? 0;
+    const ocr = stats.ocrIndexed ?? 0;
+    const skipped = stats.skipped ?? 0;
+
+    let details = `${courses} course(s), ${emails} circular(s), ${atts} attachment(s)`;
+    if (ocr > 0) {
+      details += `, ${ocr} OCR-indexed`;
+    }
+    if (skipped > 0) {
+      details += ` (${skipped} already present)`;
+    }
+
+    const message = `1-Time School Vault setup complete for ${child}! Synced ${details}. Instant search is active.`;
+
+    return await this.send({
+      id: 'kids_initial_sync_complete',
+      title: `K.I.D.S. Vault Ready (${child})`,
+      message,
+      priority: 2,
+      requireInteraction: true
+    });
+  }
 
   /**
    * Dispatches a Windows / Chrome native desktop notification.
@@ -84,6 +126,15 @@ export class NotificationService {
    * toast rather than producing two separate notifications.
    */
   public static async notifySchoolAttachments(stats: SchoolAttachmentNotificationStats): Promise<string | null> {
+    // If the 1-time historical initial sync is currently in progress, suppress intermediate attachment notifications
+    // so the user receives only 1 comprehensive completion notification at the end.
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const syncFlags: any = await chrome.storage.local.get(['step2_initial_sync_in_progress']).catch(() => ({}));
+      if (syncFlags?.step2_initial_sync_in_progress) {
+        return null;
+      }
+    }
+
     if (stats.classroomDownloaded !== undefined) {
       this.pendingAttachmentStats.classroomDownloaded = stats.classroomDownloaded;
     }

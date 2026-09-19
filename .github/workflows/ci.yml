@@ -1,0 +1,49 @@
+name: Chrome Extension CI & Validation
+
+on:
+  push:
+    branches: [ main, staging ]
+  pull_request:
+    branches: [ main, staging ]
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: extension/package-lock.json
+
+      - name: Install Dependencies
+        run: npm --prefix extension ci
+
+      - name: TypeScript Type Check (@types/chrome)
+        run: npx --prefix extension tsc --noEmit -p tsconfig.json
+
+      - name: Run Unit & Integration Tests (Vitest)
+        run: npm --prefix extension test
+
+      - name: Compile & Build Extension Production Bundle
+        run: npm --prefix extension run build
+
+      - name: Manifest V3 Linting & Validation
+        run: npm --prefix extension run verify
+
+      - name: Package Extension Artifact (ZIP)
+        run: |
+          cd extension/dist
+          zip -r ../../kids-extension-bundle.zip .
+
+
+      - name: Upload Installable Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kids-chrome-extension-mv3
+          path: kids-extension-bundle.zip
+          retention-days: 14

@@ -479,7 +479,20 @@ describe('Fully Automated Document OCR & Search Engine', () => {
     let deletedTriggers: string[] = [];
 
     let mockPending = 25;
+    class DaytimeDate extends Date {
+      constructor(...args: any[]) {
+        if (args.length === 0) {
+          super('2026-09-12T10:00:00Z');
+        } else {
+          super(...(args as [any]));
+        }
+      }
+      static now() {
+        return new Date('2026-09-12T10:00:00Z').getTime();
+      }
+    }
     const sandbox = {
+      Date: DaytimeDate,
       PropertiesService: {
         getScriptProperties: () => ({
           getProperty: (k: string) => {

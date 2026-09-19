@@ -1,10 +1,33 @@
+# Dependencies & Runtime
 node_modules/
+.pnpm-store/
+
+# Extension Build & Packaging Outputs
 dist/
+build/
+out/
+*.zip
+*.crx
+*.pem
+*.tsbuildinfo
+
+# Antigravity & Agent Workspaces
+.antigravity/
+.agent/
+.agents/workflows/
+.agents/subagents/
+graphify-out/
 *.log
 *.tmp
-.DS_Store
-Thumbs.db
+
+# Environment & Secrets
 .env
 .env.local
+.env.*.local
+
+# Operating System & IDE
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
+.vite/

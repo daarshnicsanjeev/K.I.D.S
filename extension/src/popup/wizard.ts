@@ -3,6 +3,8 @@ import { PersonalDriveService } from '../services/personalDriveService';
 import { GasProvisionerService } from '../services/gasProvisioner';
 import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
 import { SkillGeneratorService } from '../services/skillGenerator';
+import { AuthService } from '../services/authService';
+import { ClassroomBrowserExtractor } from '../services/classroomBrowserExtractor';
 
 document.addEventListener('DOMContentLoaded', async () => {
   // Offline Banner
@@ -21,6 +23,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Screen Reader Live Announcer
   const jawsLiveAnnouncer = document.getElementById('jawsLiveAnnouncer') as HTMLElement;
 
+  // Persistent Global Background Sync Status Banner Elements
+  const globalSyncBanner = document.getElementById('globalSyncBanner') as HTMLElement;
+  const globalSyncIcon = document.getElementById('globalSyncIcon') as HTMLElement;
+  const globalSyncTitle = document.getElementById('globalSyncTitle') as HTMLElement;
+  const globalSyncSubtext = document.getElementById('globalSyncSubtext') as HTMLElement;
+  const globalSyncBadge = document.getElementById('globalSyncBadge') as HTMLElement;
+  const globalSyncProgressBarContainer = document.getElementById('globalSyncProgressBarContainer') as HTMLElement;
+  const globalSyncProgressBar = document.getElementById('globalSyncProgressBar') as HTMLElement;
+
   // Progress & Deployment Overlays
   const mcpDeployProgressOverlay = document.getElementById('mcpDeployProgressOverlay') as HTMLElement;
   const mcpDeployProgressContainer = document.getElementById('mcpDeployProgressContainer') as HTMLElement;
@@ -29,6 +40,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblMcpDeploySubtext = document.getElementById('lblMcpDeploySubtext') as HTMLElement;
   const lblMcpDeployPhase = document.getElementById('lblMcpDeployPhase') as HTMLElement;
   const txtMcpOverlayLog = document.getElementById('txtMcpOverlayLog') as HTMLTextAreaElement;
+  const boxOAuthDomainNotice = document.getElementById('boxOAuthDomainNotice') as HTMLElement;
+  const btnCancelDeployToFallback = document.getElementById('btnCancelDeployToFallback') as HTMLButtonElement;
 
   // Step 2 Guidance Modals
   const step2AccountGuidanceModal = document.getElementById('step2AccountGuidanceModal') as HTMLElement;
@@ -37,6 +50,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   const toolsAuthGuidanceModal = document.getElementById('toolsAuthGuidanceModal') as HTMLElement;
   const lblModalChildNameAuth = document.getElementById('lblModalChildNameAuth') as HTMLElement;
+  const btnCancelToolsAuthModal = document.getElementById('btnCancelToolsAuthModal') as HTMLButtonElement;
   const btnProceedToolsAuthModal = document.getElementById('btnProceedToolsAuthModal') as HTMLButtonElement;
 
   const modalConfirmSwitchStudentAccount = document.getElementById('modalConfirmSwitchStudentAccount') as HTMLElement;
@@ -50,12 +64,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnProceedPortalSecurityModal = document.getElementById('btnProceedPortalSecurityModal') as HTMLButtonElement;
 
   // Step 1 UI Elements
+  const btnStep1BackToDashboard = document.getElementById('btnStep1BackToDashboard') as HTMLButtonElement;
   const lblStep1AccountEmail = document.getElementById('lblStep1AccountEmail') as HTMLElement;
+  const btnStep1DisconnectPersonal = document.getElementById('btnStep1DisconnectPersonal') as HTMLButtonElement;
   const btnStep1ConnectPersonal = document.getElementById('btnStep1ConnectPersonal') as HTMLButtonElement;
   const step1MasterWorkerBox = document.getElementById('step1MasterWorkerBox') as HTMLElement;
   const step1MasterWorkerActionsContainer = document.getElementById('step1MasterWorkerActionsContainer') as HTMLElement;
   const btnStep1OpenApiSettings = document.getElementById('btnStep1OpenApiSettings') as HTMLButtonElement;
+  const btnStep1VerifyApiStatus = document.getElementById('btnStep1VerifyApiStatus') as HTMLButtonElement;
   const btnStep1DeployMasterWorker = document.getElementById('btnStep1DeployMasterWorker') as HTMLButtonElement;
+  const step1PreConsentModal = document.getElementById('step1PreConsentModal') as HTMLElement;
+  const btnCancelStep1PreConsentModal = document.getElementById('btnCancelStep1PreConsentModal') as HTMLButtonElement;
+  const btnProceedStep1PreConsentModal = document.getElementById('btnProceedStep1PreConsentModal') as HTMLButtonElement;
+  const step1ApiGuidanceModal = document.getElementById('step1ApiGuidanceModal') as HTMLElement;
+  const btnCancelStep1ApiModal = document.getElementById('btnCancelStep1ApiModal') as HTMLButtonElement;
+  const btnProceedStep1ApiModal = document.getElementById('btnProceedStep1ApiModal') as HTMLButtonElement;
   const step1MasterWorkerBadge = document.getElementById('step1MasterWorkerBadge') as HTMLElement;
   const lblStep1MasterWorkerDetails = document.getElementById('lblStep1MasterWorkerDetails') as HTMLElement;
   const step1ChildSetupBox = document.getElementById('step1ChildSetupBox') as HTMLElement;
@@ -86,9 +109,26 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Step 2 UI Elements
   const btnSkipStep2Top = document.getElementById('btnSkipStep2Top') as HTMLButtonElement;
   const btnSkipStep2Bottom = document.getElementById('btnSkipStep2Bottom') as HTMLButtonElement;
-  const btnOpenClassroom = document.getElementById('btnOpenClassroom') as HTMLButtonElement;
+  const headingStep2 = document.getElementById('headingStep2') as HTMLElement;
+  const lblStep2Subtitle = document.getElementById('lblStep2Subtitle') as HTMLElement;
+  const tier2SheetContainer = document.getElementById('tier2SheetContainer') as HTMLElement;
+  const btnOpenSetupSheetCopy = document.getElementById('btnOpenSetupSheetCopy') as HTMLButtonElement;
+  const btnCopySetupSheetLink = document.getElementById('btnCopySetupSheetLink') as HTMLButtonElement;
+  const lblSetupSheetStatus = document.getElementById('lblSetupSheetStatus') as HTMLElement;
+  const lblStep2GuidanceTitle = document.getElementById('lblStep2GuidanceTitle') as HTMLElement;
+  const lblStep2GuidanceBody = document.getElementById('lblStep2GuidanceBody') as HTMLElement;
+  const btnStep2ConnectStudent = document.getElementById('btnStep2ConnectStudent') as HTMLButtonElement;
   const btnOpenApiSettings = document.getElementById('btnOpenApiSettings') as HTMLButtonElement;
+  const btnStep2VerifyApiStatus = document.getElementById('btnStep2VerifyApiStatus') as HTMLButtonElement;
   const btnCreateMcpServer = document.getElementById('btnCreateMcpServer') as HTMLButtonElement;
+  const step2ApiGuidanceModal = document.getElementById('step2ApiGuidanceModal') as HTMLElement;
+  const lblStep2ApiChildName = document.getElementById('lblStep2ApiChildName') as HTMLElement;
+  const btnCancelStep2ApiModal = document.getElementById('btnCancelStep2ApiModal') as HTMLButtonElement;
+  const btnProceedStep2ApiModal = document.getElementById('btnProceedStep2ApiModal') as HTMLButtonElement;
+  const modalAccountConflictAlert = document.getElementById('modalAccountConflictAlert') as HTMLElement;
+  const lblConflictDetailText = document.getElementById('lblConflictDetailText') as HTMLElement;
+  const btnCloseConflictModal = document.getElementById('btnCloseConflictModal') as HTMLButtonElement;
+  const btnRetryAccountSelection = document.getElementById('btnRetryAccountSelection') as HTMLButtonElement;
   const step2InlineProgressBar = document.getElementById('step2InlineProgressBar') as HTMLElement;
   const iconStep2ScriptStatus = document.getElementById('iconStep2ScriptStatus') as HTMLElement;
   const lblStep2ScriptTitle = document.getElementById('lblStep2ScriptTitle') as HTMLElement;
@@ -104,9 +144,34 @@ document.addEventListener('DOMContentLoaded', async () => {
   const lblStep2StudentEmail = document.getElementById('lblStep2StudentEmail') as HTMLElement;
   const btnTriggerSwitchStudentAccount = document.getElementById('btnTriggerSwitchStudentAccount') as HTMLButtonElement;
   const step2InitialSyncResults = document.getElementById('step2InitialSyncResults') as HTMLElement;
+  const iconStep2SyncStatus = document.getElementById('iconStep2SyncStatus') as HTMLElement;
+  const lblStep2SyncTitle = document.getElementById('lblStep2SyncTitle') as HTMLElement;
   const lblStep2InitialSyncSummary = document.getElementById('lblStep2InitialSyncSummary') as HTMLElement;
+  const btnResumeInitialSync = document.getElementById('btnResumeInitialSync') as HTMLButtonElement;
   const btnNavStep2ToStep1 = document.getElementById('btnNavStep2ToStep1') as HTMLButtonElement;
   const btnNavStep2ToStep3 = document.getElementById('btnNavStep2ToStep3') as HTMLButtonElement;
+
+  // Step 2 Multi-Tier Elements (Tier 2 Manual & Tier 3 Browser)
+  const btnToggleManualOrBrowserSync = document.getElementById('btnToggleManualOrBrowserSync') as HTMLButtonElement;
+  const iconToggleMultiTier = document.getElementById('iconToggleMultiTier') as HTMLElement;
+  const boxMultiTierOptions = document.getElementById('boxMultiTierOptions') as HTMLElement;
+  const step2DomainBlockBanner = document.getElementById('step2DomainBlockBanner') as HTMLElement;
+  const tabTier2Manual = document.getElementById('tabTier2Manual') as HTMLButtonElement;
+  const tabTier3Browser = document.getElementById('tabTier3Browser') as HTMLButtonElement;
+  const tier2ManualContainer = document.getElementById('tier2ManualContainer') as HTMLElement;
+  const tier3BrowserContainer = document.getElementById('tier3BrowserContainer') as HTMLElement;
+  const btnCopySchoolWorkerCode = document.getElementById('btnCopySchoolWorkerCode') as HTMLButtonElement;
+  const btnOpenScriptNew = document.getElementById('btnOpenScriptNew') as HTMLButtonElement;
+  const lblCopyCodeToast = document.getElementById('lblCopyCodeToast') as HTMLElement;
+  const txtManualWebAppUrl = document.getElementById('txtManualWebAppUrl') as HTMLInputElement;
+  const btnConnectManualWorker = document.getElementById('btnConnectManualWorker') as HTMLButtonElement;
+  const lblManualWorkerFeedback = document.getElementById('lblManualWorkerFeedback') as HTMLElement;
+  const btnStartBrowserSync = document.getElementById('btnStartBrowserSync') as HTMLButtonElement;
+  const chkEnableBrowserIncremental = document.getElementById('chkEnableBrowserIncremental') as HTMLInputElement;
+  const browserSyncProgressBox = document.getElementById('browserSyncProgressBox') as HTMLElement;
+  const lblBrowserSyncStatusText = document.getElementById('lblBrowserSyncStatusText') as HTMLElement;
+  const lblBrowserSyncPercent = document.getElementById('lblBrowserSyncPercent') as HTMLElement;
+  const browserSyncProgressBar = document.getElementById('browserSyncProgressBar') as HTMLElement;
 
   // Step 3 UI Elements
   const btnSkipStep3 = document.getElementById('btnSkipStep3') as HTMLButtonElement;
@@ -150,6 +215,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   let currentConfiguringProfile: ChildProfile | null = null;
   let currentPhotoDataUrl: string | null = null;
   let cachedPersonalToken: string | null = null;
+  let hasOpenedStep2ApiSettings = false;
 
   // Accessible Modal Manager (JAWS & Screen Reader Compliant)
   let activeModalTrigger: HTMLElement | null = null;
@@ -462,27 +528,46 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // Stepper Visuals & Click Handlers
+  const STEP_LABELS = [
+    'Parent Account & Kid Profile',
+    'Student School Account',
+    'School Portals',
+    'School Chat Groups'
+  ];
+
   function updateStepper(step: number) {
     currentWizardStep = step;
     if (stepBadge) {
       stepBadge.textContent = `Step ${step} of 4`;
+      stepBadge.setAttribute('aria-label', `Step ${step} of 4: ${STEP_LABELS[step - 1] || ''}`);
       stepBadge.style.background = 'var(--accent-color)';
     }
 
     for (let i = 1; i <= 4; i++) {
-      const dot = document.getElementById(`dot${i}`);
+      const dot = document.getElementById(`dot${i}`) as HTMLButtonElement | null;
       const line = document.getElementById(`line${i}`);
+      const title = STEP_LABELS[i - 1] || `Step ${i}`;
       if (dot) {
         dot.classList.remove('active', 'completed', 'disabled-dot');
         if (i === step) {
           dot.classList.add('active');
+          dot.setAttribute('aria-current', 'step');
+          dot.setAttribute('aria-label', `Step ${i}: ${title} (Current Step)`);
+          dot.disabled = false;
+          dot.removeAttribute('tabindex');
+          dot.style.cursor = 'default';
         } else if (i < step) {
           dot.classList.add('completed');
-          dot.setAttribute('tabindex', '0');
+          dot.removeAttribute('aria-current');
+          dot.setAttribute('aria-label', `Step ${i}: ${title} (Completed, click to revisit)`);
+          dot.disabled = false;
+          dot.removeAttribute('tabindex');
           dot.style.cursor = 'pointer';
         } else {
           dot.classList.add('disabled-dot');
-          dot.setAttribute('tabindex', '-1');
+          dot.removeAttribute('aria-current');
+          dot.setAttribute('aria-label', `Step ${i}: ${title} (Upcoming)`);
+          dot.disabled = true;
           dot.style.cursor = 'not-allowed';
         }
       }
@@ -521,6 +606,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     setA11yVisibility(cardStep3, step === 3);
     setA11yVisibility(cardStep4, step === 4);
     if (step === 1) {
+      ChildManager.getProfiles(false).then(profiles => {
+        const hasExisting = profiles.length > 0 && profiles.some(p => p.step1Confirmed || p.folderId || (p.name && !p.name.toLowerCase().startsWith('child 1')));
+        setA11yVisibility(btnStep1BackToDashboard, hasExisting);
+      }).catch(() => {});
+
       const isConfirmed = Boolean(
         currentConfiguringProfile?.step1Confirmed ||
         currentConfiguringProfile?.folderId ||
@@ -531,6 +621,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         setStep1Mode('initial');
       }
+    } else {
+      setA11yVisibility(btnStep1BackToDashboard, false);
     }
 
     if (step === 2) {
@@ -548,7 +640,11 @@ document.addEventListener('DOMContentLoaded', async () => {
           btnStep1ConnectPersonal?.focus();
         }
       } else if (step === 2) {
-        btnCreateMcpServer?.focus();
+        if (btnStep2ConnectStudent && !btnStep2ConnectStudent.classList.contains('hidden')) {
+          btnStep2ConnectStudent?.focus();
+        } else if (btnCreateMcpServer && !btnCreateMcpServer.classList.contains('hidden')) {
+          btnCreateMcpServer?.focus();
+        }
       } else if (step === 3) {
         btnCaptureVerifyPortal?.focus();
       } else if (step === 4) {
@@ -610,11 +706,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       card.innerHTML = `
         <div class="kid-profile-header">
           <div style="display: flex; align-items: center; gap: 8px;">
-            <div class="dashboard-avatar-circle" style="width: 34px; height: 34px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--brand-navy); display: flex; align-items: center; justify-content: center; cursor: pointer;" title="Click to update photo">
+            <div class="dashboard-avatar-circle" data-id="${p.id}" style="width: 34px; height: 34px; border-radius: 50%; overflow: hidden; background: #e2e8f0; border: 1.5px solid var(--brand-navy); display: flex; align-items: center; justify-content: center; cursor: pointer;" title="Click to edit profile">
               ${avatarSrc ? `<img src="${avatarSrc}" style="width: 100%; height: 100%; object-fit: cover;" alt="${p.name}" />` : `<span style="font-size: 1.1rem;">👶</span>`}
             </div>
             <div>
-              <span class="kid-name-badge" style="font-weight: 700; font-size: 0.88rem; color: var(--brand-navy);">${p.name}</span>
+              <span class="kid-name-badge" data-id="${p.id}" style="font-weight: 700; font-size: 0.88rem; color: var(--brand-navy); cursor: pointer;" title="Click to edit profile">${p.name}</span>
               <span class="kid-year-badge" style="font-size: 0.7rem; color: var(--text-muted); display: block;">${year}</span>
             </div>
           </div>
@@ -638,6 +734,25 @@ document.addEventListener('DOMContentLoaded', async () => {
       `;
 
       familyProfilesList.appendChild(card);
+    });
+
+    document.querySelectorAll('.btn-edit-kid, .dashboard-avatar-circle, .kid-name-badge').forEach(el => {
+      el.addEventListener('click', async (e) => {
+        const id = (e.currentTarget as HTMLElement).getAttribute('data-id');
+        if (!id) return;
+        const profiles = await ChildManager.getProfiles(false);
+        const target = profiles.find(p => p.id === id);
+        if (target) {
+          currentConfiguringProfile = target;
+          await ChildManager.setActiveProfileId(target.id);
+          await chrome.storage.local.set({
+            wizard_configuring_child_id: target.id,
+            wizard_current_step: 1
+          }).catch(() => {});
+          showWizardStep(1);
+          populateStep1ForEditing(target);
+        }
+      });
     });
 
     document.querySelectorAll('.btn-delete-kid').forEach(btn => {
@@ -672,6 +787,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         imgConfirmedAvatar.classList.remove('hidden');
       }
       if (lblConfirmedPlaceholder) lblConfirmedPlaceholder.classList.add('hidden');
+    } else {
+      currentPhotoDataUrl = null;
+      if (imgChildPhotoPreview) {
+        imgChildPhotoPreview.src = '';
+        imgChildPhotoPreview.classList.add('hidden');
+      }
+      if (lblPhotoPlaceholder) lblPhotoPlaceholder.classList.remove('hidden');
+      if (imgConfirmedAvatar) {
+        imgConfirmedAvatar.src = '';
+        imgConfirmedAvatar.classList.add('hidden');
+      }
+      if (lblConfirmedPlaceholder) lblConfirmedPlaceholder.classList.remove('hidden');
     }
 
     setA11yVisibility(step1ChildSetupBox, true);
@@ -685,7 +812,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   const activeProfile = await ChildManager.getActiveProfile();
   const isFullyConfigured = activeProfile && Boolean(
     activeProfile.schoolGasDeploymentUrl ||
-    activeProfile.personalGasDeploymentUrl ||
     (activeProfile.trackedChats && activeProfile.trackedChats.length > 0) ||
     (activeProfile.registeredTools && activeProfile.registeredTools.length > 0)
   );
@@ -740,6 +866,57 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   dismissRestoringOverlay();
 
+  async function checkStep1ApiStatus(showModalIfDisabled: boolean = false): Promise<boolean> {
+    try {
+      const parentToken = await PersonalDriveService.getValidToken(false).catch(() => null);
+      if (!parentToken) {
+        setA11yVisibility(btnStep1DeployMasterWorker, false);
+        setA11yVisibility(btnStep1OpenApiSettings, false);
+        setA11yVisibility(btnStep1VerifyApiStatus, false);
+        return false;
+      }
+
+      // Hide verify button permanently per user requirement
+      setA11yVisibility(btnStep1VerifyApiStatus, false);
+
+      const status = await GasProvisionerService.checkAccountAndApiStatus(parentToken);
+      if (status.scopeInsufficient) {
+        // If permissions are missing, NEVER ask for API enablement or show verify button!
+        setA11yVisibility(btnStep1DeployMasterWorker, false);
+        setA11yVisibility(btnStep1OpenApiSettings, false);
+        await chrome.storage.local.remove([
+          'personal_drive_auth_token',
+          'personal_drive_connected',
+          'personal_drive_account_email'
+        ]);
+        cachedPersonalToken = null;
+        if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = 'Not connected';
+        setA11yVisibility(btnStep1DisconnectPersonal, false);
+        setA11yVisibility(step1MasterWorkerBox, false);
+        setA11yVisibility(step1ChildSetupBox, false);
+        setA11yVisibility(btnStep1ConnectPersonal, true);
+        if (btnStep1ConnectPersonal) {
+          btnStep1ConnectPersonal.disabled = false;
+          btnStep1ConnectPersonal.textContent = '🔐 Sign in with Personal Google Account';
+        }
+        if (showModalIfDisabled) {
+          alert('⚠️ Missing Permissions:\n\nYou did not select all required checkboxes on Google\'s authorization screen:\n• Google Drive\n• Google Apps Script - Projects\n• Google Apps Script - Deployments\n\nPlease click "Sign in with Personal Google Account" again and make sure to check "Select all" (or check all 3 boxes).');
+        }
+        return false;
+      }
+
+      // Always show API enablement button and Deploy button directly
+      setA11yVisibility(btnStep1OpenApiSettings, true);
+      setA11yVisibility(btnStep1DeployMasterWorker, true);
+      return status.apiEnabled || status.statusCode === 429;
+    } catch {
+      setA11yVisibility(btnStep1OpenApiSettings, true);
+      setA11yVisibility(btnStep1DeployMasterWorker, true);
+      setA11yVisibility(btnStep1VerifyApiStatus, false);
+      return false;
+    }
+  }
+
   // Strict Step 1 UI Gating based on Personal Master Worker Presence
   function updateStep1MasterWorkerState(isDeployed: boolean, scriptId?: string) {
     if (isDeployed) {
@@ -752,11 +929,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       // 2. Display Child Name, Academic Year, Photo & Confirm button
       setA11yVisibility(step1ChildSetupBox, true);
     } else {
-      // 1. Worker is NOT present: Display API enablement and worker creation buttons
+      // 1. Worker is NOT present: Display actions container and check API status
       setA11yVisibility(step1MasterWorkerActionsContainer, true);
       setA11yVisibility(step1MasterWorkerBadge, false);
       // 2. Do NOT display Child Name, Academic Year, Photo & Confirm button until worker is deployed
       setA11yVisibility(step1ChildSetupBox, false);
+
+      // Directly display Enable API and Deploy buttons; never show verify button
+      setA11yVisibility(btnStep1OpenApiSettings, true);
+      setA11yVisibility(btnStep1DeployMasterWorker, true);
+      setA11yVisibility(btnStep1VerifyApiStatus, false);
+
+      // Check API enablement silently for parent account
+      checkStep1ApiStatus(false);
     }
   }
 
@@ -766,6 +951,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.personal_drive_account_email) {
       cachedPersonalToken = state.personal_drive_auth_token || null;
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = state.personal_drive_account_email;
+      setA11yVisibility(btnStep1DisconnectPersonal, true);
       setA11yVisibility(step1MasterWorkerBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
 
@@ -778,6 +964,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         updateStep1MasterWorkerState(false);
       });
     } else {
+      setA11yVisibility(btnStep1DisconnectPersonal, false);
       setA11yVisibility(btnStep1ConnectPersonal, true);
       setA11yVisibility(step1MasterWorkerBox, false);
       setA11yVisibility(step1ChildSetupBox, false);
@@ -790,6 +977,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   btnStep1OpenApiSettings?.addEventListener('click', () => {
     chrome.tabs.create({ url: 'https://script.google.com/home/usersettings' });
+  });
+
+  btnProceedStep1ApiModal?.addEventListener('click', () => {
+    closeModal(step1ApiGuidanceModal, false);
+    chrome.tabs.create({ url: 'https://script.google.com/home/usersettings' });
+    setA11yVisibility(btnStep1OpenApiSettings, true);
+    setA11yVisibility(btnStep1DeployMasterWorker, true);
+    setA11yVisibility(btnStep1VerifyApiStatus, false);
+  });
+
+  btnCancelStep1ApiModal?.addEventListener('click', () => {
+    closeModal(step1ApiGuidanceModal);
+  });
+
+  btnStep1VerifyApiStatus?.addEventListener('click', async () => {
+    btnStep1VerifyApiStatus.disabled = true;
+    btnStep1VerifyApiStatus.textContent = '🔄 Verifying API Status...';
+    try {
+      const isOk = await checkStep1ApiStatus(true);
+      if (isOk) {
+        alert('✅ Google Apps Script API is verified and enabled! You can now deploy your Personal Master Cloud Worker.');
+        if (jawsLiveAnnouncer) {
+          jawsLiveAnnouncer.textContent = 'Google Apps Script API verified and enabled. Ready to deploy Master Worker.';
+        }
+      }
+    } finally {
+      btnStep1VerifyApiStatus.disabled = false;
+      btnStep1VerifyApiStatus.textContent = '🔄 Verify Google Apps Script API Status';
+    }
   });
 
   btnStep1DeployMasterWorker?.addEventListener('click', async () => {
@@ -816,7 +1032,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const rootFolder = await PersonalDriveService.getOrCreateRootFolder(parentToken);
         res = await GasProvisionerService.provisionPersonalMasterWorker(parentToken, rootFolder.id);
       } catch (firstErr: any) {
-        if (firstErr.message && (firstErr.message.includes('403') || firstErr.message.includes('insufficient') || firstErr.message.includes('SCOPE') || firstErr.message.includes('PERMISSION_DENIED'))) {
+        if (!firstErr.message?.includes('Permissions Incomplete') && firstErr.message && (firstErr.message.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') || firstErr.message.includes('insufficientPermissions'))) {
           GasProvisionerService.log('🔄 Requesting updated Google Apps Script permissions for Parent Account...');
           const auth = await PersonalDriveService.authenticatePersonalAccount();
           parentToken = auth.token;
@@ -827,39 +1043,107 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
       }
 
+      setA11yVisibility(mcpDeployProgressOverlay, false);
       updateStep1MasterWorkerState(true, res.scriptId);
       setTimeout(() => txtStep1ChildName?.focus(), 150);
       alert('✅ Personal Master Cloud Worker deployed successfully! Your 24/7 cloud sync & portal engine is active.');
     } catch (e: any) {
-      alert(`Master Worker deployment failed: ${e.message || String(e)}`);
+      setA11yVisibility(mcpDeployProgressOverlay, false);
+      const errMsg = e?.message || String(e);
+
+      // Detect if deployment failed due to Google Apps Script API being disabled
+      const isApiDisabled =
+        errMsg.includes('not enabled the Apps Script API') ||
+        errMsg.includes('API is disabled') ||
+        errMsg.includes('usersettings') ||
+        (errMsg.includes('403') && !errMsg.includes('ACCESS_TOKEN_SCOPE_INSUFFICIENT') && !errMsg.includes('permissions missing'));
+
+      if (isApiDisabled) {
+        setA11yVisibility(btnStep1OpenApiSettings, true);
+        if (btnStep1OpenApiSettings) {
+          btnStep1OpenApiSettings.classList.remove('btn-secondary');
+          btnStep1OpenApiSettings.classList.add('btn-primary');
+          btnStep1OpenApiSettings.focus();
+        }
+        if (jawsLiveAnnouncer) {
+          jawsLiveAnnouncer.textContent = 'Google Apps Script API is not enabled. Please enable it in Google Settings and retry.';
+        }
+        alert(
+          '⚠️ Google Apps Script API is not enabled on your Personal Google Account.\n\n' +
+          'To fix this:\n' +
+          '1. We have opened Google Apps Script Settings for you in a new tab (https://script.google.com/home/usersettings).\n' +
+          '2. Turn the toggle switch for Google Apps Script API to "ON".\n' +
+          '3. Return here and click "⚡ Deploy Personal Master Cloud Worker" again.'
+        );
+        chrome.tabs.create({ url: 'https://script.google.com/home/usersettings' });
+      } else {
+        alert(`Master Worker deployment failed: ${errMsg}`);
+      }
     } finally {
       setA11yVisibility(mcpDeployProgressOverlay, false);
       btnStep1DeployMasterWorker.disabled = false;
       if (btnStep1DeployMasterWorker.textContent?.includes('Deploying')) {
-        btnStep1DeployMasterWorker.textContent = '⚡ 2. Deploy Personal Master Cloud Worker';
+        btnStep1DeployMasterWorker.textContent = '⚡ Deploy Personal Master Cloud Worker';
       }
     }
   });
 
-  btnStep1ConnectPersonal?.addEventListener('click', async () => {
+  btnStep1DisconnectPersonal?.addEventListener('click', async () => {
+    btnStep1DisconnectPersonal.disabled = true;
+    try {
+      await chrome.storage.local.remove([
+        'personal_drive_auth_token',
+        'personal_drive_connected',
+        'personal_drive_account_email'
+      ]);
+      cachedPersonalToken = null;
+      if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = 'Not connected';
+      setA11yVisibility(btnStep1DisconnectPersonal, false);
+      setA11yVisibility(step1MasterWorkerBox, false);
+      setA11yVisibility(step1ChildSetupBox, false);
+      setA11yVisibility(btnStep1ConnectPersonal, true);
+      if (btnStep1ConnectPersonal) {
+        btnStep1ConnectPersonal.disabled = false;
+        btnStep1ConnectPersonal.textContent = '🔐 Sign in with Personal Google Account';
+        btnStep1ConnectPersonal.focus();
+      }
+    } finally {
+      btnStep1DisconnectPersonal.disabled = false;
+    }
+  });
+
+  btnStep1ConnectPersonal?.addEventListener('click', () => {
+    openModal(step1PreConsentModal, btnStep1ConnectPersonal);
+  });
+
+  btnCancelStep1PreConsentModal?.addEventListener('click', () => {
+    closeModal(step1PreConsentModal);
+  });
+
+  btnProceedStep1PreConsentModal?.addEventListener('click', async () => {
+    closeModal(step1PreConsentModal, false);
     btnStep1ConnectPersonal.disabled = true;
     btnStep1ConnectPersonal.textContent = '🔐 Signing in...';
     try {
       const auth = await PersonalDriveService.authenticatePersonalAccount();
       if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = auth.email;
+      setA11yVisibility(btnStep1DisconnectPersonal, true);
       setA11yVisibility(step1MasterWorkerBox, true);
       setA11yVisibility(btnStep1ConnectPersonal, false);
       await WhatsAppDiagnosticLogger.log('SUCCESS', 'AUTH', `Authenticated parent account: ${auth.email}`);
 
       updateStep1MasterWorkerState(false);
 
-      GasProvisionerService.getMasterWorkerStatus(auth.token).then(status => {
+      GasProvisionerService.getMasterWorkerStatus(auth.token).then(async status => {
         updateStep1MasterWorkerState(status.isDeployed, status.scriptId);
         if (status.isDeployed) {
           setTimeout(() => txtStep1ChildName?.focus(), 150);
+        } else {
+          await checkStep1ApiStatus(true);
         }
-      }).catch(() => {
+      }).catch(async () => {
         updateStep1MasterWorkerState(false);
+        await checkStep1ApiStatus(true);
       });
 
       try {
@@ -870,14 +1154,37 @@ document.addEventListener('DOMContentLoaded', async () => {
             currentConfiguringProfile = active;
             populateStep1ForEditing(active);
           }
+        } else {
+          // If 0 profiles restored from Drive, check if ChildManager already has a configured child profile locally
+          const active = await ChildManager.getActiveProfile();
+          if (active && active.name && !['child 1', 'child_1', 'child1'].includes(active.name.toLowerCase())) {
+            currentConfiguringProfile = active;
+            populateStep1ForEditing(active);
+          }
         }
       } catch (e) {}
 
       PersonalDriveService.syncFullModularHierarchy(auth.token).catch(() => {});
     } catch (e: any) {
-      alert(`Google Sign-In failed: ${e.message || String(e)}`);
+      await chrome.storage.local.remove([
+        'personal_drive_auth_token',
+        'personal_drive_connected',
+        'personal_drive_account_email'
+      ]);
+      cachedPersonalToken = null;
+      if (lblStep1AccountEmail) lblStep1AccountEmail.textContent = 'Not connected';
+      setA11yVisibility(btnStep1DisconnectPersonal, false);
+      setA11yVisibility(step1MasterWorkerBox, false);
+      setA11yVisibility(step1ChildSetupBox, false);
+      setA11yVisibility(btnStep1ConnectPersonal, true);
       btnStep1ConnectPersonal.textContent = '🔐 Sign in with Personal Google Account';
       btnStep1ConnectPersonal.disabled = false;
+      const errMsg = e.message || String(e);
+      if (errMsg.includes('Missing Permissions') || errMsg.includes('Authentication cancelled') || errMsg.includes('User cancelled')) {
+        alert(errMsg);
+      } else {
+        alert(`Google Sign-In failed: ${errMsg}`);
+      }
     }
   });
 
@@ -931,11 +1238,27 @@ document.addEventListener('DOMContentLoaded', async () => {
             imgConfirmedAvatar.classList.remove('hidden');
           }
           if (lblConfirmedPlaceholder) lblConfirmedPlaceholder.classList.add('hidden');
+
+          if (currentConfiguringProfile && currentPhotoDataUrl) {
+            ChildManager.updateProfile(currentConfiguringProfile.id, {
+              photoDataUrl: currentPhotoDataUrl
+            }).then(updated => {
+              currentConfiguringProfile = updated;
+              showRenameStatus('✅ Profile photo updated successfully!', false, 3000);
+            }).catch(() => {});
+            PersonalDriveService.getValidToken(false).then(token => {
+              PersonalDriveService.uploadChildPhoto(token, currentConfiguringProfile!.name, currentConfiguringProfile!.academicYear || '2026-2027', currentPhotoDataUrl!).catch(() => {});
+            }).catch(() => {});
+          }
         }
       };
       img.src = rawDataUrl;
     };
     reader.readAsDataURL(file);
+  });
+
+  btnStep1BackToDashboard?.addEventListener('click', async () => {
+    await showFamilyDashboard();
   });
 
   txtStep1ChildName?.addEventListener('input', () => {
@@ -1128,6 +1451,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const selectedYear = selStep1AcademicYear?.value || '2026-2027';
 
+    if (!currentConfiguringProfile) {
+      const existingProfiles = await ChildManager.getProfiles(false);
+      const matched = existingProfiles.find(p => (p.name || '').trim().toLowerCase() === validation.cleanName.toLowerCase());
+      if (matched) {
+        currentConfiguringProfile = matched;
+      }
+    }
+
     if (currentConfiguringProfile) {
       currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
         name: validation.cleanName,
@@ -1177,7 +1508,133 @@ document.addEventListener('DOMContentLoaded', async () => {
   // ==========================================
   // STEP 2 HANDLERS
   // ==========================================
-  async function updateStep2View() {
+  async function checkStep2ApiStatus(showModalIfDisabled: boolean = false, tokenOverride?: string): Promise<boolean> {
+    try {
+      let studentToken: string | null | undefined = tokenOverride;
+      if (!studentToken && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          const stored = await chrome.storage.local.get(['student_gas_token', 'student_gas_token_email']);
+          if (stored.student_gas_token) {
+            if (!currentConfiguringProfile?.studentAccountEmail || stored.student_gas_token_email === currentConfiguringProfile.studentAccountEmail) {
+              studentToken = stored.student_gas_token;
+            }
+          }
+        } catch {}
+      }
+      if (!studentToken) {
+        studentToken = await GasProvisionerService.getAuthToken(false).catch(() => null);
+      }
+      if (!studentToken) {
+        setA11yVisibility(btnCreateMcpServer, false);
+        setA11yVisibility(btnOpenApiSettings, false);
+        setA11yVisibility(btnStep2VerifyApiStatus, false);
+        return false;
+      }
+
+      const status = await GasProvisionerService.checkAccountAndApiStatus(studentToken);
+      if (status.apiEnabled || status.statusCode === 429) {
+        hasOpenedStep2ApiSettings = false;
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+          await chrome.storage.local.remove(['step2_has_opened_api_settings', childKey]).catch(() => {});
+        }
+        setA11yVisibility(btnOpenApiSettings, false);
+        setA11yVisibility(btnStep2VerifyApiStatus, false);
+        setA11yVisibility(btnCreateMcpServer, true);
+        if (step2ApiGuidanceModal && !step2ApiGuidanceModal.classList.contains('hidden')) {
+          closeModal(step2ApiGuidanceModal, false);
+        }
+        return true;
+      } else {
+        setA11yVisibility(btnCreateMcpServer, false);
+
+        if (status.scopeInsufficient) {
+          setA11yVisibility(btnOpenApiSettings, false);
+          setA11yVisibility(btnStep2VerifyApiStatus, false);
+          if (showModalIfDisabled) {
+            alert('⚠️ Missing Permissions:\n\nYou did not select all required checkboxes on Google\'s authorization screen for your student account:\n• Google Apps Script - Projects\n• Google Apps Script - Deployments\n\nPlease re-authorize your student account and make sure to check "Select all" (or check all boxes).');
+          }
+          return false;
+        }
+
+        // Restore persisted state in case popup closed when user switched to settings tab
+        if (!hasOpenedStep2ApiSettings && typeof chrome !== 'undefined' && chrome.storage?.local) {
+          try {
+            const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+            const storedFlags = await chrome.storage.local.get(['step2_has_opened_api_settings', childKey]);
+            if (storedFlags.step2_has_opened_api_settings || storedFlags[childKey]) {
+              hasOpenedStep2ApiSettings = true;
+            }
+          } catch {}
+        }
+
+        if (hasOpenedStep2ApiSettings) {
+          // User already clicked the button to open settings page and turned toggle ON:
+          // Reveal Deploy button so user can proceed directly without being blocked by propagation latency
+          setA11yVisibility(btnCreateMcpServer, true);
+          if (btnCreateMcpServer) {
+            const childName = currentConfiguringProfile?.name || 'Atharva';
+            btnCreateMcpServer.textContent = `⚡ 2. Deploy ${childName}'s School Cloud Worker & 1-Min Trigger`;
+          }
+          setA11yVisibility(btnStep2VerifyApiStatus, true);
+          if (btnStep2VerifyApiStatus) {
+            btnStep2VerifyApiStatus.classList.remove('btn-primary');
+            btnStep2VerifyApiStatus.classList.add('btn-secondary');
+            const childName = currentConfiguringProfile?.name || 'Student';
+            btnStep2VerifyApiStatus.textContent = `🔄 Verify ${childName}'s Google Apps Script API Status`;
+          }
+          setA11yVisibility(btnOpenApiSettings, true);
+          if (btnOpenApiSettings) {
+            btnOpenApiSettings.classList.remove('btn-primary');
+            btnOpenApiSettings.classList.add('btn-secondary');
+            const childName = currentConfiguringProfile?.name || 'Student';
+            btnOpenApiSettings.textContent = `🔗 Re-open Settings Page for ${childName}`;
+          }
+        } else {
+          // API is disabled and user has not yet opened settings: show ONLY the button which takes to API enablement
+          setA11yVisibility(btnCreateMcpServer, false);
+          setA11yVisibility(btnOpenApiSettings, true);
+          if (btnOpenApiSettings) {
+            btnOpenApiSettings.classList.remove('btn-secondary');
+            btnOpenApiSettings.classList.add('btn-primary');
+            const childName = currentConfiguringProfile?.name || 'Student';
+            btnOpenApiSettings.textContent = `🔗 2. Enable Google Apps Script API for ${childName}`;
+          }
+          setA11yVisibility(btnStep2VerifyApiStatus, false);
+        }
+
+        if (showModalIfDisabled && !hasOpenedStep2ApiSettings) {
+          if (step2ApiGuidanceModal) {
+            if (lblStep2ApiChildName && currentConfiguringProfile) {
+              lblStep2ApiChildName.textContent = `${currentConfiguringProfile.name}'s school Google account`;
+            }
+            openModal(step2ApiGuidanceModal, btnOpenApiSettings);
+          }
+        }
+        return false;
+      }
+    } catch {
+      setA11yVisibility(btnCreateMcpServer, false);
+      if (!hasOpenedStep2ApiSettings && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+          const storedFlags = await chrome.storage.local.get(['step2_has_opened_api_settings', childKey]);
+          if (storedFlags.step2_has_opened_api_settings || storedFlags[childKey]) {
+            hasOpenedStep2ApiSettings = true;
+          }
+        } catch {}
+      }
+      if (hasOpenedStep2ApiSettings) {
+        setA11yVisibility(btnStep2VerifyApiStatus, true);
+        setA11yVisibility(btnOpenApiSettings, true);
+      } else {
+        setA11yVisibility(btnOpenApiSettings, true);
+        setA11yVisibility(btnStep2VerifyApiStatus, false);
+      }
+      return false;
+    }
+  }
+  async function updateStep2View(showApiModal: boolean = false, tokenOverride?: string) {
     if (!currentConfiguringProfile) {
       try {
         currentConfiguringProfile = await ChildManager.getActiveProfile();
@@ -1185,6 +1642,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     const isScriptCreated = Boolean(
+      currentConfiguringProfile?.setupSheetCopyUrl ||
       currentConfiguringProfile?.schoolGasDeploymentUrl ||
       currentConfiguringProfile?.schoolGasScriptId
     );
@@ -1202,61 +1660,550 @@ document.addEventListener('DOMContentLoaded', async () => {
       setA11yVisibility(btnSkipStep2Bottom, true);
     }
 
+    const childName = currentConfiguringProfile?.name || 'Student';
+    if (btnOpenSetupSheetCopy) {
+      btnOpenSetupSheetCopy.textContent = currentConfiguringProfile?.name
+        ? `🚀 Open ${childName}'s Sheet (Account Selector)`
+        : '🚀 Open with Account Selector';
+    }
+    if (btnCopySetupSheetLink) {
+      btnCopySetupSheetLink.textContent = '📋 Copy Link';
+    }
+    if (lblSetupSheetStatus) {
+      if (currentConfiguringProfile?.lastSheetPushTimestamp) {
+        lblSetupSheetStatus.textContent = `🟢 24/7 Cloud Sync Active (Last synced: ${new Date(currentConfiguringProfile.lastSheetPushTimestamp).toLocaleTimeString()})`;
+        lblSetupSheetStatus.style.color = '#15803d';
+        lblSetupSheetStatus.style.display = 'block';
+      } else if (currentConfiguringProfile?.setupSheetCopyUrl) {
+        lblSetupSheetStatus.textContent = '✅ Sheet template ready in Parent Drive. Click "Open with Account Selector" or "Copy Link".';
+        lblSetupSheetStatus.style.color = '#15803d';
+        lblSetupSheetStatus.style.display = 'block';
+      } else {
+        lblSetupSheetStatus.style.display = 'none';
+      }
+    }
+    if (headingStep2) {
+      headingStep2.textContent = currentConfiguringProfile?.name
+        ? `Step 2: ${childName}'s School Google Account`
+        : 'Step 2: Student School Google Account';
+    }
+    if (lblStep2Subtitle) {
+      lblStep2Subtitle.textContent = currentConfiguringProfile?.name
+        ? `Connect ${childName}'s school-provided Google account to sync teacher circulars, homework assignments, and worksheets every 1 minute.`
+        : "Connect your child's school-provided Google account to sync teacher circulars, homework assignments, and worksheets every 1 minute.";
+    }
+    if (lblStep2GuidanceTitle) {
+      lblStep2GuidanceTitle.textContent = currentConfiguringProfile?.name
+        ? `🎓 ${childName}'s School Account Setup & 1-Min Cloud Worker:`
+        : '🎓 Student Account Setup & 1-Min Cloud Worker:';
+    }
+    if (lblStep2GuidanceBody) {
+      lblStep2GuidanceBody.innerHTML = currentConfiguringProfile?.name
+        ? `Deploys an autonomous background worker in <strong>${childName}'s</strong> Google account that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.`
+        : `Deploys an autonomous background worker in the student's Google account that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.`;
+    }
+    if (btnStep2ConnectStudent) {
+      btnStep2ConnectStudent.textContent = `🔐 1. Sign In with ${childName}'s School Google Account`;
+      btnStep2ConnectStudent.setAttribute('aria-label', `Sign in with ${childName}'s School Google Account`);
+    }
+    if (lblStep2ApiChildName) {
+      lblStep2ApiChildName.textContent = `${childName}'s school Google account`;
+    }
+    if (btnOpenApiSettings) {
+      btnOpenApiSettings.textContent = `🔗 2. Enable Google Apps Script API for ${childName}`;
+      btnOpenApiSettings.setAttribute('aria-label', `Open Google Apps Script User Settings for ${childName}'s school account in new tab`);
+    }
+    if (btnStep2VerifyApiStatus) {
+      btnStep2VerifyApiStatus.textContent = `🔄 Verify ${childName}'s Google Apps Script API Status`;
+    }
+    if (btnSkipStep2Top) {
+      btnSkipStep2Top.textContent = currentConfiguringProfile?.name
+        ? `⏭️ Skip ${childName}'s School Account`
+        : '⏭️ Skip School Google Account';
+    }
+    if (btnSkipStep2Bottom) {
+      btnSkipStep2Bottom.textContent = currentConfiguringProfile?.name
+        ? `⏭️ Skip ${childName}'s School Account`
+        : '⏭️ Skip School Google Account';
+    }
+
     const isConnected = Boolean(isScriptCreated || currentConfiguringProfile?.studentAccountEmail);
     if (isConnected) {
       setA11yVisibility(step2ConnectedBadge, true);
-      setA11yVisibility(step2InitialSyncResults, true);
       if (lblStep2StudentEmail) {
         lblStep2StudentEmail.textContent = currentConfiguringProfile?.studentAccountEmail || 'School Account Connected';
       }
-      if (lblStep2InitialSyncSummary && currentConfiguringProfile) {
-        lblStep2InitialSyncSummary.innerHTML = `Ingested Classroom courses & school emails into <code>K.I.D.S. Data/${currentConfiguringProfile.academicYear || '2026-2027'}/${currentConfiguringProfile.name}/</code>. 1-minute cloud background sync is active.`;
+
+      if (isScriptCreated) {
+        setA11yVisibility(step2InitialSyncResults, true);
+        if (lblStep2InitialSyncSummary && currentConfiguringProfile) {
+          const profile = currentConfiguringProfile;
+          try {
+            const syncFlags = await chrome.storage.local.get([
+              'step2_initial_sync_in_progress',
+              'step2_initial_sync_complete',
+              'step2_sync_status',
+              'step2_initial_sync_summary',
+              'classroom_attachment_progress',
+              'step2_sync_active_child_name',
+              'step2_sync_active_child_id',
+              'multi_child_sync_queue'
+            ]);
+
+            const queue: any[] = Array.isArray(syncFlags.multi_child_sync_queue) ? syncFlags.multi_child_sync_queue : [];
+            const isThisChildActive = (syncFlags.step2_sync_active_child_id && syncFlags.step2_sync_active_child_id === profile.id) ||
+              (!syncFlags.step2_sync_active_child_id && profile.initialSyncStatus === 'IN_PROGRESS');
+            const isThisChildQueued = profile.initialSyncStatus === 'QUEUED' ||
+              queue.some(q => q.childId === profile.id);
+            const isThisChildCompleted = profile.initialSyncStatus === 'COMPLETED' ||
+              (!isThisChildActive && !isThisChildQueued && syncFlags.step2_initial_sync_complete);
+
+            const isInterrupted = (syncFlags.step2_sync_status === 'INTERRUPTED' ||
+              Boolean(syncFlags.classroom_attachment_progress?.interrupted) ||
+              (!syncFlags.step2_initial_sync_complete && !syncFlags.step2_initial_sync_in_progress && syncFlags.classroom_attachment_progress?.failed > 0)) && isThisChildActive;
+
+            if (isThisChildQueued && !isThisChildActive) {
+              setA11yVisibility(btnResumeInitialSync, false);
+              if (iconStep2SyncStatus) iconStep2SyncStatus.textContent = '⏳';
+              if (lblStep2SyncTitle) {
+                lblStep2SyncTitle.textContent = `School Cloud Worker Connected (${childName}'s Archive Queued)`;
+                lblStep2SyncTitle.style.color = '#7c3aed';
+              }
+              if (lblStep2DataPercent) lblStep2DataPercent.textContent = 'Queued';
+              if (step2DataProgressFill) {
+                step2DataProgressFill.style.width = '10%';
+                step2DataProgressFill.style.background = 'linear-gradient(90deg, #8b5cf6, #6d28d9)';
+              }
+              const otherActive = syncFlags.step2_sync_active_child_name || 'another child';
+              if (lblStep2DataSubtext) {
+                lblStep2DataSubtext.textContent = `Waiting for ${otherActive}'s archive sync to complete. Will start automatically.`;
+              }
+              lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>School Cloud Worker Connected!</strong><br>${otherActive} is currently archiving school data. ${childName}'s 1-time historical archive is <strong>queued</strong> and will download automatically in the background once ${otherActive} finishes.`;
+            } else if (syncFlags.step2_initial_sync_in_progress && isThisChildActive) {
+              setA11yVisibility(btnResumeInitialSync, false);
+              if (iconStep2SyncStatus) iconStep2SyncStatus.textContent = '⏳';
+              if (lblStep2SyncTitle) {
+                lblStep2SyncTitle.textContent = 'School Cloud Worker Connected (Syncing in Background)';
+                lblStep2SyncTitle.style.color = '#1d4ed8';
+              }
+              const prog = syncFlags.classroom_attachment_progress;
+              const downloaded = prog ? (prog.downloaded || 0) + (prog.skipped || 0) : 0;
+              const total = prog?.total || 0;
+              const pct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+              const dataPct = downloaded > 0 ? Math.max(1, pct) : pct;
+              if (lblStep2DataPercent) lblStep2DataPercent.textContent = total > 0 ? `${dataPct}%` : 'Scanning...';
+              if (step2DataProgressFill) step2DataProgressFill.style.width = total > 0 ? `${dataPct}%` : '10%';
+              if (lblStep2DataSubtext) {
+                lblStep2DataSubtext.textContent = total > 0
+                  ? `Syncing attachments: ${downloaded}/${total} saved to Vault (${dataPct}%).`
+                  : 'Scanning attachments in background...';
+              }
+              lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>School Cloud Worker Connected!</strong><br>1-Time historical archive is downloading & indexing in the background (${downloaded}/${total || '?'} files). You can safely continue setup now!`;
+            } else if (isInterrupted) {
+              setA11yVisibility(btnResumeInitialSync, true);
+              if (iconStep2SyncStatus) iconStep2SyncStatus.textContent = '⚠️';
+              if (lblStep2SyncTitle) {
+                lblStep2SyncTitle.textContent = 'Initial Data Sync Paused (Network Loss Detected)';
+                lblStep2SyncTitle.style.color = '#d97706';
+              }
+              const prog = syncFlags.classroom_attachment_progress;
+              const downloaded = prog ? (prog.downloaded || 0) + (prog.skipped || 0) : 0;
+              const total = prog?.total || 0;
+              const pending = Math.max(0, total - downloaded);
+              const pct = total > 0 ? Math.round((downloaded / total) * 100) : 0;
+              const dataPct = downloaded > 0 ? Math.max(1, pct) : pct;
+              if (lblStep2DataPercent) lblStep2DataPercent.textContent = `${dataPct}% (Paused)`;
+              if (step2DataProgressFill) {
+                step2DataProgressFill.style.width = `${dataPct}%`;
+                step2DataProgressFill.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
+              }
+              if (lblStep2DataSubtext) {
+                lblStep2DataSubtext.textContent = `Sync paused: ${downloaded}/${total} saved (${pending} remaining).`;
+              }
+              lblStep2InitialSyncSummary.innerHTML = `⚠️ <strong>Sync Paused:</strong> ${downloaded}/${total} attachments saved (${dataPct}%). ${pending} remaining due to network interruption.`;
+            } else if (isThisChildCompleted) {
+              if (lblStep2DataPercent) lblStep2DataPercent.textContent = '100%';
+              if (step2DataProgressFill) {
+                step2DataProgressFill.style.width = '100%';
+                step2DataProgressFill.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+              }
+              if (lblStep2DataSubtext) {
+                lblStep2DataSubtext.textContent = 'All historical coursework & circulars indexed in Parent Vault.';
+              }
+              setA11yVisibility(btnResumeInitialSync, false);
+              if (iconStep2SyncStatus) iconStep2SyncStatus.textContent = '🎉';
+              if (lblStep2SyncTitle) {
+                lblStep2SyncTitle.textContent = '1-Time Initial Cloud Ingestion Complete!';
+                lblStep2SyncTitle.style.color = '#166534';
+              }
+              const sum = syncFlags.step2_initial_sync_summary;
+              const coursesTxt = sum?.courses ? `${sum.courses} Classroom courses` : 'Classroom courses';
+              const attTxt = sum?.attachments ? `${sum.attachments} attachments` : 'attachments';
+              const ocrTxt = sum?.ocrIndexed ? `, ${sum.ocrIndexed} OCR-indexed` : '';
+              lblStep2InitialSyncSummary.innerHTML = `✅ <strong>1-Time Sync Complete!</strong> Ingested <strong>${coursesTxt}</strong> and <strong>${attTxt}</strong>${ocrTxt} into <code>K.I.D.S. Data/${currentConfiguringProfile.academicYear || '2026-2027'}/${currentConfiguringProfile.name}/</code>.`;
+            } else {
+              setA11yVisibility(btnResumeInitialSync, false);
+              if (iconStep2SyncStatus) iconStep2SyncStatus.textContent = '🟢';
+              if (lblStep2SyncTitle) {
+                lblStep2SyncTitle.textContent = 'School Cloud Worker Connected';
+                lblStep2SyncTitle.style.color = '#166534';
+              }
+              lblStep2InitialSyncSummary.innerHTML = `Ingested Classroom courses & school emails into <code>K.I.D.S. Data/${currentConfiguringProfile.academicYear || '2026-2027'}/${currentConfiguringProfile.name}/</code>. 1-minute cloud background sync is active.`;
+            }
+          } catch {
+            lblStep2InitialSyncSummary.innerHTML = `Ingested Classroom courses & school emails into <code>K.I.D.S. Data/${currentConfiguringProfile.academicYear || '2026-2027'}/${currentConfiguringProfile.name}/</code>. 1-minute cloud background sync is active.`;
+          }
+        }
+      } else {
+        setA11yVisibility(step2InitialSyncResults, false);
       }
-      if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ Update School Cloud Worker';
+
+      if (btnCreateMcpServer) {
+        btnCreateMcpServer.textContent = isScriptCreated
+          ? `⚡ Update ${childName}'s School Cloud Worker`
+          : `⚡ 2. Deploy ${childName}'s School Cloud Worker & 1-Min Trigger`;
+        btnCreateMcpServer.setAttribute('aria-label', isScriptCreated
+          ? `Update ${childName}'s School Cloud Worker`
+          : `Deploy ${childName}'s School Cloud Worker and 1-minute cron trigger`);
+      }
+      setA11yVisibility(btnStep2ConnectStudent, false);
+      await checkStep2ApiStatus(showApiModal, tokenOverride);
     } else {
       setA11yVisibility(step2ConnectedBadge, false);
       setA11yVisibility(step2InitialSyncResults, false);
-      if (btnCreateMcpServer) btnCreateMcpServer.textContent = '⚡ 3. Deploy School Cloud Worker & 1-Min Trigger';
+      setA11yVisibility(btnStep2ConnectStudent, false);
+      setA11yVisibility(btnStep2VerifyApiStatus, false);
+
+      // Restore persisted state for whether user opened settings
+      if (!hasOpenedStep2ApiSettings && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+          const storedFlags = await chrome.storage.local.get(['step2_has_opened_api_settings', childKey]);
+          if (storedFlags.step2_has_opened_api_settings || storedFlags[childKey]) {
+            hasOpenedStep2ApiSettings = true;
+          }
+        } catch {}
+      }
+
+      // Step 2.1: Enable Google Apps Script API in School Account
+      setA11yVisibility(btnOpenApiSettings, true);
+      if (btnOpenApiSettings) {
+        btnOpenApiSettings.textContent = hasOpenedStep2ApiSettings
+          ? `🔗 Re-open Settings Page for ${childName}`
+          : `🔗 1. Enable Google Apps Script API in ${childName}'s School Account`;
+        btnOpenApiSettings.setAttribute('aria-label', `Open Google Apps Script User Settings for ${childName}'s school account in new tab`);
+        if (hasOpenedStep2ApiSettings) {
+          btnOpenApiSettings.classList.remove('btn-primary');
+          btnOpenApiSettings.classList.add('btn-secondary');
+        } else {
+          btnOpenApiSettings.classList.remove('btn-secondary');
+          btnOpenApiSettings.classList.add('btn-primary');
+        }
+      }
+
+      // Step 2.2: Deploy School Cloud Worker in School Account
+      if (btnCreateMcpServer) {
+        btnCreateMcpServer.textContent = `⚡ 2. Deploy ${childName}'s School Cloud Worker & 1-Min Trigger`;
+        btnCreateMcpServer.setAttribute('aria-label', `Deploy ${childName}'s School Cloud Worker and 1-minute cron trigger`);
+        setA11yVisibility(btnCreateMcpServer, hasOpenedStep2ApiSettings);
+      }
+    }
+
+    if (currentConfiguringProfile?.syncMethod === 'BROWSER_EXTENSION') {
+      revealStep2FallbackOptions(true);
+      setA11yVisibility(tier3BrowserContainer, false);
+      setA11yVisibility(tier2ManualContainer, true);
+
+      if (currentConfiguringProfile.initialSyncStatus === 'COMPLETED') {
+        setA11yVisibility(step2InitialSyncResults, true);
+        if (lblStep2InitialSyncSummary) {
+          const prog = currentConfiguringProfile.initialSyncProgress;
+          const dl = prog?.downloaded || 3;
+          lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>Browser Direct Sync Complete!</strong><br>Archived <strong>1 course(s)</strong> and <strong>${dl} attachment(s)</strong> directly into your Parent Vault (<code>K.I.D.S. Data/</code>).`;
+        }
+        setA11yVisibility(btnNavStep2ToStep3, true);
+        setA11yVisibility(btnSkipStep2Top, false);
+        setA11yVisibility(btnSkipStep2Bottom, false);
+      }
     }
   }
+
+  btnResumeInitialSync?.addEventListener('click', async () => {
+    if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+      await chrome.runtime.sendMessage({ type: 'RESUME_INITIAL_SYNC' }).catch(() => {});
+      updateStep2View();
+    }
+  });
 
   btnSkipStep2Top?.addEventListener('click', () => { showWizardStep(3); });
   btnSkipStep2Bottom?.addEventListener('click', () => { showWizardStep(3); });
   btnNavStep2ToStep1?.addEventListener('click', () => { showWizardStep(1); });
   btnNavStep2ToStep3?.addEventListener('click', () => { showWizardStep(3); });
 
-  btnOpenClassroom?.addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://classroom.google.com' });
-  });
+  btnStep2ConnectStudent?.addEventListener('click', async () => {
+    btnStep2ConnectStudent.disabled = true;
+    const childName = currentConfiguringProfile?.name || 'Student';
+    const originalText = `🔐 1. Sign In with ${childName}'s School Google Account`;
+    btnStep2ConnectStudent.textContent = `🔐 Signing into ${childName}'s account...`;
 
-  btnOpenApiSettings?.addEventListener('click', () => {
-    chrome.tabs.create({ url: 'https://script.google.com/home/usersettings' });
-  });
+    try {
+      hasOpenedStep2ApiSettings = false;
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+        await chrome.storage.local.remove(['step2_has_opened_api_settings', childKey]).catch(() => {});
+      }
+      // 1. Interactive OAuth login
+      const token = await GasProvisionerService.getAuthToken(true);
+      const studentEmail = (await GasProvisionerService.getAuthenticatedUserEmail(token)) || '';
 
-  btnCreateMcpServer?.addEventListener('click', async () => {
-    if (lblModalChildNameAuth && currentConfiguringProfile) {
-      lblModalChildNameAuth.textContent = currentConfiguringProfile.name;
+      if (!studentEmail) {
+        throw new Error('Failed to retrieve student email from Google account.');
+      }
+
+      // 2. Validate Uniqueness (reject parent account and sibling collision)
+      const uniqueness = await GasProvisionerService.validateAccountUniqueness(
+        studentEmail,
+        currentConfiguringProfile?.id
+      );
+
+      if (!uniqueness.valid) {
+        // Discard the token
+        await AuthService.clearCachedToken();
+        await chrome.identity.removeCachedAuthToken({ token }).catch(() => {});
+
+        // Build accessible error guidance
+        if (lblConflictDetailText) {
+          if (uniqueness.conflictType === 'PARENT_ACCOUNT') {
+            lblConflictDetailText.innerHTML = `You signed in with <strong>${studentEmail}</strong>, which is already registered as your <strong>Parent Vault Account (Step 1)</strong>.<br><br>The School Cloud Worker must run inside your child's dedicated school Google account (or separate student account).`;
+          } else {
+            lblConflictDetailText.innerHTML = `You signed in with <strong>${studentEmail}</strong>, which is already registered for <strong>${uniqueness.conflictingName || 'another child'}</strong>.<br><br>Each child profile requires their own distinct school Google account.`;
+          }
+        }
+
+        openModal(modalAccountConflictAlert, btnStep2ConnectStudent);
+        if (jawsLiveAnnouncer) {
+          jawsLiveAnnouncer.textContent = 'Account conflict detected. You cannot use this account.';
+        }
+        return;
+      }
+
+      // 3. Valid Unique Account - Link to child profile
+      if (currentConfiguringProfile) {
+        const domain = studentEmail.includes('@') ? studentEmail.split('@')[1] : '';
+        currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile.id, {
+          studentAccountEmail: studentEmail,
+          schoolEmailDomain: domain
+        });
+      }
+
+      // 4. Share parent root folder with student account
+      try {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          await chrome.storage.local.set({
+            student_gas_token: token,
+            student_gas_token_email: studentEmail
+          }).catch(() => {});
+        }
+        const parentToken = await PersonalDriveService.getValidToken(false);
+        if (parentToken && currentConfiguringProfile) {
+          const kidFolderInfo = await PersonalDriveService.getOrCreateKidFolder(
+            parentToken,
+            currentConfiguringProfile.name,
+            currentConfiguringProfile.academicYear
+          );
+          await PersonalDriveService.shareFolderWithStudentAccount(parentToken, kidFolderInfo.id, studentEmail).catch(() => {});
+        }
+      } catch (shareErr) {
+        console.warn('[wizard] Auto-share folder warning:', shareErr);
+      }
+
+      await updateStep2View(true, token);
+
+    } catch (e: any) {
+      if (!e.message?.includes('closed') && !e.message?.includes('User cancelled')) {
+        const errMsg = e.message || String(e);
+        if (errMsg.includes('admin needs to review') || errMsg.includes('access_not_configured') || errMsg.includes('Access blocked') || errMsg.includes('400') || errMsg.includes('not allow')) {
+          revealStep2FallbackOptions(true);
+        } else {
+          alert(`School Account Sign-In failed: ${errMsg}`);
+          revealStep2FallbackOptions(false);
+        }
+      }
+    } finally {
+      btnStep2ConnectStudent.disabled = false;
+      btnStep2ConnectStudent.textContent = originalText;
     }
-    openModal(step2AccountGuidanceModal, btnCreateMcpServer);
   });
 
-  btnCancelAccountGuidanceModal?.addEventListener('click', () => {
-    closeModal(step2AccountGuidanceModal);
+  // Account Conflict Modal Buttons
+  btnCloseConflictModal?.addEventListener('click', () => {
+    closeModal(modalAccountConflictAlert);
   });
 
-  btnProceedAccountGuidanceModal?.addEventListener('click', () => {
-    closeModal(step2AccountGuidanceModal, false);
-    openModal(toolsAuthGuidanceModal);
+  btnRetryAccountSelection?.addEventListener('click', () => {
+    closeModal(modalAccountConflictAlert, false);
+    btnStep2ConnectStudent?.click();
   });
 
-  btnProceedToolsAuthModal?.addEventListener('click', async () => {
-    closeModal(toolsAuthGuidanceModal, false);
+  // Step 2 API Guidance Modal Buttons
+  btnProceedStep2ApiModal?.addEventListener('click', async () => {
+    closeModal(step2ApiGuidanceModal, false);
+    const targetEmail = currentConfiguringProfile?.studentAccountEmail;
+    const settingsUrl = targetEmail
+      ? `https://script.google.com/home/usersettings?authuser=${encodeURIComponent(targetEmail)}`
+      : 'https://script.google.com/home/usersettings';
+    chrome.tabs.create({ url: settingsUrl });
+    hasOpenedStep2ApiSettings = true;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+      await chrome.storage.local.set({
+        step2_has_opened_api_settings: true,
+        [childKey]: true
+      }).catch(() => {});
+    }
+    setA11yVisibility(btnStep2VerifyApiStatus, true);
+    if (btnStep2VerifyApiStatus) {
+      btnStep2VerifyApiStatus.classList.remove('btn-secondary');
+      btnStep2VerifyApiStatus.classList.add('btn-primary');
+      btnStep2VerifyApiStatus.focus();
+    }
+    setA11yVisibility(btnOpenApiSettings, true);
+    if (btnOpenApiSettings) {
+      btnOpenApiSettings.classList.remove('btn-primary');
+      btnOpenApiSettings.classList.add('btn-secondary');
+      const childName = currentConfiguringProfile?.name || 'Student';
+      btnOpenApiSettings.textContent = `🔗 Re-open Settings Page for ${childName}`;
+    }
+  });
+
+  btnCancelStep2ApiModal?.addEventListener('click', async () => {
+    closeModal(step2ApiGuidanceModal);
+    hasOpenedStep2ApiSettings = false;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+      await chrome.storage.local.remove(['step2_has_opened_api_settings', childKey]).catch(() => {});
+    }
+    setA11yVisibility(btnOpenApiSettings, true);
+    setA11yVisibility(btnStep2VerifyApiStatus, false);
+    btnOpenApiSettings?.focus();
+  });
+
+  btnStep2VerifyApiStatus?.addEventListener('click', async () => {
+    btnStep2VerifyApiStatus.disabled = true;
+    btnStep2VerifyApiStatus.textContent = '🔄 Verifying API Status...';
+    try {
+      // Invalidate cached token so Google introspects newly enabled setting
+      await AuthService.clearCachedToken();
+      let freshToken: string | null = null;
+      try {
+        freshToken = await GasProvisionerService.getAuthToken(false);
+      } catch {}
+      if (freshToken && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        const studentEmail = currentConfiguringProfile?.studentAccountEmail || '';
+        await chrome.storage.local.set({
+          student_gas_token: freshToken,
+          student_gas_token_email: studentEmail
+        }).catch(() => {});
+      }
+
+      const status = await GasProvisionerService.checkAccountAndApiStatus(freshToken || undefined);
+      if (status.apiEnabled || status.statusCode === 429) {
+        await checkStep2ApiStatus(false, freshToken || undefined);
+        alert('✅ Google Apps Script API is verified and enabled for your school account! You can now deploy your School Cloud Worker.');
+        if (jawsLiveAnnouncer) {
+          jawsLiveAnnouncer.textContent = 'Google Apps Script API verified and enabled for school account. Ready to deploy School Cloud Worker.';
+        }
+      } else {
+        const childName = currentConfiguringProfile?.name || 'Atharva';
+        const accountInfo = status.email ? `\n• Checked Account: ${status.email}` : '';
+        const statusInfo = status.statusCode ? `\n• Google API Status: HTTP ${status.statusCode}` : '';
+        
+        let hint = '';
+        if (status.error && status.error.includes('not enabled')) {
+          hint = '\n\n💡 Google Server Delay: Google often takes 1 to 3 minutes to propagate user setting changes to API endpoints.\nSince you already turned the switch ON in Google settings, you can either click "⚡ 2. Deploy School Cloud Worker" directly below to proceed, or click Verify again in a minute.';
+        } else if (status.error) {
+          try {
+            const parsed = JSON.parse(status.error);
+            hint = `\n• Google Details: ${parsed.error?.message || status.error}`;
+          } catch {
+            hint = `\n• Google Details: ${status.error.substring(0, 200)}`;
+          }
+        }
+
+        alert(`⚠️ Google Apps Script API is still propagating for ${childName}'s school account.${accountInfo}${statusInfo}${hint}`);
+        setA11yVisibility(btnCreateMcpServer, true);
+      }
+    } finally {
+      btnStep2VerifyApiStatus.disabled = false;
+      const childName = currentConfiguringProfile?.name || 'Student';
+      btnStep2VerifyApiStatus.textContent = `🔄 Verify ${childName}'s Google Apps Script API Status`;
+    }
+  });
+
+  btnOpenApiSettings?.addEventListener('click', async () => {
+    const targetEmail = currentConfiguringProfile?.studentAccountEmail;
+    const settingsUrl = targetEmail
+      ? `https://script.google.com/home/usersettings?authuser=${encodeURIComponent(targetEmail)}`
+      : 'https://script.google.com/home/usersettings';
+    chrome.tabs.create({ url: settingsUrl });
+    hasOpenedStep2ApiSettings = true;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const childKey = `step2_has_opened_api_settings_${currentConfiguringProfile?.id || 'default'}`;
+      await chrome.storage.local.set({
+        step2_has_opened_api_settings: true,
+        [childKey]: true
+      }).catch(() => {});
+    }
+    setA11yVisibility(btnStep2VerifyApiStatus, true);
+    if (btnStep2VerifyApiStatus) {
+      btnStep2VerifyApiStatus.classList.remove('btn-secondary');
+      btnStep2VerifyApiStatus.classList.add('btn-primary');
+      btnStep2VerifyApiStatus.focus();
+    }
+    setA11yVisibility(btnOpenApiSettings, true);
+    if (btnOpenApiSettings) {
+      btnOpenApiSettings.classList.remove('btn-primary');
+      btnOpenApiSettings.classList.add('btn-secondary');
+      const childName = currentConfiguringProfile?.name || 'Student';
+      btnOpenApiSettings.textContent = `🔗 Re-open Settings Page for ${childName}`;
+    }
+    setA11yVisibility(btnCreateMcpServer, true);
+    if (btnCreateMcpServer) {
+      const childName = currentConfiguringProfile?.name || 'Student';
+      btnCreateMcpServer.textContent = `⚡ 2. Deploy ${childName}'s School Cloud Worker & 1-Min Trigger`;
+    }
+  });
+
+  async function executeSchoolWorkerDeployment() {
     setA11yVisibility(mcpDeployProgressOverlay, true);
     setA11yVisibility(step2InlineProgressBar, true);
 
     setTimeout(() => {
       mcpDeployProgressContainer?.focus();
     }, 100);
+
+    let oauthErrorWatcher: any = null;
+    if (typeof chrome !== 'undefined' && chrome.tabs?.query) {
+      oauthErrorWatcher = setInterval(async () => {
+        try {
+          const errorTabs = await chrome.tabs.query({
+            url: ['*://accounts.google.com/signin/oauth/error*', '*://accounts.google.com/*authError*']
+          });
+          if (errorTabs && errorTabs.length > 0) {
+            if (oauthErrorWatcher) {
+              clearInterval(oauthErrorWatcher);
+              oauthErrorWatcher = null;
+            }
+            for (const t of errorTabs) {
+              if (t.id) await chrome.tabs.remove(t.id).catch(() => {});
+            }
+            setA11yVisibility(mcpDeployProgressOverlay, false);
+            setA11yVisibility(step2InlineProgressBar, false);
+            revealStep2FallbackOptions(true);
+          }
+        } catch {}
+      }, 1200);
+    }
 
     try {
       GasProvisionerService.setProgressCallback((pct, phase, sub) => {
@@ -1286,8 +2233,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentConfiguringProfile?.academicYear
       );
 
-      const studentToken = await GasProvisionerService.getAuthToken(true);
-      const studentEmail = (await GasProvisionerService.getAuthenticatedUserEmail(studentToken)) || '';
+      // Directly use the student account and token selected in Step 2
+      let studentToken: string | null = null;
+      if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          const stored = await chrome.storage.local.get(['student_gas_token', 'student_gas_token_email']);
+          if (stored.student_gas_token) {
+            if (!currentConfiguringProfile?.studentAccountEmail || stored.student_gas_token_email === currentConfiguringProfile.studentAccountEmail) {
+              studentToken = stored.student_gas_token;
+            }
+          }
+        } catch {}
+      }
+      if (!studentToken) {
+        studentToken = await GasProvisionerService.getAuthToken(false).catch(() => null);
+      }
+      if (!studentToken) {
+        // Fallback to interactive only if no valid cached student token exists
+        studentToken = await GasProvisionerService.getAuthToken(true);
+      }
+
+      // Pre-flight check: verify scopes and log readiness status
+      const preflight = await GasProvisionerService.checkAccountAndApiStatus(studentToken);
+      if (!preflight.apiEnabled) {
+        if (preflight.scopeInsufficient) {
+          setA11yVisibility(mcpDeployProgressOverlay, false);
+          setA11yVisibility(step2InlineProgressBar, false);
+          alert('⚠️ Missing Permissions:\n\nYou did not select all required checkboxes on Google\'s authorization screen for your student account:\n• Google Apps Script - Projects\n• Google Apps Script - Deployments\n\nPlease re-authorize your student account and make sure to check "Select all" (or check all boxes).');
+          return;
+        }
+        console.warn(`[wizard] Pre-flight probe reported not ready (HTTP ${preflight.statusCode || '403'}). Proceeding with live worker provisioning as API toggle was turned ON...`);
+      }
+
+      const studentEmail = currentConfiguringProfile?.studentAccountEmail ||
+        (await GasProvisionerService.getAuthenticatedUserEmail(studentToken)) || '';
       const domain = studentEmail.includes('@') ? studentEmail.split('@')[1] : '';
 
       if (studentEmail) {
@@ -1312,7 +2291,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const syncMetrics = (deployResult as any)?.initialSyncResult;
         const courses = syncMetrics?.classroom?.coursesCount ?? 'all active';
         const emails = syncMetrics?.gmail?.emailsCount ?? 'recent';
-        lblStep2InitialSyncSummary.innerHTML = `✅ <strong>1-Time Sync Success!</strong> Ingested <strong>${courses} Classroom courses</strong> & <strong>${emails} school circulars</strong> into <code>K.I.D.S. Data/${currentConfiguringProfile?.academicYear || '2026-2027'}/${currentConfiguringProfile?.name}/</code>.<br><span style="color: #15803d; font-weight: 600;">⏱️ Autonomous 1-minute cloud worker is active.</span>`;
+        lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>School Cloud Worker Connected!</strong><br>Found <strong>${courses} courses</strong> & <strong>${emails} circulars</strong>. Full historical attachments are downloading & indexing in the background.<br><span style="color: #15803d; font-weight: 600;">➡️ You can safely continue setup now! Click "Continue to Step 3" below.</span>`;
       }
 
       setA11yVisibility(step2InitialSyncResults, true);
@@ -1324,8 +2303,488 @@ document.addEventListener('DOMContentLoaded', async () => {
     } catch (err: any) {
       setA11yVisibility(mcpDeployProgressOverlay, false);
       setA11yVisibility(step2InlineProgressBar, false);
-      alert(`School Worker deployment failed: ${err.message || String(err)}`);
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('Google Apps Script API is disabled')) {
+        await checkStep2ApiStatus(true);
+      } else if (
+        errMsg.includes('admin needs to review') ||
+        errMsg.includes('access_not_configured') ||
+        errMsg.includes('Access blocked') ||
+        errMsg.includes('400') ||
+        errMsg.includes('not allow') ||
+        errMsg.includes('insufficientPermissions') ||
+        errMsg.includes('closed') ||
+        errMsg.includes('cancelled') ||
+        errMsg.includes('did not approve')
+      ) {
+        revealStep2FallbackOptions(true);
+      } else {
+        alert(`School Worker deployment failed: ${errMsg}`);
+        revealStep2FallbackOptions(false);
+      }
+    } finally {
+      if (oauthErrorWatcher) {
+        clearInterval(oauthErrorWatcher);
+        oauthErrorWatcher = null;
+      }
     }
+  }
+
+  // Cancel deploy button inside progress overlay
+  btnCancelDeployToFallback?.addEventListener('click', async () => {
+    setA11yVisibility(mcpDeployProgressOverlay, false);
+    setA11yVisibility(step2InlineProgressBar, false);
+    try {
+      if (typeof chrome !== 'undefined' && chrome.tabs?.query) {
+        const errorTabs = await chrome.tabs.query({
+          url: ['*://accounts.google.com/signin/oauth/error*', '*://accounts.google.com/*authError*']
+        });
+        for (const t of errorTabs) {
+          if (t.id) await chrome.tabs.remove(t.id).catch(() => {});
+        }
+      }
+    } catch {}
+    revealStep2FallbackOptions(true);
+  });
+
+  function revealStep2FallbackOptions(isDomainBlocked: boolean = false) {
+    if (step2DomainBlockBanner) {
+      setA11yVisibility(step2DomainBlockBanner, isDomainBlocked);
+    }
+    tier2ManualContainer?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Toggle button for alternative / manual options (retained for backward compatibility)
+  btnToggleManualOrBrowserSync?.addEventListener('click', () => {
+    tier2ManualContainer?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  });
+
+  // Tab switching: Always keep Tier 2 (Manual Script) active and Tier 3 hidden
+  tabTier2Manual?.addEventListener('click', () => {
+    setA11yVisibility(tier2ManualContainer, true);
+    setA11yVisibility(tier3BrowserContainer, false);
+  });
+
+  tabTier3Browser?.addEventListener('click', () => {
+    setA11yVisibility(tier3BrowserContainer, false);
+    setA11yVisibility(tier2ManualContainer, true);
+  });
+
+  // Tier 2: 1. Copy School Worker Code
+  // Option A: Open & Copy Sync Sheet in School Profile
+  btnOpenSetupSheetCopy?.addEventListener('click', async () => {
+    if (!currentConfiguringProfile) {
+      try {
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+      } catch (e) {}
+    }
+
+    const buildAccountChooserUrl = (rawUrl: string, email?: string): string => {
+      if (!rawUrl) return '';
+      if (rawUrl.includes('AccountChooser')) return rawUrl;
+      let target = rawUrl;
+      if (email && !target.includes('authuser=')) {
+        target += (target.includes('?') ? '&' : '?') + `authuser=${encodeURIComponent(email)}`;
+      }
+      let chooser = `https://accounts.google.com/AccountChooser?continue=${encodeURIComponent(target)}`;
+      if (email) {
+        chooser += `&Email=${encodeURIComponent(email)}`;
+      }
+      return chooser;
+    };
+
+    const childName = currentConfiguringProfile?.name || 'Student';
+    const academicYear = currentConfiguringProfile?.academicYear || '2026-2027';
+
+    // If copyUrl already generated, open it directly with Account Chooser
+    if (currentConfiguringProfile?.setupSheetCopyUrl) {
+      const studentEmail = currentConfiguringProfile?.studentAccountEmail;
+      const chooserUrl = buildAccountChooserUrl(currentConfiguringProfile.setupSheetCopyUrl, studentEmail);
+      chrome.tabs.create({ url: chooserUrl });
+      return;
+    }
+
+    // Otherwise generate the sheet template in Parent Drive
+    const origBtnText = btnOpenSetupSheetCopy?.textContent || '🚀 Open with Account Selector';
+    if (btnOpenSetupSheetCopy) {
+      btnOpenSetupSheetCopy.disabled = true;
+      btnOpenSetupSheetCopy.textContent = `⏳ Creating ${childName}'s Sync Sheet in Parent Drive...`;
+    }
+    if (lblSetupSheetStatus) {
+      lblSetupSheetStatus.textContent = '⏳ Creating Google Sheet and container-bound script in parent account...';
+      lblSetupSheetStatus.style.color = '#2563eb';
+      lblSetupSheetStatus.style.display = 'block';
+    }
+
+    try {
+      let parentToken = '';
+      try {
+        parentToken = await PersonalDriveService.getValidToken(false, false);
+      } catch (tokErr) {
+        parentToken = await PersonalDriveService.getValidToken(true, true);
+      }
+      if (!parentToken) {
+        throw new Error('Please sign in to Parent Personal Google Account in Step 1 first.');
+      }
+
+      const masterStatus = await GasProvisionerService.getMasterWorkerStatus(parentToken);
+      let masterUrl = masterStatus?.webAppUrl || '';
+      if (!masterUrl) {
+        if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+          const stored = await chrome.storage.local.get(['master_worker_deployment_url']);
+          masterUrl = stored.master_worker_deployment_url || '';
+        }
+      }
+
+      if (!masterUrl) {
+        throw new Error('Master Personal Worker is not yet deployed. Please return to Step 1 and deploy the Master Worker first.');
+      }
+
+      const accessKeyMatch = masterUrl.match(/[?&]accessKey=([^&]+)/);
+      const accessKey = accessKeyMatch ? decodeURIComponent(accessKeyMatch[1]) : '';
+
+      let sheetRes;
+      try {
+        sheetRes = await GasProvisionerService.generateChildSetupSheet(
+          parentToken,
+          childName,
+          academicYear,
+          masterUrl,
+          accessKey
+        );
+      } catch (genErr: any) {
+        const genMsg = genErr?.message || String(genErr);
+        if (genMsg.includes('401') || genMsg.includes('Invalid Credentials') || genMsg.includes('authentication credentials')) {
+          console.warn('[Wizard] 401 encountered during sheet creation, prompting interactive token refresh...');
+          const freshToken = await PersonalDriveService.getValidToken(true, true);
+          sheetRes = await GasProvisionerService.generateChildSetupSheet(
+            freshToken,
+            childName,
+            academicYear,
+            masterUrl,
+            accessKey
+          );
+        } else {
+          throw genErr;
+        }
+      }
+
+      if (currentConfiguringProfile) {
+        currentConfiguringProfile.setupSheetId = sheetRes.spreadsheetId;
+        currentConfiguringProfile.setupSheetCopyUrl = sheetRes.copyUrl;
+        currentConfiguringProfile.syncMethod = 'GAS_SHEET';
+        await ChildManager.updateProfile(currentConfiguringProfile.id, {
+          setupSheetId: sheetRes.spreadsheetId,
+          setupSheetCopyUrl: sheetRes.copyUrl,
+          syncMethod: 'GAS_SHEET'
+        });
+      }
+
+      if (lblSetupSheetStatus) {
+        lblSetupSheetStatus.textContent = '✅ Setup Sheet created! Opening Google Account Selector in browser...';
+        lblSetupSheetStatus.style.color = '#15803d';
+        lblSetupSheetStatus.style.display = 'block';
+      }
+
+      const studentEmail = currentConfiguringProfile?.studentAccountEmail;
+      const chooserUrl = buildAccountChooserUrl(sheetRes.copyUrl, studentEmail);
+      chrome.tabs.create({ url: chooserUrl });
+      await updateStep2View();
+    } catch (err: any) {
+      if (lblSetupSheetStatus) {
+        lblSetupSheetStatus.textContent = `❌ Error: ${err?.message || err}`;
+        lblSetupSheetStatus.style.color = '#dc2626';
+        lblSetupSheetStatus.style.display = 'block';
+      }
+      alert(`Could not create setup sheet: ${err?.message || err}`);
+    } finally {
+      if (btnOpenSetupSheetCopy) {
+        btnOpenSetupSheetCopy.disabled = false;
+        btnOpenSetupSheetCopy.textContent = origBtnText;
+      }
+    }
+  });
+
+  // Option A: Copy Setup Sheet Link to Clipboard
+  btnCopySetupSheetLink?.addEventListener('click', async () => {
+    if (!currentConfiguringProfile) {
+      try {
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+      } catch (e) {}
+    }
+
+    const childName = currentConfiguringProfile?.name || 'Student';
+    const studentEmail = currentConfiguringProfile?.studentAccountEmail;
+
+    let targetUrl = currentConfiguringProfile?.setupSheetCopyUrl;
+    if (!targetUrl) {
+      // If not yet generated, trigger generation first
+      btnOpenSetupSheetCopy?.click();
+      return;
+    }
+
+    const buildAccountChooserUrlLocal = (rawUrl: string, email?: string): string => {
+      if (!rawUrl) return '';
+      if (rawUrl.includes('AccountChooser')) return rawUrl;
+      let target = rawUrl;
+      if (email && !target.includes('authuser=')) {
+        target += (target.includes('?') ? '&' : '?') + `authuser=${encodeURIComponent(email)}`;
+      }
+      let chooser = `https://accounts.google.com/AccountChooser?continue=${encodeURIComponent(target)}`;
+      if (email) {
+        chooser += `&Email=${encodeURIComponent(email)}`;
+      }
+      return chooser;
+    };
+
+    const chooserUrl = buildAccountChooserUrlLocal(targetUrl, studentEmail);
+    try {
+      await navigator.clipboard.writeText(chooserUrl);
+      if (lblSetupSheetStatus) {
+        lblSetupSheetStatus.textContent = `📋 Setup Sheet link copied! Paste into ${childName}'s school browser profile.`;
+        lblSetupSheetStatus.style.color = '#15803d';
+        lblSetupSheetStatus.style.display = 'block';
+      }
+    } catch (clipErr) {
+      alert(`Setup Sheet Link:\n${chooserUrl}`);
+    }
+  });
+
+  btnCopySchoolWorkerCode?.addEventListener('click', async () => {
+    try {
+      const parentToken = await PersonalDriveService.getValidToken(false);
+      const childName = currentConfiguringProfile?.name || 'Child';
+      const academicYear = currentConfiguringProfile?.academicYear || '2026-2027';
+      let parentFolderId = currentConfiguringProfile?.folderId || '';
+
+      if (!parentFolderId && parentToken) {
+        try {
+          const kidFolder = await PersonalDriveService.getOrCreateKidFolder(parentToken, childName, academicYear);
+          parentFolderId = kidFolder.id;
+        } catch {}
+      }
+
+      const accessKey = '';
+      const code = GasProvisionerService.generateStandaloneSchoolWorkerCode(
+        parentFolderId,
+        childName,
+        academicYear,
+        accessKey
+      );
+
+      await navigator.clipboard.writeText(code);
+
+      if (lblCopyCodeToast) {
+        setA11yVisibility(lblCopyCodeToast, true);
+        setTimeout(() => {
+          setA11yVisibility(lblCopyCodeToast, false);
+        }, 4000);
+      }
+    } catch (copyErr: any) {
+      alert(`Could not copy code automatically: ${copyErr?.message || copyErr}`);
+    }
+  });
+
+  // Tier 2: 2. Open script.new
+  btnOpenScriptNew?.addEventListener('click', () => {
+    chrome.tabs.create({ url: 'https://script.new' });
+  });
+
+  // Tier 2: 3. Connect Manual School Worker
+  btnConnectManualWorker?.addEventListener('click', async () => {
+    const url = txtManualWebAppUrl?.value?.trim() || '';
+    if (!url) {
+      if (lblManualWorkerFeedback) {
+        lblManualWorkerFeedback.textContent = '⚠️ Please paste the Web App URL from Google Apps Script.';
+        lblManualWorkerFeedback.style.color = '#dc2626';
+        setA11yVisibility(lblManualWorkerFeedback, true);
+      }
+      return;
+    }
+
+    if (btnConnectManualWorker) btnConnectManualWorker.disabled = true;
+    if (lblManualWorkerFeedback) {
+      lblManualWorkerFeedback.textContent = '⏳ Verifying school worker URL...';
+      lblManualWorkerFeedback.style.color = '#2563eb';
+      setA11yVisibility(lblManualWorkerFeedback, true);
+    }
+
+    try {
+      const childId = currentConfiguringProfile?.id || '';
+      const urlMatch = url.match(/[?&]accessKey=([^&]+)/);
+      let accessKey = urlMatch ? decodeURIComponent(urlMatch[1]) : undefined;
+      if (!accessKey && typeof chrome !== 'undefined' && chrome.storage?.local) {
+        try {
+          const stored = await chrome.storage.local.get(['gas_access_key', 'access_key']);
+          accessKey = stored.gas_access_key || stored.access_key;
+        } catch {}
+      }
+      const conn = await GasProvisionerService.connectManualSchoolWorker(childId, url, accessKey);
+      if (!conn.success) {
+        if (lblManualWorkerFeedback) {
+          lblManualWorkerFeedback.textContent = `❌ ${conn.error || 'Could not verify URL'}`;
+          lblManualWorkerFeedback.style.color = '#dc2626';
+        }
+        return;
+      }
+
+      if (lblManualWorkerFeedback) {
+        lblManualWorkerFeedback.textContent = `✅ ${conn.message || 'Connected successfully!'}`;
+        lblManualWorkerFeedback.style.color = '#16a34a';
+      }
+
+      currentConfiguringProfile = await ChildManager.getActiveProfile();
+      await updateStep2View();
+
+      // Trigger 1-time background data sync via newly connected webAppUrl
+      if (currentConfiguringProfile) {
+        GasProvisionerService.runInitialSchoolDataSync(
+          currentConfiguringProfile.name,
+          currentConfiguringProfile.academicYear,
+          undefined,
+          url,
+          undefined,
+          currentConfiguringProfile.studentAccountEmail,
+          currentConfiguringProfile.schoolEmailDomain,
+          { childId: currentConfiguringProfile.id }
+        ).catch(() => {});
+      }
+
+      // Allow user to proceed to Step 3
+      setA11yVisibility(btnNavStep2ToStep3, true);
+      setA11yVisibility(btnSkipStep2Top, false);
+      setA11yVisibility(btnSkipStep2Bottom, false);
+
+      setTimeout(() => {
+        btnNavStep2ToStep3?.focus();
+      }, 200);
+
+    } catch (err: any) {
+      if (lblManualWorkerFeedback) {
+        lblManualWorkerFeedback.textContent = `❌ ${err?.message || err}`;
+        lblManualWorkerFeedback.style.color = '#dc2626';
+      }
+    } finally {
+      if (btnConnectManualWorker) btnConnectManualWorker.disabled = false;
+    }
+  });
+
+  // Tier 3: Browser Direct Sync
+  btnStartBrowserSync?.addEventListener('click', async () => {
+    if (!currentConfiguringProfile) {
+      currentConfiguringProfile = await ChildManager.getActiveProfile();
+    }
+    if (!currentConfiguringProfile) {
+      alert('Please confirm child details in Step 1 first.');
+      return;
+    }
+
+    if (btnStartBrowserSync) btnStartBrowserSync.disabled = true;
+    setA11yVisibility(browserSyncProgressBox, true);
+    stickyLastProgress = null;
+
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({
+        step2_sync_status: 'IN_PROGRESS',
+        step2_initial_sync_in_progress: true,
+        step2_initial_sync_complete: false,
+        classroom_attachment_progress: {
+          total: 0,
+          downloaded: 0,
+          skipped: 0,
+          failed: 0,
+          ocrIndexed: 0,
+          phase: 'starting',
+          interrupted: false
+        }
+      }).catch(() => {});
+    }
+
+    try {
+      if (lblBrowserSyncStatusText) lblBrowserSyncStatusText.textContent = 'Connecting to Google Classroom in background...';
+
+      // Delegate to background Service Worker so sync persists seamlessly if popup closes
+      if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage && process.env.NODE_ENV !== 'test') {
+        await chrome.runtime.sendMessage({
+          type: 'START_BROWSER_CLASSROOM_SYNC',
+          payload: { mode: 'ONE_TIME_FULL' }
+        });
+      } else {
+        const result = await ClassroomBrowserExtractor.extractClassroomData(
+          currentConfiguringProfile,
+          {
+            mode: 'ONE_TIME_FULL',
+            onProgress: (prog) => {
+              if (lblBrowserSyncStatusText) lblBrowserSyncStatusText.textContent = prog.message;
+              if (lblBrowserSyncPercent) lblBrowserSyncPercent.textContent = `${prog.percent}%`;
+              if (browserSyncProgressBar) browserSyncProgressBar.style.width = `${prog.percent}%`;
+            }
+          }
+        );
+
+        if (!result.success) {
+          if (lblBrowserSyncStatusText) {
+            lblBrowserSyncStatusText.textContent = `⚠️ ${result.error || 'Sync could not find active courses.'}`;
+            lblBrowserSyncStatusText.style.color = '#d97706';
+          }
+          return;
+        }
+
+        currentConfiguringProfile = await ChildManager.getActiveProfile();
+        await updateStep2View();
+
+        if (lblStep2InitialSyncSummary) {
+          lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>Browser Direct Sync Complete!</strong><br>Archived <strong>${result.coursesCount} course(s)</strong>, <strong>${result.announcementsCount || 0} announcement(s) / notice(s)</strong>, and <strong>${result.savedAttachments} attachment(s)</strong> directly into your Parent Vault (<code>K.I.D.S. Data/</code>).`;
+        }
+        setA11yVisibility(step2InitialSyncResults, true);
+
+        // Allow user to proceed to Step 3
+        setA11yVisibility(btnNavStep2ToStep3, true);
+        setA11yVisibility(btnSkipStep2Top, false);
+        setA11yVisibility(btnSkipStep2Bottom, false);
+
+        setTimeout(() => {
+          btnNavStep2ToStep3?.focus();
+        }, 200);
+      }
+    } catch (err: any) {
+      if (lblBrowserSyncStatusText) {
+        lblBrowserSyncStatusText.textContent = `❌ ${err?.message || err}`;
+        lblBrowserSyncStatusText.style.color = '#dc2626';
+      }
+    } finally {
+      if (btnStartBrowserSync) btnStartBrowserSync.disabled = false;
+    }
+  });
+
+  chkEnableBrowserIncremental?.addEventListener('change', async () => {
+    const isChecked = chkEnableBrowserIncremental.checked;
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ browser_sync_incremental_enabled: isChecked }).catch(() => {});
+    }
+  });
+
+  btnCreateMcpServer?.addEventListener('click', async () => {
+    // Directly deploy using the student account already selected and verified in Step 2
+    await executeSchoolWorkerDeployment();
+  });
+
+  btnCancelAccountGuidanceModal?.addEventListener('click', () => {
+    closeModal(step2AccountGuidanceModal);
+  });
+
+  btnProceedAccountGuidanceModal?.addEventListener('click', async () => {
+    closeModal(step2AccountGuidanceModal, false);
+    await executeSchoolWorkerDeployment();
+  });
+
+  btnCancelToolsAuthModal?.addEventListener('click', () => {
+    closeModal(toolsAuthGuidanceModal);
+  });
+
+  btnProceedToolsAuthModal?.addEventListener('click', async () => {
+    closeModal(toolsAuthGuidanceModal, false);
+    await executeSchoolWorkerDeployment();
   });
 
   btnTriggerSwitchStudentAccount?.addEventListener('click', () => {
@@ -1341,7 +2800,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   btnConfirmSwitchStudentModal?.addEventListener('click', () => {
     closeModal(modalConfirmSwitchStudentAccount, false);
-    btnCreateMcpServer?.click();
+    btnStep2ConnectStudent?.click();
   });
 
   // ==========================================
@@ -1400,14 +2859,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         domain
       );
 
-      if (!currentConfiguringProfile?.personalGasDeploymentUrl) {
-        await GasProvisionerService.provisionPersonalWorker(
-          parentToken,
-          kidFolderInfo.id,
-          currentConfiguringProfile?.name || 'Atharva',
-          currentConfiguringProfile?.academicYear || '2026-2027'
-        );
-      }
+      // Portals are ingested and scraped directly by the Master Personal Worker in the Parent Account.
 
       currentConfiguringProfile = await ChildManager.updateProfile(currentConfiguringProfile!.id, {
         portalDomain: domain
@@ -1457,15 +2909,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         currentConfiguringProfile?.academicYear
       );
 
-      if (currentConfiguringProfile?.personalGasDeploymentUrl) {
-        await fetch(currentConfiguringProfile.personalGasDeploymentUrl, {
+      const masterWorkerUrl = await PersonalDriveService.getMasterWorkerUrl();
+      if (masterWorkerUrl) {
+        await fetch(masterWorkerUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             method: 'register_portal_job',
             params: {
-              childId: currentConfiguringProfile.id,
-              childName: currentConfiguringProfile.name,
+              childId: currentConfiguringProfile?.id || '',
+              childName: currentConfiguringProfile?.name || 'Child',
               portalFolderId: kidFolderInfo.id,
               domain,
               feature: featureName,
@@ -1730,4 +3183,368 @@ document.addEventListener('DOMContentLoaded', async () => {
     await WhatsAppDiagnosticLogger.clearLogs();
     refreshDiagnosticLogs();
   });
+
+  // Persistent Global Background Sync Status Watcher
+  let lastAnnouncedProgressPercent = -1;
+  let stickyLastProgress: {
+    total: number;
+    downloaded: number;
+    skipped: number;
+    failed?: number;
+    phase?: string;
+    ocrIndexed?: number;
+    ocrProcessed?: number;
+    ocrWaiting?: boolean;
+    ocrStatusText?: string;
+    ocrTotal?: number;
+    ocrCurrent?: number;
+  } | null = null;
+
+  async function updateGlobalSyncBanner() {
+    if (!globalSyncBanner) return;
+    try {
+      const data = await chrome.storage.local.get([
+        'step2_initial_sync_in_progress',
+        'step2_initial_sync_complete',
+        'step2_sync_status',
+        'step2_initial_sync_summary',
+        'classroom_attachment_progress',
+        'step2_sync_active_child_name',
+        'multi_child_sync_queue'
+      ]);
+
+      const inProgress = Boolean(data.step2_initial_sync_in_progress);
+      const isComplete = Boolean(data.step2_initial_sync_complete);
+      const progress = data.classroom_attachment_progress;
+      const summary = data.step2_initial_sync_summary;
+      const syncStatus = data.step2_sync_status;
+      const activeChildName = data.step2_sync_active_child_name || '';
+      const queue: any[] = Array.isArray(data.multi_child_sync_queue) ? data.multi_child_sync_queue : [];
+      const queuedNames = queue.map(q => q.childName).filter(Boolean).join(', ');
+
+      const isInterruptedStatus = syncStatus === 'INTERRUPTED' ||
+        Boolean(progress?.interrupted) ||
+        (!inProgress && !isComplete && progress && (progress.downloaded || 0) + (progress.skipped || 0) < (progress.total || 0) && (progress.total || 0) > 0);
+
+      if (inProgress || isInterruptedStatus || queue.length > 0) {
+        setA11yVisibility(globalSyncBanner, true);
+        if (globalSyncIcon) globalSyncIcon.textContent = isInterruptedStatus ? '⚠️' : '⏳';
+        if (globalSyncTitle) {
+          if (isInterruptedStatus) {
+            globalSyncTitle.textContent = activeChildName 
+              ? `1-Time School Archive Sync Paused (${activeChildName})` 
+              : '1-Time School Archive Sync Paused';
+          } else if (inProgress && activeChildName) {
+            globalSyncTitle.textContent = queuedNames
+              ? `1-Time School Archive: Syncing ${activeChildName} (${queue.length} Queued)`
+              : `1-Time School Archive: Syncing ${activeChildName}`;
+          } else if (queue.length > 0 && !inProgress) {
+            globalSyncTitle.textContent = `1-Time School Archive Queued (${queuedNames})`;
+          } else {
+            globalSyncTitle.textContent = '1-Time School Archive Syncing in Background...';
+          }
+        }
+
+        // Maintain monotonic sticky progress to prevent temporary storage drops or race conditions
+        // from ever flipping the UI / screen readers back to generic "Scanning".
+        if (progress && typeof progress.total === 'number' && progress.total > 0) {
+          stickyLastProgress = {
+            ...stickyLastProgress,
+            ...progress,
+            total: Math.max(progress.total, stickyLastProgress?.total || 0),
+            downloaded: Math.max(progress.downloaded || 0, stickyLastProgress?.downloaded || 0),
+            skipped: Math.max(progress.skipped || 0, stickyLastProgress?.skipped || 0),
+            failed: Math.max(progress.failed || 0, stickyLastProgress?.failed || 0),
+            ocrIndexed: Math.max(progress.ocrIndexed || 0, stickyLastProgress?.ocrIndexed || 0),
+            ocrProcessed: Math.max(progress.ocrProcessed || 0, stickyLastProgress?.ocrProcessed || 0)
+          };
+        }
+
+        const effectiveProgress = (progress && progress.total > 0) ? progress : stickyLastProgress;
+
+        if (effectiveProgress && effectiveProgress.total > 0) {
+          const isDualPipeline = effectiveProgress.phase === 'dual_pipeline' || (effectiveProgress.ocrWaiting !== undefined);
+          const isOcrPhase = effectiveProgress.phase === 'ocr';
+          const isInterrupted = isInterruptedStatus || effectiveProgress.phase === 'interrupted' || Boolean(effectiveProgress.interrupted);
+          const successfulCount = (effectiveProgress.downloaded || 0) + (effectiveProgress.skipped || 0);
+          const failedCount = effectiveProgress.failed || 0;
+          const rawPercent = Math.round((successfulCount / effectiveProgress.total) * 100);
+          // If at least one file has been downloaded/saved, ensure percent is at least 1% so screen readers don't announce 0%
+          const downloadPercent = successfulCount > 0 ? Math.max(1, Math.min(100, rawPercent)) : Math.min(100, rawPercent);
+
+          if (isInterrupted) {
+            if (globalSyncBadge) {
+              globalSyncBadge.textContent = `${downloadPercent}% (Paused)`;
+              globalSyncBadge.style.background = '#fef3c7';
+              globalSyncBadge.style.color = '#92400e';
+              globalSyncBadge.style.border = '1px solid #fde68a';
+            }
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = `${downloadPercent}%`;
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #f59e0b, #d97706)';
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = `⚠️ Sync paused: ${successfulCount}/${effectiveProgress.total} saved (${failedCount} remaining due to network disruption).`;
+            }
+            const interruptedDesc = `Sync paused: ${downloadPercent}% complete. ${successfulCount} of ${effectiveProgress.total} files saved. Network disruption detected.`;
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', String(downloadPercent));
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', interruptedDesc);
+              globalSyncProgressBarContainer.setAttribute(
+                'aria-label',
+                `1-Time School Archive Background Sync Progress: ${downloadPercent}% (${successfulCount} of ${effectiveProgress.total} files saved, Paused)`
+              );
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', interruptedDesc);
+            }
+            if (jawsLiveAnnouncer && lastAnnouncedProgressPercent !== downloadPercent) {
+              lastAnnouncedProgressPercent = downloadPercent;
+              jawsLiveAnnouncer.textContent = `1-Time School Archive Sync Paused: ${downloadPercent}% complete. ${successfulCount} of ${effectiveProgress.total} files saved.`;
+            }
+          } else if (isDualPipeline) {
+            const ocrStatus = effectiveProgress.ocrStatusText || (effectiveProgress.ocrWaiting ? '⏳ OCR idle (files are digital text)' : `🔍 OCR Indexed: ${effectiveProgress.ocrIndexed || 0}`);
+            if (globalSyncBadge) {
+              globalSyncBadge.textContent = `${downloadPercent}%`;
+              globalSyncBadge.style.background = '#dbeafe';
+              globalSyncBadge.style.color = '#1e40af';
+              globalSyncBadge.style.border = '1px solid #bfdbfe';
+            }
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = `${downloadPercent}%`;
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #2563eb, #7c3aed)';
+            }
+            const progressDesc = `${downloadPercent}% complete. Vaulted ${successfulCount} of ${effectiveProgress.total} files. ${ocrStatus}.`;
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', String(downloadPercent));
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', progressDesc);
+              globalSyncProgressBarContainer.setAttribute(
+                'aria-label',
+                `1-Time School Archive Background Sync Progress: ${downloadPercent}% (${successfulCount} of ${effectiveProgress.total} files saved)`
+              );
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = `📥 ${successfulCount}/${effectiveProgress.total} vaulted | ${ocrStatus}`;
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', `1-Time School Archive Background Sync: ${downloadPercent}% complete, ${successfulCount} of ${effectiveProgress.total} files saved.`);
+            }
+            if (jawsLiveAnnouncer && (lastAnnouncedProgressPercent === -1 || Math.abs(downloadPercent - lastAnnouncedProgressPercent) >= 5 || successfulCount === effectiveProgress.total)) {
+              lastAnnouncedProgressPercent = downloadPercent;
+              jawsLiveAnnouncer.textContent = `1-Time School Archive Sync: ${downloadPercent}% complete. ${successfulCount} of ${effectiveProgress.total} files saved.`;
+            }
+          } else if (isOcrPhase && effectiveProgress.ocrTotal && effectiveProgress.ocrTotal > 0) {
+            const ocrDone = effectiveProgress.ocrCurrent || effectiveProgress.ocrIndexed || 0;
+            const ocrPercent = Math.min(100, Math.round((ocrDone / effectiveProgress.ocrTotal) * 100));
+            if (globalSyncBadge) {
+              globalSyncBadge.textContent = `${ocrPercent}%`;
+              globalSyncBadge.style.background = '#ede9fe';
+              globalSyncBadge.style.color = '#5b21b6';
+              globalSyncBadge.style.border = '1px solid #ddd6fe';
+            }
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = `${ocrPercent}%`;
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #7c3aed, #8b5cf6)';
+            }
+            const ocrDesc = `Phase 2: Indexing and OCR ${ocrDone} of ${effectiveProgress.ocrTotal} files (${ocrPercent}%).`;
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', String(ocrPercent));
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', ocrDesc);
+              globalSyncProgressBarContainer.setAttribute(
+                'aria-label',
+                `1-Time School Archive OCR Progress: ${ocrPercent}% (${ocrDone} of ${effectiveProgress.ocrTotal} files indexed)`
+              );
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = `🔍 Indexing for Search & OCR (${ocrDone}/${effectiveProgress.ocrTotal} files)...`;
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', `1-Time School Archive: Indexing and OCR ${ocrPercent}% complete (${ocrDone} of ${effectiveProgress.ocrTotal} files).`);
+            }
+            if (jawsLiveAnnouncer && (lastAnnouncedProgressPercent === -1 || Math.abs(ocrPercent - lastAnnouncedProgressPercent) >= 5 || ocrDone === effectiveProgress.ocrTotal)) {
+              lastAnnouncedProgressPercent = ocrPercent;
+              jawsLiveAnnouncer.textContent = `1-Time School Archive: Indexing and OCR ${ocrPercent}% complete. ${ocrDone} of ${effectiveProgress.ocrTotal} files indexed.`;
+            }
+          } else {
+            if (globalSyncBadge) {
+              globalSyncBadge.textContent = `${downloadPercent}%`;
+              globalSyncBadge.style.background = '#dbeafe';
+              globalSyncBadge.style.color = '#1e40af';
+              globalSyncBadge.style.border = '1px solid #bfdbfe';
+            }
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = `${downloadPercent}%`;
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #2563eb, #3b82f6)';
+            }
+            const dlDesc = `${downloadPercent}% complete. Downloaded ${successfulCount} of ${effectiveProgress.total} files.`;
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', String(downloadPercent));
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', dlDesc);
+              globalSyncProgressBarContainer.setAttribute(
+                'aria-label',
+                `1-Time School Archive Background Sync Progress: ${downloadPercent}% (${successfulCount} of ${effectiveProgress.total} files downloaded)`
+              );
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = `📥 Downloading & saving files (${successfulCount}/${effectiveProgress.total})...`;
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', `1-Time School Archive Background Sync: ${downloadPercent}% complete, ${successfulCount} of ${effectiveProgress.total} files downloaded.`);
+            }
+            if (jawsLiveAnnouncer && (lastAnnouncedProgressPercent === -1 || Math.abs(downloadPercent - lastAnnouncedProgressPercent) >= 5 || successfulCount === effectiveProgress.total)) {
+              lastAnnouncedProgressPercent = downloadPercent;
+              jawsLiveAnnouncer.textContent = `1-Time School Archive Sync: ${downloadPercent}% complete. ${successfulCount} of ${effectiveProgress.total} files downloaded.`;
+            }
+          }
+        } else {
+          const currentCount = progress ? ((progress.downloaded || 0) + (progress.skipped || 0)) : 0;
+          if (currentCount > 0) {
+            if (globalSyncBadge) globalSyncBadge.textContent = 'Syncing';
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = '20%';
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #3b82f6, #60a5fa)';
+            }
+            const countDesc = `Syncing in progress. Saved ${currentCount} files into Vault so far.`;
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', '20');
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', countDesc);
+              globalSyncProgressBarContainer.setAttribute('aria-label', `1-Time School Archive Background Sync Progress: Saved ${currentCount} files`);
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = `📥 ${currentCount} files saved to Vault...`;
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', `1-Time School Archive Background Sync: ${currentCount} files saved so far.`);
+            }
+          } else {
+            if (globalSyncBadge) globalSyncBadge.textContent = 'Scanning';
+            if (globalSyncProgressBar) {
+              globalSyncProgressBar.style.width = '10%';
+              globalSyncProgressBar.style.background = 'linear-gradient(90deg, #3b82f6, #60a5fa)';
+            }
+            const scanDesc = 'Scanning Classroom coursework and Gmail circular attachments in background.';
+            if (globalSyncProgressBarContainer) {
+              globalSyncProgressBarContainer.setAttribute('role', 'progressbar');
+              globalSyncProgressBarContainer.setAttribute('aria-valuenow', '10');
+              globalSyncProgressBarContainer.setAttribute('aria-valuetext', scanDesc);
+              globalSyncProgressBarContainer.setAttribute('aria-label', '1-Time School Archive Background Sync Progress: Scanning attachments');
+            }
+            if (globalSyncSubtext) {
+              globalSyncSubtext.textContent = 'Scanning Classroom coursework and Gmail attachments...';
+            }
+            if (globalSyncBanner) {
+              globalSyncBanner.setAttribute('aria-label', '1-Time School Archive Background Sync: Scanning attachments.');
+            }
+          }
+        }
+      } else if (isComplete && summary) {
+        stickyLastProgress = null;
+        setA11yVisibility(globalSyncBanner, true);
+        if (globalSyncIcon) globalSyncIcon.textContent = '✅';
+        if (globalSyncTitle) globalSyncTitle.textContent = '1-Time School Archive Ready';
+        if (globalSyncBadge) globalSyncBadge.textContent = '100%';
+        if (globalSyncProgressBar) {
+          globalSyncProgressBar.style.width = '100%';
+          globalSyncProgressBar.style.background = 'linear-gradient(90deg, #10b981, #059669)';
+        }
+        if (globalSyncProgressBarContainer) {
+          globalSyncProgressBarContainer.setAttribute('aria-valuenow', '100');
+          globalSyncProgressBarContainer.setAttribute('aria-valuetext', '100% complete. All historical coursework and circulars are fully indexed in your Vault.');
+        }
+        if (globalSyncSubtext) {
+          const totalAtt = summary.attachments || (summary.classroomAttachments || 0) + (summary.emailAttachments || 0);
+          const ocrText = summary.ocrIndexed ? ` | ${summary.ocrIndexed} OCR-indexed` : '';
+          globalSyncSubtext.textContent = `All historical coursework & circulars indexed in Parent Vault (${totalAtt} files${ocrText}).`;
+        }
+        if (jawsLiveAnnouncer && !jawsLiveAnnouncer.dataset.syncAnnounced) {
+          jawsLiveAnnouncer.dataset.syncAnnounced = 'true';
+          jawsLiveAnnouncer.textContent = '1-Time School Archive is 100% complete and indexed in your Vault.';
+        }
+      } else {
+        stickyLastProgress = null;
+        setA11yVisibility(globalSyncBanner, false);
+      }
+    } catch {
+      setA11yVisibility(globalSyncBanner, false);
+    }
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.onChanged) {
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local') {
+        if (
+          changes.step2_initial_sync_in_progress ||
+          changes.step2_initial_sync_complete ||
+          changes.step2_sync_status ||
+          changes.classroom_attachment_progress ||
+          changes.step2_initial_sync_summary ||
+          changes.multi_child_sync_queue ||
+          changes.step2_sync_active_child_name ||
+          changes.step2_sync_active_child_id ||
+          changes.multi_child_profiles
+        ) {
+          updateGlobalSyncBanner();
+          if (currentWizardStep === 2) {
+            updateStep2View();
+          }
+        }
+      }
+    });
+  }
+
+  if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg?.type === 'SYNC_QUEUE_UPDATED' || msg?.type === 'SYNC_QUEUE_NEXT_STARTED') {
+        updateGlobalSyncBanner();
+        if (currentWizardStep === 2) {
+          updateStep2View();
+        }
+        if (msg.type === 'SYNC_QUEUE_NEXT_STARTED' && jawsLiveAnnouncer && msg.payload?.childName) {
+          jawsLiveAnnouncer.textContent = `Starting 1-time school archive sync for ${msg.payload.childName}.`;
+        }
+      }
+      if (msg?.type === 'BROWSER_CLASSROOM_SYNC_PROGRESS' && msg.payload) {
+        setA11yVisibility(browserSyncProgressBox, true);
+        if (lblBrowserSyncStatusText) lblBrowserSyncStatusText.textContent = msg.payload.message || 'Syncing Classroom...';
+        if (lblBrowserSyncPercent) lblBrowserSyncPercent.textContent = `${msg.payload.percent || 0}%`;
+        if (browserSyncProgressBar) browserSyncProgressBar.style.width = `${msg.payload.percent || 0}%`;
+        if (msg.payload.phase === 'COMPLETED') {
+          if (lblStep2InitialSyncSummary) {
+            lblStep2InitialSyncSummary.innerHTML = `⚡ <strong>Browser Direct Sync Complete!</strong><br>Archived <strong>${msg.payload.coursesFound || 1} course(s)</strong>, <strong>${msg.payload.itemsFound || 0} items</strong>, and <strong>${msg.payload.attachmentsSaved || 0} attachment(s)</strong> directly into your Parent Vault (<code>K.I.D.S. Data/</code>).`;
+          }
+          setA11yVisibility(step2InitialSyncResults, true);
+          setA11yVisibility(btnNavStep2ToStep3, true);
+          setA11yVisibility(btnSkipStep2Top, false);
+          setA11yVisibility(btnSkipStep2Bottom, false);
+          updateStep2View();
+        }
+      }
+    });
+  }
+
+  updateGlobalSyncBanner();
+  setInterval(updateGlobalSyncBanner, 3000);
+
+  // Auto-recheck API status when popup regains focus (throttled to avoid exhausting Google quotas)
+  let lastApiCheckTime = 0;
+  window.addEventListener('focus', () => {
+    const now = Date.now();
+    if (now - lastApiCheckTime < 30000) return;
+    lastApiCheckTime = now;
+    if (currentWizardStep === 1) {
+      checkStep1ApiStatus(false);
+    } else if (currentWizardStep === 2) {
+      checkStep2ApiStatus(false);
+    }
+  });
+
+  // Auto-trigger background sync health check to recover any interrupted session seamlessly without requiring button clicks
+  if (typeof chrome !== 'undefined' && chrome.runtime?.sendMessage) {
+    chrome.runtime.sendMessage({ type: 'CHECK_INITIAL_SYNC_HEALTH' }).catch(() => {});
+  }
 });

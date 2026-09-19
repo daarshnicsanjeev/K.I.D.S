@@ -157,5 +157,29 @@ describe('NotificationService Test Suite', () => {
       expect(createdNotifications).toHaveLength(1);
       expect(createdNotifications[0].message).toBe('Successfully saved 7 Email circular attachments to Parent Vault.');
     });
+
+    it('dispatches rich 1-time sync completion notification with full metrics including OCR', async () => {
+      await NotificationService.notifyInitialSyncCompleted({
+        childName: 'Atharva',
+        courses: 8,
+        emails: 15,
+        attachments: 224,
+        classroomAttachments: 205,
+        emailAttachments: 19,
+        ocrIndexed: 180,
+        skipped: 12
+      });
+
+      expect(createdNotifications).toHaveLength(1);
+      const notif = createdNotifications[0];
+      expect(notif.title).toBe('K.I.D.S. Vault Ready (Atharva)');
+      expect(notif.message).toContain('8 course(s)');
+      expect(notif.message).toContain('15 circular(s)');
+      expect(notif.message).toContain('224 attachment(s)');
+      expect(notif.message).toContain('180 OCR-indexed');
+      expect(notif.message).toContain('12 already present');
+      expect(notif.priority).toBe(2);
+      expect(notif.requireInteraction).toBe(true);
+    });
   });
 });

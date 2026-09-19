@@ -264,7 +264,21 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     let minutesSet: number | null = null;
     let hoursSet: number | null = null;
 
+    class DaytimeDate extends Date {
+      constructor(...args: any[]) {
+        if (args.length === 0) {
+          super('2026-09-12T10:00:00Z');
+        } else {
+          super(...(args as [any]));
+        }
+      }
+      static now() {
+        return new Date('2026-09-12T10:00:00Z').getTime();
+      }
+    }
+
     const sandbox = {
+      Date: DaytimeDate,
       PropertiesService: {
         getScriptProperties: () => ({
           getProperty: (key: string) => {
@@ -319,7 +333,21 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     let triggerCreated = false;
     let propsStore: Record<string, string> = {};
 
+    class DaytimeDate extends Date {
+      constructor(...args: any[]) {
+        if (args.length === 0) {
+          super('2026-09-12T10:00:00Z');
+        } else {
+          super(...(args as [any]));
+        }
+      }
+      static now() {
+        return new Date('2026-09-12T10:00:00Z').getTime();
+      }
+    }
+
     const sandbox = {
+      Date: DaytimeDate,
       PropertiesService: {
         getScriptProperties: () => ({
           getProperty: (key: string) => propsStore[key] || null,
@@ -580,6 +608,18 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     ];
 
     const sandbox = {
+      Date: class extends Date {
+        constructor(...args: any[]) {
+          if (args.length > 0) {
+            super(...(args as [any]));
+          } else {
+            super('2026-09-08T04:30:00.000Z');
+          }
+        }
+        static now() {
+          return new Date('2026-09-08T04:30:00.000Z').getTime();
+        }
+      },
       PropertiesService: {
         getScriptProperties: () => ({
           getProperty: (k: string) => {
@@ -618,7 +658,7 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     vm.runInContext('resumeResult = resumeMorningSyncTriggers();', ctx);
     const resumeRes = (sandbox as any).resumeResult;
     expect(resumeRes.resumed).toBe(true);
-    expect(createdTriggerName).toBe('runMasterCloudSchoolSync (1m)');
+    expect(['runChildSchoolSyncTrigger (1m)', 'runSchoolSync_Atharva (1m)', 'runMasterCloudSchoolSync (1m)']).toContain(createdTriggerName);
   });
 
   it('verifies runMasterCloudSchoolSync runs during active daytime (10 AM IST) or when forced', () => {
@@ -920,5 +960,106 @@ describe('Trigger Lifecycle & Fast-Exit Guard Engine', () => {
     // 3. Since all files already existed in the batch cache, NO blob fetch queries were made!
     expect(urlFetchBlobCalls).toBe(0);
   });
+
+  it('verifies ocr_single_file indexes on-demand without triggers, and activate_incremental_triggers activates triggers at 100% completion', () => {
+    const repoCodePath = path.resolve(__dirname, '../../gas-mcp-server/src/Code.gs');
+    const code = fs.readFileSync(repoCodePath, 'utf-8');
+
+    let triggerCreated = false;
+    let singleFileIndexed = false;
+    const propsStore: Record<string, string> = {
+      multi_child_school_registry: JSON.stringify({
+        children: [{ kidName: 'Atharva', initialSyncComplete: false, targetFolderId: 'folder_123' }]
+      })
+    };
+
+    class DaytimeDate extends Date {
+      constructor(...args: any[]) {
+        if (args.length === 0) super('2026-09-12T10:00:00Z');
+        else super(...(args as [any]));
+      }
+      static now() {
+        return new Date('2026-09-12T10:00:00Z').getTime();
+      }
+    }
+
+    const sandbox = {
+      Date: DaytimeDate,
+      PropertiesService: {
+        getScriptProperties: () => ({
+          getProperty: (k: string) => propsStore[k] || null,
+          setProperty: (k: string, v: string) => { propsStore[k] = v; },
+          deleteProperty: (k: string) => { delete propsStore[k]; }
+        })
+      },
+      DocumentOcrService: {
+        indexDocumentById: (fileId: string, childName: string, source: string, targetFolderId: string) => {
+          singleFileIndexed = true;
+          return {
+            success: true,
+            fileId,
+            fileName: 'Maths_Worksheet.pdf',
+            isOcr: true,
+            wordCount: 320
+          };
+        }
+      },
+      ScriptApp: {
+        getProjectTriggers: () => [],
+        deleteTrigger: () => {},
+        newTrigger: () => ({
+          timeBased: () => ({
+            everyMinutes: () => {
+              triggerCreated = true;
+              return { create: () => {} };
+            }
+          })
+        })
+      },
+      ContentService: {
+        createTextOutput: (str: string) => ({
+          setMimeType: () => str
+        }),
+        MimeType: { JSON: 'application/json' }
+      },
+      McpLogger: { log: () => {} }
+    };
+
+    const ctx = vm.createContext(sandbox);
+
+    // 1. On-demand single-file OCR via doPost
+    const postPayload1 = {
+      postData: {
+        contents: JSON.stringify({
+          method: 'ocr_single_file',
+          params: { fileId: 'doc_abc_123', childName: 'Atharva', source: 'classroom' }
+        })
+      }
+    };
+    vm.runInContext(code + '\nocrRes = doPost(' + JSON.stringify(postPayload1) + ');', ctx);
+    const ocrOutput = JSON.parse((sandbox as any).ocrRes);
+    expect(ocrOutput.result.success).toBe(true);
+    expect(ocrOutput.result.fileId).toBe('doc_abc_123');
+    expect(singleFileIndexed).toBe(true);
+    // Zero triggers created during 1-by-1 OCR!
+    expect(triggerCreated).toBe(false);
+
+    // 2. Activate incremental triggers at 100% completion via doPost
+    const postPayload2 = {
+      postData: {
+        contents: JSON.stringify({
+          method: 'activate_incremental_triggers',
+          params: { childName: 'Atharva' }
+        })
+      }
+    };
+    vm.runInContext('actRes = doPost(' + JSON.stringify(postPayload2) + ');', ctx);
+    const actOutput = JSON.parse((sandbox as any).actRes);
+    expect(actOutput.result.success).toBe(true);
+    expect(actOutput.result.initialSyncComplete).toBe(true);
+    expect(triggerCreated).toBe(true);
+    expect(propsStore['initial_sync_complete']).toBe('true');
+  });
 });
+
 

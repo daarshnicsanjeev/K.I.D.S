@@ -199,5 +199,23 @@ describe('Popup DOM Integrity Test', () => {
       expect(wizardContent).toContain("setA11yVisibility(btnStep1SaveAcademicYear, false);");
       expect(wizardContent).toContain("setA11yVisibility(btnStep1CancelAcademicYear, false);");
     });
+
+    it('should wire up .btn-edit-kid click handlers to load child profile in Step 1 for editing', () => {
+      const wizardContent = fs.readFileSync(wizardPath, 'utf-8');
+
+      // Check that .btn-edit-kid is queried and bound
+      expect(wizardContent).toContain("document.querySelectorAll('.btn-edit-kid");
+      expect(wizardContent).toContain("populateStep1ForEditing(target)");
+      expect(wizardContent).toContain("showWizardStep(1)");
+    });
+
+    it('should have btnStep1BackToDashboard in index.html and wired to showFamilyDashboard in wizard.ts', () => {
+      const htmlContent = fs.readFileSync(htmlPath, 'utf-8');
+      const wizardContent = fs.readFileSync(wizardPath, 'utf-8');
+
+      expect(htmlContent).toContain('id="btnStep1BackToDashboard"');
+      expect(wizardContent).toContain("btnStep1BackToDashboard?.addEventListener('click'");
+      expect(wizardContent).toContain("await showFamilyDashboard()");
+    });
   });
 });

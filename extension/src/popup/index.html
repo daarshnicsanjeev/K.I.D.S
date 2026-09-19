@@ -42,6 +42,21 @@
       Please wait while Classroom & Gmail are synced into Google Drive...
     </div>
 
+    <!-- Guidance & Cancel Button for Restricted School Domains -->
+    <div id="boxOAuthDomainNotice" style="background: #fffbeb; border: 1px solid #fde68a; border-left: 4px solid #f59e0b; padding: 10px; border-radius: 8px; margin: 10px auto; text-align: left; width: 94%; font-size: 0.74rem; color: #92400e; line-height: 1.45;">
+      <strong style="color: #b45309; display: flex; align-items: center; gap: 5px;">
+        <span aria-hidden="true">⚠️</span> Seeing "Access blocked: admin needs to review"?
+      </strong>
+      <div style="margin-top: 4px; color: #78350f;">
+        Your school domain blocks 3rd-party app logins:<br>
+        1. <strong>Close the Google popup window</strong> (click ✖ at its top right).<br>
+        2. Click the button below to use <strong>Manual Script (24/7)</strong> or <strong>1-Click Browser Sync</strong>!
+      </div>
+      <button type="button" id="btnCancelDeployToFallback" class="btn btn-primary btn-sm" style="margin-top: 8px; width: 100%; background: #d97706; border-color: #b45309; font-weight: 700; font-size: 0.74rem;">
+        ✕ Close Window &amp; Switch to Manual / Browser Sync
+      </button>
+    </div>
+
     <!-- Live Deep Log Terminal Inside Overlay -->
     <div style="margin-top: 12px; text-align: left; width: 94%; margin-left: auto; margin-right: auto;">
       <div style="font-size: 0.7rem; font-weight: 700; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center;">
@@ -79,15 +94,16 @@
       <h3 id="modalToolsAuthTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Authorize School Cloud Worker</h3>
       
       <div id="boxToolsAuthGuidance" style="background: #ecfdf5; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #065f46; margin-bottom: 14px; text-align: left; border-left: 4px solid #10b981;">
-        🔑 <strong>Authorize All Tools:</strong><br>
-        <span id="lblToolsAuthInstruction">On the Google Authorization screen, please <strong>allow / authorize all requested permissions</strong> (Google Classroom, Google Drive, and Gmail).</span>
+        🔑 <strong>All Permissions Required:</strong><br>
+        <span id="lblToolsAuthInstruction">On Google's upcoming screen, please check <strong>"Select all"</strong> (or enable all requested permissions: Google Classroom, Google Drive, and Gmail).</span>
         <hr style="border: 0; border-top: 1px solid #a7f3d0; margin: 8px 0;" aria-hidden="true">
-        <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s cloud worker to sync assignments, coursework, worksheets, and teacher circulars every 1 minute.</em></span>
+        <span id="lblToolsAuthBenefit">✅ <em>Authorizing all tools enables <span id="lblModalChildNameAuth" style="font-weight:700;">your child</span>'s cloud worker to sync assignments, coursework, worksheets, and teacher circulars every 1 minute. If you cancel or decline, no worker will be deployed.</em></span>
       </div>
 
       <div style="display: flex; gap: 8px;">
-        <button id="btnProceedToolsAuthModal" class="btn btn-primary btn-hero" style="font-size: 0.8rem; font-weight: 700;" aria-label="Proceed to Deploy School Cloud Worker">
-          Got it, Proceed to Deploy Worker ➔
+        <button id="btnCancelToolsAuthModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel deployment">Cancel</button>
+        <button id="btnProceedToolsAuthModal" class="btn btn-primary btn-hero" style="flex: 1.8; font-size: 0.8rem; font-weight: 700;" aria-label="Proceed to Deploy School Cloud Worker">
+          Proceed to Deploy Worker ➔
         </button>
       </div>
     </div>
@@ -107,6 +123,106 @@
       <div style="display: flex; gap: 8px;">
         <button id="btnCancelSwitchStudentModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel account switch">Cancel</button>
         <button id="btnConfirmSwitchStudentModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;" aria-label="Confirm and proceed to switch account">Yes, Switch Account ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 1 Pre-Consent Modal (All-or-Nothing Permissions Notice) -->
+  <div id="step1PreConsentModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalStep1PreConsentTitle" aria-describedby="boxStep1PreConsentGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document" style="max-width: 390px; text-align: left; padding: 18px;">
+      <div style="text-align: center; font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">🔐</div>
+      <h3 id="modalStep1PreConsentTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; text-align: center; margin-bottom: 10px;">
+        All Permissions Required for Cloud Vault
+      </h3>
+
+      <div id="boxStep1PreConsentGuidance" style="display: flex; flex-direction: column; gap: 8px; font-size: 0.76rem; line-height: 1.45; color: #334155; margin-bottom: 14px;">
+        <p style="margin: 0; color: #1e293b;">
+          To create your secure family vault and run your 24/7 background sync worker, Google will ask for <strong>3 permissions</strong>:
+        </p>
+
+        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 10px; display: flex; flex-direction: column; gap: 8px;">
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <span style="font-size: 1rem; line-height: 1;" aria-hidden="true">📁</span>
+            <div>
+              <strong style="color: #0f172a;">Google Drive</strong>
+              <div style="color: #64748b; font-size: 0.72rem;">To create and save your K.I.D.S. Vault folder and homework archives.</div>
+            </div>
+          </div>
+          <div style="display: flex; align-items: flex-start; gap: 8px;">
+            <span style="font-size: 1rem; line-height: 1;" aria-hidden="true">⚡</span>
+            <div>
+              <strong style="color: #0f172a;">Apps Script (Projects & Deployments)</strong>
+              <div style="color: #64748b; font-size: 0.72rem;">To deploy your personal 24/7 background sync worker.</div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background: #eff6ff; border-left: 3px solid #3b82f6; padding: 8px 10px; border-radius: 4px; font-size: 0.74rem; color: #1e40af;">
+          💡 <strong>How to continue:</strong> On Google's screen, simply check <strong>"Select all"</strong>.<br>
+          <em>If you do not wish to grant all permissions, click Cancel below. No changes will be made.</em>
+        </div>
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCancelStep1PreConsentModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel and do not connect">Cancel</button>
+        <button id="btnProceedStep1PreConsentModal" class="btn btn-primary" style="flex: 1.6; font-size: 0.78rem; font-weight: 700;" aria-label="Continue to Google Sign-In">Continue to Sign-In ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 1 Apps Script API Guidance Modal -->
+  <div id="step1ApiGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalStep1ApiTitle" aria-describedby="boxStep1ApiGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">⚙️</div>
+      <h3 id="modalStep1ApiTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Google Apps Script API Required</h3>
+      
+      <div id="boxStep1ApiGuidance" style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
+        <strong>1-Time Setting Enablement:</strong><br>
+        To deploy your Personal Master Cloud Worker and 24/7 Google Drive sync engine, the Google Apps Script API must be enabled on your Google account.<br><br>
+        Clicking <strong>Open Settings Page</strong> will take you to your Google Apps Script settings in a new tab. Simply toggle the <strong>Google Apps Script API</strong> switch to <strong>ON</strong>, then return here and click <strong>Verify API Status</strong>.
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCancelStep1ApiModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel">Cancel</button>
+        <button id="btnProceedStep1ApiModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;" aria-label="Open Settings Page to Enable API">Open Settings Page ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Step 2 Apps Script API Guidance Modal -->
+  <div id="step2ApiGuidanceModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalStep2ApiTitle" aria-describedby="boxStep2ApiGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">⚙️</div>
+      <h3 id="modalStep2ApiTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #1a365d; margin-bottom: 8px;">Enable Apps Script API for School Account</h3>
+      
+      <div id="boxStep2ApiGuidance" style="background: #eff6ff; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #1e40af; margin-bottom: 14px; text-align: left; border-left: 4px solid #3b82f6;">
+        <strong>School Account API Setting:</strong><br>
+        To deploy the 1-minute background sync worker for <span id="lblStep2ApiChildName" style="font-weight: 700;">your child</span>, the Google Apps Script API must be enabled on their school Google account.<br><br>
+        Clicking <strong>Open Settings Page</strong> will take you to Google Apps Script settings in a new tab. Switch the <strong>Google Apps Script API</strong> toggle to <strong>ON</strong>, then return here and click <strong>Verify API Status</strong>.
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCancelStep2ApiModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel">Cancel</button>
+        <button id="btnProceedStep2ApiModal" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700;" aria-label="Open Settings Page to Enable API">Open Settings Page ➔</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Account Collision Alert Modal (Parent or Sibling Conflict in Step 2) -->
+  <div id="modalAccountConflictAlert" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalConflictTitle" aria-describedby="boxConflictGuidance" aria-hidden="true" hidden>
+    <div class="modal-content" role="document">
+      <div style="font-size: 2.2rem; margin-bottom: 6px;" aria-hidden="true">⚠️</div>
+      <h3 id="modalConflictTitle" tabindex="-1" style="font-size: 0.98rem; font-weight: 700; color: #b91c1c; margin-bottom: 8px;">Incorrect Account Selected</h3>
+      
+      <div id="boxConflictGuidance" style="background: #fef2f2; padding: 12px; border-radius: 8px; font-size: 0.78rem; line-height: 1.45; color: #991b1b; margin-bottom: 14px; text-align: left; border-left: 4px solid #ef4444;">
+        <span id="lblConflictDetailText">You selected this account, which is already in use.</span>
+        <hr style="border: 0; border-top: 1px solid #fecaca; margin: 8px 0;" aria-hidden="true">
+        <span>💡 <em>Please click below to choose your child's dedicated school Google account (e.g. <code>student@school.edu</code> or separate child account).</em></span>
+      </div>
+
+      <div style="display: flex; gap: 8px;">
+        <button id="btnCloseConflictModal" class="btn btn-secondary" style="flex: 1; font-size: 0.78rem;" aria-label="Cancel">Cancel</button>
+        <button id="btnRetryAccountSelection" class="btn btn-primary" style="flex: 1.5; font-size: 0.78rem; font-weight: 700; background: #b91c1c;" aria-label="Select Another Account">Select Another Account ➔</button>
       </div>
     </div>
   </div>
@@ -173,23 +289,41 @@ Loading log...
   <div class="container" id="mainAppContainer">
     <header class="header">
       <div class="logo-title">
-        <span class="icon" aria-hidden="true">🎓</span>
+        <span class="icon" aria-hidden="true" role="presentation">🎓</span>
         <h1 id="appHeaderTitle">Kids Intelligent Dashboard System (K.I.D.S.)</h1>
       </div>
       <div style="display: flex; gap: 6px; align-items: center;">
-        <span id="stepBadge" class="badge" aria-live="polite">Step 1 of 4</span>
+        <span id="stepBadge" class="badge" aria-live="polite" aria-label="Step 1 of 4">Step 1 of 4</span>
       </div>
     </header>
 
     <!-- Stepper Indicator (4 Steps) -->
-    <div id="wizardStepper" class="stepper" role="navigation" aria-label="Onboarding Progress Stepper">
-      <div class="step-dot active" id="dot1" title="Step 1: Parent Account & Kid Profile" tabindex="0" role="button" aria-label="Step 1: Parent Account & Kid Profile">1</div>
+    <nav id="wizardStepper" class="stepper" aria-label="Setup Progress Stepper">
+      <button type="button" class="step-dot active" id="dot1" aria-label="Step 1: Parent Account &amp; Kid Profile, Current Step" aria-current="step">1</button>
       <div class="step-line" id="line1" aria-hidden="true"></div>
-      <div class="step-dot" id="dot2" title="Step 2: Student School Account" tabindex="0" role="button" aria-label="Step 2: Student School Account">2</div>
+      <button type="button" class="step-dot disabled-dot" id="dot2" aria-label="Step 2: Student School Account, Upcoming" disabled>2</button>
       <div class="step-line" id="line2" aria-hidden="true"></div>
-      <div class="step-dot" id="dot3" title="Step 3: School Portals" tabindex="0" role="button" aria-label="Step 3: School Portals">3</div>
+      <button type="button" class="step-dot disabled-dot" id="dot3" aria-label="Step 3: School Portals, Upcoming" disabled>3</button>
       <div class="step-line" id="line3" aria-hidden="true"></div>
-      <div class="step-dot" id="dot4" title="Step 4: School Chat Groups" tabindex="0" role="button" aria-label="Step 4: School Chat Groups">4</div>
+      <button type="button" class="step-dot disabled-dot" id="dot4" aria-label="Step 4: School Chat Groups, Upcoming" disabled>4</button>
+    </nav>
+
+    <!-- Persistent Global Background Sync Status Banner with Visual Progress Bar -->
+    <div id="globalSyncBanner" class="hidden" style="position: sticky; top: 0; z-index: 99; background: #ffffff; border: 1px solid #bfdbfe; border-left: 4px solid #2563eb; border-radius: 8px; padding: 8px 12px; margin: 0 0 10px 0; box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12);" role="status" aria-live="polite">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px;">
+        <div style="display: flex; align-items: center; gap: 7px; flex: 1; min-width: 0;">
+          <span id="globalSyncIcon" style="font-size: 1.05rem;">⏳</span>
+          <div style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+            <strong id="globalSyncTitle" style="color: #1e40af; display: block; font-size: 0.76rem; font-family: 'Kanit', sans-serif;">1-Time School Archive Syncing...</strong>
+            <span id="globalSyncSubtext" style="color: #475569; font-size: 0.69rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Downloading & indexing attachments in background.</span>
+          </div>
+        </div>
+        <span id="globalSyncBadge" style="background: #dbeafe; color: #1e40af; padding: 2px 8px; border-radius: 999px; font-weight: 700; font-size: 0.72rem; border: 1px solid #bfdbfe; white-space: nowrap; margin-left: 8px;">Syncing...</span>
+      </div>
+      <!-- Graphical Visual Progress Bar (ARIA & Screen Reader Accessible) -->
+      <div id="globalSyncProgressBarContainer" role="progressbar" tabindex="0" aria-label="1-Time School Archive Background Sync Progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="10" aria-valuetext="Scanning school coursework and circular attachments in background." style="width: 100%; background: #e2e8f0; border-radius: 999px; height: 6px; overflow: hidden; margin-top: 5px; outline-offset: 2px;">
+        <div id="globalSyncProgressBar" style="width: 10%; height: 100%; background: linear-gradient(90deg, #2563eb, #3b82f6); border-radius: 999px; transition: width 0.3s ease;"></div>
+      </div>
     </div>
 
     <main class="main-content">
@@ -232,17 +366,27 @@ Loading log...
 
       <!-- Step 1: Fixed Parent Account, Kid Name, Academic Year & Reference Photo -->
       <section id="step1Card" class="card" aria-hidden="false" role="region" aria-labelledby="headingStep1">
-        <h2 id="headingStep1" tabindex="-1">Step 1: Parent Account & Kid Profile</h2>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+          <h2 id="headingStep1" tabindex="-1" style="margin: 0;">Step 1: Parent Account & Kid Profile</h2>
+          <button type="button" id="btnStep1BackToDashboard" class="btn btn-outline btn-sm hidden" aria-hidden="true" hidden style="font-size: 0.72rem; padding: 2px 8px;" aria-label="Back to Family Dashboard">
+            🏠 Family Dashboard
+          </button>
+        </div>
         <p class="subtitle">
           Connect your <strong>Personal Google Account</strong>. All child data and attachments will be vaulted securely in your private <code>K.I.D.S. Data/</code> Google Drive.
         </p>
 
-        <div class="status-box mb-1" role="region" aria-label="Parent Account Information">
-          <span aria-hidden="true">🔒</span>
-          <div>
-            <strong>Parent Account (Subscription Owner):</strong>
-            <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;" aria-live="polite">Not connected</span>
+        <div class="status-box mb-1" role="region" aria-label="Parent Account Information" style="display: flex; justify-content: space-between; align-items: center;">
+          <div style="display: flex; gap: 8px; align-items: center;">
+            <span aria-hidden="true">🔒</span>
+            <div>
+              <strong>Parent Account (Subscription Owner):</strong>
+              <span id="lblStep1AccountEmail" style="color: var(--brand-navy); font-weight: 700; display: block;" aria-live="polite">Not connected</span>
+            </div>
           </div>
+          <button id="btnStep1DisconnectPersonal" class="btn btn-secondary btn-sm hidden" aria-hidden="true" hidden style="padding: 3px 8px; font-size: 0.72rem;" aria-label="Disconnect or Reconnect Personal Google Account">
+            🔄 Reconnect
+          </button>
         </div>
 
         <button id="btnStep1ConnectPersonal" class="btn btn-primary btn-hero mb-2" aria-label="Sign in with Personal Google Account to connect Drive storage">
@@ -259,11 +403,14 @@ Loading log...
             </div>
 
             <div style="display: flex; flex-direction: column; gap: 6px;">
-              <button id="btnStep1OpenApiSettings" class="btn btn-secondary btn-hero" aria-label="Verify Google Apps Script API Enabled for Personal Account">
-                🔗 1. Verify Google Apps Script API Enabled
+              <button id="btnStep1OpenApiSettings" class="btn btn-secondary btn-hero" aria-label="Open Google Apps Script API Settings">
+                🔗 Enable Google Apps Script API
+              </button>
+              <button id="btnStep1VerifyApiStatus" class="btn btn-secondary btn-hero hidden" aria-hidden="true" hidden style="display: none !important;" aria-label="Verify Google Apps Script API Status for Personal Account">
+                🔄 Verify Google Apps Script API Status
               </button>
               <button id="btnStep1DeployMasterWorker" class="btn btn-success btn-hero" aria-label="Deploy Personal Master Cloud Worker">
-                ⚡ 2. Deploy Personal Master Cloud Worker
+                ⚡ Deploy Personal Master Cloud Worker
               </button>
             </div>
           </div>
@@ -367,23 +514,149 @@ Loading log...
           Connect your child's school-provided Google account to sync teacher circulars, homework assignments, and worksheets every 1 minute.
         </p>
 
-        <!-- School Account Connection Box -->
-        <div class="guidance-box mb-2" role="region" aria-label="School Account Details">
-          <p class="guidance-title">🎓 Student Account Setup & 1-Min Cloud Worker:</p>
-          <div style="font-size: 0.74rem; line-height: 1.4; color: #334155;">
-            Deploys an autonomous background worker in the student's Google account that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.
+        <!-- Option A: 1-Click Google Sheet Template (Recommended & Easiest) -->
+        <div id="tier2SheetContainer" role="region" aria-label="1-Click Google Sheet Sync Template" style="background: #f0fdf4; border: 1.5px solid #86efac; border-radius: 8px; padding: 12px; margin-bottom: 12px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <strong style="font-size: 0.82rem; color: #166534;">📋 Option A: 1-Click Google Sheet Template</strong>
+            <span class="badge" style="background: #16a34a; color: #fff; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px; font-weight: 700;">Zero-Code • Recommended</span>
+          </div>
+          <p style="font-size: 0.72rem; color: #1e293b; line-height: 1.45; margin-bottom: 8px;">
+            Sync Google Classroom coursework, materials, announcements, and teacher circulars without pasting any code or deploying Web Apps.
+          </p>
+
+          <ol style="font-size: 0.72rem; line-height: 1.45; color: #334155; margin-left: 18px; margin-bottom: 10px;">
+            <li>Click <strong>Open with Account Selector</strong> to pick your child's school account, or <strong>Copy Link</strong> to paste into their school browser window.</li>
+            <li>Click <strong>"Make a copy"</strong> to clone the sheet into their school Drive.</li>
+            <li>In the copied sheet, click menu: <strong>🎓 School Sync ➔ 🚀 Authorize &amp; Start 24/7 Cloud Sync</strong>.</li>
+          </ol>
+
+          <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+            <button type="button" id="btnOpenSetupSheetCopy" class="btn btn-primary btn-hero" style="flex: 1.5; background: #16a34a; border-color: #15803d; margin-bottom: 0;" aria-label="Open setup sheet in school account with account selector">
+              🚀 Open with Account Selector
+            </button>
+            <button type="button" id="btnCopySetupSheetLink" class="btn btn-secondary btn-hero" style="flex: 1; margin-bottom: 0;" aria-label="Copy setup sheet link to clipboard">
+              📋 Copy Link
+            </button>
+          </div>
+          <div id="lblSetupSheetStatus" style="font-size: 0.7rem; color: #166534; font-weight: 600; margin-top: 4px; display: none;"></div>
+        </div>
+
+        <!-- Option Divider -->
+        <div style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+          <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+          <span style="font-size: 0.7rem; color: #64748b; font-weight: 700; text-transform: uppercase;">OR (Alternative Methods)</span>
+          <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+        </div>
+
+        <!-- Option B: Automated 1-Click School Worker Deployment -->
+        <div id="option1AutomatedWorkerBox" class="guidance-box mb-2" role="region" aria-label="Automated School Worker Deployment" style="background: #f8fafc; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <p class="guidance-title" id="lblStep2GuidanceTitle" style="margin: 0; color: #1e40af;">🎓 Option B: 1-Click Automated Cloud Worker</p>
+            <span class="badge" style="background: #2563eb; color: #fff; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px;">1-Click</span>
+          </div>
+          <div id="lblStep2GuidanceBody" style="font-size: 0.74rem; line-height: 1.4; color: #334155; margin-bottom: 8px;">
+            Deploys an autonomous background worker in the student's Google account via OAuth that automatically syncs Google Classroom coursework and school Gmail circulars into your shared <code>K.I.D.S. Data/</code> Google Drive.
+          </div>
+
+          <button id="btnStep2ConnectStudent" class="btn btn-primary btn-hero mb-1" aria-label="Sign in with Student School Google Account">
+            🔐 1. Sign In with Student School Google Account
+          </button>
+          <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1 hidden" aria-hidden="true" hidden aria-label="Open Google Apps Script User Settings in new tab">
+            🔗 2. Enable Google Apps Script API
+          </button>
+          <button id="btnStep2VerifyApiStatus" class="btn btn-secondary btn-hero mb-1 hidden" aria-hidden="true" hidden aria-label="Verify School Account Google Apps Script API Status">
+            🔄 Verify Google Apps Script API Status
+          </button>
+          <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-1 hidden" aria-hidden="true" hidden aria-label="Deploy School Cloud Worker and 1-minute cron trigger">
+            ⚡ 2. Deploy School Cloud Worker & 1-Min Trigger
+          </button>
+        </div>
+
+        <!-- Option Divider -->
+        <div style="display: flex; align-items: center; gap: 8px; margin: 10px 0;">
+          <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+          <span style="font-size: 0.7rem; color: #64748b; font-weight: 700; text-transform: uppercase;">OR (Recommended if school restricts external apps)</span>
+          <div style="flex: 1; height: 1px; background: #e2e8f0;"></div>
+        </div>
+
+        <!-- Option C: Guided Manual Script Deployment -->
+        <div id="tier2ManualContainer" role="region" aria-label="Manual Script Deployment" style="background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+            <strong style="font-size: 0.78rem; color: #166534;">☁️ Option C: Guided Manual Script Deployment</strong>
+            <span class="badge" style="background: #059669; color: #fff; font-size: 0.65rem; padding: 2px 6px; border-radius: 4px;">100% Reliable</span>
+          </div>
+          <p style="font-size: 0.71rem; color: #475569; margin-bottom: 8px; line-height: 1.4;">
+            Deploy directly in Google Apps Script as the student. 100% bypasses third-party OAuth app restrictions with 24/7 cloud sync.
+          </p>
+
+          <!-- Domain Block Notification Banner -->
+          <div id="step2DomainBlockBanner" class="status-box mb-2 hidden" aria-hidden="true" hidden style="background: #fffbeb; border-left: 3px solid #f59e0b; padding: 8px 10px; font-size: 0.73rem; color: #92400e; line-height: 1.4;">
+            <strong>🎓 School Workspace Restrictions Detected:</strong><br>
+            Your school blocks external OAuth apps. Use this 2-minute manual deployment below to connect:
+          </div>
+
+          <!-- Step-by-Step Instructions Accordion -->
+          <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px; margin-bottom: 8px; font-size: 0.72rem; line-height: 1.45; color: #334155;">
+            <div style="font-weight: 700; color: #0f172a; margin-bottom: 4px;">Phase A: Create Project &amp; Paste Code</div>
+            <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+              <button type="button" id="btnCopySchoolWorkerCode" class="btn btn-secondary btn-sm" style="flex: 1.2; font-size: 0.72rem; padding: 4px 6px; font-weight: 600;">
+                📋 1. Copy Worker Code
+              </button>
+              <button type="button" id="btnOpenScriptNew" class="btn btn-secondary btn-sm" style="flex: 1; font-size: 0.72rem; padding: 4px 6px;">
+                🚀 2. Open script.new
+              </button>
+            </div>
+            <span id="lblCopyCodeToast" class="hidden" style="display: block; font-size: 0.68rem; color: #16a34a; font-weight: 600; margin-bottom: 4px;">✅ Worker code copied to clipboard!</span>
+            <ol style="margin-left: 16px; margin-bottom: 6px;">
+              <li>In <code>script.new</code>, select all (<code>Ctrl+A</code>) and paste (<code>Ctrl+V</code>).</li>
+              <li>Rename project to <strong>K.I.D.S. School Worker</strong> and save (<code>Ctrl+S</code>).</li>
+            </ol>
+
+            <div style="font-weight: 700; color: #0f172a; margin-top: 6px; margin-bottom: 4px;">Phase B: Deploy as Web App</div>
+            <ol start="3" style="margin-left: 16px;">
+              <li>Click <strong>Deploy</strong> ➔ <strong>New deployment</strong>.</li>
+              <li>Click ⚙️ gear icon ➔ select <strong>Web app</strong>.</li>
+              <li>Set <em>Execute as:</em> <strong>Me</strong> &amp; <em>Who has access:</em> <strong>Anyone</strong>.</li>
+              <li>Click <strong>Deploy</strong> ➔ <strong>Authorize access</strong> ➔ <strong>Advanced</strong> ➔ <strong>Go to K.I.D.S. School Worker (unsafe)</strong> ➔ <strong>Allow</strong>.</li>
+              <li>Copy the <strong>Web app URL</strong> (<code>https://script.google.com/macros/s/.../exec</code>).</li>
+            </ol>
+          </div>
+
+          <!-- Web App URL Input & Connect Button -->
+          <div class="form-group" style="margin-bottom: 6px;">
+            <label for="txtManualWebAppUrl" style="font-size: 0.72rem; font-weight: 600; color: #334155; margin-bottom: 3px; display: block;">
+              Paste Web App URL:
+            </label>
+            <div style="display: flex; gap: 6px;">
+              <input type="url" id="txtManualWebAppUrl" placeholder="https://script.google.com/macros/s/.../exec" style="flex: 1; font-size: 0.72rem; padding: 5px 8px;" />
+              <button type="button" id="btnConnectManualWorker" class="btn btn-primary btn-sm" style="font-size: 0.72rem; padding: 5px 10px; font-weight: 600; white-space: nowrap;">
+                🔗 Connect
+              </button>
+            </div>
+            <span id="lblManualWorkerFeedback" class="hidden" style="display: block; font-size: 0.7rem; margin-top: 4px; font-weight: 600;" role="status"></span>
           </div>
         </div>
 
-        <button id="btnOpenClassroom" class="btn btn-primary btn-hero mb-1" aria-label="Open Google Classroom in new tab">
-          🌐 1. Sign In with Student School Google Account
-        </button>
-        <button id="btnOpenApiSettings" class="btn btn-secondary btn-hero mb-1" aria-label="Open Google Apps Script User Settings in new tab">
-          🔗 2. Enable Google Apps Script API
-        </button>
-        <button id="btnCreateMcpServer" class="btn btn-success btn-hero mb-2" aria-label="Deploy School Cloud Worker and 1-minute cron trigger">
-          ⚡ 3. Deploy School Cloud Worker & 1-Min Trigger
-        </button>
+        <!-- Hidden Tier 3 Browser Crawler elements (retained for backward compatibility but completely hidden) -->
+        <div style="display: none !important;" aria-hidden="true" hidden>
+          <div id="step2FallbackSection">
+            <button type="button" id="btnToggleManualOrBrowserSync"></button>
+            <span id="iconToggleMultiTier"></span>
+            <div id="boxMultiTierOptions">
+              <button type="button" id="tabTier2Manual"></button>
+              <button type="button" id="tabTier3Browser"></button>
+              <div id="tier3BrowserContainer">
+                <button type="button" id="btnStartBrowserSync"></button>
+                <input type="checkbox" id="chkEnableBrowserIncremental" />
+                <div id="browserSyncProgressBox">
+                  <span id="lblBrowserSyncStatusText"></span>
+                  <span id="lblBrowserSyncPercent"></span>
+                  <div id="browserSyncProgressBar"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
 
         <!-- Step 2 In-Card Dual Progress Bar (1. Script Creation, 2. Data Ingestion) -->
         <div id="step2InlineProgressBar" class="status-box mb-2 hidden" aria-hidden="true" hidden style="flex-direction: column; align-items: stretch; background: #eff6ff; border-left: 3px solid #2563eb; padding: 8px 10px; gap: 8px;" role="status" aria-live="polite">
@@ -449,14 +722,17 @@ Loading log...
               <button id="btnViewClassroomDeepLog" class="btn btn-outline btn-sm" style="font-size: 0.72rem; padding: 3px 8px; background: white; border-color: #16a34a; color: #166534; font-weight: 600;" aria-label="View Classroom Deep Diagnostic Crawl Log">
                 📜 View Deep Sync Log
               </button>
-</div>
+              <button id="btnResumeInitialSync" class="btn btn-primary btn-sm hidden" style="font-size: 0.72rem; padding: 3px 8px; font-weight: 600;" aria-label="Resume Initial School Data Sync">
+                🔄 Resume Syncing Remaining Files
+              </button>
+            </div>
           </div>
         </div>
 
         <div style="display: flex; gap: 6px; margin-top: 6px;">
           <button id="btnNavStep2ToStep1" class="btn btn-secondary btn-sm" style="flex: 1;" aria-label="Back to Step 1">⬅️ Back</button>
           <button id="btnSkipStep2Bottom" class="btn btn-outline btn-sm" style="flex: 1.2; font-size: 0.72rem;" aria-label="Skip School Account and go to Step 3">⏭️ Skip School Account</button>
-          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm hidden" hidden aria-hidden="true" style="flex: 1.5; font-weight: 700;" aria-label="Continue to Step 3">➡️ Continue to Step 3</button>
+          <button id="btnNavStep2ToStep3" class="btn btn-primary btn-sm hidden" hidden aria-hidden="true" style="flex: 1.5; font-weight: 700;" aria-label="Continue to Step 3: School Portals">➡️ Continue to Step 3: School Portals</button>
         </div>
       </section>
 

@@ -69,12 +69,11 @@ export class AuthService {
       const scopes = (manifest.oauth2?.scopes && manifest.oauth2.scopes.length > 0)
         ? manifest.oauth2.scopes.join(' ')
         : [
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/script.projects',
             'https://www.googleapis.com/auth/script.deployments',
-            'https://www.googleapis.com/auth/drive.file',
-            'https://www.googleapis.com/auth/classroom.courses.readonly',
-            'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly'
+            'https://www.googleapis.com/auth/drive.file'
           ].join(' ');
 
       const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -133,12 +132,11 @@ export class AuthService {
       const scopes = (manifest.oauth2?.scopes && manifest.oauth2.scopes.length > 0)
         ? manifest.oauth2.scopes.join(' ')
         : [
+            'https://www.googleapis.com/auth/userinfo.email',
+            'https://www.googleapis.com/auth/userinfo.profile',
             'https://www.googleapis.com/auth/script.projects',
             'https://www.googleapis.com/auth/script.deployments',
-            'https://www.googleapis.com/auth/drive.file',
-            'https://www.googleapis.com/auth/classroom.courses.readonly',
-            'https://www.googleapis.com/auth/classroom.coursework.me.readonly',
-            'https://www.googleapis.com/auth/calendar.events.readonly'
+            'https://www.googleapis.com/auth/drive.file'
           ].join(' ');
 
       const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -146,7 +144,7 @@ export class AuthService {
       authUrl.searchParams.set('response_type', 'token');
       authUrl.searchParams.set('redirect_uri', redirectUri);
       authUrl.searchParams.set('scope', scopes);
-      authUrl.searchParams.set('prompt', 'select_account');
+      authUrl.searchParams.set('prompt', 'consent select_account');
 
       chrome.identity.launchWebAuthFlow(
         { url: authUrl.toString(), interactive: true },
@@ -163,6 +161,7 @@ export class AuthService {
             const hash = parsedUrl.hash.startsWith('#') ? parsedUrl.hash.substring(1) : parsedUrl.hash;
             const hashParams = new URLSearchParams(hash);
             const accessToken = hashParams.get('access_token');
+            const grantedScope = hashParams.get('scope') || '';
             const expiresInSec = parseInt(hashParams.get('expires_in') || '3600', 10);
             const error = hashParams.get('error');
 
@@ -171,6 +170,13 @@ export class AuthService {
             }
             if (!accessToken) {
               return reject(new Error('No access token returned from Google.'));
+            }
+
+            const hasScriptProjects = grantedScope.includes('script.projects') || grantedScope.includes('/auth/script');
+            const hasScriptDeployments = grantedScope.includes('script.deployments');
+            if (grantedScope && (!hasScriptProjects || !hasScriptDeployments)) {
+              await chrome.storage.local.remove([AuthService.STORAGE_KEY_TOKEN, AuthService.STORAGE_KEY_EXPIRY]);
+              return reject(new Error("⚠️ Google Apps Script permissions were not granted. Please sign in again and ensure you check 'Select all' on the Google authorization screen."));
             }
 
             // Save token and calculated expiry time

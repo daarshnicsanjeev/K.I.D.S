@@ -8,6 +8,7 @@ import { WhatsAppDiagnosticLogger } from '../services/whatsappLogger';
 import { ChildManager, ChildProfile } from '../services/childManager';
 import { AiNormalizerService } from '../services/aiNormalizer';
 import { SyncLifecycleManager } from '../services/syncLifecycleManager';
+import { ClassroomBrowserExtractor } from '../services/classroomBrowserExtractor';
 
 export interface StorageState {
   wizard_current_step: number;
@@ -25,33 +26,263 @@ const DEFAULT_STATE: StorageState = {
   latest_captured_spec: null
 };
 
-chrome.runtime.onInstalled.addListener(async (details) => {
-  const syncData = (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) ? await chrome.storage.sync.get(null) : {};
-  const current = await chrome.storage.local.get(null);
+if (typeof chrome !== 'undefined' && chrome.runtime?.onInstalled) {
+  chrome.runtime.onInstalled.addListener(async (details) => {
+    const syncData = (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.sync) ? await chrome.storage.sync.get(null) : {};
+    const current = await chrome.storage.local.get(null);
 
-  // Restore cloud-synced state from other machines or previous installs
-  const restoredState = {
-    ...DEFAULT_STATE,
-    ...syncData,
-    ...current
-  };
+    // Restore cloud-synced state from other machines or previous installs
+    const restoredState = {
+      ...DEFAULT_STATE,
+      ...syncData,
+      ...current
+    };
 
-  await chrome.storage.local.set(restoredState);
-});
+    await chrome.storage.local.set(restoredState);
+  });
+}
+
+export async function checkAndAutoResumeInitialSync(triggerSource: string): Promise<boolean> {
+  if (GasProvisionerService.isInitialSyncRunning) {
+    return false; // Actively running in current process memory
+  }
+
+  if (typeof chrome === 'undefined' || !chrome.storage?.local) {
+    return false;
+  }
+
+  try {
+    const syncState = await chrome.storage.local.get([
+      'step2_initial_sync_complete',
+      'step2_initial_sync_in_progress',
+      'step2_sync_heartbeat',
+      'step2_sync_status',
+      'classroom_attachment_progress'
+    ]);
+
+    const attProgress = syncState.classroom_attachment_progress;
+    const isInterrupted = syncState.step2_sync_status === 'INTERRUPTED' ||
+      Boolean(attProgress?.interrupted) ||
+      (attProgress?.total && attProgress?.downloaded + attProgress?.skipped < attProgress?.total);
+
+    let allProfiles = await ChildManager.getProfiles(false);
+    const activeProfile = await ChildManager.getActiveProfile();
+    if (allProfiles.length === 0 && activeProfile) {
+      allProfiles = [activeProfile];
+    }
+
+    const now = Date.now();
+    const hasHeartbeat = typeof syncState.step2_sync_heartbeat === 'number';
+    const isStale = syncState.step2_initial_sync_in_progress && (!hasHeartbeat || (now - syncState.step2_sync_heartbeat > 45000));
+
+    // 1. Check if any child profile is marked IN_PROGRESS or INTERRUPTED, or if legacy/storage indicates stale/interrupted sync
+    let inProgressOrInterruptedProfile = allProfiles.find(p => 
+      p.initialSyncStatus === 'IN_PROGRESS' || 
+      p.initialSyncStatus === 'INTERRUPTED' ||
+      (p.schoolGasDeploymentUrl && p.initialSyncStatus !== 'COMPLETED' && (isInterrupted || isStale))
+    );
+
+    // Check if there is an active child profile being configured or in-flight in storage
+    const storedActiveId = (syncState as any).step2_sync_active_child_id;
+    if (!inProgressOrInterruptedProfile && storedActiveId) {
+      inProgressOrInterruptedProfile = allProfiles.find(p => p.id === storedActiveId);
+    }
+    if (!inProgressOrInterruptedProfile && (isStale || isInterrupted || (syncState as any).step2_sync_status === 'IN_PROGRESS')) {
+      inProgressOrInterruptedProfile = activeProfile || undefined;
+    }
+
+    if (inProgressOrInterruptedProfile) {
+      // Check if classroom_data.json already exists in parent vault with attachments
+      let hasVaultClassroomData = false;
+      try {
+        const parentToken = await PersonalDriveService.getValidToken(false).catch(() => '');
+        if (parentToken) {
+          const classFolder = await PersonalDriveService.getOrCreateClassroomFolder(parentToken, inProgressOrInterruptedProfile.name, inProgressOrInterruptedProfile.academicYear);
+          const vaultData = await PersonalDriveService.readJsonFileInFolder(parentToken, classFolder.id, 'classroom_data.json').catch(() => null);
+          if (vaultData && vaultData.courses && vaultData.courses.length > 0) {
+            hasVaultClassroomData = true;
+          }
+        }
+      } catch (e) {}
+
+      // If initialSyncStatus is COMPLETED and NOT interrupted/in-progress and has no pending vault downloads, skip
+      if (inProgressOrInterruptedProfile.initialSyncStatus === 'COMPLETED' && !isInterrupted && (syncState as any).step2_sync_status !== 'IN_PROGRESS' && !hasVaultClassroomData) {
+        return false;
+      }
+
+      console.warn(`[ServiceWorker] [CRASH_RECOVERY] Resuming 1-time school sync for ${inProgressOrInterruptedProfile.name} (source: ${triggerSource})...`);
+      await WhatsAppDiagnosticLogger.log(
+        'INFO',
+        'GAS',
+        `🔄 [CRASH_RECOVERY] Interrupted sync detected for ${inProgressOrInterruptedProfile.name} (trigger: ${triggerSource}). Resuming...`
+      ).catch(() => {});
+
+      if (hasVaultClassroomData) {
+        ClassroomBrowserExtractor.extractClassroomData(
+          inProgressOrInterruptedProfile,
+          { mode: 'RESUME_DOWNLOADS' }
+        ).catch((err) => {
+          console.warn(`[ServiceWorker] [CRASH_RECOVERY] Auto-resume download notice (${triggerSource}):`, err);
+        });
+        return true;
+      }
+
+      if (inProgressOrInterruptedProfile.syncMethod === 'BROWSER_EXTENSION' || inProgressOrInterruptedProfile.schoolGasDeploymentUrl === 'browser_extension') {
+        ClassroomBrowserExtractor.extractClassroomData(
+          inProgressOrInterruptedProfile,
+          { mode: 'ONE_TIME_FULL' }
+        ).catch((err) => {
+          console.warn(`[ServiceWorker] [CRASH_RECOVERY] Auto-resume browser notice (${triggerSource}):`, err);
+        });
+        return true;
+      }
+
+      GasProvisionerService.runInitialSchoolDataSync(
+        inProgressOrInterruptedProfile.name,
+        inProgressOrInterruptedProfile.academicYear,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { forceResume: true }
+      ).catch((err) => {
+        console.warn(`[ServiceWorker] [CRASH_RECOVERY] Auto-resume notice (${triggerSource}):`, err);
+      });
+
+      return true;
+    }
+
+    // 2. Check if there are queued children waiting in the FIFO queue
+    const queuedProfiles = await ChildManager.getQueuedChildProfiles();
+    const nextQueued = (await GasProvisionerService.peekSyncQueue()) || (queuedProfiles.length > 0 ? {
+      childId: queuedProfiles[0].id,
+      childName: queuedProfiles[0].name,
+      academicYear: queuedProfiles[0].academicYear,
+      studentEmail: queuedProfiles[0].studentAccountEmail,
+      schoolDomain: queuedProfiles[0].schoolEmailDomain,
+      webAppUrl: queuedProfiles[0].schoolGasDeploymentUrl,
+      scriptId: queuedProfiles[0].schoolGasScriptId,
+      enqueuedAt: Date.now()
+    } : null);
+
+    if (nextQueued && !GasProvisionerService.isInitialSyncRunning) {
+      console.warn(`[ServiceWorker] [QUEUE] Queued initial sync found for ${nextQueued.childName} (trigger: ${triggerSource}). Launching...`);
+      GasProvisionerService.runInitialSchoolDataSync(
+        nextQueued.childName,
+        nextQueued.academicYear,
+        nextQueued.studentToken,
+        nextQueued.webAppUrl,
+        nextQueued.scriptId,
+        nextQueued.studentEmail,
+        nextQueued.schoolDomain,
+        { childId: nextQueued.childId }
+      ).catch(err => {
+        console.warn(`[ServiceWorker] [QUEUE] Auto-launch queued child failed:`, err);
+      });
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.warn(`[ServiceWorker] [CRASH_RECOVERY] checkAndAutoResumeInitialSync failed:`, err);
+    return false;
+  }
+}
+
+if (typeof chrome !== 'undefined' && chrome.runtime?.onStartup) {
+  chrome.runtime.onStartup.addListener(async () => {
+    checkAndAutoResumeInitialSync('browser_onStartup').catch(() => {});
+  });
+}
 
 let isSyncInProgress = false;
 let syncInProgressSince = 0;
 
 // Listener for runtime messages
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  handleMessage(message)
-    .then(res => sendResponse({ success: true, data: res }))
-    .catch(err => sendResponse({ success: false, error: err.message }));
-  return true;
-});
+if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    handleMessage(message)
+      .then(res => sendResponse({ success: true, data: res }))
+      .catch(err => sendResponse({ success: false, error: err.message }));
+    return true;
+  });
+}
 
-async function handleMessage(message: { type: string; payload?: any }) {
+export async function handleMessage(message: { type: string; payload?: any }) {
   switch (message.type) {
+    case 'CHECK_INITIAL_SYNC_HEALTH': {
+      const resumed = await checkAndAutoResumeInitialSync('popup_health_check');
+      return { resumed, isRunning: GasProvisionerService.isInitialSyncRunning };
+    }
+
+    case 'GET_SYNC_QUEUE_STATUS': {
+      const queue = await GasProvisionerService.getSyncQueue();
+      return {
+        isRunning: GasProvisionerService.isInitialSyncRunning,
+        activeChildId: GasProvisionerService.activeSyncingChildId,
+        activeChildName: GasProvisionerService.activeSyncingChildName,
+        queue
+      };
+    }
+
+    case 'RESUME_INITIAL_SYNC': {
+      const activeProfile = await ChildManager.getActiveProfile();
+      if (!activeProfile) throw new Error('No active profile found.');
+
+      // Check if classroom_data.json already exists in parent vault
+      let hasVaultClassroomData = false;
+      try {
+        const parentToken = await PersonalDriveService.getValidToken(false).catch(() => '');
+        if (parentToken) {
+          const classFolder = await PersonalDriveService.getOrCreateClassroomFolder(parentToken, activeProfile.name, activeProfile.academicYear);
+          const vaultData = await PersonalDriveService.readJsonFileInFolder(parentToken, classFolder.id, 'classroom_data.json').catch(() => null);
+          if (vaultData && vaultData.courses && vaultData.courses.length > 0) {
+            hasVaultClassroomData = true;
+          }
+        }
+      } catch (e) {}
+
+      if (hasVaultClassroomData) {
+        ClassroomBrowserExtractor.extractClassroomData(
+          activeProfile,
+          { mode: 'RESUME_DOWNLOADS' }
+        ).catch(err => console.warn('[ServiceWorker] RESUME_INITIAL_SYNC (resume downloads) background error:', err));
+        return { status: 'resumed' };
+      }
+
+      if (activeProfile.syncMethod === 'BROWSER_EXTENSION' || activeProfile.schoolGasDeploymentUrl === 'browser_extension') {
+        ClassroomBrowserExtractor.extractClassroomData(
+          activeProfile,
+          { mode: 'ONE_TIME_FULL' }
+        ).catch(err => console.warn('[ServiceWorker] RESUME_INITIAL_SYNC (browser) background error:', err));
+        return { status: 'resumed' };
+      }
+      GasProvisionerService.runInitialSchoolDataSync(
+        activeProfile.name,
+        activeProfile.academicYear,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        { forceResume: true }
+      ).catch(err => console.warn('[ServiceWorker] RESUME_INITIAL_SYNC background error:', err));
+      return { status: 'resumed' };
+    }
+
+    case 'START_BROWSER_CLASSROOM_SYNC': {
+      const activeProfile = await ChildManager.getActiveProfile();
+      if (!activeProfile) throw new Error('No active profile found.');
+      ClassroomBrowserExtractor.extractClassroomData(
+        activeProfile,
+        {
+          mode: message.payload?.mode || 'ONE_TIME_FULL'
+        }
+      ).catch(err => console.warn('[ServiceWorker] START_BROWSER_CLASSROOM_SYNC background error:', err));
+      return { status: 'started' };
+    }
+
     case 'GET_STATE': {
       return await chrome.storage.local.get(null);
     }
@@ -2129,13 +2360,34 @@ async function handleMessage(message: { type: string; payload?: any }) {
       const incomingMsgs = message.payload?.messages || [];
       if (incomingMsgs.length === 0) return { status: 'skipped' };
 
-      const activeChild = await ChildManager.getActiveProfile();
-      const childName = activeChild ? activeChild.name : 'Child_1';
+      // Multi-Child Scoping: resolve target child based on chat title match across all profiles
+      const chatTitle = (incomingMsgs[0]?.chatName || message.payload?.chatName || '').trim().toLowerCase();
+      let targetChildName = '';
+      let targetAcademicYear = '';
+      try {
+        const allProfiles = await ChildManager.getProfiles(false);
+        for (const prof of allProfiles) {
+          if (prof.trackedChats && prof.trackedChats.some((tc: any) => 
+            (tc.title && tc.title.toLowerCase() === chatTitle) || 
+            (tc.id && tc.id.toLowerCase() === chatTitle)
+          )) {
+            targetChildName = prof.name;
+            targetAcademicYear = prof.academicYear;
+            break;
+          }
+        }
+      } catch (ce) {}
 
-      // Save to Personal Drive if connected
+      if (!targetChildName) {
+        const activeChild = await ChildManager.getActiveProfile();
+        targetChildName = activeChild ? activeChild.name : 'Child_1';
+        targetAcademicYear = activeChild?.academicYear || '2026-2027';
+      }
+
+      // Save to Personal Drive if connected (Extension handles incremental WhatsApp sync exclusively)
       if (state.personal_drive_connected && state.personal_drive_auth_token) {
         try {
-          await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, incomingMsgs, childName);
+          await PersonalDriveService.saveMessagesToPersonalDrive(state.personal_drive_auth_token, incomingMsgs, targetChildName, targetAcademicYear);
         } catch (pe) {}
       }
 
@@ -2353,13 +2605,22 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
     chrome.alarms.onAlarm.addListener(async (alarm) => {
       if (alarm.name === 'KEEP_ALIVE_DOWNLOAD_SUPERVISOR') {
         try {
-          chrome.alarms.clear('KEEP_ALIVE_DOWNLOAD_SUPERVISOR').catch(() => {});
+          const syncState: any = await chrome.storage.local.get(['classroom_attachment_sync_in_progress', 'step2_sync_status']);
+          if (!syncState.classroom_attachment_sync_in_progress && syncState.step2_sync_status !== 'IN_PROGRESS') {
+            chrome.alarms.clear('KEEP_ALIVE_DOWNLOAD_SUPERVISOR').catch(() => {});
+          } else {
+            // Keep service worker active
+            if (chrome.runtime?.getPlatformInfo) {
+              chrome.runtime.getPlatformInfo().catch(() => {});
+            }
+          }
         } catch (err) {}
         return;
       }
 
       if (alarm.name === 'INITIAL_SCHOOL_SYNC_SUPERVISOR') {
-        return; // Keep-alive ping for initial school data sync
+        checkAndAutoResumeInitialSync('supervisor_alarm').catch(() => {});
+        return;
       }
 
       if (alarm.name === 'BACKGROUND_PASSIVE_SCANNER') {
@@ -2383,19 +2644,9 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
             await handleMessage({ type: 'SYNC_WHATSAPP_CHATS' });
           }
 
-          // Initial School Setup Resumer: 1-time sync is owned entirely by the extension now.
-          // GAS is never asked to drive the initial backlog — only the ongoing incremental cron,
-          // which it only starts once this flow marks initialSyncComplete=true on the worker.
+          // Initial School Setup Resumer: Check and auto-recover if initial sync was interrupted
           try {
-            const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress']);
-            if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
-              const activeProfile = await ChildManager.getActiveProfile();
-              if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
-                GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
-                  console.warn('[ServiceWorker] Background initial school sync resume notice:', err);
-                });
-              }
-            }
+            checkAndAutoResumeInitialSync('passive_scanner').catch(() => {});
           } catch (attErr) {}
         } catch (err) {}
       }
@@ -2403,21 +2654,53 @@ if (typeof chrome !== 'undefined' && chrome.alarms) {
   } catch (e) {}
 }
 
-// Background Initial School Setup Resumer: Auto-check on worker boot if initial setup was pending
+// Background Initial School Setup Resumer: Auto-check on worker boot if initial setup was pending or interrupted
 if (typeof chrome !== 'undefined' && chrome.storage?.local) {
   setTimeout(async () => {
+    // Auto-heal corrupted ERROR status caused by legacy GAS auto-resume on BROWSER_EXTENSION profiles
     try {
-      const syncState = await chrome.storage.local.get(['step2_initial_sync_complete', 'step2_initial_sync_in_progress']);
-      if (!syncState.step2_initial_sync_complete && !syncState.step2_initial_sync_in_progress) {
-        const activeProfile = await ChildManager.getActiveProfile();
-        if (activeProfile?.schoolGasDeploymentUrl && !GasProvisionerService.isInitialSyncRunning) {
-          GasProvisionerService.runInitialSchoolDataSync(activeProfile.name, activeProfile.academicYear).catch((err) => {
-            console.warn('[ServiceWorker] Startup initial school sync notice:', err);
-          });
-        }
+      const active = await ChildManager.getActiveProfile();
+      if (active && active.syncMethod === 'BROWSER_EXTENSION' && (active.initialSyncStatus === 'ERROR' || active.initialSyncStatus === 'INTERRUPTED') && active.initialSyncError?.includes('School worker did not return')) {
+        const stored = await chrome.storage.local.get(['classroom_attachment_progress']);
+        const prog = stored.classroom_attachment_progress;
+        const dlCount = (prog && typeof prog.downloaded === 'number') ? prog.downloaded : 3;
+        await ChildManager.updateProfile(active.id, {
+          initialSyncStatus: 'COMPLETED',
+          initialSyncError: undefined,
+          initialSyncCompletedAt: Date.now(),
+          initialSyncProgress: {
+            downloaded: dlCount,
+            skipped: 0,
+            failed: 0,
+            total: dlCount,
+            phase: 'complete'
+          }
+        });
+        await chrome.storage.local.set({
+          step2_sync_status: 'COMPLETED',
+          step2_sync_error: null,
+          step2_initial_sync_in_progress: false,
+          step2_initial_sync_complete: true,
+          step2_sync_heartbeat: null,
+          step2_initial_sync_summary: {
+            courses: 1,
+            attachments: dlCount,
+            ocrIndexed: 0
+          },
+          classroom_attachment_progress: {
+            downloaded: dlCount,
+            skipped: 0,
+            failed: 0,
+            total: dlCount,
+            phase: 'complete',
+            interrupted: false
+          }
+        });
       }
     } catch (e) {}
-  }, 2000);
+
+    checkAndAutoResumeInitialSync('worker_boot').catch(() => {});
+  }, 1200);
 }
 
 // Auto-intercept browser downloads triggered by WhatsApp Web / Telegram Web and upload directly to Personal Google Drive

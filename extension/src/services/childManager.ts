@@ -22,6 +22,10 @@ export interface ChildProfile {
   personalGasDeploymentUrl?: string;
   schoolGasScriptId?: string;
   schoolGasDeploymentUrl?: string;
+  setupSheetId?: string;
+  setupSheetCopyUrl?: string;
+  lastSheetPushTimestamp?: string;
+  syncMethod?: 'GAS_AUTO' | 'GAS_MANUAL' | 'GAS_SHEET' | 'BROWSER_EXTENSION';
   deployedGasVersion?: string;
   deployedGasHash?: string;
   hasClassroom?: boolean;
@@ -31,6 +35,16 @@ export interface ChildProfile {
   trackedChats?: any[];
   lastSchoolSync?: string;
   lastPortalSync?: string;
+  initialSyncStatus?: 'IDLE' | 'QUEUED' | 'IN_PROGRESS' | 'COMPLETED' | 'INTERRUPTED' | 'ERROR';
+  initialSyncProgress?: {
+    downloaded: number;
+    skipped: number;
+    failed: number;
+    total: number;
+    phase?: 'classroom' | 'emails' | 'complete' | 'interrupted';
+  };
+  initialSyncCompletedAt?: number;
+  initialSyncError?: string;
   isRemoved?: boolean;
 }
 
@@ -319,6 +333,16 @@ export class ChildManager {
 
     let profiles = await this.getProfiles(false);
 
+    // If a profile with the same name already exists (case-insensitive), reuse and update it instead of creating a duplicate
+    const existingSameName = profiles.find(p => (p.name || '').trim().toLowerCase() === cleanName.toLowerCase());
+    if (existingSameName) {
+      existingSameName.name = cleanName;
+      if (academicYear) existingSameName.academicYear = year;
+      if (hasClassroom !== undefined) existingSameName.hasClassroom = hasClassroom;
+      await this.saveProfiles(profiles, existingSameName.id);
+      return existingSameName;
+    }
+
     // If the only existing profile is a placeholder ("Child 1"), rename it instead of duplicating
     if (profiles.length === 1) {
       const n = (profiles[0].name || '').toLowerCase();
@@ -443,6 +467,38 @@ export class ChildManager {
       throw new Error(`Child profile "${childId}" was not found.`);
     }
     return updated;
+  }
+
+  /**
+   * Updates initial sync status and progress metrics for a specific child.
+   */
+  public static async updateChildSyncStatus(
+    childId: string,
+    status: ChildProfile['initialSyncStatus'],
+    progress?: ChildProfile['initialSyncProgress'],
+    error?: string
+  ): Promise<ChildProfile | null> {
+    const updates: Partial<ChildProfile> = {
+      initialSyncStatus: status
+    };
+    if (progress) {
+      updates.initialSyncProgress = progress;
+    }
+    if (status === 'COMPLETED') {
+      updates.initialSyncCompletedAt = Date.now();
+      updates.initialSyncError = undefined;
+    } else if (status === 'ERROR') {
+      updates.initialSyncError = error;
+    }
+    return await this.updateProfile(childId, updates);
+  }
+
+  /**
+   * Retrieves all child profiles currently queued for initial sync.
+   */
+  public static async getQueuedChildProfiles(): Promise<ChildProfile[]> {
+    const profiles = await this.getProfiles(false);
+    return profiles.filter(p => p.initialSyncStatus === 'QUEUED' && !p.isRemoved);
   }
 }
 

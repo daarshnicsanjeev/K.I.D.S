@@ -236,4 +236,83 @@ describe('Classroom Attachment Diagnostics & Direct Persistence', () => {
     const res = await GasProvisionerService.runInitialSchoolDataSync('Atharva', '2026-2027');
     expect(res).toEqual({ inProgress: true });
   });
+
+  it('classifyOcrRequirement correctly categorizes media, digital documents, and scans', () => {
+    // Non-text media
+    expect(PersonalDriveService.classifyOcrRequirement('lecture.mp3', 'audio/mpeg')).toBe('SKIP');
+    expect(PersonalDriveService.classifyOcrRequirement('video.mp4', 'video/mp4')).toBe('SKIP');
+    expect(PersonalDriveService.classifyOcrRequirement('archive.zip', 'application/zip')).toBe('SKIP');
+
+    // Direct digital text formats
+    expect(PersonalDriveService.classifyOcrRequirement('homework.docx')).toBe('DIRECT_TEXT');
+    expect(PersonalDriveService.classifyOcrRequirement('slides.pptx')).toBe('DIRECT_TEXT');
+    expect(PersonalDriveService.classifyOcrRequirement('notes.txt', 'text/plain')).toBe('DIRECT_TEXT');
+
+    // Images (Always require OCR)
+    expect(PersonalDriveService.classifyOcrRequirement('schedule.jpeg', 'image/jpeg')).toBe('NEEDS_OCR');
+    expect(PersonalDriveService.classifyOcrRequirement('blackboard.jpg')).toBe('NEEDS_OCR');
+    expect(PersonalDriveService.classifyOcrRequirement('capture.png')).toBe('NEEDS_OCR');
+
+    // Scanned PDFs by naming convention
+    expect(PersonalDriveService.classifyOcrRequirement('DocScanner 9 Sept 2026.pdf')).toBe('NEEDS_OCR');
+    expect(PersonalDriveService.classifyOcrRequirement('CamScanner_123.pdf')).toBe('NEEDS_OCR');
+
+    // Vector PDF with font text stream
+    const fakeVectorPdf = new TextEncoder().encode('%PDF-1.4 ... /Type /Font ... BT (Hello World) Tj ET');
+    expect(PersonalDriveService.classifyOcrRequirement('syllabus.pdf', 'application/pdf', fakeVectorPdf.buffer)).toBe('DIRECT_TEXT');
+  });
+
+  it('syncClassroomAttachments runs Phase 1 downloads first and then Phase 2 OCR indexing', async () => {
+    const fakePdfBytes = new TextEncoder().encode('%PDF-1.4 ... /Type /Font ... BT (Worksheet Text) Tj ET').buffer;
+    vi.spyOn(PersonalDriveService, 'getOrCreateClassroomFolder').mockResolvedValue({
+      id: 'class_folder_1',
+      attachmentsFolderId: 'class_att_folder_1'
+    } as any);
+    vi.spyOn(PersonalDriveService, 'listFilesInFolder').mockResolvedValue([]);
+    vi.spyOn(PersonalDriveService, 'listSchoolVaultFiles').mockResolvedValue([]);
+    vi.spyOn(PersonalDriveService, 'downloadDriveFileContent').mockResolvedValue({
+      bytes: fakePdfBytes,
+      mimeType: 'application/pdf',
+      fileName: 'worksheet.pdf'
+    });
+    vi.spyOn(PersonalDriveService, 'saveBinaryFileInFolder').mockResolvedValue('vault_file_123');
+    const rpcSpy = vi.spyOn(PersonalDriveService, 'callGasWorkerRpc').mockResolvedValue({
+      success: true,
+      record: { fileId: 'vault_file_123' },
+      isOcr: false,
+      wordCount: 120
+    });
+
+    const mockClassData = {
+      courses: [{
+        name: 'Math',
+        materials: [{
+          title: 'Fractions',
+          attachments: [{ fileId: 'f_math_1', title: 'fractions.pdf', targetName: 'Math_Fractions_f_math_1' }]
+        }]
+      }]
+    };
+
+    const res = await PersonalDriveService.syncClassroomAttachments(
+      'parent_token',
+      'student_token',
+      'Atharva',
+      '2026-2027',
+      { silent: true, classData: mockClassData, webAppUrl: 'https://gas.mock/exec' }
+    );
+
+    expect(res.downloaded).toBe(1);
+    expect(res.ocrIndexed).toBe(1);
+
+    // Verify Phase 1 download completed before Phase 2 OCR started
+    const savedLog = logs.find(l => l.message.includes('[ATTACHMENT_SAVED]'));
+    const phase2StartLog = logs.find(l => l.message.includes('[PHASE_2_OCR_START]'));
+    const ocrDoneLog = logs.find(l => l.message.includes('[OCR_INDEXED]'));
+
+    expect(savedLog).toBeDefined();
+    expect(savedLog.message).toContain('OCR Category: DIRECT_TEXT');
+    expect(phase2StartLog).toBeDefined();
+    expect(ocrDoneLog).toBeDefined();
+  });
 });
+

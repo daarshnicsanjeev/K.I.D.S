@@ -117,7 +117,7 @@ describe('School Data Initial Sync Safety Gate', () => {
     vi.spyOn(GasProvisionerService, 'executeMcpCommand').mockResolvedValue({
       classroom: {
         totalCourses: 8,
-        totalAttachments: 12,
+        totalAttachments: 2,
         courses: [{ id: 'c1', name: 'Grade 3B Math' }]
       },
       gmail: {
@@ -148,8 +148,10 @@ describe('School Data Initial Sync Safety Gate', () => {
     expect(mockStorage['step2_initial_sync_complete']).toBe(true);
 
     expect(createdNotifications).toHaveLength(1);
-    expect(createdNotifications[0].title).toBe('K.I.D.S. School Sync Complete');
-    expect(createdNotifications[0].message).toContain('8 courses, 2 attachments (2 Classroom, 0 Email circulars) & 3 emails');
+    expect(createdNotifications[0].title).toBe('K.I.D.S. Vault Ready (Atharva)');
+    expect(createdNotifications[0].message).toContain('8 course(s)');
+    expect(createdNotifications[0].message).toContain('2 attachment(s)');
+    expect(createdNotifications[0].message).toContain('3 circular(s)');
   });
 
   it('invokes PersonalDriveService.callGasWorkerRpc with isIncremental: false and extractOnly: true when Web App fallback is used', async () => {
@@ -195,6 +197,49 @@ describe('School Data Initial Sync Safety Gate', () => {
     expect(res.attachments).toBe(208);
     expect(mockStorage['step2_sync_status']).toBe('COMPLETED');
     expect(mockStorage['step2_initial_sync_complete']).toBe(true);
+  });
+
+  it('marks INTERRUPTED and suppresses completion notification when saveExtractedSchoolData reports interruption or missing attachments', async () => {
+    vi.spyOn(GasProvisionerService, 'executeMcpCommand').mockResolvedValue({
+      classroom: {
+        totalCourses: 1,
+        totalAttachments: 228,
+        courses: [{ id: 'course_1', name: 'Grade 3B CAIE' }]
+      },
+      gmail: {
+        totalEmails: 66,
+        totalAttachments: 2,
+        emails: [{ id: 'm1', subject: 'Circular' }]
+      }
+    });
+
+    // Only 50 files reached disk before network loss
+    vi.spyOn(PersonalDriveService, 'listFilesInFolder').mockResolvedValue(
+      new Array(50).fill(null).map((_, i) => ({ id: `f_${i}`, name: `file_${i}.pdf` }))
+    );
+    vi.spyOn(PersonalDriveService, 'listSchoolVaultFiles').mockResolvedValue(
+      new Array(50).fill(null).map((_, i) => ({ id: `f_${i}`, name: `file_${i}.pdf` }))
+    );
+    vi.spyOn(PersonalDriveService, 'saveExtractedSchoolData').mockResolvedValue({
+      classroomDownloaded: 50,
+      emailDownloaded: 0,
+      totalDownloaded: 50,
+      totalSkipped: 0,
+      totalFailed: 180,
+      interrupted: true
+    } as any);
+
+    await expect(GasProvisionerService.runInitialSchoolDataSync(
+      'Atharva',
+      '2026-2027',
+      'mock_student_token',
+      'https://script.google.com/macros/s/test/exec',
+      'script_123'
+    )).rejects.toThrow(/Initial sync interrupted due to network loss or errors/);
+
+    expect(mockStorage['step2_sync_status']).toBe('INTERRUPTED');
+    expect(mockStorage['step2_initial_sync_complete']).toBe(false);
+    expect(createdNotifications).toHaveLength(0);
   });
 });
 

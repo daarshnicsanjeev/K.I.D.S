@@ -225,6 +225,21 @@ export class WhatsAppExtractor {
       return null;
     };
 
+    // 0. Auto-expand any truncated long messages ("Read more" buttons) in the active chat
+    try {
+      const readMoreButtons = document.querySelectorAll(
+        'span[role="button"], div[role="button"], strong[role="button"], [class*="read-more"]'
+      );
+      readMoreButtons.forEach(btn => {
+        const t = (btn.textContent || '').trim().toLowerCase();
+        if (t === 'read more' || t === '... read more' || t === '… read more' || t.endsWith('read more')) {
+          try {
+            (btn as HTMLElement).click();
+          } catch (btnErr) {}
+        }
+      });
+    } catch (expandErr) {}
+
     // Query all chat elements in chronological document order
     const allChatElements = document.querySelectorAll(
       'div[data-testid="date-container"], span._ak72, span._ak73, [data-testid="chat-header-date"], .chat-date, ' +
@@ -333,8 +348,22 @@ export class WhatsAppExtractor {
           : (dateStr || timeStr || new Date().toLocaleTimeString());
 
         // 4. Message text extraction
+        // If this specific row still contains an unclicked "Read more", expand it
+        const rowReadMore = row.querySelector('span[role="button"], div[role="button"], strong[role="button"], [class*="read-more"]');
+        if (rowReadMore) {
+          const t = (rowReadMore.textContent || '').trim().toLowerCase();
+          if (t === 'read more' || t === '... read more' || t === '… read more' || t.endsWith('read more')) {
+            try {
+              (rowReadMore as HTMLElement).click();
+            } catch (e) {}
+          }
+        }
+
         const textEl = row.querySelector('span.selectable-text, span._ao3e, div.copyable-text span');
         let text = textEl ? (textEl.textContent || '').trim() : '';
+
+        // Strip trailing "... Read more" or "... read more" artifacts if lingering
+        text = text.replace(/(?:\.\.\.|…)?\s*read\s+more\s*$/i, '').trim();
 
         // Clean up: If body text was erroneously identical to sender label only, clear it
         if (text === sender) {
@@ -366,12 +395,28 @@ export class WhatsAppExtractor {
         const mediaCaption = captionEl ? (captionEl.textContent || '').trim() : undefined;
         const hasMedia = !!row.querySelector('img, video, div[data-testid="audio-player"], span[data-testid="document"]') || !!documentTitle;
 
+        // Multi-image / Album detection
+        const imgEls = row.querySelectorAll('img');
+        const isAlbum = !!row.querySelector('div[data-testid="album"], [data-testid="album-grid"], div[class*="album"]') || imgEls.length > 1;
+
         let fullBody = text;
         if (documentTitle && !fullBody.includes(documentTitle)) {
           fullBody = `[Document Attachment: ${documentTitle}] ${fullBody}`.trim();
         }
         if (mediaCaption && !fullBody.includes(mediaCaption)) {
           fullBody = `${fullBody} [Media Caption: ${mediaCaption}]`.trim();
+        }
+
+        if (!fullBody && hasMedia) {
+          if (isAlbum && imgEls.length > 1) {
+            fullBody = `[Photo Album: ${imgEls.length} photos]`;
+          } else if (documentTitle) {
+            fullBody = `[Document Attachment: ${documentTitle}]`;
+          } else {
+            fullBody = `[Media Attachment]`;
+          }
+        } else if (isAlbum && imgEls.length > 1 && !fullBody.includes('[Photo Album:')) {
+          fullBody = `[Photo Album: ${imgEls.length} photos] ${fullBody}`.trim();
         }
 
         if (!fullBody && !hasMedia) return;

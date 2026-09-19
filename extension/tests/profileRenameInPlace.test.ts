@@ -14,7 +14,7 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
   }> = [];
 
   beforeEach(() => {
-    mockStorage = {};
+    mockStorage = { access_key: 'mock_access_key' };
     mockDriveFiles = [];
 
     (globalThis as any).chrome = {
@@ -48,6 +48,14 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
 
     (globalThis as any).fetch = vi.fn(async (url: string, opts?: any) => {
       const urlStr = url.toString();
+
+      if (urlStr.includes('script.googleapis.com')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ status: 'success' })
+        };
+      }
 
       // 1. Search files: GET /drive/v3/files?q=...
       if (urlStr.includes('/drive/v3/files?') && (!opts || !opts.method || opts.method === 'GET')) {
@@ -389,7 +397,7 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
       expect(yearConfigFile?.content.children[0].relativeConfigPath).toBe('Atharva Sharma/Atharva Sharma_config.json');
     });
 
-    it('should update Apps Script project title via Drive API PATCH', async () => {
+    it('preserves permanent role-based Apps Script project title without unnecessary renaming', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
       await PersonalDriveService.renameChildNameInPlace(
@@ -400,12 +408,17 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
         'kid_atharva_folder_id'
       );
 
-      const scriptRenameCall = fetchSpy.mock.calls.find(c =>
-        c[0].toString().includes('/files/script_gas_123') && c[1]?.method === 'PATCH'
+      // In Dual Worker architecture, GAS projects use permanent role titles and are never renamed
+      const scriptCalls = fetchSpy.mock.calls.filter(c =>
+        c[0].toString().includes('script_gas_123')
       );
-      expect(scriptRenameCall).toBeDefined();
-      const body = JSON.parse(scriptRenameCall![1].body);
-      expect(body.name).toBe('Kids Intelligent Dashboard System (K.I.D.S.) - Atharva Sharma (2026-2027)');
+      expect(scriptCalls).toHaveLength(0);
+
+      // Zero Drive API calls on Apps Script project
+      const forbiddenDriveCall = fetchSpy.mock.calls.find(c =>
+        c[0].toString().includes('drive/v3/files/script_gas_123')
+      );
+      expect(forbiddenDriveCall).toBeUndefined();
     });
   });
 
@@ -497,7 +510,7 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
       expect(kidCfg?.content.academicYear).toBe(NEW_YEAR);
     });
 
-    it('should update Apps Script project title with new academic year', async () => {
+    it('preserves permanent role-based Apps Script project title across academic year moves', async () => {
       const fetchSpy = vi.spyOn(globalThis, 'fetch');
 
       await PersonalDriveService.moveChildToNewAcademicYear(
@@ -508,12 +521,17 @@ describe('Step 1 Profile In-Place Rename & Strict Validation', () => {
         'kid_atharva_folder_id'
       );
 
-      const scriptRenameCall = fetchSpy.mock.calls.find(c =>
-        c[0].toString().includes('/files/script_gas_123') && c[1]?.method === 'PATCH'
+      // In Dual Worker architecture, GAS projects use permanent role titles and are never renamed
+      const scriptCalls = fetchSpy.mock.calls.filter(c =>
+        c[0].toString().includes('script_gas_123')
       );
-      expect(scriptRenameCall).toBeDefined();
-      const body = JSON.parse(scriptRenameCall![1].body);
-      expect(body.name).toBe('Kids Intelligent Dashboard System (K.I.D.S.) - Atharva (2026-2027)');
+      expect(scriptCalls).toHaveLength(0);
+
+      // Zero Drive API calls on Apps Script project
+      const forbiddenDriveCall = fetchSpy.mock.calls.find(c =>
+        c[0].toString().includes('drive/v3/files/script_gas_123')
+      );
+      expect(forbiddenDriveCall).toBeUndefined();
     });
   });
 });

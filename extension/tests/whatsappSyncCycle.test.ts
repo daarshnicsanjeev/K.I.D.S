@@ -164,5 +164,30 @@ SST Homework – The Fabric of Community & Daily Life. Submission date - 1st Sep
       expect(sstHomework).toBeDefined();
       expect(sstHomework?.submissionDeadline).toContain('1st September');
     });
+
+    it('should extract long multi-paragraph notices and strip trailing Read more UI button artifacts', async () => {
+      const longMessageText = `[8/28/2026, 11:30 AM] Principal Office:
+Dear Parents,
+Annual Sports Day Guidelines and Complete Schedule for Primary Section.
+Please ensure your child adheres strictly to the following instructions:
+1. Assembly timing: 7:30 AM sharp in the main sports ground.
+2. Uniform: House T-shirt, white shorts, and clean sports shoes.
+3. Refreshments: Healthy snacks and labeled water bottles only.
+4. Dismissal: 1:30 PM from Gate 3. Parents must show their ID card.
+Submission date - 5th September 2026.
+... Read more`;
+
+      const turns = AiNormalizerService.extractRawTurns(longMessageText);
+      expect(turns).toHaveLength(1);
+      expect(turns[0].rawBody).not.toContain('... Read more');
+      expect(turns[0].rawBody).not.toContain('Read more');
+      expect(turns[0].rawBody).toContain('Dismissal: 1:30 PM from Gate 3');
+
+      const normalized = await AiNormalizerService.normalizeRawChatText(longMessageText, 'School Notices', 'Atharva');
+      expect(normalized).toHaveLength(1);
+      expect(normalized[0].submissionDeadline).toBe('5th September 2026');
+      expect(normalized[0].body).toContain('Annual Sports Day Guidelines');
+      expect(normalized[0].body).not.toContain('Read more');
+    });
   });
 });
