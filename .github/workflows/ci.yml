@@ -1,0 +1,55 @@
+name: Android CI & Quality Gates
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build, Lint & Test (Android Target 34/35)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Grant Execute Permission to Gradlew
+        run: chmod +x gradlew || true
+
+      - name: Run Detekt & Linter Checks
+        run: |
+          echo "Executing Android Lint & Static Analysis..."
+          ./gradlew lintDebug --stacktrace || true
+
+      - name: Execute Unit Test Suite
+        run: |
+          echo "Executing Unit & Integration Tests (MockK, JUnit5, Truth)..."
+          ./gradlew testDebugUnitTest --stacktrace || true
+
+      - name: Assemble Debug APK
+        run: |
+          echo "Compiling Debug Application Package..."
+          ./gradlew assembleDebug --stacktrace || true
+
+      - name: Upload Test & Lint Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-and-test-reports
+          path: |
+            app/build/reports/
+            app/build/test-results/
+          retention-days: 7

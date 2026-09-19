@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- Zero-Cloud Backend: Explicitly exclude student databases from cloud backup -->
+        <exclude domain="database" path="kids_vault.db" />
+        <exclude domain="sharedpref" path="kids_prefs.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="database" path="kids_vault.db" />
+        <include domain="sharedpref" path="kids_prefs.xml" />
+    </device-transfer>
+</data-extraction-rules>

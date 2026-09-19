@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- K.I.D.S. Brand Palette -->
+    <color name="primary_navy">#1A365D</color>
+    <color name="accent_orange">#ED8936</color>
+    <color name="border_slate">#E2E8F0</color>
+    <color name="canvas_offwhite">#F7FAFC</color>
+    <color name="surface_white">#FFFFFF</color>
+    <color name="text_primary">#0F172A</color>
+    <color name="text_secondary">#475569</color>
+</resources>

@@ -1,0 +1,40 @@
+name: Bug Report
+description: Report a defect or unexpected behavior in the K.I.D.S. Android Collector
+title: "[BUG]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting an issue with K.I.D.S. Please ensure you are not pasting any personal child data or authentication tokens in this report.
+  - type: input
+    id: version
+    attributes:
+      label: App & Android Version
+      description: What version of K.I.D.S. and Android OS are you running?
+      placeholder: "e.g. K.I.D.S. v1.0.0 on Android 14 (Pixel 8 Pro)"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: Provide clear, step-by-step instructions to reproduce the issue.
+      placeholder: |
+        1. Open Onboarding Wizard
+        2. Enter child profile name 'Anvesha'
+        3. Proceed to Step 2...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted Diagnostic Snapshot / Log Excerpt
+      description: Paste any sanitized log snippets from in-app Diagnostic Feed or sync_timeline.log (tokens redacted).

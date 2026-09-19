@@ -1,0 +1,29 @@
+name: Feature Request
+description: Suggest an enhancement or new school portal integration for K.I.D.S.
+title: "[FEATURE]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        We welcome community feature requests that preserve our Zero-Backend and Privacy-First architecture.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or Educational Ingestion Need
+      description: Is your feature request related to a specific school app, ERP portal, or notice format?
+      placeholder: "e.g. Need native detection for Toddle Family circular notifications..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe how the feature should behave and how it integrates with K.I.D.S.
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy & Data Safety Consideration
+      description: How does this proposed feature adhere to on-device zero-backend processing?

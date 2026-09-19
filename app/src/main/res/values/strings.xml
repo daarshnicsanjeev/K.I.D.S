@@ -1,0 +1,6 @@
+<resources>
+    <string name="app_name">K.I.D.S. Collector</string>
+    <string name="nls_service_label">K.I.D.S. Notification Ingestion Service</string>
+    <string name="accessibility_service_label">K.I.D.S. Historical Notice Crawler</string>
+    <string name="accessibility_description">Automates historical backfill of past circulars and homework from Classroom, school portals, and whitelisted WhatsApp groups. 100% optional and only active when target school apps are open.</string>
+</resources>

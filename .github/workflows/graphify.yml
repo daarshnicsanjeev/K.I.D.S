@@ -1,0 +1,53 @@
+name: Knowledge Graph Validation & Graphify Pipeline
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'app/**'
+      - 'gradle/**'
+      - 'build.gradle.kts'
+      - 'GEMINI.md'
+      - 'prd.md'
+  workflow_dispatch:
+
+jobs:
+  validate-knowledge-graph:
+    name: Validate GraphRAG & Community Clusters
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Graphify Engine
+        run: |
+          pip install --upgrade graphifyy
+
+      - name: Verify Existing Graph Artifacts
+        run: |
+          python -c "
+          import json, os
+          graph_path = 'graphify-out/graph.json'
+          assert os.path.exists(graph_path), 'graph.json missing!'
+          data = json.load(open(graph_path, encoding='utf-8'))
+          nodes = data.get('nodes', [])
+          edges = data.get('edges', [])
+          print(f'Knowledge Graph Verified: {len(nodes)} nodes, {len(edges)} edges')
+          assert len(nodes) > 0, 'Knowledge Graph is empty!'
+          "
+
+      - name: Upload Graph Visualization Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: knowledge-graph-visuals
+          path: |
+            graphify-out/graph.html
+            graphify-out/graph.json
+            graphify-out/GRAPH_REPORT.md
+          retention-days: 14
