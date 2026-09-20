@@ -1,17 +1,27 @@
 package com.kids.collector.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.content.Context
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.work.Constraints
+import androidx.work.NetworkType
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.data.db.NoticeEntity
 import com.kids.collector.domain.classifier.ContentClassifier
 import com.kids.collector.domain.dedupe.DeduplicationEngine
+import com.kids.collector.domain.model.ChildProfile
 import com.kids.collector.domain.model.SyncStatus
+import com.kids.collector.domain.router.MultiChildRouter
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -19,18 +29,17 @@ import java.util.UUID
  * Historical Notice Crawler Accessibility Service
  *
  * Exclusively active for Day 0 historical backfill when authorized school apps are in foreground.
- * Traverses accessibility node trees, extracts past circulars & homework, and scrolls automatically.
+ * Traverses accessibility node trees, extracts past circulars & homework, and deduplicates via SHA-256.
  *
  * Governance:
  * - 100% Optional: declining accessibility does not impair 24/7 push notification capture.
- * - Zero third-party cloud retention.
+ * - Zero third-party cloud retention: all notices sync solely to parent's personal Google Drive vault.
  */
 class KidsAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val classifier = ContentClassifier()
     private val deduplicationEngine = DeduplicationEngine()
-    private var isCrawlingActive = false
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
@@ -55,8 +64,29 @@ class KidsAccessibilityService : AccessibilityService() {
                         val body = combinedText
                         val category = classifier.classify(title, body)
 
+                        // 1. Fetch children for multi-child attribution
+                        val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
+                        val children = childEntities.map { e ->
+                            ChildProfile(
+                                childId = e.childId,
+                                firstName = e.firstName,
+                                grade = e.grade,
+                                academicYear = e.academicYear,
+                                schoolName = e.schoolName,
+                                accountEmail = e.accountEmail,
+                                disambiguationTag = e.disambiguationTag,
+                                photoUri = e.photoUri,
+                                channels = e.channels,
+                                createdAtMs = e.createdAtMs
+                            )
+                        }
+
+                        val router = MultiChildRouter(children)
+                        val targetChild = router.route(packageName, title, body)
+                        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "default"
+
                         val hash = deduplicationEngine.computeNoticeHash(
-                            childId = "crawled_child",
+                            childId = targetChildId,
                             sourceApp = packageName,
                             title = title,
                             body = body
@@ -66,7 +96,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         if (existing == null) {
                             val noticeEntity = NoticeEntity(
                                 noticeId = UUID.randomUUID().toString(),
-                                childId = "crawled_child",
+                                childId = targetChildId,
                                 sourceApp = packageName,
                                 category = category.name,
                                 title = title,
@@ -79,7 +109,18 @@ class KidsAccessibilityService : AccessibilityService() {
                                 attachmentCount = 0
                             )
                             db.noticeDao().insert(noticeEntity)
-                            Log.i(TAG, "Historical notice backfilled: \"$title\" ($category)")
+                            Log.i(TAG, "Historical notice backfilled: \"$title\" ($category) -> Child: ${targetChild?.firstName ?: "Default"}")
+
+                            // 2. Schedule WorkManager Expedited Sync to Google Drive
+                            val constraints = Constraints.Builder()
+                                .setRequiredNetworkType(NetworkType.CONNECTED)
+                                .build()
+
+                            val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+                                .setConstraints(constraints)
+                                .build()
+
+                            WorkManager.getInstance(applicationContext).enqueue(syncRequest)
                         }
                     }
                 }
@@ -116,5 +157,17 @@ class KidsAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "KidsAccessibilityService"
+
+        fun isEnabled(context: Context): Boolean {
+            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
+            val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            for (enabled in enabledServices) {
+                val serviceInfo = enabled.resolveInfo.serviceInfo
+                if (serviceInfo.packageName == context.packageName && serviceInfo.name == KidsAccessibilityService::class.java.name) {
+                    return true
+                }
+            }
+            return false
+        }
     }
 }

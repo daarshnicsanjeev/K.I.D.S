@@ -254,6 +254,23 @@
                 <p class="text-[11px] text-slate-500 mt-2">Zero typing: populated directly from accounts already signed in on your Android phone.</p>
               </div>
 
+              <!-- HISTORICAL DATA BACKFILL ASSISTANT (ZERO PASSWORD) -->
+              <div class="p-3 bg-blue-50/70 rounded-xl border border-blue-200 text-xs space-y-2">
+                <div class="flex items-center justify-between">
+                  <span class="font-bold text-[#1A365D]">Historical Backfill (Past Notices)</span>
+                  <span id="crawl-badge" class="bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded">✓ Assistant Active</span>
+                </div>
+                <p class="text-slate-600 text-[11px] leading-relaxed">
+                  To import past homework, announcements & circulars without school passwords: open Classroom and scroll past notices. K.I.D.S. reads them on-screen and automatically syncs them to your Google Drive vault.
+                </p>
+                <div class="flex items-center gap-2 pt-1">
+                  <button onclick="simulateCrawlNotice()" class="touch-target px-3 py-1.5 bg-[#1A365D] hover:bg-[#0F2341] text-white rounded-lg text-xs font-semibold shadow">
+                    Test Screen Crawler
+                  </button>
+                  <span id="crawl-status" class="text-[10px] text-slate-500 italic">Ready to crawl upon scroll</span>
+                </div>
+              </div>
+
               <!-- NOTICE: NO PRIMARY CLASSROOM SECTION & NO AUTO-RULES HARDCODED -->
               <div class="p-3 bg-slate-100 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-center justify-between">
                 <span>Don't use Google Classroom for this child?</span>
@@ -720,6 +737,29 @@
       region.setAttribute('aria-label', titles[viewId]);
 
       updateDriveTree(viewId);
+    }
+
+    function simulateCrawlNotice() {
+      const statusEl = document.getElementById('crawl-status');
+      statusEl.innerText = "Crawling Google Classroom on-screen nodes...";
+      statusEl.className = "text-[10px] text-amber-600 font-bold animate-pulse";
+      setTimeout(() => {
+        statusEl.innerText = "✓ Backfilled 3 past assignments & circulars into Drive vault!";
+        statusEl.className = "text-[10px] text-emerald-600 font-bold";
+        const treeEl = document.getElementById('drive-tree');
+        const childName = document.getElementById('input-child-name').value.trim() || "Anvesha";
+        const year = document.getElementById('select-academic-year').value || "2026-2027";
+        treeEl.innerHTML = `
+          <div class="text-blue-300 font-bold">&#128193; My Drive /</div>
+          <div class="pl-3 text-emerald-400 font-bold">&#128193; K.I.D.S. Data/</div>
+          <div class="pl-6 text-slate-300">&#128196; FAMILY_DIGEST.md</div>
+          <div class="pl-6 text-amber-400 font-bold">&#128193; ${year}/${childName}/</div>
+          <div class="pl-9 text-slate-300">&#128196; notices.jsonl <span class="text-emerald-300 text-[10px] font-bold">[+3 PAST NOTICES BACKFILLED]</span></div>
+          <div class="pl-9 text-slate-300">&#128196; MASTER_DIGEST.md <span class="text-blue-300 text-[10px] font-bold">[CLASSROOM ADDED]</span></div>
+          <div class="pl-9 text-slate-400">&#128193; _system/knowledge_graph.json <span class="text-blue-300 text-[10px] font-bold">[UPDATED]</span></div>
+          <div class="pl-9 text-slate-400">&#128196; _system/logs/sync_timeline.log <span class="text-emerald-300 text-[10px] font-bold">[CRAWL COMPLETED]</span></div>
+        `;
+      }, 1000);
     }
 
     function finishWizard() {

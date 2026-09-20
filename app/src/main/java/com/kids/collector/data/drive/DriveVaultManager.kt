@@ -153,10 +153,11 @@ object DriveVaultManager {
             if (account == null || folders == null) return@withContext Result.success(Unit)
             val driveClient = GoogleDriveClient(getDriveService(context, account))
 
+            val backfillActive = com.kids.collector.service.KidsAccessibilityService.isEnabled(context)
             val statusMsg = if (isSkipped) {
                 "[STEP 2 SKIPPED] Google Classroom not enabled"
             } else {
-                "[STEP 2 COMPLETE] Google Classroom mapped: $studentEmail"
+                "[STEP 2 COMPLETE] Google Classroom mapped: $studentEmail | Historical Backfill Crawler: ${if (backfillActive) "ACTIVE" else "STANDBY"}"
             }
             driveClient.appendTimelineLog(folders.logsFolderId, statusMsg)
 

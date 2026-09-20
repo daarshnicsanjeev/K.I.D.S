@@ -4,6 +4,7 @@ import android.accounts.AccountManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,6 +35,7 @@ import com.kids.collector.domain.model.ChannelConfig
 import com.kids.collector.domain.model.ChannelType
 import com.kids.collector.domain.model.ChildProfile
 import com.kids.collector.presentation.theme.*
+import com.kids.collector.service.KidsAccessibilityService
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -360,6 +362,10 @@ fun OnboardingWizardScreen(
                 }
 
                 WizardStep.STEP_2_CLASSROOM -> {
+                    val isAccessibilityActive = remember {
+                        mutableStateOf(KidsAccessibilityService.isEnabled(context))
+                    }
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -402,6 +408,70 @@ fun OnboardingWizardScreen(
                                         colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                                     ) {
                                         Text(if (studentEmail.isNotBlank()) "Change" else "Select Account")
+                                    }
+                                }
+
+                                HorizontalDivider(color = LightSlate)
+
+                                // Historical Data Backfill Section
+                                Text(
+                                    text = "Historical Data Backfill (Past Notices)",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = DeepNavy
+                                )
+                                Text(
+                                    text = "To backfill past assignments & announcements without school passwords: turn on the Backfill Assistant, then open Classroom and scroll past notices.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextSecondary
+                                )
+
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    if (isAccessibilityActive.value) {
+                                        Surface(
+                                            color = SuccessGreen.copy(alpha = 0.15f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text(
+                                                text = "✓ Backfill Assistant Active",
+                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = DeepNavy
+                                            )
+                                        }
+                                        OutlinedButton(
+                                            onClick = {
+                                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")
+                                                if (launchIntent != null) {
+                                                    context.startActivity(launchIntent)
+                                                } else {
+                                                    Toast.makeText(context, "Google Classroom is not installed", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                                        ) {
+                                            Text("Open Classroom")
+                                        }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                try {
+                                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                                                    }
+                                                    context.startActivity(intent)
+                                                    Toast.makeText(context, "Turn on 'K.I.D.S.' under Downloaded Apps / Accessibility", Toast.LENGTH_LONG).show()
+                                                } catch (e: Exception) {
+                                                    Toast.makeText(context, "Could not open Accessibility Settings", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                                        ) {
+                                            Text("Enable Backfill Assistant")
+                                        }
                                     }
                                 }
                             }
