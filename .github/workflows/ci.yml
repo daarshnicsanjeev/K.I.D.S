@@ -11,6 +11,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   build-and-test:
     name: Build, Lint & Test (Android Target 34/35)
@@ -43,6 +46,20 @@ jobs:
         run: |
           echo "Compiling Debug APK..."
           ./gradlew assembleDebug --stacktrace
+
+      - name: Publish Automated GitHub Release
+        if: github.ref == 'refs/heads/main' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Publishing automated GitHub Release for latest build..."
+          gh release delete latest --yes || true
+          git push --delete origin latest || true
+          gh release create latest \
+            app/build/outputs/apk/debug/app-debug.apk#K.I.D.S-latest.apk \
+            --title "K.I.D.S. (Latest Automated Build - Run #${{ github.run_number }})" \
+            --notes "Automated continuous delivery build from commit ${{ github.sha }} on $(date -u '+%Y-%m-%d %H:%M:%S UTC')." \
+            --prerelease
 
       - name: Upload Test Reports & APK
         if: always()
