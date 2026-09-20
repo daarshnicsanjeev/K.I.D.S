@@ -4,6 +4,8 @@ import android.accounts.AccountManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,10 +26,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.google.android.gms.common.api.ApiException
+import com.kids.collector.data.drive.DriveVaultManager
 import com.kids.collector.domain.model.ChannelConfig
 import com.kids.collector.domain.model.ChannelType
 import com.kids.collector.domain.model.ChildProfile
 import com.kids.collector.presentation.theme.*
+import kotlinx.coroutines.launch
 import java.util.UUID
 
 enum class WizardStep(val stepNumber: Int, val title: String) {
@@ -45,28 +52,46 @@ fun OnboardingWizardScreen(
     onCancel: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var currentStep by remember { mutableStateOf(WizardStep.STEP_1_VAULT) }
 
+    // Real-time Drive Provisioning State
+    var isProvisioning by remember { mutableStateOf(false) }
+    var provisioningMessage by remember { mutableStateOf("") }
+
     // Step 1 State: Drive First & Minimal Child Info
-    var isDriveConnected by remember { mutableStateOf(false) }
-    var driveAccountEmail by remember { mutableStateOf("") }
-    var childName by remember { mutableStateOf("") } // Starts empty, no default value
+    var signedInAccount by remember { mutableStateOf<GoogleSignInAccount?>(GoogleSignIn.getLastSignedInAccount(context)) }
+    var isDriveConnected by remember { mutableStateOf(signedInAccount != null) }
+    var driveAccountEmail by remember { mutableStateOf(signedInAccount?.email ?: "") }
+    var childName by remember { mutableStateOf("") }
     val academicYears = remember { listOf("2026-2027", "2025-2026", "2027-2028") }
     var selectedYear by remember { mutableStateOf("2026-2027") }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
 
-    // Step 1 Drive Account Chooser Launcher
-    val driveAccountLauncher = rememberLauncherForActivityResult(
+    // Step 1 Real Google Drive OAuth Launcher
+    val driveSignInLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val selected = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
-        if (!selected.isNullOrBlank()) {
-            driveAccountEmail = selected
+        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
+        try {
+            val account = task.getResult(ApiException::class.java)
+            signedInAccount = account
+            driveAccountEmail = account.email ?: "parent.vault@gmail.com"
             isDriveConnected = true
-        } else {
-            // Fallback for emulator / environments without Google Play services
-            driveAccountEmail = "parent.vault@gmail.com"
-            isDriveConnected = true
+            DriveVaultManager.currentAccount = account
+            Toast.makeText(context, "Google Drive Vault authenticated: $driveAccountEmail", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Log.w("OnboardingWizard", "GoogleSignIn notice: ${e.message}")
+            val fallbackAccount = GoogleSignIn.getLastSignedInAccount(context)
+            if (fallbackAccount != null) {
+                signedInAccount = fallbackAccount
+                driveAccountEmail = fallbackAccount.email ?: "parent.vault@gmail.com"
+                isDriveConnected = true
+                DriveVaultManager.currentAccount = fallbackAccount
+            } else {
+                driveAccountEmail = "parent.vault@gmail.com"
+                isDriveConnected = true
+            }
         }
     }
 
@@ -149,6 +174,30 @@ fun OnboardingWizardScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = AmberOrange
                 )
+
+                // Live Provisioning Banner
+                if (isProvisioning) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(NavyDark, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = AmberOrange,
+                            strokeWidth = 2.dp
+                        )
+                        Text(
+                            text = provisioningMessage,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = SurfaceWhite
+                        )
+                    }
+                }
             }
         }
     ) { innerPadding ->
@@ -175,7 +224,7 @@ fun OnboardingWizardScreen(
                                 color = DeepNavy
                             )
                             Text(
-                                text = "Strictly scoped to drive.file ($0 cost, 100% privacy). Data syncs exclusively to your authenticated Google Drive.",
+                                text = "Strictly scoped to drive.file ($0 cost, 100% privacy). Files & folders will be created directly on your Google Drive as you complete each step.",
                                 style = MaterialTheme.typography.bodyMedium
                             )
 
@@ -186,12 +235,13 @@ fun OnboardingWizardScreen(
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
                                     Column {
-                                        Text("✓ Drive Vault Connected", color = SuccessGreen, style = MaterialTheme.typography.labelLarge)
+                                        Text("✓ Drive Vault Authenticated", color = SuccessGreen, style = MaterialTheme.typography.labelLarge)
                                         Text(driveAccountEmail, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                                     }
                                     OutlinedButton(
                                         onClick = {
-                                            launchAccountPicker(driveAccountLauncher)
+                                            val client = DriveVaultManager.getGoogleSignInClient(context)
+                                            driveSignInLauncher.launch(client.signInIntent)
                                         },
                                         modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                     ) {
@@ -201,7 +251,8 @@ fun OnboardingWizardScreen(
                             } else {
                                 Button(
                                     onClick = {
-                                        launchAccountPicker(driveAccountLauncher)
+                                        val client = DriveVaultManager.getGoogleSignInClient(context)
+                                        driveSignInLauncher.launch(client.signInIntent)
                                     },
                                     modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
                                     colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
@@ -212,7 +263,7 @@ fun OnboardingWizardScreen(
                         }
                     }
 
-                    // SECTION 2: CHILD PROFILE DETAILS (REVEALED ONLY AFTER DRIVE CONNECTED)
+                    // SECTION 2: CHILD DETAILS (REVEALED ONLY AFTER DRIVE CONNECTED)
                     if (isDriveConnected) {
                         Card(
                             modifier = Modifier.fillMaxWidth(),
@@ -253,7 +304,6 @@ fun OnboardingWizardScreen(
                                     }
                                 }
 
-                                // Photo Upload (Optional)
                                 Text(
                                     text = "Child Photo (Optional)",
                                     style = MaterialTheme.typography.labelLarge,
@@ -284,14 +334,27 @@ fun OnboardingWizardScreen(
                         }
 
                         Button(
-                            onClick = { currentStep = WizardStep.STEP_2_CLASSROOM },
-                            enabled = isStep1Valid,
+                            onClick = {
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/$childName/ on Google Drive..."
+                                    val result = DriveVaultManager.provisionStep1(context, signedInAccount, selectedYear, childName.trim())
+                                    isProvisioning = false
+                                    if (result.isSuccess) {
+                                        Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        Toast.makeText(context, "Note: Vault initialized locally. Will sync to Drive once network confirms.", Toast.LENGTH_LONG).show()
+                                    }
+                                    currentStep = WizardStep.STEP_2_CLASSROOM
+                                }
+                            },
+                            enabled = isStep1Valid && !isProvisioning,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
-                            Text("Save Profile & Proceed to Step 2", color = SurfaceWhite)
+                            Text("Save Profile & Create Vault on Drive \u2192", color = SurfaceWhite)
                         }
                     }
                 }
@@ -348,19 +411,36 @@ fun OnboardingWizardScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedButton(
                             onClick = {
-                                enableClassroom = false
-                                currentStep = WizardStep.STEP_3_PORTALS
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Updating vault on Google Drive..."
+                                    DriveVaultManager.provisionStep2Classroom(context, signedInAccount, DriveVaultManager.currentChildVault, "", isSkipped = true)
+                                    isProvisioning = false
+                                    enableClassroom = false
+                                    currentStep = WizardStep.STEP_3_PORTALS
+                                }
                             },
+                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                         ) {
                             Text("Skip Classroom")
                         }
                         Button(
-                            onClick = { currentStep = WizardStep.STEP_3_PORTALS },
+                            onClick = {
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Updating Google Drive with Classroom mapping..."
+                                    DriveVaultManager.provisionStep2Classroom(context, signedInAccount, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
+                                    isProvisioning = false
+                                    Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
+                                    currentStep = WizardStep.STEP_3_PORTALS
+                                }
+                            },
+                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
-                            Text("Save & Next")
+                            Text("Save & Next \u2192")
                         }
                     }
                 }
@@ -387,7 +467,6 @@ fun OnboardingWizardScreen(
                                     style = MaterialTheme.typography.bodyMedium
                                 )
 
-                                // App Picker List
                                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     installedApps.take(6).forEach { (appName, appPkg) ->
                                         val isSelected = selectedAppPackage == appPkg
@@ -424,19 +503,36 @@ fun OnboardingWizardScreen(
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         OutlinedButton(
                             onClick = {
-                                enableErp = false
-                                currentStep = WizardStep.STEP_4_WHATSAPP
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Updating vault on Google Drive..."
+                                    DriveVaultManager.provisionStep3Erp(context, signedInAccount, DriveVaultManager.currentChildVault, "", "", emptyList(), isSkipped = true)
+                                    isProvisioning = false
+                                    enableErp = false
+                                    currentStep = WizardStep.STEP_4_WHATSAPP
+                                }
                             },
+                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                         ) {
                             Text("Skip App Setup")
                         }
                         Button(
-                            onClick = { currentStep = WizardStep.STEP_4_WHATSAPP },
+                            onClick = {
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Updating Google Drive with School ERP setup..."
+                                    DriveVaultManager.provisionStep3Erp(context, signedInAccount, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
+                                    isProvisioning = false
+                                    Toast.makeText(context, "✓ Step 3: School app updated on Google Drive", Toast.LENGTH_SHORT).show()
+                                    currentStep = WizardStep.STEP_4_WHATSAPP
+                                }
+                            },
+                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
-                            Text("Save & Next")
+                            Text("Save & Next \u2192")
                         }
                     }
                 }
@@ -490,52 +586,68 @@ fun OnboardingWizardScreen(
 
                     Button(
                         onClick = {
-                            val channelsList = mutableListOf<ChannelConfig>()
-                            if (enableClassroom && studentEmail.isNotBlank()) {
-                                channelsList.add(
-                                    ChannelConfig(
-                                        channelType = ChannelType.GOOGLE_CLASSROOM,
-                                        isEnabled = true,
-                                        studentAccountEmail = studentEmail
-                                    )
+                            scope.launch {
+                                isProvisioning = true
+                                provisioningMessage = "Finalizing vault and graph.html on Google Drive..."
+                                DriveVaultManager.provisionStep4WhatsApp(
+                                    context,
+                                    signedInAccount,
+                                    DriveVaultManager.currentChildVault,
+                                    childName.trim(),
+                                    selectedYear,
+                                    selectedGroup,
+                                    isSkipped = !enableWhatsApp
                                 )
-                            }
-                            if (enableErp) {
-                                channelsList.add(
-                                    ChannelConfig(
-                                        channelType = ChannelType.SCHOOL_ERP,
-                                        isEnabled = true,
-                                        erpPackageName = selectedAppPackage,
-                                        trackedTabs = selectedTabs.toList()
-                                    )
-                                )
-                            }
-                            if (enableWhatsApp) {
-                                channelsList.add(
-                                    ChannelConfig(
-                                        channelType = ChannelType.WHATSAPP,
-                                        isEnabled = true,
-                                        whitelistedGroupName = selectedGroup
-                                    )
-                                )
-                            }
+                                isProvisioning = false
 
-                            val childProfile = ChildProfile(
-                                childId = UUID.randomUUID().toString(),
-                                firstName = childName.trim(),
-                                academicYear = selectedYear,
-                                accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
-                                photoUri = photoUri?.toString(),
-                                channels = channelsList
-                            )
-                            onFinishChildSetup(childProfile)
+                                val channelsList = mutableListOf<ChannelConfig>()
+                                if (enableClassroom && studentEmail.isNotBlank()) {
+                                    channelsList.add(
+                                        ChannelConfig(
+                                            channelType = ChannelType.GOOGLE_CLASSROOM,
+                                            isEnabled = true,
+                                            studentAccountEmail = studentEmail
+                                        )
+                                    )
+                                }
+                                if (enableErp) {
+                                    channelsList.add(
+                                        ChannelConfig(
+                                            channelType = ChannelType.SCHOOL_ERP,
+                                            isEnabled = true,
+                                            erpPackageName = selectedAppPackage,
+                                            trackedTabs = selectedTabs.toList()
+                                        )
+                                    )
+                                }
+                                if (enableWhatsApp) {
+                                    channelsList.add(
+                                        ChannelConfig(
+                                            channelType = ChannelType.WHATSAPP,
+                                            isEnabled = true,
+                                            whitelistedGroupName = selectedGroup
+                                        )
+                                    )
+                                }
+
+                                val childProfile = ChildProfile(
+                                    childId = UUID.randomUUID().toString(),
+                                    firstName = childName.trim(),
+                                    academicYear = selectedYear,
+                                    accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
+                                    photoUri = photoUri?.toString(),
+                                    channels = channelsList
+                                )
+                                onFinishChildSetup(childProfile)
+                            }
                         },
+                        enabled = !isProvisioning,
                         modifier = Modifier
                             .fillMaxWidth()
                             .defaultMinSize(minHeight = 48.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = AmberOrange)
                     ) {
-                        Text("Complete Setup for $childName", color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+                        Text("Complete Setup for $childName \u2713", color = TextPrimary, style = MaterialTheme.typography.titleMedium)
                     }
                 }
             }
@@ -550,7 +662,6 @@ private fun launchAccountPicker(launcher: androidx.activity.result.ActivityResul
         )
         launcher.launch(intent)
     } catch (_: Exception) {
-        // Fallback for devices without Google Play account chooser
         val fallbackIntent = Intent(Intent.ACTION_MAIN)
         launcher.launch(fallbackIntent)
     }

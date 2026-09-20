@@ -17,6 +17,7 @@ out/
 build/
 app/build/
 build-artifacts/
+build-artifacts-latest/
 .gradle/
 
 # Local configuration file (sdk path, etc)
