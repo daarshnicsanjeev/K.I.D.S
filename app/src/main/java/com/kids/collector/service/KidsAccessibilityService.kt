@@ -49,12 +49,7 @@ class KidsAccessibilityService : AccessibilityService() {
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "KidsAccessibilityService connected")
-        crawlerOverlay = FloatingCrawlerOverlay(this) {
-            // Manual "Grab Screen" trigger from floating button
-            val root = rootInActiveWindow ?: return@FloatingCrawlerOverlay
-            val pkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
-            processRootNode(root, pkg)
-        }
+        getOrCreateOverlay()
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -62,16 +57,34 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
+        // 1. Ignore system background events (clock ticks, network meter, battery, keyboard)
+        // so they do not inadvertently hide the overlay while inside Google Classroom
+        if (isSystemPackage(packageName)) {
+            return
+        }
+
         if (isAuthorizedSchoolApp(packageName)) {
             lastActiveSchoolPackage = packageName
-            crawlerOverlay?.show()
+            getOrCreateOverlay().show()
 
             val rootNode = rootInActiveWindow ?: return
             processRootNode(rootNode, packageName)
-        } else {
-            // When exiting school apps or returning to launcher, hide the floating assistant
+        } else if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isHomeScreenOrLauncher(packageName)) {
+            // Only hide when user explicitly navigates to the home screen launcher
             crawlerOverlay?.hide()
         }
+    }
+
+    private fun getOrCreateOverlay(): FloatingCrawlerOverlay {
+        if (crawlerOverlay == null) {
+            crawlerOverlay = FloatingCrawlerOverlay(this) {
+                // Manual "Grab Screen" trigger from floating button
+                val root = rootInActiveWindow ?: return@FloatingCrawlerOverlay
+                val pkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+                processRootNode(root, pkg)
+            }
+        }
+        return crawlerOverlay!!
     }
 
     private fun processRootNode(rootNode: AccessibilityNodeInfo, packageName: String) {
@@ -177,6 +190,23 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("campuscare") ||
                 lower.contains("toddle") ||
                 lower.contains("edunext")
+    }
+
+    private fun isSystemPackage(pkg: String): Boolean {
+        val lower = pkg.lowercase()
+        return lower.contains("systemui") ||
+                lower.contains("inputmethod") ||
+                lower.contains("gboard") ||
+                lower.contains("keyboard") ||
+                lower == "android" ||
+                lower.contains("miui.securitycenter")
+    }
+
+    private fun isHomeScreenOrLauncher(pkg: String): Boolean {
+        val lower = pkg.lowercase()
+        return lower.contains("launcher") ||
+                lower.contains("home") ||
+                lower.contains("miui.home")
     }
 
     override fun onInterrupt() {

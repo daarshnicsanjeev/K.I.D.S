@@ -19,6 +19,9 @@
     <!-- System account picker -->
     <uses-permission android:name="android.permission.GET_ACCOUNTS" />
 
+    <!-- Overlay permission for floating capture assistant on Xiaomi/MIUI/HyperOS -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <!-- Package visibility queries for installed school ERP & educational app picker -->
     <queries>
         <intent>

@@ -64,183 +64,217 @@ class FloatingCrawlerOverlay(
     }
 
     fun show() {
-        if (overlayView != null) {
-            overlayView?.visibility = View.VISIBLE
-            return
-        }
-
-        try {
-            val root = LinearLayout(service).apply {
-                orientation = LinearLayout.VERTICAL
-                gravity = Gravity.CENTER_HORIZONTAL
+        handler.post {
+            if (overlayView != null) {
+                overlayView?.visibility = View.VISIBLE
+                overlayView?.bringToFront()
+                return@post
             }
 
-            // Window Layout Params
-            val p = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT
-            ).apply {
-                gravity = Gravity.TOP or Gravity.START
-                x = 40
-                y = 180
-            }
-            params = p
-
-            // 1. Minimized Bubble View (48dp x 48dp circle)
-            minimizedBubble = TextView(service).apply {
-                text = "K"
-                setTextColor(Color.parseColor("#0F172A")) // TextPrimary
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
-                gravity = Gravity.CENTER
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.OVAL
-                    setColor(Color.parseColor("#ED8936")) // AmberOrange
-                    setStroke(dpToPx(2), Color.parseColor("#1A365D"))
+            try {
+                val root = LinearLayout(service).apply {
+                    orientation = LinearLayout.VERTICAL
+                    gravity = Gravity.CENTER_HORIZONTAL
                 }
-                layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
-                visibility = View.GONE
-                setOnClickListener {
-                    expand()
-                }
-            }
-            root.addView(minimizedBubble)
 
-            // 2. Expanded Container
-            val expanded = LinearLayout(service).apply {
-                orientation = LinearLayout.VERTICAL
-                setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dpToPx(16).toFloat()
-                    setColor(Color.parseColor("#1A365D")) // DeepNavy
-                    setStroke(dpToPx(2), Color.parseColor("#ED8936")) // AmberOrange border
-                }
-                elevation = dpToPx(8).toFloat()
-            }
-            expandedContent = expanded
-
-            // Header row (Title + Counter + Minimize)
-            val headerRow = LinearLayout(service).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                )
-            }
-
-            val titleText = TextView(service).apply {
-                text = "K.I.D.S. Assistant"
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            }
-
-            val counter = TextView(service).apply {
-                text = "0 Captured"
-                setTextColor(Color.parseColor("#ED8936")) // Amber
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                setTypeface(typeface, android.graphics.Typeface.BOLD)
-                setPadding(dpToPx(6), dpToPx(2), dpToPx(6), dpToPx(2))
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dpToPx(6).toFloat()
-                    setColor(Color.parseColor("#0F2341"))
-                }
-            }
-            counterTextView = counter
-
-            val btnMin = TextView(service).apply {
-                text = " — "
-                setTextColor(Color.parseColor("#CBD5E1"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                setPadding(dpToPx(8), 0, 0, 0)
-                setOnClickListener {
-                    minimize()
-                }
-            }
-
-            headerRow.addView(titleText)
-            headerRow.addView(counter)
-            headerRow.addView(btnMin)
-            expanded.addView(headerRow)
-
-            // Button Row
-            val buttonRow = LinearLayout(service).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
+                // Window Layout Params with high visibility and accessibility flags
+                val p = WindowManager.LayoutParams(
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.WRAP_CONTENT,
+                    WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
                 ).apply {
-                    topMargin = dpToPx(8)
+                    gravity = Gravity.TOP or Gravity.START
+                    x = 40
+                    y = 280
                 }
+                params = p
+
+                // 1. Minimized Bubble View (48dp x 48dp circle)
+                minimizedBubble = TextView(service).apply {
+                    text = "K"
+                    setTextColor(Color.parseColor("#0F172A")) // TextPrimary
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f)
+                    gravity = Gravity.CENTER
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.OVAL
+                        setColor(Color.parseColor("#ED8936")) // AmberOrange
+                        setStroke(dpToPx(2), Color.parseColor("#1A365D"))
+                    }
+                    layoutParams = LinearLayout.LayoutParams(dpToPx(48), dpToPx(48))
+                    visibility = View.GONE
+                    setOnClickListener {
+                        expand()
+                    }
+                }
+                root.addView(minimizedBubble)
+
+                // 2. Expanded Container
+                val expanded = LinearLayout(service).apply {
+                    orientation = LinearLayout.VERTICAL
+                    setPadding(dpToPx(12), dpToPx(10), dpToPx(12), dpToPx(10))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dpToPx(16).toFloat()
+                        setColor(Color.parseColor("#1A365D")) // DeepNavy
+                        setStroke(dpToPx(2), Color.parseColor("#ED8936")) // AmberOrange border
+                    }
+                    elevation = dpToPx(8).toFloat()
+                }
+                expandedContent = expanded
+
+                // Header row (Title + Counter + Minimize + Close)
+                val headerRow = LinearLayout(service).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                }
+
+                val titleText = TextView(service).apply {
+                    text = "K.I.D.S. Assistant"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                }
+
+                val counter = TextView(service).apply {
+                    text = "0 Captured"
+                    setTextColor(Color.parseColor("#ED8936")) // Amber
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTypeface(typeface, android.graphics.Typeface.BOLD)
+                    setPadding(dpToPx(6), dpToPx(2), dpToPx(6), dpToPx(2))
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dpToPx(6).toFloat()
+                        setColor(Color.parseColor("#0F2341"))
+                    }
+                }
+                counterTextView = counter
+
+                val btnMin = TextView(service).apply {
+                    text = " — "
+                    setTextColor(Color.parseColor("#CBD5E1"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
+                    setPadding(dpToPx(8), 0, 0, 0)
+                    setOnClickListener {
+                        minimize()
+                    }
+                }
+
+                val btnClose = TextView(service).apply {
+                    text = " ✕ "
+                    setTextColor(Color.parseColor("#CBD5E1"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
+                    setPadding(dpToPx(6), 0, 0, 0)
+                    setOnClickListener {
+                        hide()
+                    }
+                }
+
+                headerRow.addView(titleText)
+                headerRow.addView(counter)
+                headerRow.addView(btnMin)
+                headerRow.addView(btnClose)
+                expanded.addView(headerRow)
+
+                // Button Row
+                val buttonRow = LinearLayout(service).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dpToPx(8)
+                    }
+                }
+
+                // Auto-Capture Button
+                val btnAuto = Button(service).apply {
+                    text = "▶ Auto-Capture"
+                    setTextColor(Color.parseColor("#0F172A"))
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dpToPx(8).toFloat()
+                        setColor(Color.parseColor("#ED8936")) // Amber
+                    }
+                    minHeight = dpToPx(40)
+                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                    setOnClickListener {
+                        toggleAutoScroll()
+                    }
+                }
+                autoButton = btnAuto
+                buttonRow.addView(btnAuto)
+
+                // Manual Grab Screen Button
+                val btnGrab = Button(service).apply {
+                    text = "📸 Grab"
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    background = GradientDrawable().apply {
+                        shape = GradientDrawable.RECTANGLE
+                        cornerRadius = dpToPx(8).toFloat()
+                        setColor(Color.parseColor("#2B4C7E"))
+                    }
+                    minHeight = dpToPx(40)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        marginStart = dpToPx(8)
+                    }
+                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                    setOnClickListener {
+                        onManualCaptureRequested()
+                    }
+                }
+                buttonRow.addView(btnGrab)
+
+                expanded.addView(buttonRow)
+                root.addView(expanded)
+
+                // Drag listener to allow moving anywhere on screen
+                setupDragListener(root, p)
+
+                overlayView = root
+                try {
+                    windowManager.addView(root, p)
+                    Log.i(TAG, "FloatingCrawlerOverlay attached successfully with type ${p.type}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Failed with primary overlay type ${p.type}, attempting fallback type", e)
+                    p.type = if (p.type == WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY) {
+                        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        } else {
+                            @Suppress("DEPRECATION")
+                            WindowManager.LayoutParams.TYPE_PHONE
+                        }
+                    } else {
+                        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY
+                    }
+                    windowManager.addView(root, p)
+                    Log.i(TAG, "FloatingCrawlerOverlay attached with fallback type ${p.type}")
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to attach FloatingCrawlerOverlay", e)
             }
-
-            // Auto-Capture Button
-            val btnAuto = Button(service).apply {
-                text = "▶ Auto-Capture"
-                setTextColor(Color.parseColor("#0F172A"))
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dpToPx(8).toFloat()
-                    setColor(Color.parseColor("#ED8936")) // Amber
-                }
-                minHeight = dpToPx(40)
-                setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
-                setOnClickListener {
-                    toggleAutoScroll()
-                }
-            }
-            autoButton = btnAuto
-            buttonRow.addView(btnAuto)
-
-            // Manual Grab Screen Button
-            val btnGrab = Button(service).apply {
-                text = "📸 Grab"
-                setTextColor(Color.WHITE)
-                setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                background = GradientDrawable().apply {
-                    shape = GradientDrawable.RECTANGLE
-                    cornerRadius = dpToPx(8).toFloat()
-                    setColor(Color.parseColor("#2B4C7E"))
-                }
-                minHeight = dpToPx(40)
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.WRAP_CONTENT,
-                    LinearLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    marginStart = dpToPx(8)
-                }
-                setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
-                setOnClickListener {
-                    onManualCaptureRequested()
-                }
-            }
-            buttonRow.addView(btnGrab)
-
-            expanded.addView(buttonRow)
-            root.addView(expanded)
-
-            // Drag listener to allow moving anywhere on screen
-            setupDragListener(root, p)
-
-            overlayView = root
-            windowManager.addView(root, p)
-            Log.i(TAG, "FloatingCrawlerOverlay attached successfully")
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to attach FloatingCrawlerOverlay", e)
         }
     }
 
     fun hide() {
-        stopAutoScroll()
-        overlayView?.visibility = View.GONE
+        handler.post {
+            stopAutoScroll()
+            overlayView?.visibility = View.GONE
+        }
     }
 
     fun incrementNoticeCount() {
@@ -251,15 +285,17 @@ class FloatingCrawlerOverlay(
     }
 
     fun destroy() {
-        stopAutoScroll()
-        overlayView?.let {
-            try {
-                windowManager.removeView(it)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error removing overlay", e)
+        handler.post {
+            stopAutoScroll()
+            overlayView?.let {
+                try {
+                    windowManager.removeView(it)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error removing overlay", e)
+                }
             }
+            overlayView = null
         }
-        overlayView = null
     }
 
     private fun toggleAutoScroll() {

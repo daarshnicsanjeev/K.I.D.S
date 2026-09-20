@@ -62,4 +62,25 @@ object PermissionHelper {
             context.startActivity(intent)
         }
     }
+
+    fun canDrawOverlays(context: Context): Boolean {
+        return android.os.Build.VERSION.SDK_INT < android.os.Build.VERSION_CODES.M ||
+                Settings.canDrawOverlays(context)
+    }
+
+    fun openOverlaySettings(context: Context) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    android.net.Uri.parse("package:${context.packageName}")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                context.startActivity(intent)
+            }
+        } catch (e: Exception) {
+            openAppDetailsSettings(context)
+        }
+    }
 }
