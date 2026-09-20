@@ -150,6 +150,7 @@ fun ChildrenGridDashboard(
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun ChildCard(
     child: ChildProfile,

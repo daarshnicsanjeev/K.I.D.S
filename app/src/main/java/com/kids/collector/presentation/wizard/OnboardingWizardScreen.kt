@@ -31,6 +31,7 @@ enum class WizardStep(val stepNumber: Int, val title: String) {
     STEP_4_WHATSAPP(4, "WhatsApp School Groups")
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun OnboardingWizardScreen(
     childSequenceNumber: Int = 1,
