@@ -106,7 +106,7 @@ fun OnboardingWizardScreen(
                     }
                     is ProvisionStep1Result.UserConsentRequired -> {
                         isProvisioning = false
-                        driveConsentLauncher.launch(provResult.consentIntent)
+                        driveErrorMessage = "Additional consent required. Please tap save to retry."
                     }
                     is ProvisionStep1Result.Failure -> {
                         isProvisioning = false
