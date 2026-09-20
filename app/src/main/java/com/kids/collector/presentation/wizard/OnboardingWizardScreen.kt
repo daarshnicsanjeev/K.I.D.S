@@ -181,7 +181,7 @@ fun OnboardingWizardScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(NavyDark, RoundedCornerShape(8.dp))
+                            .background(DeepNavy, RoundedCornerShape(8.dp))
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
