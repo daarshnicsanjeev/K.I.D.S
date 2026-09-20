@@ -144,8 +144,20 @@ object DriveVaultManager {
             ProvisionStep1Result.UserConsentRequired(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Step 1: Failed to provision Google Drive vault", e)
-            val userMsg = e.localizedMessage ?: e.javaClass.simpleName
-            ProvisionStep1Result.Failure(e, userMsg)
+            val cause = e.cause
+            if (cause is UserRecoverableAuthException) {
+                Log.w(TAG, "Unwrapped UserRecoverableAuthException from cause", cause)
+                val intent = cause.intent ?: Intent()
+                ProvisionStep1Result.UserConsentRequired(intent)
+            } else {
+                val causeMsg = cause?.message
+                val userMsg = if (!causeMsg.isNullOrBlank()) {
+                    "${e.javaClass.simpleName}: $causeMsg"
+                } else {
+                    e.localizedMessage ?: e.javaClass.simpleName
+                }
+                ProvisionStep1Result.Failure(e, userMsg)
+            }
         }
     }
 
