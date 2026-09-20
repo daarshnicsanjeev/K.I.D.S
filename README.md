@@ -1,4 +1,4 @@
-# K.I.D.S. Android Collector
+# K.I.D.S.
                                     
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Android_14%2B-1A365D?style=for-the-badge&logo=android" alt="Android 14+"/>
@@ -15,7 +15,7 @@
 
 ## 🎯 Executive Overview
 
-The **Kids Intelligent Dashboard System (K.I.D.S.) Android Collector** is an ambient, privacy-first mobile companion application that continuously captures, deduplicates, and organizes school communications (notices, circulars, homework assignments, exam schedules, and PDF attachments) across school apps (Google Classroom, WhatsApp, School ERPs, Gmail) and syncs them directly into the parent's personal **Google Drive Vault** in **100% AI-native file formats** (`notices.jsonl`, `MASTER_DIGEST.md`, `_system/knowledge_graph.json`, and `graph.html`).
+The **Kids Intelligent Dashboard System (K.I.D.S.)** is an ambient, privacy-first mobile companion application that continuously captures, deduplicates, and organizes school communications (notices, circulars, homework assignments, exam schedules, and PDF attachments) across school apps (Google Classroom, WhatsApp, School ERPs, Gmail) and syncs them directly into the parent's personal **Google Drive Vault** in **100% AI-native file formats** (`notices.jsonl`, `MASTER_DIGEST.md`, `_system/knowledge_graph.json`, and `graph.html`).
 
 By moving ingestion to an Android background service on the parent's mobile device, K.I.D.S.:
 1. **Eliminates desktop tab dependencies**: No need to keep browser windows open or run background desktop scrapers.

@@ -1,6 +1,6 @@
-# Antigravity Workspace Guidelines: K.I.D.S. Android Collector
+# Antigravity Workspace Guidelines: K.I.D.S.
 
-Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.) Android Collector** repository. This document establishes authoritative architectural principles, coding conventions, safety invariants, and operational workflows for AI agents and human contributors developing on this codebase.
+Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.)** repository. This document establishes authoritative architectural principles, coding conventions, safety invariants, and operational workflows for AI agents and human contributors developing on this codebase.
 
 ---
 

@@ -9,7 +9,7 @@ import android.util.Log
 class KidsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        Log.i(TAG, "Initializing K.I.D.S. Android Collector (Zero-Backend Privacy Engine)")
+        Log.i(TAG, "Initializing K.I.D.S. (Zero-Backend Privacy Engine)")
     }
 
     companion object {
