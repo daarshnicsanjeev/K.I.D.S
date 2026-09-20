@@ -641,9 +641,14 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating Google Drive with Classroom mapping..."
-                                    DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
+                                    val res = DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
                                     isProvisioning = false
-                                    Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
+                                    if (res.isSuccess) {
+                                        Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to update Google Drive"
+                                        Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
+                                    }
                                     currentStep = WizardStep.STEP_3_PORTALS
                                 }
                             },
@@ -733,9 +738,14 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating Google Drive with School ERP setup..."
-                                    DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
+                                    val res = DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
                                     isProvisioning = false
-                                    Toast.makeText(context, "✓ Step 3: School app updated on Google Drive", Toast.LENGTH_SHORT).show()
+                                    if (res.isSuccess) {
+                                        Toast.makeText(context, "✓ Step 3: School app updated on Google Drive", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to update Google Drive"
+                                        Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
+                                    }
                                     currentStep = WizardStep.STEP_4_WHATSAPP
                                 }
                             },
@@ -800,7 +810,7 @@ fun OnboardingWizardScreen(
                             scope.launch {
                                 isProvisioning = true
                                 provisioningMessage = "Finalizing vault and graph.html on Google Drive..."
-                                DriveVaultManager.provisionStep4WhatsApp(
+                                val res = DriveVaultManager.provisionStep4WhatsApp(
                                     context,
                                     driveAccountEmail,
                                     DriveVaultManager.currentChildVault,
@@ -810,6 +820,10 @@ fun OnboardingWizardScreen(
                                     isSkipped = !enableWhatsApp
                                 )
                                 isProvisioning = false
+                                if (res.isFailure) {
+                                    val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to finalize Google Drive"
+                                    Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
+                                }
 
                                 val channelsList = mutableListOf<ChannelConfig>()
                                 if (enableClassroom && studentEmail.isNotBlank()) {

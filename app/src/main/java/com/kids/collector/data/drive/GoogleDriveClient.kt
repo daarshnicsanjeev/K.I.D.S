@@ -122,7 +122,7 @@ class GoogleDriveClient(
             val combinedBytes = outputStream.toByteArray() + newLineBytes
 
             val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
-            val updated = driveService.files().update(existingFileId, null, updateContent).setFields("id").execute()
+            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
             updated.id
         }
     }
@@ -177,7 +177,7 @@ class GoogleDriveClient(
             driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
             val combined = outputStream.toByteArray() + lineBytes
             val updateContent = ByteArrayContent("text/plain", combined)
-            val updated = driveService.files().update(existingFileId, null, updateContent).setFields("id").execute()
+            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
             updated.id
         }
     }
@@ -248,7 +248,7 @@ class GoogleDriveClient(
             val created = driveService.files().create(fileMetadata, mediaContent).setFields("id").execute()
             created.id
         } else {
-            val updated = driveService.files().update(existingFileId, null, mediaContent).setFields("id").execute()
+            val updated = driveService.files().update(existingFileId, File(), mediaContent).setFields("id").execute()
             updated.id
         }
     }
