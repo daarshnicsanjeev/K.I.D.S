@@ -81,6 +81,10 @@ class WhatsAppChatExportParser(
                 currentBody.append(messagePart)
             } else {
                 // Continuation line of multi-line circular/homework description
+                val attachMatch = attachmentPattern.matcher(line)
+                if (attachMatch.find()) {
+                    currentAttachment = attachMatch.group(1)
+                }
                 if (currentBody.isNotEmpty()) {
                     currentBody.append("\n").append(line)
                 }

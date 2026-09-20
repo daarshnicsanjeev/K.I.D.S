@@ -3,7 +3,6 @@ package com.kids.collector
 import android.app.Notification
 import android.graphics.Bitmap
 import android.os.Bundle
-import android.service.notification.StatusBarNotification
 import com.google.common.truth.Truth.assertThat
 import com.kids.collector.domain.parser.NotificationParser
 import io.mockk.every
@@ -22,14 +21,7 @@ class NotificationParserTest {
 
     @Test
     fun `parses title, bigText and conversationTitle correctly`() {
-        val sbn = mockk<StatusBarNotification>()
-        val notification = mockk<Notification>()
         val extras = mockk<Bundle>()
-
-        every { sbn.packageName } returns "com.google.android.apps.classroom"
-        every { sbn.notification } returns notification
-        every { sbn.postTime } returns 1726815600000L
-        every { notification.extras } returns extras
 
         every { extras.getCharSequence(Notification.EXTRA_TITLE) } returns "Mathematics Announcement"
         every { extras.getCharSequence(Notification.EXTRA_TEXT) } returns "Short summary"
@@ -40,7 +32,11 @@ class NotificationParserTest {
         @Suppress("DEPRECATION")
         every { extras.getParcelable<Bitmap>(Notification.EXTRA_PICTURE) } returns null
 
-        val parsed = parser.parse(sbn)
+        val parsed = parser.parse(
+            packageName = "com.google.android.apps.classroom",
+            postTimeMs = 1726815600000L,
+            extras = extras
+        )
 
         assertThat(parsed).isNotNull()
         assertThat(parsed?.packageName).isEqualTo("com.google.android.apps.classroom")

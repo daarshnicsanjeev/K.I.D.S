@@ -27,7 +27,10 @@ class NotificationParser {
         val packageName = sbn.packageName ?: return null
         val notification = sbn.notification ?: return null
         val extras: Bundle = notification.extras ?: return null
+        return parse(packageName, sbn.postTime, extras)
+    }
 
+    fun parse(packageName: String, postTimeMs: Long, extras: Bundle): ParsedNotification? {
         val title = extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim().orEmpty()
         val text = extras.getCharSequence(Notification.EXTRA_TEXT)?.toString()?.trim().orEmpty()
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()?.trim().orEmpty()

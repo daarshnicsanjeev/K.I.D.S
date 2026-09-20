@@ -11,9 +11,9 @@ class ContentClassifier {
     fun classify(title: String, body: String): ContentCategory {
         val combined = "$title $body".lowercase()
 
-        // 1. Homework & Assignment patterns
-        if (HOMEWORK_KEYWORDS.any { combined.contains(it) }) {
-            return ContentCategory.HOMEWORK
+        // 1. Fee reminders & receipts (high financial priority)
+        if (FEE_KEYWORDS.any { combined.contains(it) }) {
+            return ContentCategory.FEES
         }
 
         // 2. Attendance alerts
@@ -21,9 +21,9 @@ class ContentClassifier {
             return ContentCategory.ATTENDANCE
         }
 
-        // 3. Fee reminders & receipts
-        if (FEE_KEYWORDS.any { combined.contains(it) }) {
-            return ContentCategory.FEES
+        // 3. Homework & Assignment patterns
+        if (HOMEWORK_KEYWORDS.any { combined.contains(it) }) {
+            return ContentCategory.HOMEWORK
         }
 
         // 4. Circulars & general announcements
