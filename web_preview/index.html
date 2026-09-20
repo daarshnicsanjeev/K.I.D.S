@@ -67,6 +67,9 @@
         <button id="nav-dash" onclick="switchView('dash')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 transition">
           Main Dashboard
         </button>
+        <button onclick="openPermModal()" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 text-white hover:bg-emerald-600 transition shadow">
+          🛡️ Permissions
+        </button>
       </nav>
 
       <!-- FEEDBACK TOGGLE -->
@@ -827,6 +830,91 @@
         alert("Feedback copied to clipboard! You can paste it right into our conversation.");
       });
     }
+
+    let notifGranted = false;
+    let accGranted = false;
+
+    function openPermModal() {
+      document.getElementById('permission-modal').classList.remove('hidden');
+    }
+
+    function closePermModal() {
+      document.getElementById('permission-modal').classList.add('hidden');
+    }
+
+    function togglePermNotif() {
+      notifGranted = !notifGranted;
+      const badge = document.getElementById('perm-notif-badge');
+      const btn = document.getElementById('btn-toggle-notif');
+      if (notifGranted) {
+        badge.innerText = "✓ ACTIVE";
+        badge.className = "bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded";
+        btn.innerText = "Access Granted ✓";
+        btn.className = "w-full py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg";
+      } else {
+        badge.innerText = "REQUIRED";
+        badge.className = "bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded";
+        btn.innerText = "Enable Notification Access →";
+        btn.className = "w-full py-1.5 bg-[#1A365D] hover:bg-[#0F2341] text-white text-xs font-semibold rounded-lg shadow";
+      }
+    }
+
+    function togglePermAcc() {
+      accGranted = !accGranted;
+      const badge = document.getElementById('perm-acc-badge');
+      const btn = document.getElementById('btn-toggle-acc');
+      if (accGranted) {
+        badge.innerText = "✓ ACTIVE";
+        badge.className = "bg-emerald-100 text-emerald-800 text-[10px] font-bold px-2 py-0.5 rounded";
+        btn.innerText = "Assistant Enabled ✓";
+        btn.className = "w-full py-1.5 bg-emerald-600 text-white text-xs font-semibold rounded-lg";
+      } else {
+        badge.innerText = "OPTIONAL";
+        badge.className = "bg-slate-200 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded";
+        btn.innerText = "Enable Backfill Assistant →";
+        btn.className = "w-full py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded-lg";
+      }
+    }
   </script>
+
+  <!-- PERMISSIONS SETUP MODAL -->
+  <div id="permission-modal" class="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-2xl max-w-md w-full p-5 shadow-2xl border-2 border-[#1A365D] space-y-4">
+      <div class="flex items-center gap-3">
+        <span class="p-2 bg-amber-100 rounded-lg text-lg">🛡️</span>
+        <div>
+          <h3 class="font-bold text-[#1A365D] text-base">Required Permissions Setup</h3>
+          <p class="text-[11px] text-slate-500">K.I.D.S. operates 100% locally with zero cloud backend.</p>
+        </div>
+      </div>
+      <div class="space-y-3">
+        <!-- Perm 1 -->
+        <div class="p-3 border rounded-xl bg-slate-50 border-slate-300 flex flex-col gap-2">
+          <div class="flex justify-between items-center">
+            <span class="font-bold text-xs text-slate-900">1. Notification Access</span>
+            <span id="perm-notif-badge" class="bg-amber-100 text-amber-900 text-[10px] font-bold px-2 py-0.5 rounded">REQUIRED</span>
+          </div>
+          <p class="text-[11px] text-slate-600">Enables 24/7 background capture of notices from Classroom, WhatsApp & ERPs.</p>
+          <button id="btn-toggle-notif" onclick="togglePermNotif()" class="w-full py-1.5 bg-[#1A365D] hover:bg-[#0F2341] text-white text-xs font-semibold rounded-lg shadow">
+            Enable Notification Access &rarr;
+          </button>
+        </div>
+        <!-- Perm 2 -->
+        <div class="p-3 border rounded-xl bg-slate-50 border-slate-300 flex flex-col gap-2">
+          <div class="flex justify-between items-center">
+            <span class="font-bold text-xs text-slate-900">2. Backfill Assistant</span>
+            <span id="perm-acc-badge" class="bg-slate-200 text-slate-700 text-[10px] font-bold px-2 py-0.5 rounded">OPTIONAL</span>
+          </div>
+          <p class="text-[11px] text-slate-600">Powers the floating assistant to auto-capture past assignments without school passwords.</p>
+          <button id="btn-toggle-acc" onclick="togglePermAcc()" class="w-full py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded-lg">
+            Enable Backfill Assistant &rarr;
+          </button>
+        </div>
+      </div>
+      <button onclick="closePermModal()" class="w-full py-2 bg-[#ED8936] hover:bg-[#DD6B20] text-[#0F172A] font-bold text-xs rounded-xl shadow">
+        Continue to App
+      </button>
+    </div>
+  </div>
 </body>
 </html>

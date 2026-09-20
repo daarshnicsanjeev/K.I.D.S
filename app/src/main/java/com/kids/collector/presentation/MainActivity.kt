@@ -14,6 +14,8 @@ import com.kids.collector.presentation.dashboard.ChildrenGridDashboard
 import com.kids.collector.presentation.telemetry.DiagnosticFeedScreen
 import com.kids.collector.presentation.theme.KidsTheme
 import com.kids.collector.presentation.wizard.OnboardingWizardScreen
+import com.kids.collector.presentation.permission.PermissionHelper
+import com.kids.collector.presentation.permission.PermissionSetupDialog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -37,6 +39,15 @@ class MainActivity : ComponentActivity() {
                 var currentScreen by remember { mutableStateOf(AppScreen.DASHBOARD) }
                 var childrenList by remember { mutableStateOf<List<ChildProfile>>(emptyList()) }
                 var isFirstLoad by remember { mutableStateOf(true) }
+                var showPermissionDialog by remember {
+                    mutableStateOf(!PermissionHelper.isNotificationAccessGranted(this@MainActivity))
+                }
+
+                if (showPermissionDialog) {
+                    PermissionSetupDialog(
+                        onDismiss = { showPermissionDialog = false }
+                    )
+                }
 
                 // Observe children profiles from Room
                 LaunchedEffect(Unit) {

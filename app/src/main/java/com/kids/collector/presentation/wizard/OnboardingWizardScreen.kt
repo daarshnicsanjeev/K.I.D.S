@@ -26,7 +26,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.kids.collector.presentation.permission.PermissionHelper
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
 import com.google.android.gms.common.api.ApiException
@@ -211,6 +213,48 @@ fun OnboardingWizardScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
+            val hasNotificationAccess = remember {
+                mutableStateOf(PermissionHelper.isNotificationAccessGranted(context))
+            }
+            if (!hasNotificationAccess.value) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = AmberOrange.copy(alpha = 0.12f)),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "⚠️ Notification Access Needed",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = DeepNavy
+                            )
+                            Text(
+                                text = "Required to capture incoming notices silently.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                        }
+                        Button(
+                            onClick = {
+                                PermissionHelper.openNotificationListenerSettings(context)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = DeepNavy),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                        ) {
+                            Text("Enable", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
+                }
+            }
+
             when (currentStep) {
                 WizardStep.STEP_1_VAULT -> {
                     // SECTION 1: GOOGLE DRIVE VAULT ACCOUNT (REQUIRED 1ST)

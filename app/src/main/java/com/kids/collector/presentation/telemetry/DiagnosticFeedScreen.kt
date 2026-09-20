@@ -11,10 +11,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.kids.collector.domain.model.ProbeItem
+import com.kids.collector.presentation.permission.PermissionHelper
 import com.kids.collector.presentation.theme.*
 
 data class LogLine(
@@ -29,13 +31,15 @@ fun DiagnosticFeedScreen(
     onBack: () -> Unit,
     onShareBundle: () -> Unit
 ) {
+    val context = LocalContext.current
+    val nlsActive = remember { PermissionHelper.isNotificationAccessGranted(context) }
     var isProbing by remember { mutableStateOf(false) }
     var probeResults by remember {
         mutableStateOf(
             listOf(
                 ProbeItem("probe_auth", "Google Drive Auth Token", true, "OAuth token valid (drive.file scope). Expires in 54 min."),
                 ProbeItem("probe_vault", "Drive Vault Folder Structure", true, "Verified path: K.I.D.S. Data/2026-2027/"),
-                ProbeItem("probe_nls", "NotificationListenerService Status", true, "Connected & listening to Classroom, WhatsApp & ERPs."),
+                ProbeItem("probe_nls", "NotificationListenerService Status", nlsActive, if (nlsActive) "Connected & listening to Classroom, WhatsApp & ERPs." else "Permission pending. Notification Access not granted in phone Settings."),
                 ProbeItem("probe_ocr", "On-Device Google ML Kit OCR", true, "play-services-mlkit-text-recognition loaded in memory."),
                 ProbeItem("probe_quota", "Drive Storage Quota", true, "11.8 GB free (Usage: 3.2 GB / 15.0 GB).")
             )
