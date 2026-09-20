@@ -31,6 +31,7 @@ sealed interface ProvisionStep1Result {
 object DriveVaultManager {
     private const val TAG = "DriveVaultManager"
     const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+    const val GOOGLE_CLIENT_ID = "378609737196-c7bsdma5l20d1vf9r5dm7vahneai10am.apps.googleusercontent.com"
 
     @Volatile
     var currentChildVault: ChildVaultFolders? = null
