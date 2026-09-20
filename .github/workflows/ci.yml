@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -24,32 +25,32 @@ jobs:
         with:
           distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.9'
 
       - name: Grant Execute Permission to Gradlew
-        run: chmod +x gradlew || true
-
-      - name: Run Detekt & Linter Checks
-        run: |
-          echo "Executing Android Lint & Static Analysis..."
-          ./gradlew lintDebug --stacktrace || true
+        run: chmod +x gradlew
 
       - name: Execute Unit Test Suite
         run: |
-          echo "Executing Unit & Integration Tests (MockK, JUnit5, Truth)..."
-          ./gradlew testDebugUnitTest --stacktrace || true
+          echo "Executing Unit Tests..."
+          ./gradlew testDebugUnitTest --stacktrace
 
       - name: Assemble Debug APK
         run: |
-          echo "Compiling Debug Application Package..."
-          ./gradlew assembleDebug --stacktrace || true
+          echo "Compiling Debug APK..."
+          ./gradlew assembleDebug --stacktrace
 
-      - name: Upload Test & Lint Results
+      - name: Upload Test Reports & APK
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: lint-and-test-reports
+          name: build-and-test-artifacts
           path: |
             app/build/reports/
             app/build/test-results/
+            app/build/outputs/apk/
           retention-days: 7

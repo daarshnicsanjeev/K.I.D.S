@@ -118,3 +118,7 @@ dependencies {
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
 }
+
+tasks.withType<Test> {
+    useJUnitPlatform()
+}
