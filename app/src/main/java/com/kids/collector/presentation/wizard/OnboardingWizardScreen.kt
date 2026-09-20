@@ -27,12 +27,12 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import android.app.Activity
 import androidx.compose.ui.unit.dp
 import com.kids.collector.presentation.permission.PermissionHelper
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInAccount
-import com.google.android.gms.common.api.ApiException
 import com.kids.collector.data.drive.DriveVaultManager
+import com.kids.collector.data.drive.ProvisionStep1Result
+import com.kids.collector.data.drive.SafVaultManager
 import com.kids.collector.domain.model.ChannelConfig
 import com.kids.collector.domain.model.ChannelType
 import com.kids.collector.domain.model.ChildProfile
@@ -64,38 +64,81 @@ fun OnboardingWizardScreen(
     var provisioningMessage by remember { mutableStateOf("") }
 
     // Step 1 State: Drive First & Minimal Child Info
-    var signedInAccount by remember { mutableStateOf<GoogleSignInAccount?>(GoogleSignIn.getLastSignedInAccount(context)) }
-    var isDriveConnected by remember { mutableStateOf(signedInAccount != null) }
-    var driveAccountEmail by remember { mutableStateOf(signedInAccount?.email ?: "") }
+    var driveAccountEmail by remember { mutableStateOf("") }
+    var isDriveConnected by remember { mutableStateOf(false) }
+    var selectedSafTreeUri by remember { mutableStateOf<Uri?>(null) }
+    var driveVaultType by remember { mutableStateOf("DIRECT") } // "DIRECT" or "SAF"
+    var driveErrorMessage by remember { mutableStateOf<String?>(null) }
     var childName by remember { mutableStateOf("") }
     val academicYears = remember { listOf("2026-2027", "2025-2026", "2027-2028") }
     var selectedYear by remember { mutableStateOf("2026-2027") }
     var photoUri by remember { mutableStateOf<Uri?>(null) }
 
-    // Step 1 Real Google Drive OAuth Launcher
-    val driveSignInLauncher = rememberLauncherForActivityResult(
+    // Step 1 Direct Google Drive Account Picker Launcher (native Android AccountManager)
+    val driveAccountPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
     ) { result ->
-        val task = GoogleSignIn.getSignedInAccountFromIntent(result.data)
-        try {
-            val account = task.getResult(ApiException::class.java)
-            signedInAccount = account
-            driveAccountEmail = account.email ?: "parent.vault@gmail.com"
+        val selectedEmail = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        if (!selectedEmail.isNullOrBlank()) {
+            driveAccountEmail = selectedEmail
             isDriveConnected = true
-            DriveVaultManager.currentAccount = account
-            Toast.makeText(context, "Google Drive Vault authenticated: $driveAccountEmail", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Log.w("OnboardingWizard", "GoogleSignIn notice: ${e.message}")
-            val fallbackAccount = GoogleSignIn.getLastSignedInAccount(context)
-            if (fallbackAccount != null) {
-                signedInAccount = fallbackAccount
-                driveAccountEmail = fallbackAccount.email ?: "parent.vault@gmail.com"
-                isDriveConnected = true
-                DriveVaultManager.currentAccount = fallbackAccount
-            } else {
-                driveAccountEmail = "parent.vault@gmail.com"
-                isDriveConnected = true
+            driveVaultType = "DIRECT"
+            driveErrorMessage = null
+            DriveVaultManager.currentAccountEmail = selectedEmail
+            Toast.makeText(context, "Google Account connected: $selectedEmail", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    // Step 1 Google OAuth User Consent Launcher (handles UserRecoverableAuthIOException / UserRecoverableAuthException)
+    val driveConsentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            Toast.makeText(context, "Permission granted! Initializing vault on Google Drive...", Toast.LENGTH_SHORT).show()
+            scope.launch {
+                isProvisioning = true
+                provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/${childName.trim()}/ on Google Drive..."
+                when (val provResult = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, childName.trim())) {
+                    is ProvisionStep1Result.Success -> {
+                        isProvisioning = false
+                        Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
+                        currentStep = WizardStep.STEP_2_CLASSROOM
+                    }
+                    is ProvisionStep1Result.UserConsentRequired -> {
+                        isProvisioning = false
+                        driveConsentLauncher.launch(provResult.consentIntent)
+                    }
+                    is ProvisionStep1Result.Failure -> {
+                        isProvisioning = false
+                        driveErrorMessage = provResult.userMessage
+                        Toast.makeText(context, "Drive Error: ${provResult.userMessage}", Toast.LENGTH_LONG).show()
+                    }
+                }
             }
+        } else {
+            Toast.makeText(context, "Google Drive access was not approved.", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    // Step 1 Storage Access Framework (SAF) Google Drive Folder Launcher (zero-config fallback)
+    val driveSafFolderLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                context.contentResolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                )
+            } catch (e: Exception) {
+                Log.w("OnboardingWizard", "Persistable permission notice: ${e.message}")
+            }
+            selectedSafTreeUri = uri
+            driveVaultType = "SAF"
+            isDriveConnected = true
+            driveAccountEmail = "Google Drive Folder (Storage Access)"
+            driveErrorMessage = null
+            Toast.makeText(context, "Google Drive folder connected via Storage Picker!", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -280,30 +323,43 @@ fun OnboardingWizardScreen(
                                     verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement = Arrangement.SpaceBetween
                                 ) {
-                                    Column {
-                                        Text("✓ Drive Vault Authenticated", color = SuccessGreen, style = MaterialTheme.typography.labelLarge)
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = if (driveVaultType == "DIRECT") "✓ Google Account Connected" else "✓ Google Drive Folder Connected",
+                                            color = SuccessGreen,
+                                            style = MaterialTheme.typography.labelLarge
+                                        )
                                         Text(driveAccountEmail, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                                     }
                                     OutlinedButton(
                                         onClick = {
-                                            val client = DriveVaultManager.getGoogleSignInClient(context)
-                                            driveSignInLauncher.launch(client.signInIntent)
+                                            isDriveConnected = false
+                                            driveErrorMessage = null
                                         },
                                         modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                                     ) {
-                                        Text("Change Account")
+                                        Text("Change")
                                     }
                                 }
                             } else {
-                                Button(
-                                    onClick = {
-                                        val client = DriveVaultManager.getGoogleSignInClient(context)
-                                        driveSignInLauncher.launch(client.signInIntent)
-                                    },
-                                    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
-                                    colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
-                                ) {
-                                    Text("Select Google Account for Vault", color = SurfaceWhite)
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(
+                                        onClick = {
+                                            launchAccountPicker(driveAccountPickerLauncher)
+                                        },
+                                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
+                                    ) {
+                                        Text("Select Google Account (Direct Sync)", color = SurfaceWhite)
+                                    }
+                                    OutlinedButton(
+                                        onClick = {
+                                            driveSafFolderLauncher.launch(null)
+                                        },
+                                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                                    ) {
+                                        Text("Choose Google Drive Folder (Instant Setup)")
+                                    }
                                 }
                             }
                         }
@@ -379,19 +435,77 @@ fun OnboardingWizardScreen(
                             }
                         }
 
+                        if (driveErrorMessage != null) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.errorContainer,
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Text(
+                                        text = "Drive Setup Note: $driveErrorMessage",
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = "Tip: You can connect instantly via 'Choose Google Drive Folder' with zero developer console setup.",
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+                                    Button(
+                                        onClick = { driveSafFolderLauncher.launch(null) },
+                                        colors = ButtonDefaults.buttonColors(containerColor = AmberOrange),
+                                        modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                                    ) {
+                                        Text("Select Drive Folder via Storage Picker", color = TextPrimary)
+                                    }
+                                }
+                            }
+                        }
+
                         Button(
                             onClick = {
                                 scope.launch {
                                     isProvisioning = true
-                                    provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/$childName/ on Google Drive..."
-                                    val result = DriveVaultManager.provisionStep1(context, signedInAccount, selectedYear, childName.trim())
-                                    isProvisioning = false
-                                    if (result.isSuccess) {
-                                        Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
+                                    provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/${childName.trim()}/ on Google Drive..."
+                                    driveErrorMessage = null
+
+                                    if (driveVaultType == "SAF" && selectedSafTreeUri != null) {
+                                        val safResult = SafVaultManager.provisionStep1Saf(
+                                            context,
+                                            selectedSafTreeUri!!,
+                                            selectedYear,
+                                            childName.trim()
+                                        )
+                                        isProvisioning = false
+                                        if (safResult.isSuccess) {
+                                            Toast.makeText(context, "✓ Step 1: Vault created on Google Drive via Storage Picker!", Toast.LENGTH_SHORT).show()
+                                            currentStep = WizardStep.STEP_2_CLASSROOM
+                                        } else {
+                                            val err = safResult.exceptionOrNull()?.localizedMessage ?: "Failed to create folders via Storage Picker"
+                                            driveErrorMessage = err
+                                            Toast.makeText(context, "Drive Error: $err", Toast.LENGTH_LONG).show()
+                                        }
                                     } else {
-                                        Toast.makeText(context, "Note: Vault initialized locally. Will sync to Drive once network confirms.", Toast.LENGTH_LONG).show()
+                                        when (val result = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, childName.trim())) {
+                                            is ProvisionStep1Result.Success -> {
+                                                isProvisioning = false
+                                                Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
+                                                currentStep = WizardStep.STEP_2_CLASSROOM
+                                            }
+                                            is ProvisionStep1Result.UserConsentRequired -> {
+                                                isProvisioning = false
+                                                Toast.makeText(context, "Please approve Google Drive permission...", Toast.LENGTH_SHORT).show()
+                                                driveConsentLauncher.launch(result.consentIntent)
+                                            }
+                                            is ProvisionStep1Result.Failure -> {
+                                                isProvisioning = false
+                                                driveErrorMessage = result.userMessage
+                                                Toast.makeText(context, "Drive Error: ${result.userMessage}", Toast.LENGTH_LONG).show()
+                                            }
+                                        }
                                     }
-                                    currentStep = WizardStep.STEP_2_CLASSROOM
                                 }
                             },
                             enabled = isStep1Valid && !isProvisioning,
@@ -528,7 +642,7 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating vault on Google Drive..."
-                                    DriveVaultManager.provisionStep2Classroom(context, signedInAccount, DriveVaultManager.currentChildVault, "", isSkipped = true)
+                                    DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, "", isSkipped = true)
                                     isProvisioning = false
                                     enableClassroom = false
                                     currentStep = WizardStep.STEP_3_PORTALS
@@ -544,7 +658,7 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating Google Drive with Classroom mapping..."
-                                    DriveVaultManager.provisionStep2Classroom(context, signedInAccount, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
+                                    DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
                                     isProvisioning = false
                                     Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
                                     currentStep = WizardStep.STEP_3_PORTALS
@@ -620,7 +734,7 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating vault on Google Drive..."
-                                    DriveVaultManager.provisionStep3Erp(context, signedInAccount, DriveVaultManager.currentChildVault, "", "", emptyList(), isSkipped = true)
+                                    DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, "", "", emptyList(), isSkipped = true)
                                     isProvisioning = false
                                     enableErp = false
                                     currentStep = WizardStep.STEP_4_WHATSAPP
@@ -636,7 +750,7 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating Google Drive with School ERP setup..."
-                                    DriveVaultManager.provisionStep3Erp(context, signedInAccount, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
+                                    DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
                                     isProvisioning = false
                                     Toast.makeText(context, "✓ Step 3: School app updated on Google Drive", Toast.LENGTH_SHORT).show()
                                     currentStep = WizardStep.STEP_4_WHATSAPP
@@ -705,7 +819,7 @@ fun OnboardingWizardScreen(
                                 provisioningMessage = "Finalizing vault and graph.html on Google Drive..."
                                 DriveVaultManager.provisionStep4WhatsApp(
                                     context,
-                                    signedInAccount,
+                                    driveAccountEmail,
                                     DriveVaultManager.currentChildVault,
                                     childName.trim(),
                                     selectedYear,

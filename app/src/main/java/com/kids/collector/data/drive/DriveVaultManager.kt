@@ -1,14 +1,12 @@
 package com.kids.collector.data.drive
 
 import android.content.Context
+import android.content.Intent
 import android.util.Log
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInAccount
-import com.google.android.gms.auth.api.signin.GoogleSignInClient
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.android.gms.common.api.Scope
-import com.google.api.client.http.javanet.NetHttpTransport
+import com.google.android.gms.auth.UserRecoverableAuthException
 import com.google.api.client.googleapis.extensions.android.gms.auth.GoogleAccountCredential
+import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecoverableAuthIOException
+import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
 import kotlinx.coroutines.Dispatchers
@@ -16,6 +14,15 @@ import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+/**
+ * Result of Step 1 Google Drive Vault provisioning.
+ */
+sealed interface ProvisionStep1Result {
+    data class Success(val folders: ChildVaultFolders) : ProvisionStep1Result
+    data class UserConsentRequired(val consentIntent: Intent) : ProvisionStep1Result
+    data class Failure(val error: Throwable, val userMessage: String) : ProvisionStep1Result
+}
 
 /**
  * Manages Google Drive OAuth authentication and coordinates incremental,
@@ -29,22 +36,14 @@ object DriveVaultManager {
     var currentChildVault: ChildVaultFolders? = null
 
     @Volatile
-    var currentAccount: GoogleSignInAccount? = null
+    var currentAccountEmail: String? = null
 
-    fun getGoogleSignInClient(context: Context): GoogleSignInClient {
-        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-            .requestEmail()
-            .requestScopes(Scope(DRIVE_FILE_SCOPE))
-            .build()
-        return GoogleSignIn.getClient(context, gso)
-    }
-
-    fun getDriveService(context: Context, account: GoogleSignInAccount): Drive {
+    fun getDriveService(context: Context, accountEmail: String): Drive {
         val credential = GoogleAccountCredential.usingOAuth2(
             context,
             listOf(DRIVE_FILE_SCOPE)
         ).apply {
-            selectedAccount = account.account
+            selectedAccountName = accountEmail
         }
 
         return Drive.Builder(
@@ -60,22 +59,25 @@ object DriveVaultManager {
      */
     suspend fun provisionStep1(
         context: Context,
-        account: GoogleSignInAccount?,
+        accountEmail: String?,
         academicYear: String,
         childName: String
-    ): Result<ChildVaultFolders> = withContext(Dispatchers.IO) {
-        try {
-            if (account == null) {
-                return@withContext Result.failure(IllegalStateException("No authenticated Google Account provided."))
-            }
+    ): ProvisionStep1Result = withContext(Dispatchers.IO) {
+        if (accountEmail.isNullOrBlank()) {
+            return@withContext ProvisionStep1Result.Failure(
+                IllegalStateException("No Google Account selected."),
+                "Please select your Google Account first."
+            )
+        }
 
-            val driveService = getDriveService(context, account)
+        try {
+            val driveService = getDriveService(context, accountEmail)
             val driveClient = GoogleDriveClient(driveService)
 
             Log.i(TAG, "Step 1: Provisioning child vault on Google Drive for $childName ($academicYear)...")
             val folders = driveClient.provisionChildVault(academicYear, childName)
             currentChildVault = folders
-            currentAccount = account
+            currentAccountEmail = accountEmail
 
             val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
@@ -132,10 +134,18 @@ object DriveVaultManager {
             driveClient.uploadOrUpdateFamilyDigest(folders.yearFolderId, familyDigest)
 
             Log.i(TAG, "Step 1: Successfully created Google Drive vault folders and initial files.")
-            Result.success(folders)
+            ProvisionStep1Result.Success(folders)
+        } catch (e: UserRecoverableAuthIOException) {
+            Log.w(TAG, "User consent required for Google Drive access via UserRecoverableAuthIOException", e)
+            ProvisionStep1Result.UserConsentRequired(e.intent)
+        } catch (e: UserRecoverableAuthException) {
+            Log.w(TAG, "User consent required for Google Drive access via UserRecoverableAuthException", e)
+            val intent = e.intent ?: Intent()
+            ProvisionStep1Result.UserConsentRequired(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Step 1: Failed to provision Google Drive vault", e)
-            Result.failure(e)
+            val userMsg = e.localizedMessage ?: e.javaClass.simpleName
+            ProvisionStep1Result.Failure(e, userMsg)
         }
     }
 
@@ -144,14 +154,20 @@ object DriveVaultManager {
      */
     suspend fun provisionStep2Classroom(
         context: Context,
-        account: GoogleSignInAccount?,
+        accountEmail: String?,
         folders: ChildVaultFolders?,
         studentEmail: String,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        // Also update SAF vault if active
+        SafVaultManager.provisionStep2ClassroomSaf(context, studentEmail, isSkipped)
+
         try {
-            if (account == null || folders == null) return@withContext Result.success(Unit)
-            val driveClient = GoogleDriveClient(getDriveService(context, account))
+            val email = accountEmail ?: currentAccountEmail
+            val vault = folders ?: currentChildVault
+            if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
+
+            val driveClient = GoogleDriveClient(getDriveService(context, email))
 
             val backfillActive = com.kids.collector.service.KidsAccessibilityService.isEnabled(context)
             val statusMsg = if (isSkipped) {
@@ -159,7 +175,7 @@ object DriveVaultManager {
             } else {
                 "[STEP 2 COMPLETE] Google Classroom mapped: $studentEmail | Historical Backfill Crawler: ${if (backfillActive) "ACTIVE" else "STANDBY"}"
             }
-            driveClient.appendTimelineLog(folders.logsFolderId, statusMsg)
+            driveClient.appendTimelineLog(vault.logsFolderId, statusMsg)
 
             if (!isSkipped && studentEmail.isNotBlank()) {
                 val graphUpdate = """
@@ -169,7 +185,7 @@ object DriveVaultManager {
                       "status": "ACTIVE"
                     }
                 """.trimIndent()
-                driveClient.uploadOrUpdateKnowledgeGraph(folders.systemFolderId, graphUpdate)
+                driveClient.uploadOrUpdateKnowledgeGraph(vault.systemFolderId, graphUpdate)
             }
             Result.success(Unit)
         } catch (e: Exception) {
@@ -183,23 +199,29 @@ object DriveVaultManager {
      */
     suspend fun provisionStep3Erp(
         context: Context,
-        account: GoogleSignInAccount?,
+        accountEmail: String?,
         folders: ChildVaultFolders?,
         appName: String,
         appPkg: String,
         tabs: List<String>,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        // Also update SAF vault if active
+        SafVaultManager.provisionStep3ErpSaf(context, appName, appPkg, tabs, isSkipped)
+
         try {
-            if (account == null || folders == null) return@withContext Result.success(Unit)
-            val driveClient = GoogleDriveClient(getDriveService(context, account))
+            val email = accountEmail ?: currentAccountEmail
+            val vault = folders ?: currentChildVault
+            if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
+
+            val driveClient = GoogleDriveClient(getDriveService(context, email))
 
             val statusMsg = if (isSkipped) {
                 "[STEP 3 SKIPPED] School ERP not enabled"
             } else {
                 "[STEP 3 COMPLETE] School ERP mapped: $appName ($appPkg), tabs: ${tabs.joinToString()}"
             }
-            driveClient.appendTimelineLog(folders.logsFolderId, statusMsg)
+            driveClient.appendTimelineLog(vault.logsFolderId, statusMsg)
             Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "Step 3: Failed to update School ERP vault files", e)
@@ -212,24 +234,30 @@ object DriveVaultManager {
      */
     suspend fun provisionStep4WhatsApp(
         context: Context,
-        account: GoogleSignInAccount?,
+        accountEmail: String?,
         folders: ChildVaultFolders?,
         childName: String,
         academicYear: String,
         groupName: String,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
+        // Also update SAF vault if active
+        SafVaultManager.provisionStep4WhatsAppSaf(context, childName, academicYear, groupName, isSkipped)
+
         try {
-            if (account == null || folders == null) return@withContext Result.success(Unit)
-            val driveClient = GoogleDriveClient(getDriveService(context, account))
+            val email = accountEmail ?: currentAccountEmail
+            val vault = folders ?: currentChildVault
+            if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
+
+            val driveClient = GoogleDriveClient(getDriveService(context, email))
 
             val statusMsg = if (isSkipped) {
                 "[STEP 4 SKIPPED] WhatsApp groups not enabled"
             } else {
                 "[STEP 4 COMPLETE] WhatsApp group whitelisted: $groupName"
             }
-            driveClient.appendTimelineLog(folders.logsFolderId, statusMsg)
-            driveClient.appendTimelineLog(folders.logsFolderId, "[ONBOARDING FINISHED] All vault files active.")
+            driveClient.appendTimelineLog(vault.logsFolderId, statusMsg)
+            driveClient.appendTimelineLog(vault.logsFolderId, "[ONBOARDING FINISHED] All vault files active.")
 
             // Write standalone interactive graph.html
             val graphHtml = """
@@ -255,7 +283,7 @@ object DriveVaultManager {
                 </body>
                 </html>
             """.trimIndent()
-            driveClient.uploadOrUpdateGraphHtml(folders.childFolderId, graphHtml)
+            driveClient.uploadOrUpdateGraphHtml(vault.childFolderId, graphHtml)
 
             Result.success(Unit)
         } catch (e: Exception) {
