@@ -1,6 +1,7 @@
 package com.kids.collector
 
 import android.app.Notification
+import android.graphics.Bitmap
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
 import com.google.common.truth.Truth.assertThat
@@ -35,8 +36,9 @@ class NotificationParserTest {
         every { extras.getCharSequence(Notification.EXTRA_BIG_TEXT) } returns "Full homework instructions for Chapter 4 Algebraic Expressions."
         every { extras.getCharSequence(Notification.EXTRA_SUB_TEXT) } returns null
         every { extras.getCharSequence(Notification.EXTRA_CONVERSATION_TITLE) } returns "STD- VIII (B)"
-        every { extras.getParcelable(any(), any<Class<Any>>()) } returns null
-        every { extras.getParcelable(any()) } returns null
+        every { extras.getParcelable(Notification.EXTRA_PICTURE, Bitmap::class.java) } returns null
+        @Suppress("DEPRECATION")
+        every { extras.getParcelable<Bitmap>(Notification.EXTRA_PICTURE) } returns null
 
         val parsed = parser.parse(sbn)
 
