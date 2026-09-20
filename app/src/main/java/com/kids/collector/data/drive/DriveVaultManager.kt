@@ -39,6 +39,22 @@ object DriveVaultManager {
     @Volatile
     var currentAccountEmail: String? = null
 
+    fun saveVaultPrefs(context: Context, accountEmail: String, academicYear: String, childName: String) {
+        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+            .putString("account_email", accountEmail)
+            .putString("academic_year", academicYear)
+            .putString("child_name", childName)
+            .apply()
+    }
+
+    fun getSavedVaultPrefs(context: Context): Triple<String?, String, String> {
+        val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        val email = prefs.getString("account_email", null) ?: currentAccountEmail
+        val year = prefs.getString("academic_year", null) ?: "2026-2027"
+        val child = prefs.getString("child_name", null) ?: "atharva"
+        return Triple(email, year, child)
+    }
+
     fun getDriveService(context: Context, accountEmail: String): Drive {
         val credential = GoogleAccountCredential.usingOAuth2(
             context,
@@ -79,6 +95,7 @@ object DriveVaultManager {
             val folders = driveClient.provisionChildVault(academicYear, childName)
             currentChildVault = folders
             currentAccountEmail = accountEmail
+            saveVaultPrefs(context, accountEmail, academicYear, childName)
 
             val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
@@ -183,10 +200,28 @@ object DriveVaultManager {
             val driveClient = GoogleDriveClient(getDriveService(context, email))
 
             val backfillActive = com.kids.collector.service.KidsAccessibilityService.isEnabled(context)
+            if (!isSkipped) {
+                // Provision dedicated Google Classroom vault folder & attachments subfolder
+                val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+                val initialDigest = """
+                    # Google Classroom Digest
+                    **Student Account:** $studentEmail
+                    **Status:** Active & Monitoring
+                    **Configured:** $timeStampStr
+
+                    ---
+
+                    ## Announcements & Assignments
+                    * Real-time monitoring and historical backfill crawler active.
+                """.trimIndent()
+                driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, initialDigest)
+            }
+
             val statusMsg = if (isSkipped) {
                 "[STEP 2 SKIPPED] Google Classroom not enabled"
             } else {
-                "[STEP 2 COMPLETE] Google Classroom mapped: $studentEmail | Historical Backfill Crawler: ${if (backfillActive) "ACTIVE" else "STANDBY"}"
+                "[STEP 2 COMPLETE] Google Classroom mapped: $studentEmail | Vault: Google Classroom/ (attachments/) | Historical Backfill Crawler: ${if (backfillActive) "ACTIVE" else "STANDBY"}"
             }
             driveClient.appendTimelineLog(vault.logsFolderId, statusMsg)
 

@@ -19,6 +19,11 @@ data class ChildVaultFolders(
     val logsFolderId: String
 )
 
+data class ChannelVaultFolders(
+    val channelFolderId: String,
+    val attachmentsFolderId: String
+)
+
 data class DriveQuotaInfo(
     val limitBytes: Long,
     val usageBytes: Long,
@@ -221,6 +226,81 @@ class GoogleDriveClient(
             usageBytes = usage,
             freeBytes = (limit - usage).coerceAtLeast(0L)
         )
+    }
+
+    /**
+     * Provisions a dedicated channel subfolder (e.g. "Google Classroom") and its "attachments" folder.
+     */
+    suspend fun provisionChannelVault(childFolderId: String, channelName: String): ChannelVaultFolders = withContext(Dispatchers.IO) {
+        val channelFolderId = getOrCreateFolder(channelName, childFolderId)
+        val attachmentsFolderId = getOrCreateFolder("attachments", channelFolderId)
+        ChannelVaultFolders(
+            channelFolderId = channelFolderId,
+            attachmentsFolderId = attachmentsFolderId
+        )
+    }
+
+    /**
+     * Appends a notice record to a channel-specific notices.jsonl file.
+     */
+    suspend fun appendNoticeToChannelJsonl(channelFolderId: String, jsonLine: String): String = withContext(Dispatchers.IO) {
+        val fileName = "notices.jsonl"
+        val existingFileId = findFileIdByName(fileName, channelFolderId)
+        val newLineBytes = (jsonLine.trim() + "\n").toByteArray(StandardCharsets.UTF_8)
+
+        if (existingFileId == null) {
+            val fileMetadata = File().apply {
+                name = fileName
+                parents = listOf(channelFolderId)
+                mimeType = "application/x-ndjson"
+            }
+            val content = ByteArrayContent("application/x-ndjson", newLineBytes)
+            val created = driveService.files().create(fileMetadata, content).setFields("id").execute()
+            created.id
+        } else {
+            val outputStream = ByteArrayOutputStream()
+            driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
+            val combinedBytes = outputStream.toByteArray() + newLineBytes
+            val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
+            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
+            updated.id
+        }
+    }
+
+    /**
+     * Uploads or updates a channel digest (e.g. CLASSROOM_DIGEST.md).
+     */
+    suspend fun uploadOrUpdateChannelDigest(channelFolderId: String, markdownContent: String): String = withContext(Dispatchers.IO) {
+        uploadOrUpdateTextFile(channelFolderId, "CLASSROOM_DIGEST.md", "text/markdown", markdownContent)
+    }
+
+    /**
+     * Appends deep scroller telemetry trace lines to _system/logs/crawler_trace.log.
+     */
+    suspend fun appendCrawlerTraceLog(logsFolderId: String, logLines: List<String>): String = withContext(Dispatchers.IO) {
+        if (logLines.isEmpty()) return@withContext ""
+        val fileName = "crawler_trace.log"
+        val existingFileId = findFileIdByName(fileName, logsFolderId)
+        val combinedText = logLines.joinToString("\n") + "\n"
+        val lineBytes = combinedText.toByteArray(StandardCharsets.UTF_8)
+
+        if (existingFileId == null) {
+            val fileMetadata = File().apply {
+                name = fileName
+                parents = listOf(logsFolderId)
+                mimeType = "text/plain"
+            }
+            val content = ByteArrayContent("text/plain", lineBytes)
+            val created = driveService.files().create(fileMetadata, content).setFields("id").execute()
+            created.id
+        } else {
+            val outputStream = ByteArrayOutputStream()
+            driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
+            val combined = outputStream.toByteArray() + lineBytes
+            val updateContent = ByteArrayContent("text/plain", combined)
+            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
+            updated.id
+        }
     }
 
     private fun findFileIdByName(name: String, parentFolderId: String): String? {

@@ -196,48 +196,28 @@ class FloatingCrawlerOverlay(
                     }
                 }
 
-                // Auto-Capture Button
+                // Single Clear Action Button (Zero Confusion)
                 val btnAuto = Button(service).apply {
-                    text = "▶ Auto-Capture"
+                    text = "▶ Start Auto-Capture"
                     setTextColor(Color.parseColor("#0F172A"))
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
                     background = GradientDrawable().apply {
                         shape = GradientDrawable.RECTANGLE
                         cornerRadius = dpToPx(8).toFloat()
-                        setColor(Color.parseColor("#ED8936")) // Amber
+                        setColor(Color.parseColor("#ED8936")) // Amber Orange
                     }
-                    minHeight = dpToPx(40)
-                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
+                    minHeight = dpToPx(44)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    )
+                    setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6))
                     setOnClickListener {
                         toggleAutoScroll()
                     }
                 }
                 autoButton = btnAuto
                 buttonRow.addView(btnAuto)
-
-                // Manual Grab Screen Button
-                val btnGrab = Button(service).apply {
-                    text = "📸 Grab"
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
-                    background = GradientDrawable().apply {
-                        shape = GradientDrawable.RECTANGLE
-                        cornerRadius = dpToPx(8).toFloat()
-                        setColor(Color.parseColor("#2B4C7E"))
-                    }
-                    minHeight = dpToPx(40)
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
-                        LinearLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
-                        marginStart = dpToPx(8)
-                    }
-                    setPadding(dpToPx(10), dpToPx(4), dpToPx(10), dpToPx(4))
-                    setOnClickListener {
-                        onManualCaptureRequested()
-                    }
-                }
-                buttonRow.addView(btnGrab)
 
                 expanded.addView(buttonRow)
                 root.addView(expanded)
@@ -308,11 +288,13 @@ class FloatingCrawlerOverlay(
 
     private fun startAutoScroll() {
         isAutoScrolling = true
-        autoButton?.text = "⏸ Pause"
+        CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
+        autoButton?.text = "⏹ Stop Capture"
+        autoButton?.setTextColor(Color.WHITE)
         autoButton?.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dpToPx(8).toFloat()
-            setColor(Color.parseColor("#E2E8F0")) // Slate light
+            setColor(Color.parseColor("#334155")) // Slate Dark
         }
         // Grab current screen first, then start loop
         onManualCaptureRequested()
@@ -321,8 +303,10 @@ class FloatingCrawlerOverlay(
 
     private fun stopAutoScroll() {
         isAutoScrolling = false
+        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture")
         handler.removeCallbacks(autoScrollRunnable)
-        autoButton?.text = "▶ Auto-Capture"
+        autoButton?.text = "▶ Start Auto-Capture"
+        autoButton?.setTextColor(Color.parseColor("#0F172A"))
         autoButton?.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dpToPx(8).toFloat()
@@ -351,6 +335,11 @@ class FloatingCrawlerOverlay(
         val startY = height * 0.72f
         val endY = height * 0.28f
 
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}, density=${displayMetrics.density}"
+        )
+
         val path = Path().apply {
             moveTo(startX, startY)
             lineTo(startX, endY)
@@ -360,15 +349,22 @@ class FloatingCrawlerOverlay(
         val stroke = GestureDescription.StrokeDescription(path, 0, 450)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
-        service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Swipe gesture COMPLETED")
                 onComplete()
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Swipe gesture CANCELLED")
                 onComplete()
             }
         }, null)
+
+        if (!dispatched) {
+            CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch gesture (service or window not ready)")
+            onComplete()
+        }
     }
 
     private fun setupDragListener(view: View, p: WindowManager.LayoutParams) {

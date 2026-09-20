@@ -31,65 +31,116 @@ class DriveSyncWorker(
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Log.i(TAG, "Starting DriveSyncWorker execution cycle...")
-        deepLogger.log("SYNC_WORKER", "INFO", "Sync cycle started. Checking pending notices.")
+        CrawlerTraceLogger.log("SYNC_WORKER", "Sync cycle started. Checking pending notices.")
 
         val db = KidsDatabase.getInstance(applicationContext)
 
         return@withContext try {
+            val (savedEmail, academicYear, childName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
             val pendingNotices = db.noticeDao().getPendingNotices()
             val pendingAttachments = db.attachmentDao().getPendingAttachments()
+            val pendingLogs = CrawlerTraceLogger.drainPendingLogs()
 
-            Log.d(TAG, "Found ${pendingNotices.size} pending notices, ${pendingAttachments.size} pending attachments")
+            CrawlerTraceLogger.log(TAG, "Found ${pendingNotices.size} pending notices, ${pendingAttachments.size} attachments, ${pendingLogs.size} trace logs")
 
-            for (notice in pendingNotices) {
-                // In production, GoogleDriveClient uploads to parent's vault.
-                // 1. Format AI-native JSONL record
-                val jsonLine = buildJsonObject {
-                    put("noticeId", notice.noticeId)
-                    put("childId", notice.childId)
-                    put("timestampMs", notice.timestampMs)
-                    put("sourceApp", notice.sourceApp)
-                    put("category", notice.category)
-                    put("title", notice.title)
-                    put("body", notice.body)
-                    put("sender", notice.sender)
-                    put("hashSha256", notice.hashSha256)
-                }.toString()
+            if (!savedEmail.isNullOrBlank()) {
+                val driveService = com.kids.collector.data.drive.DriveVaultManager.getDriveService(applicationContext, savedEmail)
+                val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
+                val vault = driveClient.provisionChildVault(academicYear, childName)
 
-                // Mark synced in local database
-                db.noticeDao().updateSyncStatus(
-                    noticeId = notice.noticeId,
-                    newStatus = SyncStatus.SYNCED.name,
-                    driveFileId = "drive_${notice.noticeId.take(8)}"
-                )
+                // 1. Flush crawler deep trace logs to _system/logs/crawler_trace.log
+                if (pendingLogs.isNotEmpty()) {
+                    driveClient.appendCrawlerTraceLog(vault.logsFolderId, pendingLogs)
+                    CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
+                }
 
-                deepLogger.log(
-                    "DRIVE_UPLOAD",
-                    "SUCCESS",
-                    "Notice synced to notices.jsonl: \"${notice.title}\" (${notice.category})."
-                )
+                // 2. Upload pending notices to Google Drive
+                var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
+
+                for (notice in pendingNotices) {
+                    val jsonLine = buildJsonObject {
+                        put("noticeId", notice.noticeId)
+                        put("childId", notice.childId)
+                        put("timestampMs", notice.timestampMs)
+                        put("sourceApp", notice.sourceApp)
+                        put("category", notice.category)
+                        put("title", notice.title)
+                        put("body", notice.body)
+                        put("sender", notice.sender)
+                        put("hashSha256", notice.hashSha256)
+                    }.toString()
+
+                    val isClassroom = notice.sourceApp.contains("classroom", ignoreCase = true)
+                    val uploadedFileId: String
+
+                    if (isClassroom) {
+                        if (classroomVault == null) {
+                            classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                        }
+                        // Upload notice into dedicated Google Classroom/ folder
+                        uploadedFileId = driveClient.appendNoticeToChannelJsonl(classroomVault.channelFolderId, jsonLine)
+
+                        // Also mirror to root child notices.jsonl for unified family rollup
+                        driveClient.appendNoticeToJsonl(vault.childFolderId, jsonLine)
+
+                        // Log milestone in sync_timeline.log
+                        driveClient.appendTimelineLog(
+                            vault.logsFolderId,
+                            "[CLASSROOM SYNC] Auto-captured notice synced to Google Classroom/ folder: \"${notice.title}\" (${notice.category})"
+                        )
+                    } else {
+                        uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, jsonLine)
+                        driveClient.appendTimelineLog(
+                            vault.logsFolderId,
+                            "[NOTICE SYNC] Synced notice: \"${notice.title}\" (${notice.category}) from ${notice.sourceApp}"
+                        )
+                    }
+
+                    // Mark synced in local database
+                    db.noticeDao().updateSyncStatus(
+                        noticeId = notice.noticeId,
+                        newStatus = SyncStatus.SYNCED.name,
+                        driveFileId = uploadedFileId
+                    )
+                }
+
+                // 3. Upload pending attachments
+                for (att in pendingAttachments) {
+                    val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
+                    val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
+
+                    val uploadedAttId = if (localFile != null && localFile.exists()) {
+                        driveClient.uploadAttachment(
+                            parentFolderId = targetFolderId,
+                            file = localFile,
+                            mimeType = if (att.fileType == "PDF") "application/pdf" else "application/octet-stream"
+                        )
+                    } else {
+                        "virtual_${att.attachmentId.take(8)}"
+                    }
+
+                    db.attachmentDao().updateSyncStatus(
+                        attachmentId = att.attachmentId,
+                        newStatus = SyncStatus.SYNCED.name,
+                        driveFileId = uploadedAttId
+                    )
+
+                    driveClient.appendTimelineLog(
+                        vault.logsFolderId,
+                        "[ATTACHMENT SYNC] Attachment uploaded to Google Classroom/attachments/: \"${att.fileName}\""
+                    )
+                }
+            } else {
+                Log.w(TAG, "No Google Drive account email configured. Skipping remote upload.")
+                CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
             }
 
-            for (att in pendingAttachments) {
-                // Mark attachment synced
-                db.attachmentDao().updateSyncStatus(
-                    attachmentId = att.attachmentId,
-                    newStatus = SyncStatus.SYNCED.name,
-                    driveFileId = "att_drive_${att.attachmentId.take(8)}"
-                )
-                deepLogger.log(
-                    "DRIVE_UPLOAD",
-                    "SUCCESS",
-                    "Attachment uploaded: \"${att.fileName}\" (${att.sizeBytes} bytes)."
-                )
-            }
-
-            deepLogger.log("SYNC_WORKER", "SUCCESS", "Drive sync cycle completed successfully.")
+            CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
             Result.success()
 
         } catch (e: Exception) {
             Log.e(TAG, "Error during Drive sync worker execution", e)
-            deepLogger.log("SYNC_WORKER", "ERROR", "Sync failed: ${e.message}")
+            CrawlerTraceLogger.log("SYNC_WORKER", "Sync failed: ${e.message}")
             Result.retry()
         }
     }
