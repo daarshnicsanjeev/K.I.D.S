@@ -55,12 +55,14 @@ class DriveSyncWorker(
                 }
 
                 // 2. Batch upload pending notices to Google Drive
+                var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
+
                 if (pendingNotices.isNotEmpty()) {
                     val classroomNotices = pendingNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
                     val otherNotices = pendingNotices.filter { !it.sourceApp.contains("classroom", ignoreCase = true) }
 
                     if (classroomNotices.isNotEmpty()) {
-                        val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                        classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
                         val batchClassroomJsonl = classroomNotices.joinToString("\n") { notice ->
                             buildJsonObject {
                                 put("noticeId", notice.noticeId)
