@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>K.I.D.S. — Interactive Laptop Testing & UI Review Suite</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    :root {
+      --deep-navy: #1A365D;
+      --navy-dark: #0F2341;
+      --amber: #ED8936;
+      --amber-dark: #DD6B20;
+      --amber-light: #FEEBC8;
+      --slate-border: #E2E8F0;
+      --canvas: #F7FAFC;
+      --surface: #FFFFFF;
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: #F1F5F9;
+      color: var(--text-primary);
+    }
+    .touch-target {
+      min-height: 48px;
+      min-width: 48px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    :focus-visible {
+      outline: 3px solid var(--amber) !important;
+      outline-offset: 2px !important;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col antialiased">
+
+  <!-- TOP LAPTOP TESTING BANNER -->
+  <header class="bg-[#1A365D] text-white border-b border-slate-700 shadow-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center space-x-3">
+        <span class="w-8 h-8 rounded-lg bg-[#ED8936] text-[#0F172A] font-extrabold flex items-center justify-center text-sm">K</span>
+        <div>
+          <h1 class="font-bold text-lg leading-tight tracking-wide">K.I.D.S. Interactive Laptop Preview</h1>
+          <p class="text-xs text-slate-300">Updated: Zero-Typing, Account Pickers & Group Capture Flow</p>
+        </div>
+      </div>
+
+      <!-- VIEW SELECTOR BAR -->
+      <nav aria-label="Screen Selection" class="flex flex-wrap items-center gap-2">
+        <span class="text-xs text-slate-300 font-semibold mr-1">JUMP TO VIEW:</span>
+        <button id="nav-step1" onclick="switchView('step1')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-[#ED8936] text-[#0F172A] transition shadow">
+          1. Vault & Child
+        </button>
+        <button id="nav-step2" onclick="switchView('step2')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 transition">
+          2. Classroom Picker
+        </button>
+        <button id="nav-step3" onclick="switchView('step3')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 transition">
+          3. App Picker
+        </button>
+        <button id="nav-step4" onclick="switchView('step4')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 transition">
+          4. Group Capture
+        </button>
+        <button id="nav-dash" onclick="switchView('dash')" class="touch-target px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 text-slate-200 hover:bg-slate-700 transition">
+          Main Dashboard
+        </button>
+      </nav>
+
+      <!-- FEEDBACK TOGGLE -->
+      <button onclick="toggleFeedbackDrawer()" class="touch-target px-4 py-2 rounded-lg text-xs font-bold bg-amber-400 text-slate-950 hover:bg-amber-300 shadow flex items-center gap-2">
+        <span>UI Feedback Tool</span>
+        <span id="feedback-badge" class="bg-slate-900 text-amber-300 rounded-full text-[10px] px-1.5 py-0.5">0 notes</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE -->
+  <main class="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+    <!-- SIMULATED PHONE / APP CONTAINER -->
+    <div class="lg:col-span-8 flex justify-center">
+      <div class="w-full max-w-md bg-[#F7FAFC] rounded-3xl shadow-2xl border-4 border-slate-300 overflow-hidden flex flex-col min-h-[720px] transition-all">
+        
+        <!-- PHONE TOP NOTIFICATION BAR SIMULATION -->
+        <div class="bg-[#1A365D] text-white px-5 py-2 text-xs flex justify-between items-center select-none">
+          <span class="font-medium">12:55 PM</span>
+          <div class="flex items-center gap-2 text-[11px]">
+            <span>100% Zero-Cloud Vault</span>
+            <span class="w-2 h-2 rounded-full bg-green-400"></span>
+          </div>
+        </div>
+
+        <!-- APP HEADER -->
+        <div class="bg-[#1A365D] text-white px-5 py-3 flex items-center justify-between border-b border-slate-700">
+          <div class="flex items-center gap-3">
+            <span class="w-7 h-7 rounded-md bg-[#ED8936] text-[#0F172A] font-extrabold flex items-center justify-center text-xs">K</span>
+            <span class="font-bold tracking-wide text-base">K.I.D.S.</span>
+          </div>
+          <span id="screen-indicator" class="text-xs bg-slate-800 text-amber-300 px-2.5 py-1 rounded-full font-medium">Wizard (1/4)</span>
+        </div>
+
+        <!-- VIEW CONTAINER -->
+        <div class="flex-1 p-5 overflow-y-auto" id="view-content" role="region" aria-live="polite">
+          
+          <!-- STEP 1: VAULT CONNECTION FIRST & MINIMAL CHILD INFO -->
+          <div id="view-step1" class="space-y-5">
+            <div class="border-b border-slate-200 pb-3">
+              <span class="text-xs font-bold text-[#ED8936] tracking-wider uppercase">Step 1 of 4</span>
+              <h2 class="text-xl font-bold text-[#1A365D]">Connect Vault & Child</h2>
+              <p class="text-xs text-slate-600 mt-1">Connect your private Google Drive vault first, then provide child details.</p>
+            </div>
+
+            <!-- SECTION A: DRIVE ACCOUNT CONNECTION (MUST BE DONE 1ST) -->
+            <div class="p-4 bg-white border-2 border-slate-200 rounded-2xl shadow-sm space-y-3" id="drive-connect-card">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-9 h-9 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center font-bold text-sm">
+                    &#128194;
+                  </div>
+                  <div>
+                    <h3 class="text-sm font-bold text-slate-900">1. Google Drive Vault</h3>
+                    <p class="text-[11px] text-slate-500">Encrypted personal vault (<code class="text-blue-700">drive.file</code> scope)</p>
+                  </div>
+                </div>
+                <span id="drive-badge" class="text-[10px] font-bold bg-amber-100 text-amber-900 px-2.5 py-1 rounded-full">REQUIRED FIRST</span>
+              </div>
+
+              <div id="drive-disconnected-view">
+                <p class="text-xs text-slate-600 mb-3">Connect your Google Account to automatically provision your private <code class="bg-slate-100 px-1 py-0.5 rounded">K.I.D.S. Data/</code> folder.</p>
+                <button onclick="simulateDriveConnect()" class="touch-target w-full bg-[#1A365D] hover:bg-[#0F2341] text-white font-bold rounded-xl text-xs py-2 shadow flex items-center justify-center gap-2">
+                  <span>&#128274; Select Google Account for Vault</span>
+                </button>
+              </div>
+
+              <div id="drive-connected-view" class="hidden pt-2 border-t border-slate-100 space-y-1">
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-slate-600">Connected Account:</span>
+                  <span class="font-bold text-slate-900" id="connected-email">parent.vault@gmail.com</span>
+                </div>
+                <div class="flex items-center justify-between text-xs">
+                  <span class="text-slate-600">Drive Folder:</span>
+                  <span class="text-emerald-700 font-semibold">K.I.D.S. Data/</span>
+                </div>
+                <button onclick="disconnectDrive()" class="text-[11px] text-slate-400 hover:text-red-600 underline pt-1">Change Account</button>
+              </div>
+            </div>
+
+            <!-- SECTION B: CHILD DETAILS (LOCKED UNTIL DRIVE CONNECTED) -->
+            <div id="child-details-section" class="space-y-4 opacity-40 pointer-events-none transition-all">
+              <div class="border-t border-slate-200 pt-3">
+                <h3 class="text-sm font-bold text-slate-900">2. Child Details</h3>
+                <p class="text-xs text-slate-500">Only basic details required.</p>
+              </div>
+
+              <!-- FIRST NAME (STARTS COMPLETELY EMPTY, NO DEFAULT VALUE) -->
+              <div>
+                <label for="input-child-name" class="block text-xs font-bold text-slate-700 uppercase mb-1">
+                  First Name <span class="text-red-500">*</span>
+                </label>
+                <input id="input-child-name" type="text" placeholder="e.g. Anvesha" value="" oninput="validateStep1()" class="w-full touch-target px-3.5 border border-slate-300 rounded-xl bg-white text-sm focus:ring-2 focus:ring-[#ED8936]">
+                <p class="text-[11px] text-slate-400 mt-1">Starts blank (no pre-filled mock name).</p>
+              </div>
+
+              <!-- ACADEMIC YEAR DROPDOWN -->
+              <div>
+                <label for="input-academic-year" class="block text-xs font-bold text-slate-700 uppercase mb-1">
+                  Academic Year <span class="text-red-500">*</span>
+                </label>
+                <select id="input-academic-year" class="w-full touch-target px-3.5 border border-slate-300 rounded-xl bg-white text-sm focus:ring-2 focus:ring-[#ED8936]">
+                  <option selected>2026-2027</option>
+                  <option>2025-2026</option>
+                  <option>2027-2028</option>
+                </select>
+              </div>
+
+              <!-- PHOTO UPLOAD (OPTIONAL) -->
+              <div>
+                <label class="block text-xs font-bold text-slate-700 uppercase mb-1">Child Photo (Optional)</label>
+                <div class="flex items-center gap-3 p-3 bg-white border border-slate-200 rounded-2xl">
+                  <div id="photo-preview" class="w-12 h-12 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center text-slate-400 font-bold text-lg select-none">
+                    ?
+                  </div>
+                  <div class="flex-1 space-y-1">
+                    <button onclick="simulatePhotoUpload()" class="touch-target px-3 py-1.5 border border-slate-300 hover:border-slate-400 text-slate-700 font-semibold rounded-xl text-xs bg-slate-50 flex items-center gap-1.5">
+                      <span>&#128247; Choose Photo</span>
+                    </button>
+                    <p class="text-[11px] text-slate-500" id="photo-label">Optional avatar for dashboard identification</p>
+                  </div>
+                  <button id="btn-remove-photo" onclick="removePhoto()" class="hidden text-xs text-red-500 hover:underline">Remove</button>
+                </div>
+              </div>
+
+              <!-- CONTINUE BUTTON -->
+              <div class="pt-3">
+                <button id="btn-step1-next" onclick="switchView('step2')" disabled class="touch-target w-full bg-slate-300 text-slate-500 font-bold rounded-xl text-sm shadow cursor-not-allowed transition">
+                  Continue to Step 2 &rarr;
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 2: GOOGLE CLASSROOM (SYSTEM ACCOUNT PICKER, NO TYPING, NO AUTO-CATEGORIZATION RULES) -->
+          <div id="view-step2" class="space-y-5 hidden">
+            <div class="border-b border-slate-200 pb-3">
+              <span class="text-xs font-bold text-[#ED8936] tracking-wider uppercase">Step 2 of 4</span>
+              <h2 class="text-xl font-bold text-[#1A365D]">Google Classroom Mapping</h2>
+              <p class="text-xs text-slate-600 mt-1">Select the student's logged-in school account without re-authentication.</p>
+            </div>
+
+            <div class="space-y-4">
+              <!-- SYSTEM ACCOUNT PICKER -->
+              <div>
+                <label class="block text-xs font-bold text-slate-700 uppercase mb-2">Student Account from Device</label>
+                <div class="space-y-2" id="account-picker-list">
+                  <!-- Account 1 -->
+                  <label class="touch-target p-3 border-2 border-[#ED8936] bg-amber-50/40 rounded-xl flex items-center justify-between cursor-pointer w-full">
+                    <div class="flex items-center gap-3">
+                      <input type="radio" name="classroom_account" checked class="accent-[#ED8936]">
+                      <div>
+                        <div class="font-bold text-xs text-slate-900">anvesha.student@sjbhs.org</div>
+                        <div class="text-[10px] text-slate-500">School Google Workspace Account</div>
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-bold text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded">Ready</span>
+                  </label>
+
+                  <!-- Account 2 -->
+                  <label class="touch-target p-3 border border-slate-300 bg-white rounded-xl flex items-center justify-between cursor-pointer w-full hover:border-slate-400">
+                    <div class="flex items-center gap-3">
+                      <input type="radio" name="classroom_account" class="accent-[#ED8936]">
+                      <div>
+                        <div class="font-bold text-xs text-slate-900">atharva.student@myglobal.school</div>
+                        <div class="text-[10px] text-slate-500">School Google Workspace Account</div>
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">Available</span>
+                  </label>
+
+                  <!-- Account 3 -->
+                  <label class="touch-target p-3 border border-slate-300 bg-white rounded-xl flex items-center justify-between cursor-pointer w-full hover:border-slate-400">
+                    <div class="flex items-center gap-3">
+                      <input type="radio" name="classroom_account" class="accent-[#ED8936]">
+                      <div>
+                        <div class="font-bold text-xs text-slate-900">personal.student@gmail.com</div>
+                        <div class="text-[10px] text-slate-500">Personal Google Account</div>
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">Available</span>
+                  </label>
+                </div>
+                <p class="text-[11px] text-slate-500 mt-2">Zero typing: populated directly from accounts already signed in on your Android phone.</p>
+              </div>
+
+              <!-- NOTICE: NO PRIMARY CLASSROOM SECTION & NO AUTO-RULES HARDCODED -->
+              <div class="p-3 bg-slate-100 rounded-xl border border-slate-200 text-xs text-slate-600 flex items-center justify-between">
+                <span>Don't use Google Classroom for this child?</span>
+                <button onclick="switchView('step3')" class="font-bold text-[#ED8936] hover:underline">Skip Step &rarr;</button>
+              </div>
+            </div>
+
+            <div class="pt-4 flex gap-3">
+              <button onclick="switchView('step1')" class="touch-target px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-xl text-sm">
+                &larr; Back
+              </button>
+              <button onclick="switchView('step3')" class="flex-1 touch-target bg-[#1A365D] hover:bg-[#0F2341] text-white font-semibold rounded-xl text-sm shadow">
+                Continue to Step 3 &rarr;
+              </button>
+            </div>
+          </div>
+
+          <!-- STEP 3: SCHOOL PORTALS & ERP (INSTALLED APP PICKER, DYNAMIC FUNCTIONALITY) -->
+          <div id="view-step3" class="space-y-5 hidden">
+            <div class="border-b border-slate-200 pb-3">
+              <span class="text-xs font-bold text-[#ED8936] tracking-wider uppercase">Step 3 of 4</span>
+              <h2 class="text-xl font-bold text-[#1A365D]">School App & ERP Picker</h2>
+              <p class="text-xs text-slate-600 mt-1">Pick installed school applications without typing app names.</p>
+            </div>
+
+            <div class="space-y-4">
+              <!-- INSTALLED APP SELECTOR -->
+              <div>
+                <label for="select-erp-app" class="block text-xs font-bold text-slate-700 uppercase mb-1">Pick Installed School App</label>
+                <select id="select-erp-app" onchange="onAppSelected(this.value)" class="w-full touch-target px-3.5 border border-slate-300 rounded-xl bg-white text-sm focus:ring-2 focus:ring-[#ED8936]">
+                  <option value="entab">CampusCare / Entab (Installed)</option>
+                  <option value="toddle">Toddle Family Portal (Installed)</option>
+                  <option value="edunext">Edunext Parent Portal (Installed)</option>
+                  <option value="teams">Microsoft Teams (Installed)</option>
+                  <option value="custom">[Select another app from device...]</option>
+                </select>
+                <p class="text-[11px] text-slate-500 mt-1">Queried directly from launcher apps on your device via <code class="bg-slate-100 px-1 rounded">&lt;queries&gt;</code>.</p>
+              </div>
+
+              <!-- DYNAMIC FUNCTIONALITY SELECTION -->
+              <div class="p-3.5 bg-white border border-slate-200 rounded-2xl space-y-2.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-bold text-slate-800 uppercase">Selected Features for <span id="app-name-display" class="text-[#1A365D]">CampusCare</span></span>
+                  <span class="text-[10px] text-slate-400">Dynamic toggles</span>
+                </div>
+                <div class="grid grid-cols-2 gap-2 text-xs">
+                  <label class="touch-target p-2.5 border border-slate-300 rounded-xl flex items-center gap-2 bg-slate-50 cursor-pointer hover:border-[#ED8936]">
+                    <input type="checkbox" checked class="accent-[#ED8936]"> Homework
+                  </label>
+                  <label class="touch-target p-2.5 border border-slate-300 rounded-xl flex items-center gap-2 bg-slate-50 cursor-pointer hover:border-[#ED8936]">
+                    <input type="checkbox" checked class="accent-[#ED8936]"> Circulars
+                  </label>
+                  <label class="touch-target p-2.5 border border-slate-300 rounded-xl flex items-center gap-2 bg-slate-50 cursor-pointer hover:border-[#ED8936]">
+                    <input type="checkbox" class="accent-[#ED8936]"> Attendance
+                  </label>
+                  <label class="touch-target p-2.5 border border-slate-300 rounded-xl flex items-center gap-2 bg-slate-50 cursor-pointer hover:border-[#ED8936]">
+                    <input type="checkbox" class="accent-[#ED8936]"> Fee Receipts
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div class="pt-4 flex gap-3">
+              <button onclick="switchView('step2')" class="touch-target px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-xl text-sm">
+                &larr; Back
+              </button>
+              <button onclick="switchView('step4')" class="flex-1 touch-target bg-[#1A365D] hover:bg-[#0F2341] text-white font-semibold rounded-xl text-sm shadow">
+                Continue to Step 4 &rarr;
+              </button>
+            </div>
+          </div>
+
+          <!-- STEP 4: WHATSAPP SCHOOL GROUPS (ZERO-TYPING, CAPTURABLE) -->
+          <div id="view-step4" class="space-y-5 hidden">
+            <div class="border-b border-slate-200 pb-3">
+              <span class="text-xs font-bold text-[#ED8936] tracking-wider uppercase">Step 4 of 4</span>
+              <h2 class="text-xl font-bold text-[#1A365D]">WhatsApp Group Capture</h2>
+              <p class="text-xs text-slate-600 mt-1">Zero-typing: select from recent notifications or auto-listen for messages.</p>
+            </div>
+
+            <div class="space-y-4">
+              <!-- CAPTURED GROUPS LIST -->
+              <div>
+                <div class="flex items-center justify-between mb-2">
+                  <label class="block text-xs font-bold text-slate-700 uppercase">Captured School Groups</label>
+                  <span class="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded-full">Auto-Detected</span>
+                </div>
+
+                <div class="space-y-2" id="captured-groups-list">
+                  <!-- Group 1 -->
+                  <label class="touch-target p-3 border-2 border-[#ED8936] bg-amber-50/40 rounded-xl flex items-center justify-between cursor-pointer w-full">
+                    <div class="flex items-center gap-3">
+                      <input type="radio" name="captured_group" checked class="accent-[#ED8936]">
+                      <div>
+                        <div class="font-bold text-xs text-slate-900">SJBHS 8B Parents 2026-27</div>
+                        <div class="text-[10px] text-slate-500">Detected from recent teacher circular</div>
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-bold text-[#1A365D] bg-blue-100 px-2 py-0.5 rounded">Selected</span>
+                  </label>
+
+                  <!-- Group 2 -->
+                  <label class="touch-target p-3 border border-slate-300 bg-white rounded-xl flex items-center justify-between cursor-pointer w-full hover:border-slate-400">
+                    <div class="flex items-center gap-3">
+                      <input type="radio" name="captured_group" class="accent-[#ED8936]">
+                      <div>
+                        <div class="font-bold text-xs text-slate-900">Grade 8B Activity & Sports Updates</div>
+                        <div class="text-[10px] text-slate-500">Detected 2 hours ago</div>
+                      </div>
+                    </div>
+                    <span class="text-[10px] font-bold text-slate-600 bg-slate-100 px-2 py-0.5 rounded">Tap to choose</span>
+                  </label>
+                </div>
+              </div>
+
+              <!-- CAPTURE ACTION BUTTONS -->
+              <div class="grid grid-cols-2 gap-2 pt-1">
+                <button onclick="simulateListen()" class="touch-target p-2.5 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-900 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm">
+                  <span>&#128266; Listen for Next Message</span>
+                </button>
+                <button onclick="simulateChatImport()" class="touch-target p-2.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-900 rounded-xl text-xs font-bold flex items-center justify-center gap-1.5 shadow-sm">
+                  <span>&#128193; Import Chat Export</span>
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-500">No manual group typing required. Groups are identified via incoming notification headers or exported chat files.</p>
+            </div>
+
+            <div class="pt-4 flex gap-3">
+              <button onclick="switchView('step3')" class="touch-target px-4 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-xl text-sm">
+                &larr; Back
+              </button>
+              <button onclick="finishWizard()" class="flex-1 touch-target bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-sm shadow">
+                Save & Open Dashboard &#10003;
+              </button>
+            </div>
+          </div>
+
+          <!-- DASHBOARD VIEW -->
+          <div id="view-dash" class="space-y-4 hidden">
+            <!-- CHILD TABS -->
+            <div class="flex items-center gap-2 border-b border-slate-200 pb-2">
+              <button class="touch-target px-4 py-1.5 rounded-full text-xs font-bold bg-[#1A365D] text-white">
+                <span id="dash-child-name">Anvesha</span> (2026-2027)
+              </button>
+              <button onclick="switchView('step1')" class="touch-target px-3 py-1.5 rounded-full text-xs font-semibold border border-dashed border-slate-400 text-slate-600 hover:border-slate-600">
+                + Add Child
+              </button>
+            </div>
+
+            <!-- CATEGORY FILTER CHIPS -->
+            <div class="flex items-center gap-1.5 overflow-x-auto py-1">
+              <button class="touch-target px-3 py-1 rounded-lg text-xs font-bold bg-[#ED8936] text-[#0F172A]">All (18)</button>
+              <button class="touch-target px-3 py-1 rounded-lg text-xs font-medium bg-white border border-slate-300 text-slate-700 hover:bg-slate-100">Circular (9)</button>
+              <button class="touch-target px-3 py-1 rounded-lg text-xs font-medium bg-white border border-slate-300 text-slate-700 hover:bg-slate-100">Homework (5)</button>
+              <button class="touch-target px-3 py-1 rounded-lg text-xs font-medium bg-white border border-slate-300 text-slate-700 hover:bg-slate-100">Fees (2)</button>
+            </div>
+
+            <!-- SAMPLE NOTICE CARDS -->
+            <div class="space-y-3">
+              <article class="p-3.5 bg-white border border-slate-200 rounded-2xl shadow-sm hover:border-[#ED8936] transition">
+                <div class="flex items-center justify-between gap-2 mb-1.5">
+                  <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">CIRCULAR</span>
+                  <span class="text-[11px] text-slate-500">Today, 10:15 AM</span>
+                </div>
+                <h3 class="text-sm font-bold text-slate-900 leading-snug">Annual Sports Day Schedule & Practice Timings</h3>
+                <p class="text-xs text-slate-600 mt-1 line-clamp-2">Dear Parents, the Annual Sports Day will be held on Oct 12th. House uniforms mandatory.</p>
+                <div class="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
+                  <span class="text-emerald-700 font-semibold">&#128196; Sports_Day.pdf</span>
+                  <span class="text-slate-400">Drive Synced</span>
+                </div>
+              </article>
+
+              <article class="p-3.5 bg-white border border-slate-200 rounded-2xl shadow-sm hover:border-[#ED8936] transition">
+                <div class="flex items-center justify-between gap-2 mb-1.5">
+                  <span class="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-900">FEES REMINDER</span>
+                  <span class="text-[11px] text-slate-500">Yesterday, 4:30 PM</span>
+                </div>
+                <h3 class="text-sm font-bold text-slate-900 leading-snug">Term 2 Tuition Fee Installment Due</h3>
+                <p class="text-xs text-slate-600 mt-1">Please note the last date for Term 2 tuition fee payment is September 30th.</p>
+                <div class="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[11px]">
+                  <span class="text-amber-800 font-semibold">Due: 30 Sep 2026</span>
+                  <span class="text-slate-400">CampusCare ERP</span>
+                </div>
+              </article>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- APP BOTTOM SYSTEM STATUS BAR -->
+        <footer class="bg-white border-t border-slate-200 px-4 py-2.5 flex items-center justify-between text-[11px] text-slate-600">
+          <div class="flex items-center gap-1.5">
+            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+            <span>Local DB & Vault Active</span>
+          </div>
+          <span>TalkBack / NVDA Ready</span>
+        </footer>
+
+      </div>
+    </div>
+
+    <!-- FEEDBACK & DIAGNOSTIC INSPECTOR PANEL (RIGHT SIDE) -->
+    <aside id="feedback-panel" class="lg:col-span-4 bg-white rounded-2xl border border-slate-300 p-5 shadow-lg flex flex-col space-y-4">
+      <div class="border-b border-slate-200 pb-3 flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-bold text-[#1A365D]">UI Feedback Workbench</h2>
+          <p class="text-xs text-slate-500">Record specific thoughts on the new zero-typing flow</p>
+        </div>
+        <span class="text-xs bg-amber-100 text-amber-900 font-bold px-2 py-0.5 rounded">Laptop Review</span>
+      </div>
+
+      <!-- FEEDBACK FORM -->
+      <div class="space-y-3 flex-1 flex flex-col">
+        <div>
+          <label for="fb-screen" class="block text-xs font-bold text-slate-700 uppercase mb-1">Target Screen</label>
+          <select id="fb-screen" class="w-full text-xs p-2 border border-slate-300 rounded-lg bg-slate-50">
+            <option value="Step 1: Vault & Profile">Step 1: Vault & Child Profile</option>
+            <option value="Step 2: Classroom">Step 2: Google Classroom Picker</option>
+            <option value="Step 3: ERPs">Step 3: Installed App Picker</option>
+            <option value="Step 4: WhatsApp">Step 4: WhatsApp Group Capture</option>
+            <option value="Dashboard & Feeds">Dashboard & Notice Feed</option>
+            <option value="General Accessibility">Screen Reader Accessibility</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="fb-category" class="block text-xs font-bold text-slate-700 uppercase mb-1">Feedback Category</label>
+          <select id="fb-category" class="w-full text-xs p-2 border border-slate-300 rounded-lg bg-slate-50">
+            <option value="Picker Flow">Picker Flow / Zero-Typing</option>
+            <option value="Clutter / Complexity">Visual Clarity / Simplicity</option>
+            <option value="Screen Reader Order">Screen Reader / NVDA Focus</option>
+            <option value="Button & Targets">Buttons / Touch Targets</option>
+            <option value="Other Suggestion">Other Suggestion</option>
+          </select>
+        </div>
+
+        <div class="flex-1 flex flex-col">
+          <label for="fb-notes" class="block text-xs font-bold text-slate-700 uppercase mb-1">Your Feedback / Critique</label>
+          <textarea id="fb-notes" rows="4" placeholder="How does this revised flow feel on your screen reader / laptop?" class="w-full flex-1 text-xs p-2.5 border border-slate-300 rounded-lg bg-slate-50 focus:ring-2 focus:ring-[#ED8936]"></textarea>
+        </div>
+
+        <button onclick="addFeedback()" class="touch-target w-full bg-[#1A365D] hover:bg-[#0F2341] text-white font-bold rounded-xl text-xs py-2 shadow transition">
+          + Add Note to Feedback List
+        </button>
+      </div>
+
+      <!-- COLLECTED FEEDBACK LIST -->
+      <div class="border-t border-slate-200 pt-3 space-y-2">
+        <div class="flex items-center justify-between">
+          <span class="text-xs font-bold text-slate-700">Collected Notes (<span id="notes-count">0</span>)</span>
+          <button onclick="copyAllFeedback()" class="text-xs font-bold text-[#ED8936] hover:underline">Copy All to Clipboard</button>
+        </div>
+        <div id="notes-container" class="max-h-48 overflow-y-auto space-y-2 text-xs text-slate-600">
+          <p class="text-[11px] text-slate-400 italic">No notes added yet.</p>
+        </div>
+      </div>
+    </aside>
+
+  </main>
+
+  <script>
+    let isDriveConnected = false;
+    let feedbackNotes = [];
+
+    function simulateDriveConnect() {
+      // Prompt account selection simulation
+      const account = prompt("Select Google Account for Vault:", "parent.vault@gmail.com");
+      if (account) {
+        isDriveConnected = true;
+        document.getElementById('connected-email').innerText = account;
+        document.getElementById('drive-disconnected-view').classList.add('hidden');
+        document.getElementById('drive-connected-view').classList.remove('hidden');
+        document.getElementById('drive-badge').innerText = "CONNECTED";
+        document.getElementById('drive-badge').className = "text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2.5 py-1 rounded-full";
+
+        // Unlock Child Details
+        const details = document.getElementById('child-details-section');
+        details.classList.remove('opacity-40', 'pointer-events-none');
+        document.getElementById('input-child-name').focus();
+        validateStep1();
+      }
+    }
+
+    function disconnectDrive() {
+      isDriveConnected = false;
+      document.getElementById('drive-disconnected-view').classList.remove('hidden');
+      document.getElementById('drive-connected-view').classList.add('hidden');
+      document.getElementById('drive-badge').innerText = "REQUIRED FIRST";
+      document.getElementById('drive-badge').className = "text-[10px] font-bold bg-amber-100 text-amber-900 px-2.5 py-1 rounded-full";
+
+      const details = document.getElementById('child-details-section');
+      details.classList.add('opacity-40', 'pointer-events-none');
+      validateStep1();
+    }
+
+    function validateStep1() {
+      const name = document.getElementById('input-child-name').value.trim();
+      const nextBtn = document.getElementById('btn-step1-next');
+      if (isDriveConnected && name.length > 0) {
+        nextBtn.disabled = false;
+        nextBtn.className = "touch-target w-full bg-[#1A365D] hover:bg-[#0F2341] text-white font-bold rounded-xl text-sm shadow cursor-pointer transition";
+      } else {
+        nextBtn.disabled = true;
+        nextBtn.className = "touch-target w-full bg-slate-300 text-slate-500 font-bold rounded-xl text-sm shadow cursor-not-allowed transition";
+      }
+    }
+
+    function simulatePhotoUpload() {
+      const preview = document.getElementById('photo-preview');
+      const label = document.getElementById('photo-label');
+      const removeBtn = document.getElementById('btn-remove-photo');
+
+      preview.innerHTML = '<span class="text-2xl">&#128103;</span>';
+      preview.className = "w-12 h-12 rounded-full bg-amber-100 border-2 border-[#ED8936] flex items-center justify-center";
+      label.innerText = "Photo selected: student_avatar.png";
+      label.className = "text-[11px] text-emerald-700 font-medium";
+      removeBtn.classList.remove('hidden');
+    }
+
+    function removePhoto() {
+      const preview = document.getElementById('photo-preview');
+      const label = document.getElementById('photo-label');
+      const removeBtn = document.getElementById('btn-remove-photo');
+
+      preview.innerHTML = '?';
+      preview.className = "w-12 h-12 rounded-full bg-slate-100 border border-slate-300 flex items-center justify-center text-slate-400 font-bold text-lg select-none";
+      label.innerText = "Optional avatar for dashboard identification";
+      label.className = "text-[11px] text-slate-500";
+      removeBtn.classList.add('hidden');
+    }
+
+    function onAppSelected(val) {
+      const names = {
+        entab: "CampusCare",
+        toddle: "Toddle Family",
+        edunext: "Edunext Portal",
+        teams: "Microsoft Teams",
+        custom: "Custom App"
+      };
+      document.getElementById('app-name-display').innerText = names[val] || "Selected App";
+    }
+
+    function simulateListen() {
+      alert("Background Listener active: Listening for notifications from school WhatsApp groups...");
+    }
+
+    function simulateChatImport() {
+      alert("WhatsApp Chat Export selected: Automatically extracted group title 'SJBHS 8B Parents' from chat headers!");
+    }
+
+    function switchView(viewId) {
+      ['step1', 'step2', 'step3', 'step4', 'dash'].forEach(v => {
+        const el = document.getElementById('view-' + v);
+        const navBtn = document.getElementById('nav-' + v);
+        if (el) el.classList.add('hidden');
+        if (navBtn) {
+          navBtn.classList.remove('bg-[#ED8936]', 'text-[#0F172A]');
+          navBtn.classList.add('bg-slate-800', 'text-slate-200');
+        }
+      });
+
+      const current = document.getElementById('view-' + viewId);
+      const currentNav = document.getElementById('nav-' + viewId);
+      if (current) current.classList.remove('hidden');
+      if (currentNav) {
+        currentNav.classList.add('bg-[#ED8936]', 'text-[#0F172A]');
+        currentNav.classList.remove('bg-slate-800', 'text-slate-200');
+      }
+
+      const titles = {
+        step1: "Wizard (1/4)",
+        step2: "Wizard (2/4)",
+        step3: "Wizard (3/4)",
+        step4: "Wizard (4/4)",
+        dash: "Children Grid Dashboard"
+      };
+      document.getElementById('screen-indicator').innerText = titles[viewId] || "K.I.D.S.";
+      const region = document.getElementById('view-content');
+      region.setAttribute('aria-label', titles[viewId]);
+    }
+
+    function finishWizard() {
+      const childName = document.getElementById('input-child-name').value.trim() || "Anvesha";
+      document.getElementById('dash-child-name').innerText = childName;
+      alert(`Child '${childName}' profile configured successfully! Opening Dashboard.`);
+      switchView('dash');
+    }
+
+    function toggleFeedbackDrawer() {
+      const panel = document.getElementById('feedback-panel');
+      panel.scrollIntoView({ behavior: 'smooth' });
+      document.getElementById('fb-notes').focus();
+    }
+
+    function addFeedback() {
+      const screen = document.getElementById('fb-screen').value;
+      const category = document.getElementById('fb-category').value;
+      const text = document.getElementById('fb-notes').value.trim();
+
+      if (!text) {
+        alert("Please write your feedback note before adding.");
+        return;
+      }
+
+      feedbackNotes.push({ screen, category, text, time: new Date().toLocaleTimeString() });
+      document.getElementById('fb-notes').value = "";
+      renderNotes();
+    }
+
+    function renderNotes() {
+      const container = document.getElementById('notes-container');
+      const countEl = document.getElementById('notes-count');
+      const badgeEl = document.getElementById('feedback-badge');
+
+      countEl.innerText = feedbackNotes.length;
+      badgeEl.innerText = feedbackNotes.length + " notes";
+
+      if (feedbackNotes.length === 0) {
+        container.innerHTML = '<p class="text-[11px] text-slate-400 italic">No notes added yet.</p>';
+        return;
+      }
+
+      container.innerHTML = feedbackNotes.map((n, i) => `
+        <div class="p-2.5 bg-slate-50 border border-slate-200 rounded-xl">
+          <div class="flex justify-between items-center text-[10px] font-bold text-slate-500 mb-1">
+            <span class="text-[#1A365D]">${n.screen}</span>
+            <span class="text-amber-700">${n.category}</span>
+          </div>
+          <p class="text-xs text-slate-800">${n.text}</p>
+        </div>
+      `).join('');
+    }
+
+    function copyAllFeedback() {
+      if (feedbackNotes.length === 0) {
+        alert("No feedback to copy yet!");
+        return;
+      }
+      const formatted = feedbackNotes.map((n, i) => 
+        `${i + 1}. [${n.screen}] (${n.category}): ${n.text}`
+      ).join('\n');
+
+      navigator.clipboard.writeText(formatted).then(() => {
+        alert("Feedback copied to clipboard! You can paste it right into our conversation.");
+      });
+    }
+  </script>
+</body>
+</html>

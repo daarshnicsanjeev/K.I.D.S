@@ -40,9 +40,9 @@ data class ChannelConfig(
 data class ChildProfile(
     val childId: String,
     val firstName: String,
-    val grade: String,
+    val grade: String = "",
     val academicYear: String,
-    val schoolName: String,
+    val schoolName: String = "",
     val accountEmail: String? = null,
     val disambiguationTag: String? = null,
     val photoUri: String? = null,
