@@ -420,7 +420,7 @@ fun OnboardingWizardScreen(
                                     color = DeepNavy
                                 )
                                 Text(
-                                    text = "To backfill past assignments & announcements without school passwords: turn on the Backfill Assistant, then open Classroom and scroll past notices.",
+                                    text = "When you open Classroom, a floating K.I.D.S. Assistant pill appears with a one-tap Auto-Capture button (scrolling at the calibrated optimal pace) to extract and sync past notices.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = TextSecondary
                                 )

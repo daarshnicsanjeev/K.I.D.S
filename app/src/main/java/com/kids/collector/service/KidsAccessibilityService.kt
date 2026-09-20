@@ -31,6 +31,8 @@ import java.util.UUID
  * Exclusively active for Day 0 historical backfill when authorized school apps are in foreground.
  * Traverses accessibility node trees, extracts past circulars & homework, and deduplicates via SHA-256.
  *
+ * Includes FloatingCrawlerOverlay for one-tap auto-capture at the calibrated optimal speed.
+ *
  * Governance:
  * - 100% Optional: declining accessibility does not impair 24/7 push notification capture.
  * - Zero third-party cloud retention: all notices sync solely to parent's personal Google Drive vault.
@@ -41,14 +43,38 @@ class KidsAccessibilityService : AccessibilityService() {
     private val classifier = ContentClassifier()
     private val deduplicationEngine = DeduplicationEngine()
 
+    private var crawlerOverlay: FloatingCrawlerOverlay? = null
+    private var lastActiveSchoolPackage: String? = null
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        Log.i(TAG, "KidsAccessibilityService connected")
+        crawlerOverlay = FloatingCrawlerOverlay(this) {
+            // Manual "Grab Screen" trigger from floating button
+            val root = rootInActiveWindow ?: return@FloatingCrawlerOverlay
+            val pkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+            processRootNode(root, pkg)
+        }
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
         val packageName = event.packageName?.toString() ?: return
-        if (!isAuthorizedSchoolApp(packageName)) return
 
-        val rootNode = rootInActiveWindow ?: return
+        if (isAuthorizedSchoolApp(packageName)) {
+            lastActiveSchoolPackage = packageName
+            crawlerOverlay?.show()
 
+            val rootNode = rootInActiveWindow ?: return
+            processRootNode(rootNode, packageName)
+        } else {
+            // When exiting school apps or returning to launcher, hide the floating assistant
+            crawlerOverlay?.hide()
+        }
+    }
+
+    private fun processRootNode(rootNode: AccessibilityNodeInfo, packageName: String) {
         serviceScope.launch {
             try {
                 val db = KidsDatabase.getInstance(applicationContext)
@@ -56,7 +82,6 @@ class KidsAccessibilityService : AccessibilityService() {
 
                 extractNodeText(rootNode, crawledItems)
 
-                // Combine text fragments into notice candidates
                 if (crawledItems.isNotEmpty()) {
                     val combinedText = crawledItems.joinToString(" ")
                     if (combinedText.length > 30) {
@@ -111,6 +136,9 @@ class KidsAccessibilityService : AccessibilityService() {
                             db.noticeDao().insert(noticeEntity)
                             Log.i(TAG, "Historical notice backfilled: \"$title\" ($category) -> Child: ${targetChild?.firstName ?: "Default"}")
 
+                            // Update overlay counter badge in real time
+                            crawlerOverlay?.incrementNoticeCount()
+
                             // 2. Schedule WorkManager Expedited Sync to Google Drive
                             val constraints = Constraints.Builder()
                                 .setRequiredNetworkType(NetworkType.CONNECTED)
@@ -153,6 +181,12 @@ class KidsAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w(TAG, "KidsAccessibilityService interrupted")
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        crawlerOverlay?.destroy()
+        crawlerOverlay = null
     }
 
     companion object {
