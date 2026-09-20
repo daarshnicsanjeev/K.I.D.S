@@ -1,5 +1,5 @@
 # K.I.D.S. Android Collector
-
+                                    
 <p align="center">
   <img src="https://img.shields.io/badge/Platform-Android_14%2B-1A365D?style=for-the-badge&logo=android" alt="Android 14+"/>
   <img src="https://img.shields.io/badge/Architecture-Clean_%26_MVI-ED8936?style=for-the-badge" alt="Clean Architecture"/>
