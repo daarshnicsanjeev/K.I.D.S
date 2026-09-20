@@ -113,7 +113,7 @@ class DriveSyncWorker(
                         driveClient.uploadAttachment(
                             parentFolderId = targetFolderId,
                             file = localFile,
-                            mimeType = if (att.fileType == "PDF") "application/pdf" else "application/octet-stream"
+                            mimeType = att.mimeType
                         )
                     } else {
                         "virtual_${att.attachmentId.take(8)}"

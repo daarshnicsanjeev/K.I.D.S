@@ -162,11 +162,14 @@ class KidsAccessibilityService : AccessibilityService() {
                                     attachmentId = UUID.randomUUID().toString(),
                                     noticeId = noticeId,
                                     fileName = att.take(60),
-                                    fileType = if (att.contains(".pdf", true)) "PDF" else "DOCUMENT",
                                     localUri = "",
+                                    mimeType = if (att.contains(".pdf", true)) "application/pdf" else "application/octet-stream",
                                     sizeBytes = 0L,
-                                    syncStatus = SyncStatus.PENDING.name,
-                                    ocrText = null
+                                    fileHash = att.hashCode().toString(),
+                                    ocrText = null,
+                                    pageCount = 1,
+                                    driveFileId = null,
+                                    syncStatus = SyncStatus.PENDING.name
                                 )
                                 db.attachmentDao().insert(attEntity)
                             }
