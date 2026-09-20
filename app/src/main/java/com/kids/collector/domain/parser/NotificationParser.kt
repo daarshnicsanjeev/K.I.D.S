@@ -71,7 +71,7 @@ class NotificationParser {
             body = body,
             conversationTitle = conversationTitle,
             sender = sender,
-            postTimeMs = sbn.postTime,
+            postTimeMs = postTimeMs,
             pictureBitmap = pictureBitmap,
             hasAttachmentPreview = hasAttachment
         )
