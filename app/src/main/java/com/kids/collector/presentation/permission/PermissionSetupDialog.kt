@@ -238,6 +238,45 @@ fun PermissionSetupDialog(
                     }
                 }
 
+                // Restricted Settings Helper Card (Android 13/14/15)
+                if (!hasNotificationAccess || !hasAccessibility) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = OffWhiteCanvas),
+                        shape = RoundedCornerShape(10.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LightSlate)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(
+                                text = "💡 Getting \"Restricted setting\" error?",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = DeepNavy
+                            )
+                            Text(
+                                text = "Android restricts sideloaded APKs by default. To unlock:\n1. Tap 'Unlock in App Settings' below\n2. Tap the 3 dots (⋮) in top-right corner\n3. Tap 'Allow restricted settings'",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = TextSecondary
+                            )
+                            OutlinedButton(
+                                onClick = {
+                                    Toast.makeText(context, "Tap 3 dots (⋮) in top-right -> 'Allow restricted settings'", Toast.LENGTH_LONG).show()
+                                    PermissionHelper.openAppDetailsSettings(context)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 40.dp),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("Unlock in App Settings (3 Dots ⋮)", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+                    }
+                }
+
                 // Continue / Done Button
                 Button(
                     onClick = onDismiss,
