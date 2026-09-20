@@ -21,18 +21,23 @@ def run_cmd(cmd: list[str]) -> str:
     res = subprocess.run(cmd, capture_output=True, text=True)
     return res.stdout.strip()
 
-def get_latest_run():
-    output = run_cmd(["gh", "run", "list", "--limit", "1", "--json", "databaseId,status,conclusion,name,headBranch,url,updatedAt"])
+def get_latest_run(workflow_name="Android CI & Quality Gates"):
+    output = run_cmd(["gh", "run", "list", "--limit", "10", "--json", "databaseId,status,conclusion,name,headBranch,url,updatedAt"])
     if not output:
         return None
     try:
         runs = json.loads(output)
-        return runs[0] if runs else None
+        if not runs:
+            return None
+        if workflow_name:
+            filtered = [r for r in runs if workflow_name.lower() in r.get("name", "").lower()]
+            return filtered[0] if filtered else runs[0]
+        return runs[0]
     except json.JSONDecodeError:
         return None
 
-def monitor_latest_run(timeout_seconds=300, poll_interval=10):
-    print("[INFO] Inspecting latest GitHub Actions workflow run...")
+def monitor_latest_run(workflow_name="Android CI & Quality Gates", timeout_seconds=420, poll_interval=10):
+    print(f"[INFO] Monitoring workflow: {workflow_name}...")
     start_time = time.time()
     
     while time.time() - start_time < timeout_seconds:
