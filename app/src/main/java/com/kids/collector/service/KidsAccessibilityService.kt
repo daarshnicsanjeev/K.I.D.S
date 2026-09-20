@@ -57,6 +57,11 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
+        // 0. Drop our own app events so we never capture our own wizard UI
+        if (packageName == applicationContext.packageName) {
+            return
+        }
+
         // 1. Ignore system background events (clock ticks, network meter, battery, keyboard)
         // so they do not inadvertently hide the overlay while inside Google Classroom
         if (isSystemPackage(packageName)) {
@@ -68,6 +73,9 @@ class KidsAccessibilityService : AccessibilityService() {
             getOrCreateOverlay().show()
 
             val rootNode = rootInActiveWindow ?: return
+            if (rootNode.packageName?.toString() == applicationContext.packageName) {
+                return
+            }
             processRootNode(rootNode, packageName)
         } else if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isHomeScreenOrLauncher(packageName)) {
             // Only hide when user explicitly navigates to the home screen launcher
@@ -80,6 +88,7 @@ class KidsAccessibilityService : AccessibilityService() {
             crawlerOverlay = FloatingCrawlerOverlay(this) {
                 // Manual "Grab Screen" trigger from floating button
                 val root = rootInActiveWindow ?: return@FloatingCrawlerOverlay
+                if (root.packageName?.toString() == applicationContext.packageName) return@FloatingCrawlerOverlay
                 val pkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
                 processRootNode(root, pkg)
             }
@@ -88,6 +97,7 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun processRootNode(rootNode: AccessibilityNodeInfo, packageName: String) {
+        if (rootNode.packageName?.toString() == applicationContext.packageName) return
         CrawlerTraceLogger.log("SCROLLER_SCAN", "Inspecting active window: pkg=$packageName")
         serviceScope.launch {
             try {
@@ -105,7 +115,22 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (crawledItems.isNotEmpty()) {
                     val combinedText = crawledItems.joinToString(" ")
                     if (combinedText.length > 30) {
-                        val title = crawledItems.firstOrNull()?.take(80) ?: "Historical Classroom Notice"
+                        val excludedChrome = setOf(
+                            "open navigation menu", "show menu", "more options", "navigate up", "back",
+                            "stream", "classwork", "people", "about", "join course", "view to-do list",
+                            "classroom", "google classroom", "class options"
+                        )
+
+                        val titleCandidate = crawledItems.firstOrNull { item ->
+                            val lower = item.trim().lowercase()
+                            !excludedChrome.contains(lower) &&
+                            !lower.startsWith("tab ") &&
+                            !lower.startsWith("signed in as") &&
+                            !lower.startsWith("tasks due") &&
+                            !lower.startsWith("class options for") &&
+                            item.trim().length > 3
+                        }
+                        val title = titleCandidate?.take(80) ?: "Historical Classroom Notice"
                         val body = combinedText
                         val category = classifier.classify(title, body)
 

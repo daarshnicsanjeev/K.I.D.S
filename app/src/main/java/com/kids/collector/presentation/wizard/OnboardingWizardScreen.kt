@@ -57,20 +57,44 @@ fun OnboardingWizardScreen(
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var currentStep by remember { mutableStateOf(WizardStep.STEP_1_VAULT) }
+    val prefs = remember { context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE) }
+    val savedEmail = remember { prefs.getString("account_email", "") ?: "" }
+    val savedChild = remember { prefs.getString("child_name", "") ?: "" }
+    val savedYear = remember { prefs.getString("academic_year", "2026-2027") ?: "2026-2027" }
+    val savedStepStr = remember { prefs.getString("wizard_current_step", null) }
+
+    val initialStep = remember {
+        try {
+            if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
+                WizardStep.valueOf(savedStepStr)
+            } else if (savedEmail.isNotBlank() && savedChild.isNotBlank()) {
+                WizardStep.STEP_2_CLASSROOM
+            } else {
+                WizardStep.STEP_1_VAULT
+            }
+        } catch (e: Exception) {
+            WizardStep.STEP_1_VAULT
+        }
+    }
+
+    var currentStep by rememberSaveable { mutableStateOf(initialStep) }
+
+    LaunchedEffect(currentStep) {
+        prefs.edit().putString("wizard_current_step", currentStep.name).apply()
+    }
 
     // Real-time Drive Provisioning State
     var isProvisioning by remember { mutableStateOf(false) }
     var provisioningMessage by remember { mutableStateOf("") }
 
     // Step 1 State: Drive First & Minimal Child Info
-    var driveAccountEmail by remember { mutableStateOf("") }
-    var isDriveConnected by remember { mutableStateOf(false) }
-    var driveErrorMessage by remember { mutableStateOf<String?>(null) }
-    var childName by remember { mutableStateOf("") }
+    var driveAccountEmail by rememberSaveable { mutableStateOf(savedEmail) }
+    var isDriveConnected by rememberSaveable { mutableStateOf(savedEmail.isNotBlank()) }
+    var driveErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var childName by rememberSaveable { mutableStateOf(savedChild) }
     val academicYears = remember { listOf("2026-2027", "2025-2026", "2027-2028") }
-    var selectedYear by remember { mutableStateOf("2026-2027") }
-    var photoUri by remember { mutableStateOf<Uri?>(null) }
+    var selectedYear by rememberSaveable { mutableStateOf(savedYear) }
+    var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
     // Step 1 Direct Google Drive Account Picker Launcher (native Android AccountManager)
     val driveAccountPickerLauncher = rememberLauncherForActivityResult(
@@ -125,8 +149,15 @@ fun OnboardingWizardScreen(
     }
 
     // Step 2 State (Classroom: System Account Picker, No Typing, No Auto Rules)
-    var enableClassroom by remember { mutableStateOf(true) }
-    var studentEmail by remember { mutableStateOf("") }
+    val savedStudentEmail = remember { prefs.getString("wizard_student_email", "") ?: "" }
+    var enableClassroom by rememberSaveable { mutableStateOf(true) }
+    var studentEmail by rememberSaveable { mutableStateOf(savedStudentEmail) }
+
+    LaunchedEffect(studentEmail) {
+        if (studentEmail.isNotBlank()) {
+            prefs.edit().putString("wizard_student_email", studentEmail).apply()
+        }
+    }
 
     val classroomAccountLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -134,8 +165,7 @@ fun OnboardingWizardScreen(
         val selected = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
         if (!selected.isNullOrBlank()) {
             studentEmail = selected
-        } else {
-            studentEmail = "student@school.org"
+            prefs.edit().putString("wizard_student_email", selected).apply()
         }
     }
 
@@ -863,6 +893,7 @@ fun OnboardingWizardScreen(
                                     photoUri = photoUri?.toString(),
                                     channels = channelsList
                                 )
+                                prefs.edit().remove("wizard_current_step").remove("wizard_student_email").apply()
                                 onFinishChildSetup(childProfile)
                             }
                         },

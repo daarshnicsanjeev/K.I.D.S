@@ -54,54 +54,73 @@ class DriveSyncWorker(
                     CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
                 }
 
-                // 2. Upload pending notices to Google Drive
-                var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
+                // 2. Batch upload pending notices to Google Drive
+                if (pendingNotices.isNotEmpty()) {
+                    val classroomNotices = pendingNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
+                    val otherNotices = pendingNotices.filter { !it.sourceApp.contains("classroom", ignoreCase = true) }
 
-                for (notice in pendingNotices) {
-                    val jsonLine = buildJsonObject {
-                        put("noticeId", notice.noticeId)
-                        put("childId", notice.childId)
-                        put("timestampMs", notice.timestampMs)
-                        put("sourceApp", notice.sourceApp)
-                        put("category", notice.category)
-                        put("title", notice.title)
-                        put("body", notice.body)
-                        put("sender", notice.sender)
-                        put("hashSha256", notice.hashSha256)
-                    }.toString()
-
-                    val isClassroom = notice.sourceApp.contains("classroom", ignoreCase = true)
-                    val uploadedFileId: String
-
-                    if (isClassroom) {
-                        if (classroomVault == null) {
-                            classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                    if (classroomNotices.isNotEmpty()) {
+                        val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                        val batchClassroomJsonl = classroomNotices.joinToString("\n") { notice ->
+                            buildJsonObject {
+                                put("noticeId", notice.noticeId)
+                                put("childId", notice.childId)
+                                put("timestampMs", notice.timestampMs)
+                                put("sourceApp", notice.sourceApp)
+                                put("category", notice.category)
+                                put("title", notice.title)
+                                put("body", notice.body)
+                                put("sender", notice.sender)
+                                put("hashSha256", notice.hashSha256)
+                            }.toString()
                         }
-                        // Upload notice into dedicated Google Classroom/ folder
-                        uploadedFileId = driveClient.appendNoticeToChannelJsonl(classroomVault.channelFolderId, jsonLine)
 
-                        // Also mirror to root child notices.jsonl for unified family rollup
-                        driveClient.appendNoticeToJsonl(vault.childFolderId, jsonLine)
+                        val uploadedFileId = driveClient.appendNoticeToChannelJsonl(classroomVault.channelFolderId, batchClassroomJsonl)
+                        driveClient.appendNoticeToJsonl(vault.childFolderId, batchClassroomJsonl)
 
-                        // Log milestone in sync_timeline.log
                         driveClient.appendTimelineLog(
                             vault.logsFolderId,
-                            "[CLASSROOM SYNC] Auto-captured notice synced to Google Classroom/ folder: \"${notice.title}\" (${notice.category})"
+                            "[CLASSROOM BATCH SYNC] Synced ${classroomNotices.size} notices into Google Classroom/ folder"
                         )
-                    } else {
-                        uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, jsonLine)
-                        driveClient.appendTimelineLog(
-                            vault.logsFolderId,
-                            "[NOTICE SYNC] Synced notice: \"${notice.title}\" (${notice.category}) from ${notice.sourceApp}"
-                        )
+
+                        for (notice in classroomNotices) {
+                            db.noticeDao().updateSyncStatus(
+                                noticeId = notice.noticeId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedFileId
+                            )
+                        }
                     }
 
-                    // Mark synced in local database
-                    db.noticeDao().updateSyncStatus(
-                        noticeId = notice.noticeId,
-                        newStatus = SyncStatus.SYNCED.name,
-                        driveFileId = uploadedFileId
-                    )
+                    if (otherNotices.isNotEmpty()) {
+                        val batchOtherJsonl = otherNotices.joinToString("\n") { notice ->
+                            buildJsonObject {
+                                put("noticeId", notice.noticeId)
+                                put("childId", notice.childId)
+                                put("timestampMs", notice.timestampMs)
+                                put("sourceApp", notice.sourceApp)
+                                put("category", notice.category)
+                                put("title", notice.title)
+                                put("body", notice.body)
+                                put("sender", notice.sender)
+                                put("hashSha256", notice.hashSha256)
+                            }.toString()
+                        }
+
+                        val uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, batchOtherJsonl)
+                        driveClient.appendTimelineLog(
+                            vault.logsFolderId,
+                            "[NOTICE BATCH SYNC] Synced ${otherNotices.size} notices"
+                        )
+
+                        for (notice in otherNotices) {
+                            db.noticeDao().updateSyncStatus(
+                                noticeId = notice.noticeId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedFileId
+                            )
+                        }
+                    }
                 }
 
                 // 3. Upload pending attachments
