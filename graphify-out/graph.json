@@ -4934,6 +4934,18 @@
       "type": "external"
     },
     {
+      "id": "delay",
+      "label": "delay",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "KidsAccessibilityService.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "delay",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "dispatchers",
       "label": "dispatchers",
       "_origin": "semantic",
@@ -5002,6 +5014,18 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "gsonfactory",
+      "source_file": "",
+      "type": "external"
+    },
+    {
+      "id": "isactive",
+      "label": "isactive",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "KidsAccessibilityService.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "isactive",
       "source_file": "",
       "type": "external"
     },
@@ -5086,6 +5110,18 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "put",
+      "source_file": "",
+      "type": "external"
+    },
+    {
+      "id": "rect",
+      "label": "rect",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "KidsAccessibilityService.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "rect",
       "source_file": "",
       "type": "external"
     },
@@ -6170,6 +6206,18 @@
       "type": "external"
     },
     {
+      "id": "textutils",
+      "label": "textutils",
+      "_origin": "semantic",
+      "community": 3,
+      "community_name": "FloatingCrawlerOverlay",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "textutils",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "typedvalue",
       "label": "typedvalue",
       "_origin": "semantic",
@@ -6600,50 +6648,6 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "simpledateformat",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "delay",
-      "label": "delay",
-      "community": 0,
-      "community_name": "KidsAccessibilityService.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "delay",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "isactive",
-      "label": "isactive",
-      "community": 0,
-      "community_name": "KidsAccessibilityService.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "isactive",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "rect",
-      "label": "rect",
-      "community": 0,
-      "community_name": "KidsAccessibilityService.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "rect",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "textutils",
-      "label": "textutils",
-      "community": 3,
-      "community_name": "FloatingCrawlerOverlay",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "textutils",
       "source_file": "",
       "type": "external"
     }
@@ -20509,5 +20513,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "f0cc54a076cc71136d345b43761fbc24392a9207"
+  "built_at_commit": "1e9eaab0c8cd395ca7ff4f3906c62eedbe5705eb"
 }
