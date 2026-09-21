@@ -162,3 +162,21 @@ c:\K.I.D.S\
        - Analyzes live trace logs (`crawler_trace.log`, `sync_timeline.log`, logcat), notices databases, and Google Drive vault system logs.
        - Provides line-level root-cause analysis for any reported discrepancies (e.g. download counts, dropped notifications, timing bottlenecks) accompanied by concrete remedial code.
 
+### 4.8. Security, Privacy & Threat Modeling Guardian Subagent (`security_guardian`)
+- **Automated Security, Privacy & Threat Analysis Before, During & After Implementation**:
+  - The `security_guardian` subagent serves as the authoritative guardian of application security, privacy preservation, and threat resistance.
+  - Its objective is to evaluate, audit, and verify:
+    1. **Before Implementation (Design & Threat Modeling)**:
+       - STRIDE threat modeling on proposed features, architecture patterns, and data pipelines.
+       - Zero-Backend Invariant enforcement: strictly vetoes external cloud databases, analytics relays, proxy servers, or third-party telemetry.
+       - OAuth scope minimization: enforces strict `drive.file` scope, blocking any attempts to broaden permissions.
+    2. **During Implementation (Code & Diff Auditing)**:
+       - Code-level vulnerability analysis: path traversal during attachment handling, SQL injection in queries, cryptographic misuse, insecure IPC (`PendingIntent.FLAG_IMMUTABLE`, unexported components).
+       - Memory-boundary privacy filtering: validates that non-educational notifications, personal chats, OTPs, and banking alerts are dropped before disk persistence.
+       - Dependency and supply chain security auditing in `libs.versions.toml`.
+    3. **After Implementation (Post-Build Verification & Release Audit)**:
+       - Merged AndroidManifest audit for exposed components (`android:exported="false"` enforcement).
+       - Runtime log sanitization verification: ensures zero student credentials, tokens, or PII are logged to logcat, `crawler_trace.log`, or `sync_timeline.log`.
+       - ProGuard / R8 rule validation to ensure test hooks, mocks, and debug bypasses are stripped from production release builds.
+
+

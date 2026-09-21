@@ -1112,25 +1112,29 @@ flowchart LR
 
 ## 🤖 Guardian Subagents & Engineering Governance
 
-To enforce continuous architectural fidelity, zero silent failures, complete test coverage, and documentation parity, engineering and operational workflows are governed by a specialized quad-guardian subagent matrix:
+To enforce continuous architectural fidelity, zero silent failures, complete test coverage, and documentation parity, engineering and operational workflows are governed by a specialized 5-guardian engineering governance quintet:
 
 ```mermaid
 flowchart TD
     subgraph MATRIX["Guardian Subagent Governance Matrix"]
         WRG["workflow_risk_guardian<br/>(UX, Safety & Stability Risk Analysis)"]
+        SEC["security_guardian<br/>(Security, Privacy & Threat Modeling)"]
         DLG["deep_logger_guardian<br/>(Observability Audit & Root-Cause Telemetry)"]
         CIG["github_ci_guardian<br/>(CI/CD, Graphify & Release Delivery)"]
         DOC["docs_maintainer<br/>(User & Architecture Documentation)"]
     end
 
     CODE["Proposed Code / Diff / Feature"] --> WRG
+    CODE --> SEC
     CODE --> DLG
     WRG -->|Risk Clearance & UX Validation| CIG
+    SEC -->|Security Clearance & Threat Verification| CIG
     DLG -->|Structured Telemetry & No Silent Failures| CIG
     CIG -->|Build, Unit Tests & Graphify Verified| DOC
     DOC -->|User Manual & Architecture Sync| RELEASE["Ship Verified Artifacts & Docs"]
 
-    RUNTIME["Live Runtime Diagnostics<br/>(crawler_trace.log, sync_timeline.log, notices.db)"] -.->|Post-Run Diagnostics| DLG
+    RUNTIME["Live Runtime Diagnostics & Artifacts<br/>(crawler_trace.log, sync_timeline.log, notices.db, Manifest)"] -.->|Post-Run Diagnostics| DLG
+    RUNTIME -.->|Release Audit & Log Sanitization| SEC
 ```
 
 ### 1. `deep_logger_guardian`: Deep Logging & Diagnostic Telemetry Guardian
@@ -1150,8 +1154,8 @@ flowchart TD
        - Google Drive Vault System Logs (`_system/logs/`): Validates remote file creation, digest updates, and folder provisioning.
      - Provides line-level root-cause analysis for any reported discrepancies (e.g., mismatched notice counts, missed attachments, rate limits, or crawler timeouts) accompanied by concrete, production-ready code remedies.
 - **Integration & Coordination**:
-  - Coordinates alongside `github_ci_guardian`, `docs_maintainer`, and `workflow_risk_guardian`.
-  - Collaborates with `workflow_risk_guardian` to pair structural risk mitigation with high-resolution diagnostic logging.
+  - Coordinates alongside `github_ci_guardian`, `docs_maintainer`, `workflow_risk_guardian`, and `security_guardian`.
+  - Collaborates with `workflow_risk_guardian` and `security_guardian` to pair structural risk mitigation and privacy boundary enforcement with high-resolution diagnostic logging.
   - Feeds telemetry insights and operational log schemas to `docs_maintainer` to keep the troubleshooting and diagnostic guides in `docs/USER_MANUAL.md` and `docs/TECHNICAL_ARCHITECTURE.md` accurate.
   - Ensures diagnostic health checks pass prior to final deployment validation by `github_ci_guardian`.
 
@@ -1163,7 +1167,7 @@ flowchart TD
   - Executes `scripts/ci_watch.py` to stream live CI status for `Android CI & Quality Gates` (`ci.yml`) and `Knowledge Graph Validation & Graphify Pipeline` (`graphify.yml`).
   - Confirms GitHub Release delivery of `app-debug.apk` under the `latest` tag with zero assumption of success.
 - **Integration & Coordination**:
-  - Coordinates with `workflow_risk_guardian` to ensure no build is triggered with unverified UX or stability risks.
+  - Coordinates with `workflow_risk_guardian` and `security_guardian` to ensure no build is triggered with unverified UX, stability, security, or privacy risks.
   - Validates that `docs_maintainer` has committed synchronized documentation updates before releasing.
 
 ### 3. `docs_maintainer`: Documentation Guardian
@@ -1175,6 +1179,7 @@ flowchart TD
 - **Integration & Coordination**:
   - Coordinates directly with `github_ci_guardian` to document CI/CD workflows and release assets.
   - Integrates diagnostic schemas and log interpretations established by `deep_logger_guardian` into user-facing troubleshooting guides.
+  - Synchronizes security threat models, privacy filters, and permission rationales established by `security_guardian`.
 
 ### 4. `workflow_risk_guardian`: Workflow, App & UX Risk Guardian
 - **Role & Purpose**: Proactively inspects proposed implementations, code diffs, and architectural changes both before and after execution to detect failure modes, UX dead ends, and regressions.
@@ -1185,7 +1190,29 @@ flowchart TD
   - Enforces zero-backend privacy invariants and storage anti-clutter lifecycles.
 - **Integration & Coordination**:
   - Coordinates with `deep_logger_guardian` to verify that all edge cases and error handling branches have high-signal telemetry.
-  - Coordinates with `github_ci_guardian` to gate CI passes against detected risk regressions.
+  - Coordinates with `security_guardian` and `github_ci_guardian` to gate CI passes against detected risk regressions.
+
+### 5. `security_guardian`: Security, Privacy & Threat Modeling Guardian
+- **Role & Purpose**: Authoritative guardian of application security, privacy preservation, and threat resistance before, during, and after implementation.
+- **Key Responsibilities**:
+  1. **Before Implementation (Threat Modeling & Design Review)**:
+     - **STRIDE Threat Modeling**: Conducts rigorous STRIDE analysis on proposed architectural modifications, IPC channels, and data flows to prevent Spoofing, Tampering, Repudiation, Information Disclosure, Denial of Service, and Elevation of Privilege.
+     - **Zero-Backend Invariant Enforcement**: Strictly vetoes any external cloud database, intermediate proxy server, third-party analytics relay, or non-Google-Drive telemetry infrastructure ($0 Cloud Cost invariant).
+     - **OAuth Scope Minimization**: Enforces strict `https://www.googleapis.com/auth/drive.file` scope verification, blocking any attempt to request broader permissions (`drive`, `drive.readonly`).
+     - **Least Privilege Permission Audits**: Audits Android runtime permissions (`MANAGE_EXTERNAL_STORAGE`, `POST_NOTIFICATIONS`, `BIND_ACCESSIBILITY_SERVICE`, `BIND_NOTIFICATION_LISTENER_SERVICE`) to guarantee every requested capability has strict least-privilege boundary justifications.
+  2. **During Implementation (Code & Diff Auditing)**:
+     - **Line-by-Line Vulnerability Detection**: Audits code diffs for path traversal vulnerabilities during attachment extraction/staging, SQL injection in SQLite/Room query construction, cryptographic weaknesses in SHA-256 fingerprinting, insecure IPC (`PendingIntent.FLAG_IMMUTABLE`, unexported components), and memory leaks.
+     - **Memory-Boundary Privacy Filter Drops**: Rigorously validates that non-educational push notifications, personal chats, OTPs, and banking credentials are discarded directly from volatile memory before reaching persistence or telemetry layers.
+     - **Dependency Supply Chain Security**: Audits `gradle/libs.versions.toml` and Gradle build configurations to prevent dependency hijacking, unverified repositories, and vulnerable third-party libraries.
+  3. **After Implementation (Post-Implementation Verification & Release Audit)**:
+     - **Merged AndroidManifest Component Isolation**: Inspects the final merged manifest to enforce explicit `android:exported="false"` on all private activities, receivers, services, and content providers, ensuring non-exported boundaries cannot be traversed by malicious third-party apps.
+     - **Runtime Log Sanitization Verification**: Audits log outputs (`logcat`, `crawler_trace.log`, `sync_timeline.log`, Drive vault logs) to verify that zero student credentials, tokens, PII, or raw message payloads are leaked into storage or diagnostics.
+     - **ProGuard / R8 Rule Enforcement**: Verifies release obfuscation and code shrinking rules to guarantee that test hooks, debug bypasses, mock data injectors, and logging trampolines are completely stripped from production release builds (`app-release.apk` / `app-debug.apk`).
+- **Integration & Coordination**:
+  - Collaborates with `workflow_risk_guardian`, `deep_logger_guardian`, `github_ci_guardian`, and `docs_maintainer` to form a comprehensive 5-guardian engineering governance quintet.
+  - Enforces gating authority: vetoes pull requests and CI pipelines if security invariants, OAuth boundaries, or privacy filters are compromised.
+  - Coordinates with `deep_logger_guardian` to verify that diagnostic logging enhancements maintain zero-PII and zero-credential leak guarantees.
+  - Ensures documentation parity with `docs_maintainer` on security mechanisms, permission rationales, and parent data sovereignty.
 
 ---
 
