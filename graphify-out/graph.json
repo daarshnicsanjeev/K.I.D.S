@@ -5502,6 +5502,18 @@
       "source_file": "prd.md"
     },
     {
+      "id": "async",
+      "label": "async",
+      "_origin": "semantic",
+      "community": 3,
+      "community_name": "GoogleDriveClient",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "async",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "bytearraycontent",
       "label": "bytearraycontent",
       "_origin": "semantic",
@@ -5522,6 +5534,18 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "bytearrayoutputstream",
+      "source_file": "",
+      "type": "external"
+    },
+    {
+      "id": "concurrenthashmap",
+      "label": "concurrenthashmap",
+      "_origin": "semantic",
+      "community": 3,
+      "community_name": "GoogleDriveClient",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "concurrenthashmap",
       "source_file": "",
       "type": "external"
     },
@@ -5970,6 +5994,18 @@
       "type": "external"
     },
     {
+      "id": "syncstatus",
+      "label": "syncstatus",
+      "_origin": "semantic",
+      "community": 6,
+      "community_name": "DriveSyncWorker.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "syncstatus",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "typeconverter",
       "label": "typeconverter",
       "_origin": "semantic",
@@ -6170,39 +6206,6 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "userrecoverableauthioexception",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "async",
-      "label": "async",
-      "community": 3,
-      "community_name": "GoogleDriveClient",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "async",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "concurrenthashmap",
-      "label": "concurrenthashmap",
-      "community": 3,
-      "community_name": "GoogleDriveClient",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "concurrenthashmap",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "syncstatus",
-      "label": "syncstatus",
-      "community": 6,
-      "community_name": "DriveSyncWorker.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "syncstatus",
       "source_file": "",
       "type": "external"
     }
@@ -18952,5 +18955,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "d7d3103913ead81d01e8c12039dd012357cea29f"
+  "built_at_commit": "63534abc99729fc9481157a172a068954c366b62"
 }
