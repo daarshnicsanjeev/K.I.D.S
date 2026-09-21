@@ -2,6 +2,7 @@ package com.kids.collector.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.view.accessibility.AccessibilityNodeInfo
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Path

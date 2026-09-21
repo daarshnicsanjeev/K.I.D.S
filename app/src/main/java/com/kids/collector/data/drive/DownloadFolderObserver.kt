@@ -5,7 +5,7 @@ import android.os.Environment
 import android.util.Log
 import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.domain.dedupe.DeduplicationEngine
-import com.kids.collector.telemetry.CrawlerTraceLogger
+import com.kids.collector.service.CrawlerTraceLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
