@@ -4646,6 +4646,18 @@
       "type": "external"
     },
     {
+      "id": "arrowback",
+      "label": "arrowback",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "OnboardingWizardScreen.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "arrowback",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "background",
       "label": "background",
       "_origin": "semantic",
@@ -4654,6 +4666,18 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "background",
+      "source_file": "",
+      "type": "external"
+    },
+    {
+      "id": "backhandler",
+      "label": "backhandler",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "OnboardingWizardScreen.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "backhandler",
       "source_file": "",
       "type": "external"
     },
@@ -4798,6 +4822,18 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "heading",
+      "source_file": "",
+      "type": "external"
+    },
+    {
+      "id": "icons",
+      "label": "icons",
+      "_origin": "semantic",
+      "community": 0,
+      "community_name": "OnboardingWizardScreen.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "icons",
       "source_file": "",
       "type": "external"
     },
@@ -6288,39 +6324,6 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "userrecoverableauthioexception",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "arrowback",
-      "label": "arrowback",
-      "community": 0,
-      "community_name": "OnboardingWizardScreen.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "arrowback",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "backhandler",
-      "label": "backhandler",
-      "community": 0,
-      "community_name": "OnboardingWizardScreen.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "backhandler",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "icons",
-      "label": "icons",
-      "community": 0,
-      "community_name": "OnboardingWizardScreen.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "icons",
       "source_file": "",
       "type": "external"
     }
@@ -19260,5 +19263,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "5650c598a1f75e4ebc7fce135600a77fdbc8bf74"
+  "built_at_commit": "e2a7c0de7d381cb859bf43036ee66183badaa503"
 }
