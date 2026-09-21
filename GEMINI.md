@@ -139,3 +139,13 @@ c:\K.I.D.S\
     1. Updates `docs/USER_MANUAL.md` to reflect new user-facing features, permission requirements, UI interactions, Classroom auto-capture modes (Stream vs. Classwork), autonomous attachment handling, and troubleshooting tips.
     2. Updates `docs/TECHNICAL_ARCHITECTURE.md` to reflect Clean Architecture layers, Room SQLite/FTS4 schema, background services (`KidsAccessibilityService`, `DownloadFolderObserver`, `DriveSyncWorker`), Graphify pipeline, and privacy boundary invariants.
     3. Keeps technical architecture and user guides 100% synchronized with actual code implementation.
+
+### 4.6. Workflow, App & UX Risk Guardian Subagent (`workflow_risk_guardian`)
+- **Automated Failure Mode & UX Risk Analysis**:
+  - The `workflow_risk_guardian` subagent proactively inspects proposed implementations, code diffs, and architectural changes both before and after execution.
+  - Its objective is to detect and report:
+    1. **Workflow Breakage & Dead Ends**: Trapped user states, blocked permission gates, unhandled back-button navigation, corrupted state persistence across app restarts.
+    2. **App Stability & Lifecycle Failures**: Process death, configuration changes, coroutine lifecycle leaks, OOM from ML Kit/PDF rendering, network dropouts, Google Drive rate limit handling.
+    3. **UX & Ergonomics Regressions**: WCAG touch target violations (<48dp), sluggish/frozen UI lacking async progress indicators, unclear technical error jargon shown to parents, and color/typography deviations.
+    4. **Safety & Privacy Violations**: Any violation of the Zero-Backend Invariant, privacy filter leaks, or storage anti-clutter regressions.
+  - When risks are detected, it brings them to immediate attention with concrete, actionable code and UI solutions.

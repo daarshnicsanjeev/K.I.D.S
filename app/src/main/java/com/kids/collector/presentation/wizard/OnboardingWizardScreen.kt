@@ -7,10 +7,13 @@ import android.net.Uri
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -95,15 +98,16 @@ fun OnboardingWizardScreen(
         }
     }
 
+    val isNewChildSession = childSequenceNumber > 1
     val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
     val initialStep = remember {
         try {
             if (!isAccessibilityActiveInitial) {
                 WizardStep.STEP_0_PERMISSIONS
-            } else if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
+            } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
                 val step = WizardStep.valueOf(savedStepStr)
                 if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
-            } else if (savedEmail.isNotBlank() && savedChild.isNotBlank()) {
+            } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank()) {
                 WizardStep.STEP_2_CLASSROOM
             } else {
                 WizardStep.STEP_1_VAULT
@@ -114,18 +118,45 @@ fun OnboardingWizardScreen(
     }
 
     var currentStep by rememberSaveable { mutableStateOf(initialStep) }
+    var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(null) }
 
     LaunchedEffect(currentStep) {
-        prefs.edit().putString("wizard_current_step", currentStep.name).apply()
-    }
-
-    // Strict Invariant: If Accessibility is revoked or not granted, force return to STEP_0_PERMISSIONS
-    LaunchedEffect(hasAccessibility) {
-        if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
-            currentStep = WizardStep.STEP_0_PERMISSIONS
+        if (!isNewChildSession) {
+            prefs.edit().putString("wizard_current_step", currentStep.name).apply()
         }
     }
 
+    // Strict Invariant: If Accessibility is revoked, return to STEP_0_PERMISSIONS.
+    // Cache the previous step so the parent resumes seamlessly once Accessibility is re-enabled.
+    LaunchedEffect(hasAccessibility) {
+        if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
+            preRevocationStep = currentStep
+            currentStep = WizardStep.STEP_0_PERMISSIONS
+        } else if (hasAccessibility && preRevocationStep != null && currentStep == WizardStep.STEP_0_PERMISSIONS) {
+            val resumeStep = preRevocationStep!!
+            preRevocationStep = null
+            currentStep = resumeStep
+        }
+    }
+
+    // Hardware and Gesture Back Navigation
+    BackHandler {
+        when (currentStep) {
+            WizardStep.STEP_0_PERMISSIONS -> onCancel?.invoke()
+            WizardStep.STEP_1_VAULT -> {
+                if (!hasAccessibility) {
+                    currentStep = WizardStep.STEP_0_PERMISSIONS
+                } else if (onCancel != null) {
+                    onCancel()
+                } else {
+                    currentStep = WizardStep.STEP_0_PERMISSIONS
+                }
+            }
+            WizardStep.STEP_2_CLASSROOM -> currentStep = WizardStep.STEP_1_VAULT
+            WizardStep.STEP_3_PORTALS -> currentStep = WizardStep.STEP_2_CLASSROOM
+            WizardStep.STEP_4_WHATSAPP -> currentStep = WizardStep.STEP_3_PORTALS
+        }
+    }
 
     // Real-time Drive Provisioning State
     var isProvisioning by remember { mutableStateOf(false) }
@@ -135,7 +166,7 @@ fun OnboardingWizardScreen(
     var driveAccountEmail by rememberSaveable { mutableStateOf(savedEmail) }
     var isDriveConnected by rememberSaveable { mutableStateOf(savedEmail.isNotBlank()) }
     var driveErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
-    var childName by rememberSaveable { mutableStateOf(savedChild) }
+    var childName by rememberSaveable { mutableStateOf(if (isNewChildSession) "" else savedChild) }
     val academicYears = remember { listOf("2026-2027", "2025-2026", "2027-2028") }
     var selectedYear by rememberSaveable { mutableStateOf(savedYear) }
     var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
@@ -259,17 +290,47 @@ fun OnboardingWizardScreen(
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        text = "K.I.D.S. Onboarding",
-                        style = MaterialTheme.typography.titleLarge,
-                        color = SurfaceWhite,
-                        modifier = Modifier.semantics { heading() }
-                    )
-                    Badge(containerColor = AmberOrange, contentColor = TextPrimary) {
-                        Text("Child #$childSequenceNumber")
+                    if (currentStep != WizardStep.STEP_0_PERMISSIONS || onCancel != null) {
+                        IconButton(
+                            onClick = {
+                                when (currentStep) {
+                                    WizardStep.STEP_0_PERMISSIONS -> onCancel?.invoke()
+                                    WizardStep.STEP_1_VAULT -> {
+                                        if (!hasAccessibility) currentStep = WizardStep.STEP_0_PERMISSIONS
+                                        else onCancel?.invoke() ?: run { currentStep = WizardStep.STEP_0_PERMISSIONS }
+                                    }
+                                    WizardStep.STEP_2_CLASSROOM -> currentStep = WizardStep.STEP_1_VAULT
+                                    WizardStep.STEP_3_PORTALS -> currentStep = WizardStep.STEP_2_CLASSROOM
+                                    WizardStep.STEP_4_WHATSAPP -> currentStep = WizardStep.STEP_3_PORTALS
+                                }
+                            },
+                            modifier = Modifier.size(48.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "Navigate Back",
+                                tint = SurfaceWhite
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "K.I.D.S. Onboarding",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = SurfaceWhite,
+                            modifier = Modifier.semantics { heading() }
+                        )
+                        Badge(containerColor = AmberOrange, contentColor = TextPrimary) {
+                            Text("Child #$childSequenceNumber")
+                        }
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
@@ -348,7 +409,8 @@ fun OnboardingWizardScreen(
                                 PermissionHelper.openNotificationListenerSettings(context)
                             },
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy),
-                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
+                            modifier = Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp)
                         ) {
                             Text("Enable", style = MaterialTheme.typography.labelMedium)
                         }
@@ -358,13 +420,14 @@ fun OnboardingWizardScreen(
 
             when (currentStep) {
                 WizardStep.STEP_0_PERMISSIONS -> {
-                    // SECTION 0: ADVANCE PERMISSION (ALLOW RESTRICTED SETTINGS) - FIRST
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
-                        shape = RoundedCornerShape(12.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.5.dp, DeepNavy)
-                    ) {
+                    // SECTION 0: ADVANCE PERMISSION (ALLOW RESTRICTED SETTINGS) - ONLY ON ANDROID 13+
+                    if (PermissionHelper.isRestrictedSettingsLikelyRequired() && (!hasAccessibility || !hasNotificationAccess)) {
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                            shape = RoundedCornerShape(12.dp),
+                            border = androidx.compose.foundation.BorderStroke(1.5.dp, DeepNavy)
+                        ) {
                         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -423,6 +486,7 @@ fun OnboardingWizardScreen(
                             }
                         }
                     }
+                }
 
                     // SECTION 1: ACCESSIBILITY SERVICE (MANDATORY BEFORE STEP 1)
                     Card(
@@ -863,7 +927,7 @@ fun OnboardingWizardScreen(
                                                 clipboard.setPrimaryClip(clip)
                                                 Toast.makeText(context, "SHA-1 copied to clipboard!", Toast.LENGTH_SHORT).show()
                                             },
-                                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp)
+                                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                                         ) {
                                             Text("Copy SHA-1")
                                         }
@@ -874,7 +938,7 @@ fun OnboardingWizardScreen(
                                                 context.startActivity(intent)
                                             },
                                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy),
-                                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 44.dp)
+                                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                                         ) {
                                             Text("Open Console")
                                         }
@@ -1006,7 +1070,7 @@ fun OnboardingWizardScreen(
                                                     Toast.makeText(context, "Google Classroom is not installed", Toast.LENGTH_SHORT).show()
                                                 }
                                             },
-                                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                         ) {
                                             Text("Open Classroom")
                                         }
@@ -1023,7 +1087,7 @@ fun OnboardingWizardScreen(
                                                     Toast.makeText(context, "Could not open Accessibility Settings", Toast.LENGTH_SHORT).show()
                                                 }
                                             },
-                                            modifier = Modifier.defaultMinSize(minHeight = 44.dp)
+                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                         ) {
                                             Text("Enable Backfill Assistant")
                                         }
@@ -1059,7 +1123,7 @@ fun OnboardingWizardScreen(
                                             onClick = {
                                                 PermissionHelper.openStorageAccessSettings(context)
                                             },
-                                            modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp, minWidth = 48.dp)
                                         ) {
                                             Text("Enable")
                                         }

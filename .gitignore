@@ -19,6 +19,7 @@ app/build/
 build-artifacts/
 build-artifacts-latest/
 .gradle/
+.kotlin/
 
 # Local configuration file (sdk path, etc)
 local.properties

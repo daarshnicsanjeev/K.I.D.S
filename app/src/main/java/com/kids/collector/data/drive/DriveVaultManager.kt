@@ -53,7 +53,7 @@ object DriveVaultManager {
         val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
         val email = prefs.getString("account_email", null) ?: currentAccountEmail
         val year = prefs.getString("academic_year", null) ?: "2026-2027"
-        val child = prefs.getString("child_name", null) ?: "atharva"
+        val child = prefs.getString("child_name", null) ?: ""
         return Triple(email, year, child)
     }
 

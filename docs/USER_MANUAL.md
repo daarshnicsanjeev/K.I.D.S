@@ -27,14 +27,16 @@ As parents, keeping up with school communications is exhausting. Homework assign
 
 1. [System Requirements & Installation](#1-system-requirements--installation)
 2. [Onboarding Wizard: Step 0 Prerequisite & 4-Step Setup](#2-onboarding-wizard-step-0-prerequisite--4-step-setup)
+   - [Hardware, Gesture & TopBar Back Navigation](#hardware-gesture--topbar-back-navigation)
    - [Step 0: System Permissions & Setup (Prerequisite Gate)](#step-0-system-permissions--setup-prerequisite-gate)
-     - [The Android 13+ 'Restricted Settings' Requirement (Sideloaded APKs)](#the-android-13-restricted-settings-requirement-sideloaded-apks)
+     - [Android 13+ Dynamic Presentation ('Allow restricted settings')](#android-13-dynamic-presentation-allow-restricted-settings)
      - [Mandatory Accessibility Service Gate](#mandatory-accessibility-service-gate)
      - [Live UI Refresh via Lifecycle Observation](#live-ui-refresh-via-lifecycle-observation)
    - [Step 1: Cloud Vault & Child Profile](#step-1-cloud-vault--child-profile)
    - [Step 2: Google Classroom Mapping](#step-2-google-classroom-mapping)
    - [Step 3: School App & ERP Picker](#step-3-school-app--erp-picker)
    - [Step 4: WhatsApp Group Capture](#step-4-whatsapp-group-capture)
+   - [Seamless Multi-Child (+ Add Child) Setup Flow](#seamless-multi-child--add-child-setup-flow)
 3. [Android Permissions & Safety Guarantees](#3-android-permissions--safety-guarantees)
    - [Notification Listener Service (24/7 Passive Capture)](#notification-listener-service-247-passive-capture)
    - [Accessibility Service (Historical Backfill Assistant)](#accessibility-service-historical-backfill-assistant)
@@ -90,16 +92,34 @@ flowchart LR
     S4 --> DASH["Children Dashboard"]
 ```
 
+### Hardware, Gesture & TopBar Back Navigation
+
+Navigating through multi-step setup is completely effortless and resilient. You are never trapped in a forward-only flow:
+
+- **TopBar Back Button (`←`):** An accessible, prominent back arrow is positioned in the top navigation bar on every step where backward progression or cancellation is possible. It complies with WCAG 2.1 AA/AAA standards with a minimum touch target size of 48dp × 48dp.
+- **Hardware & Gesture Navigation:** Swiping from the left or right screen edge (Android predictive gesture navigation) or pressing your phone's physical Back button triggers the exact same reliable backward transition.
+- **Deterministic Step Sequence:**
+  - **From Step 4 (WhatsApp):** Returns to **Step 3 (School App & ERP)**.
+  - **From Step 3 (School App & ERP):** Returns to **Step 2 (Google Classroom)**.
+  - **From Step 2 (Google Classroom):** Returns to **Step 1 (Cloud Vault & Profile)**.
+  - **From Step 1 (Cloud Vault & Profile):** If Accessibility Service was revoked or missing, returns to **Step 0 (Permissions Gate)**. If you are adding a secondary child from the dashboard, pressing Back safely cancels setup and returns you to the Children Dashboard without altering existing profiles.
+  - **From Step 0 (Permissions Gate):** If accessed during a multi-child session, pressing Back cleanly exits back to the Children Dashboard.
+
+---
+
 ### Step 0: System Permissions & Setup (Prerequisite Gate)
 *The critical prerequisite gate ensuring all background capture and backfill capabilities are operational before provisioning child vaults.*
 
-#### The Android 13+ 'Restricted Settings' Requirement (Sideloaded APKs)
+#### Android 13+ Dynamic Presentation ('Allow restricted settings')
 > [!IMPORTANT]
-> **Why this step is required on Android 13, 14, and 15:**
-> Because K.I.D.S. is distributed directly as an APK from GitHub Releases (sideloaded), Android's enhanced security sandbox automatically disables sensitive permissions—specifically **Accessibility Service** and **Notification Listener Service**. If you try enabling them directly in settings, Android will display a greyed-out toggle with the notice:
+> **Dynamic Presentation Only on Android 13, 14, and 15 (API 33+):**
+> Android 13 introduced an enhanced security sandbox (`APP_OPS_ACCESS_RESTRICTED_SETTINGS`) that automatically disables sensitive accessibility and notification listener toggles for sideloaded applications (installed via APK from GitHub Releases). If you try enabling them directly in phone settings, Android displays a greyed-out toggle with the notice:
 > *"Restricted setting: For your security, this setting is currently unavailable."*
+>
+> **Clean Setup on Android 10, 11, and 12:**
+> On devices running Android 10 through 12, this operating system restriction does not exist. K.I.D.S. dynamically detects your Android version and **completely hides the "Advance Permission" card on Android 10–12**, keeping your setup screen clean, uncluttered, and free of unnecessary instructions!
 
-**The 3-Step Solution (DO FIRST):**
+**The 3-Step Solution for Android 13+ Devices (DO FIRST):**
 1. In Step 0, tap the primary button: **Open App Settings (⋮ → Allow restricted settings)**.
 2. In the Android **App Info** screen that opens, tap the **three dots (⋮)** in the top-right corner.
 3. Tap **Allow restricted settings** and authenticate using your device PIN, pattern, or fingerprint.
@@ -192,6 +212,27 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
    - Your child's profile is initialized in the local encrypted database.
    - The initial knowledge graph (`graph.html`) and markdown digests (`MASTER_DIGEST.md` and `FAMILY_DIGEST.md`) are generated and uploaded to Google Drive.
    - You are redirected to the **Children Grid Dashboard**.
+
+---
+
+### Seamless Multi-Child (+ Add Child) Setup Flow
+*Effortlessly manage multiple siblings across different grades, sections, or even different schools.*
+
+Once your first child is configured, K.I.D.S. transforms into a multi-child family command center. Adding a second or third child is instant, clean, and completely isolated:
+
+1. **Initiate Setup from Dashboard:** On the **Children Grid Dashboard**, tap the **+ Add Another Child** button.
+2. **Prerequisite Step 0 Bypassed Automatically:** Because core system permissions (Accessibility, Notifications, and Storage) were already granted during the setup of Child #1, K.I.D.S. validates their active state and opens directly on **Step 1: Cloud Vault & Child Profile**.
+3. **Clean Slate Guarantee (Zero Cross-Contamination):** 
+   - The child name input field starts completely empty (`""`). It will **never** pre-fill or accidentally carry over the previous child's name, grade, or photo.
+   - Secondary child sessions operate under a fresh session sequence (`childSequenceNumber > 1`), isolating local wizard preferences so your older child's configuration is never overwritten or mutated.
+4. **Isolated Google Drive Vault:**
+   - K.I.D.S. provisions an independent subfolder hierarchy on your Google Drive:
+     `Google Drive / K.I.D.S. Data / {AcademicYear} / {NewChildName} /`
+   - Child #2 gets their own dedicated `notices.jsonl`, `MASTER_DIGEST.md`, `graph.html`, and `attachments/` folder.
+   - The top-level `FAMILY_DIGEST.md` is automatically updated to synthesize notices across all your children into one single family briefing!
+5. **Sequence Visual Indicator & Cancel Safety:**
+   - The top bar displays a prominent amber badge (`Child #2`, `Child #3`, etc.), ensuring you always know which child you are currently configuring.
+   - If you tap the TopBar Back arrow (`←`) or use your phone's back gesture from Step 1, the wizard cleanly cancels and returns you directly to the **Children Grid Dashboard** without saving partial records or affecting your existing children.
 
 ---
 

@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.lifecycle.lifecycleScope
 import com.kids.collector.data.db.ChildProfileEntity
 import com.kids.collector.data.db.KidsDatabase
@@ -36,14 +37,14 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             KidsTheme {
-                var currentScreen by remember { mutableStateOf(AppScreen.DASHBOARD) }
+                var currentScreen by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
                 var childrenList by remember { mutableStateOf<List<ChildProfile>>(emptyList()) }
                 var isFirstLoad by remember { mutableStateOf(true) }
                 var showPermissionDialog by remember {
                     mutableStateOf(!PermissionHelper.isNotificationAccessGranted(this@MainActivity))
                 }
 
-                if (showPermissionDialog) {
+                if (showPermissionDialog && currentScreen == AppScreen.DASHBOARD) {
                     PermissionSetupDialog(
                         onDismiss = { showPermissionDialog = false }
                     )

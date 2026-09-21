@@ -430,7 +430,7 @@ On every synchronization run, `DriveSyncWorker`:
 
 The presentation tier is implemented in Jetpack Compose adhering to Single-Activity Architecture (`MainActivity.kt`) and unidirectional data flow. The onboarding experience for configuring children profiles is driven by a sequential finite state machine in `OnboardingWizardScreen.kt`.
 
-### 1. Finite State Machine: `WizardStep`
+### 1. Finite State Machine: `WizardStep` & Bidirectional Navigation
 The onboarding lifecycle is modeled by the 5-state enum `WizardStep`:
 
 ```kotlin
@@ -445,18 +445,30 @@ enum class WizardStep(val stepNumber: Int, val title: String) {
 
 ```mermaid
 stateDiagram-v2
-    [*] --> STEP_0_PERMISSIONS: Cold Start / Initial Run
+    [*] --> STEP_0_PERMISSIONS: Initial Launch (Permissions Missing)
+    [*] --> STEP_1_VAULT: Child #1 (Permissions Active) / Multi-Child Session
     
-    STEP_0_PERMISSIONS --> STEP_1_VAULT: Continue (Accessibility Granted)
-    STEP_1_VAULT --> STEP_2_CLASSROOM: Save Profile & Provision Vault
-    STEP_2_CLASSROOM --> STEP_3_PORTALS: Save Classroom Account
-    STEP_3_PORTALS --> STEP_4_WHATSAPP: Save ERP Apps / Skip
-    STEP_4_WHATSAPP --> DASHBOARD: Complete Setup
+    STEP_0_PERMISSIONS --> STEP_1_VAULT: Forward: Continue (Accessibility Active)
+    STEP_1_VAULT --> STEP_2_CLASSROOM: Forward: Save Profile & Provision Vault
+    STEP_2_CLASSROOM --> STEP_3_PORTALS: Forward: Save Classroom Account
+    STEP_3_PORTALS --> STEP_4_WHATSAPP: Forward: Save ERP Apps / Skip
+    STEP_4_WHATSAPP --> DASHBOARD: Forward: Complete Setup
     
-    STEP_1_VAULT --> STEP_0_PERMISSIONS: Accessibility Revoked
-    STEP_2_CLASSROOM --> STEP_0_PERMISSIONS: Accessibility Revoked
-    STEP_3_PORTALS --> STEP_0_PERMISSIONS: Accessibility Revoked
-    STEP_4_WHATSAPP --> STEP_0_PERMISSIONS: Accessibility Revoked
+    STEP_4_WHATSAPP --> STEP_3_PORTALS: Back: Hardware / Gesture / TopBar
+    STEP_3_PORTALS --> STEP_2_CLASSROOM: Back: Hardware / Gesture / TopBar
+    STEP_2_CLASSROOM --> STEP_1_VAULT: Back: Hardware / Gesture / TopBar
+    STEP_1_VAULT --> STEP_0_PERMISSIONS: Back: Single-Child Root / Accessibility Lost
+    STEP_1_VAULT --> DASHBOARD: Back: Multi-Child Session (onCancel)
+    STEP_0_PERMISSIONS --> DASHBOARD: Back: Multi-Child Session (onCancel)
+    
+    STEP_1_VAULT --> STEP_0_PERMISSIONS: Dynamic Revocation (preRevocationStep cached)
+    STEP_2_CLASSROOM --> STEP_0_PERMISSIONS: Dynamic Revocation (preRevocationStep cached)
+    STEP_3_PORTALS --> STEP_0_PERMISSIONS: Dynamic Revocation (preRevocationStep cached)
+    STEP_4_WHATSAPP --> STEP_0_PERMISSIONS: Dynamic Revocation (preRevocationStep cached)
+    STEP_0_PERMISSIONS --> STEP_1_VAULT: Service Restored (preRevocationStep == STEP_1)
+    STEP_0_PERMISSIONS --> STEP_2_CLASSROOM: Service Restored (preRevocationStep == STEP_2)
+    STEP_0_PERMISSIONS --> STEP_3_PORTALS: Service Restored (preRevocationStep == STEP_3)
+    STEP_0_PERMISSIONS --> STEP_4_WHATSAPP: Service Restored (preRevocationStep == STEP_4)
 ```
 
 #### Step Roles:
@@ -466,9 +478,44 @@ stateDiagram-v2
 - **`STEP_3_PORTALS`:** Discovers installed school ERP packages (`CampusCare`, `Toddle`, `Edunext`, `Teams`) and selects notice categories.
 - **`STEP_4_WHATSAPP`:** Intercepts or selects school WhatsApp broadcast groups and finalizes child setup.
 
+#### BackHandler & TopBar State Machine Transition Map
+Bidirectional navigation is natively integrated via Jetpack Compose's `BackHandler` and the TopBar `IconButton`:
+
+```kotlin
+// Hardware and Gesture Back Navigation
+BackHandler {
+    when (currentStep) {
+        WizardStep.STEP_0_PERMISSIONS -> onCancel?.invoke()
+        WizardStep.STEP_1_VAULT -> {
+            if (!hasAccessibility) {
+                currentStep = WizardStep.STEP_0_PERMISSIONS
+            } else if (onCancel != null) {
+                onCancel()
+            } else {
+                currentStep = WizardStep.STEP_0_PERMISSIONS
+            }
+        }
+        WizardStep.STEP_2_CLASSROOM -> currentStep = WizardStep.STEP_1_VAULT
+        WizardStep.STEP_3_PORTALS -> currentStep = WizardStep.STEP_2_CLASSROOM
+        WizardStep.STEP_4_WHATSAPP -> currentStep = WizardStep.STEP_3_PORTALS
+    }
+}
+```
+
+The TopBar Back `IconButton` shares the identical transition logic, conditionally rendered whenever `currentStep != WizardStep.STEP_0_PERMISSIONS || onCancel != null`:
+
+| Active Step | Trigger Event | Destination / Action | Guard Condition |
+| :--- | :--- | :--- | :--- |
+| `STEP_4_WHATSAPP` | Back (Gesture / TopBar) | `STEP_3_PORTALS` | Unconditional |
+| `STEP_3_PORTALS` | Back (Gesture / TopBar) | `STEP_2_CLASSROOM` | Unconditional |
+| `STEP_2_CLASSROOM` | Back (Gesture / TopBar) | `STEP_1_VAULT` | Unconditional |
+| `STEP_1_VAULT` | Back (Gesture / TopBar) | `STEP_0_PERMISSIONS` | `!hasAccessibility` OR (`hasAccessibility && onCancel == null`) |
+| `STEP_1_VAULT` | Back (Gesture / TopBar) | `onCancel()` -> `DASHBOARD` | `hasAccessibility && onCancel != null` (Multi-Child session) |
+| `STEP_0_PERMISSIONS` | Back (Gesture / TopBar) | `onCancel()` -> `DASHBOARD` | `onCancel != null` (Multi-Child session) |
+
 ---
 
-### 2. Mandatory Accessibility Gate & Invariant Enforcement
+### 2. Mandatory Accessibility Gate & `preRevocationStep` Caching Pattern
 
 The historical notice backfill engine (`KidsAccessibilityService`) is foundational to the application's offline extraction capability. Without it, retrospective harvesting of past notices, homework, and attachment downloads in Google Classroom and School ERP portals cannot execute.
 
@@ -489,44 +536,144 @@ Button(
 When `!hasAccessibility`, a prominent error container warns the user:
 `"⚠️ Accessibility Service is mandatory before Step 1. Please enable it above to unlock Step 1."`
 
-#### Invariant 2: Dynamic Downgrade on Permission Revocation
-If an operating system process, battery optimizer, or user revokes the Accessibility Service permission while the user is anywhere in the wizard (Steps 1 through 4), an active `LaunchedEffect` listener immediately detects the revocation and forces `currentStep` back to `STEP_0_PERMISSIONS`:
+#### Invariant 2: `preRevocationStep` Caching (Preserving Wizard Position Across Rebinds)
+Android's accessibility subsystem can temporarily unbind or restart accessibility services during system memory trimming, configuration changes, or when the user toggles related settings in Android Settings. A naive downgrade implementation would discard user progress, forcing the parent back to Step 0 and resetting their workflow.
+
+`OnboardingWizardScreen` introduces the **`preRevocationStep` caching pattern** utilizing Compose `rememberSaveable`:
 
 ```kotlin
-// Strict Invariant: If Accessibility is revoked or not granted, force return to STEP_0_PERMISSIONS
+var currentStep by rememberSaveable { mutableStateOf(initialStep) }
+var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(null) }
+
+// Strict Invariant: If Accessibility is revoked, return to STEP_0_PERMISSIONS.
+// Cache the previous step so the parent resumes seamlessly once Accessibility is re-enabled.
 LaunchedEffect(hasAccessibility) {
     if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
+        preRevocationStep = currentStep
         currentStep = WizardStep.STEP_0_PERMISSIONS
+    } else if (hasAccessibility && preRevocationStep != null && currentStep == WizardStep.STEP_0_PERMISSIONS) {
+        val resumeStep = preRevocationStep!!
+        preRevocationStep = null
+        currentStep = resumeStep
     }
 }
 ```
 
-#### Invariant 3: Clamped Initial Step Evaluation
-When `OnboardingWizardScreen` initializes, even if previous session state exists in `SharedPreferences` (`wizard_current_step`), the initial step calculation evaluates `PermissionHelper.isAccessibilityGranted(context)` first. If false, it strictly forces `initialStep = WizardStep.STEP_0_PERMISSIONS`:
-
-```kotlin
-val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
-val initialStep = remember {
-    try {
-        if (!isAccessibilityActiveInitial) {
-            WizardStep.STEP_0_PERMISSIONS
-        } else if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
-            val step = WizardStep.valueOf(savedStepStr)
-            if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
-        } else if (savedEmail.isNotBlank() && savedChild.isNotBlank()) {
-            WizardStep.STEP_2_CLASSROOM
-        } else {
-            WizardStep.STEP_1_VAULT
-        }
-    } catch (e: Exception) {
-        if (!isAccessibilityActiveInitial) WizardStep.STEP_0_PERMISSIONS else WizardStep.STEP_1_VAULT
-    }
-}
-```
+#### Execution Lifecycle of the Caching Pattern:
+1. **Transient Disconnection:** When `hasAccessibility` transitions to `false` while the user is at `STEP_2_CLASSROOM`, `LaunchedEffect` intercepts the event:
+   - It captures `preRevocationStep = WizardStep.STEP_2_CLASSROOM`.
+   - It redirects `currentStep = WizardStep.STEP_0_PERMISSIONS` to enforce system invariants.
+2. **Service Rebind / Re-enablement:** When the accessibility service rebinds and `hasAccessibility` returns to `true`:
+   - `LaunchedEffect` detects `hasAccessibility == true && preRevocationStep != null`.
+   - It restores `currentStep = resumeStep` (`STEP_2_CLASSROOM`).
+   - It cleans up the cache (`preRevocationStep = null`).
+3. **Zero Data Loss:** The parent's input states (`studentEmail`, `childName`, `selectedYear`, `photoUri`) remain completely intact in memory/saveable state, resuming immediately without friction.
 
 ---
 
-### 3. Lifecycle-Aware Permission State Observation (`LifecycleEventObserver`)
+### 3. Multi-Child Session Isolation (`childSequenceNumber > 1`)
+
+In a multi-child family setup, configuring secondary children must not inadvertently read, overwrite, or mutate the cached onboarding state of prior siblings. 
+
+`OnboardingWizardScreen` parameterizes session isolation via `childSequenceNumber`:
+
+```kotlin
+@Composable
+fun OnboardingWizardScreen(
+    childSequenceNumber: Int = 1,
+    onFinishChildSetup: (ChildProfile) -> Unit,
+    onCancel: (() -> Unit)? = null
+) {
+    ...
+    val isNewChildSession = childSequenceNumber > 1
+```
+
+#### Isolation Mechanisms:
+1. **Initial Step Determination:**
+   ```kotlin
+   val initialStep = remember {
+       try {
+           if (!isAccessibilityActiveInitial) {
+               WizardStep.STEP_0_PERMISSIONS
+           } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
+               val step = WizardStep.valueOf(savedStepStr)
+               if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
+           } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank()) {
+               WizardStep.STEP_2_CLASSROOM
+           } else {
+               WizardStep.STEP_1_VAULT
+           }
+       } catch (e: Exception) {
+           if (!isAccessibilityActiveInitial) WizardStep.STEP_0_PERMISSIONS else WizardStep.STEP_1_VAULT
+       }
+   }
+   ```
+   When `isNewChildSession == true`:
+   - It bypasses `wizard_current_step` persisted from Child #1.
+   - It opens directly on `STEP_1_VAULT` (since system accessibility was verified during initial setup).
+2. **Step Persistence Guard:**
+   ```kotlin
+   LaunchedEffect(currentStep) {
+       if (!isNewChildSession) {
+           prefs.edit().putString("wizard_current_step", currentStep.name).apply()
+       }
+   }
+   ```
+   Secondary children sessions do not overwrite `wizard_current_step` in `SharedPreferences`, safeguarding primary child restoration points.
+3. **Child Name Blanking:**
+   ```kotlin
+   var childName by rememberSaveable { mutableStateOf(if (isNewChildSession) "" else savedChild) }
+   ```
+   Secondary sessions guarantee an empty input field (`""`), preventing sibling name leakage or accidental duplicate overwrites.
+4. **Session Cancellation & Header Badge:**
+   - In `MainActivity.kt`, `onCancel` is supplied only when existing children exist (`if (childrenList.isNotEmpty()) { { currentScreen = AppScreen.DASHBOARD } } else null`).
+   - The wizard TopBar renders a high-visibility amber pill badge: `Badge { Text("Child #$childSequenceNumber") }`.
+
+---
+
+### 4. `MainActivity` Navigation Architecture & Modal Dialog Guard
+
+`MainActivity.kt` orchestrates top-level application navigation using Jetpack Compose Single-Activity Architecture without external navigation library overhead:
+
+```kotlin
+enum class AppScreen {
+    WIZARD,
+    DASHBOARD,
+    DIAGNOSTICS
+}
+```
+
+#### 1. Configuration-Resilient Screen State
+Navigation state is tracked using `rememberSaveable`:
+```kotlin
+var currentScreen by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
+```
+By utilizing `rememberSaveable`, the current navigation destination (`WIZARD`, `DASHBOARD`, or `DIAGNOSTICS`) automatically survives Activity recreation caused by device orientation rotation, display scaling adjustments, and system dark/light theme switching.
+
+#### 2. The `DASHBOARD` Guard on `PermissionSetupDialog`
+At application launch or on resumption, the system checks whether passive notification capture is granted. However, presenting a modal permission dialog while the parent is actively navigating the onboarding wizard causes severe visual collisions, double-scrimming, and broken focus.
+
+`MainActivity` enforces an explicit screen guard on `PermissionSetupDialog`:
+
+```kotlin
+var showPermissionDialog by remember {
+    mutableStateOf(!PermissionHelper.isNotificationAccessGranted(this@MainActivity))
+}
+
+if (showPermissionDialog && currentScreen == AppScreen.DASHBOARD) {
+    PermissionSetupDialog(
+        onDismiss = { showPermissionDialog = false }
+    )
+}
+```
+
+#### Rationale:
+- **`OnboardingWizardScreen` Self-Sufficiency:** The wizard features its own dedicated `STEP_0_PERMISSIONS` gate and contextual inline warning cards (e.g. `⚠️ Notification Access Needed`).
+- **Modal Collision Prevention:** The `currentScreen == AppScreen.DASHBOARD` guard strictly confines `PermissionSetupDialog` to the main children dashboard. It will never interrupt or overlay on top of the onboarding wizard, guaranteeing an uncluttered, distraction-free setup experience.
+
+---
+
+### 5. Lifecycle-Aware Permission State Observation (`LifecycleEventObserver`)
 
 Because granting Android system permissions (Accessibility, Notification Listener, All Files Access) requires leaving the application to navigate native Android Settings, the UI must seamlessly reconcile permission status without requiring manual refresh or application restarts.
 
@@ -562,7 +709,7 @@ When the user grants a permission in system settings and returns to K.I.D.S. via
 
 ---
 
-### 4. `PermissionHelper` & Android 13+ Restricted Settings Sandbox
+### 6. `PermissionHelper` & Android 13+ Dynamic Restricted Settings Sandbox
 
 Android 13 (API 33, Tiramisu) introduced a security mechanism (`APP_OPS_ACCESS_RESTRICTED_SETTINGS`) that disables Accessibility and Notification Listener permissions for sideloaded applications (installed via APK rather than an authorized app store).
 
@@ -600,11 +747,12 @@ object PermissionHelper {
 }
 ```
 
-#### Unblocking Restricted Settings:
-1. `isRestrictedSettingsLikelyRequired()` verifies if the host device runs Android 13+ (`Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU`).
-2. `openAppDetailsSettings(context)` directs the user to `ACTION_APPLICATION_DETAILS_SETTINGS` with the app package URI.
-3. The parent taps the top-right overflow menu (**⋮**) in App Info and selects **"Allow restricted settings"**, authenticating via device lock.
-4. This removes the sandbox lock on **both** `KidsAccessibilityService` and `KidsNotificationListenerService`, allowing standard system toggles to succeed.
+#### Dynamic Presentation & Unblocking:
+1. **Dynamic OS Filtering:** `isRestrictedSettingsLikelyRequired()` evaluates `Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU`. On devices running Android 10, 11, or 12, this evaluates to `false`, causing the wizard to completely omit the "Advance Permission" card.
+2. **Sideload Unblock Sequence on Android 13+:**
+   - `openAppDetailsSettings(context)` directs the user to `ACTION_APPLICATION_DETAILS_SETTINGS`.
+   - The parent taps the top-right overflow menu (**⋮**) in App Info and selects **"Allow restricted settings"**, authenticating via device lock.
+   - This removes the sandbox lock on **both** `KidsAccessibilityService` and `KidsNotificationListenerService`, allowing standard system toggles to succeed.
 
 ---
 
