@@ -11,14 +11,19 @@ on:
       - 'prd.md'
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   validate-knowledge-graph:
-    name: Validate GraphRAG & Community Clusters
+    name: Extract, Cluster & Update Knowledge Graph
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
@@ -29,7 +34,12 @@ jobs:
         run: |
           pip install --upgrade graphifyy
 
-      - name: Verify Existing Graph Artifacts
+      - name: Re-extract AST & Cluster Knowledge Graph
+        run: |
+          graphify extract . --code-only
+          graphify cluster-only .
+
+      - name: Verify Updated Graph Artifacts
         run: |
           python -c "
           import json, os
@@ -41,6 +51,18 @@ jobs:
           print(f'Knowledge Graph Verified: {len(nodes)} nodes, {len(edges)} edges')
           assert len(nodes) > 0, 'Knowledge Graph is empty!'
           "
+
+      - name: Commit & Push Updated Knowledge Graph
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain graphify-out/)" ]; then
+            git add graphify-out/
+            git commit -m "chore(graphify): auto-update knowledge graph on commit [skip ci]"
+            git push origin main
+          else
+            echo "Knowledge graph is already synchronized."
+          fi
 
       - name: Upload Graph Visualization Artifacts
         uses: actions/upload-artifact@v4
