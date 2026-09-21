@@ -1110,6 +1110,85 @@ flowchart LR
 
 ---
 
+## 🤖 Guardian Subagents & Engineering Governance
+
+To enforce continuous architectural fidelity, zero silent failures, complete test coverage, and documentation parity, engineering and operational workflows are governed by a specialized quad-guardian subagent matrix:
+
+```mermaid
+flowchart TD
+    subgraph MATRIX["Guardian Subagent Governance Matrix"]
+        WRG["workflow_risk_guardian<br/>(UX, Safety & Stability Risk Analysis)"]
+        DLG["deep_logger_guardian<br/>(Observability Audit & Root-Cause Telemetry)"]
+        CIG["github_ci_guardian<br/>(CI/CD, Graphify & Release Delivery)"]
+        DOC["docs_maintainer<br/>(User & Architecture Documentation)"]
+    end
+
+    CODE["Proposed Code / Diff / Feature"] --> WRG
+    CODE --> DLG
+    WRG -->|Risk Clearance & UX Validation| CIG
+    DLG -->|Structured Telemetry & No Silent Failures| CIG
+    CIG -->|Build, Unit Tests & Graphify Verified| DOC
+    DOC -->|User Manual & Architecture Sync| RELEASE["Ship Verified Artifacts & Docs"]
+
+    RUNTIME["Live Runtime Diagnostics<br/>(crawler_trace.log, sync_timeline.log, notices.db)"] -.->|Post-Run Diagnostics| DLG
+```
+
+### 1. `deep_logger_guardian`: Deep Logging & Diagnostic Telemetry Guardian
+- **Role & Purpose**:
+  - Proactively audits code implementations to guarantee deep, high-signal, structured diagnostic observability across all application subsystems, eliminating silent failures and enforcing privacy preservation.
+  - Performs comprehensive post-run root-cause telemetry diagnostics by analyzing runtime logs, SQLite databases, and Google Drive vault telemetry to isolate anomalies and recommend line-level code fixes.
+- **Key Responsibilities**:
+  1. **Implementation Logging Audit**:
+     - Guarantees that every critical operational path (Classroom crawler state machine transitions, node-tree traversals, autonomous attachment downloads, WorkManager sync jobs, SQLite Room operations, and Google Drive REST API calls) incorporates structured event logging with UTC timestamps, event types, operational context parameters, and explicit outcomes.
+     - Enforces the **Zero Silent Failures** standard: identifies and remediates empty catch blocks, unlogged coroutine cancellations, unhandled `IOException` / `ApiException` instances, and swallowed background worker errors.
+     - Validates **Privacy Preservation**: rigorously ensures that no student PII, credentials, OAuth tokens, or private non-educational message bodies are leaked to disk logs, logcat, or cloud vault files.
+  2. **Post-Run Root-Cause Telemetry Diagnostics**:
+     - Inspects live trace and telemetry files:
+       - `crawler_trace.log`: Tracks post-detail navigation, card parsing, attachment chip clicks, dialog dismissals, and retry backoffs.
+       - `sync_timeline.log`: Tracks WorkManager scheduling, batch upload latencies, MIME resolution, and folder ID lookups.
+       - SQLite Database (`notices.db`): Verifies record insertion integrity, deduplication hash collisions, and sync state transitions (`PENDING` -> `SYNCED`).
+       - Google Drive Vault System Logs (`_system/logs/`): Validates remote file creation, digest updates, and folder provisioning.
+     - Provides line-level root-cause analysis for any reported discrepancies (e.g., mismatched notice counts, missed attachments, rate limits, or crawler timeouts) accompanied by concrete, production-ready code remedies.
+- **Integration & Coordination**:
+  - Coordinates alongside `github_ci_guardian`, `docs_maintainer`, and `workflow_risk_guardian`.
+  - Collaborates with `workflow_risk_guardian` to pair structural risk mitigation with high-resolution diagnostic logging.
+  - Feeds telemetry insights and operational log schemas to `docs_maintainer` to keep the troubleshooting and diagnostic guides in `docs/USER_MANUAL.md` and `docs/TECHNICAL_ARCHITECTURE.md` accurate.
+  - Ensures diagnostic health checks pass prior to final deployment validation by `github_ci_guardian`.
+
+### 2. `github_ci_guardian`: CI/CD & Knowledge Graph Pipeline Guardian
+- **Role & Purpose**: Manages GitHub repository activity, keeps codebase knowledge graphs (`graphify-out/`) synchronized with every commit, and monitors CI/CD pipelines.
+- **Key Responsibilities**:
+  - Synchronizes AST extraction & community clustering via `graphify extract . --code-only` and `graphify cluster-only .`.
+  - Validates `graphify-out/graph.json` integrity (500+ nodes, valid edges, 20+ clusters).
+  - Executes `scripts/ci_watch.py` to stream live CI status for `Android CI & Quality Gates` (`ci.yml`) and `Knowledge Graph Validation & Graphify Pipeline` (`graphify.yml`).
+  - Confirms GitHub Release delivery of `app-debug.apk` under the `latest` tag with zero assumption of success.
+- **Integration & Coordination**:
+  - Coordinates with `workflow_risk_guardian` to ensure no build is triggered with unverified UX or stability risks.
+  - Validates that `docs_maintainer` has committed synchronized documentation updates before releasing.
+
+### 3. `docs_maintainer`: Documentation Guardian
+- **Role & Purpose**: Maintains and updates both the parent-facing User Manual (`docs/USER_MANUAL.md`) and the engineering specification (`docs/TECHNICAL_ARCHITECTURE.md`) on every build and architectural change.
+- **Key Responsibilities**:
+  - Keeps `docs/USER_MANUAL.md` synchronized with onboarding steps, permission rationales, Stream vs. Classwork crawling mechanics, autonomous attachment staging, and parent Google Drive vault usage.
+  - Keeps `docs/TECHNICAL_ARCHITECTURE.md` synchronized with Clean Architecture layers, Room SQLite/FTS4 schemas, background services (`KidsAccessibilityService`, `DownloadFolderObserver`, `DriveSyncWorker`), Graphify pipelines, and privacy boundary invariants.
+  - Guarantees 100% parity between repository source code and documentation.
+- **Integration & Coordination**:
+  - Coordinates directly with `github_ci_guardian` to document CI/CD workflows and release assets.
+  - Integrates diagnostic schemas and log interpretations established by `deep_logger_guardian` into user-facing troubleshooting guides.
+
+### 4. `workflow_risk_guardian`: Workflow, App & UX Risk Guardian
+- **Role & Purpose**: Proactively inspects proposed implementations, code diffs, and architectural changes both before and after execution to detect failure modes, UX dead ends, and regressions.
+- **Key Responsibilities**:
+  - Inspects workflows for trapped user states, blocked permission gates, and corrupted persistence across process death.
+  - Validates app stability under configuration changes, coroutine lifecycle cancellations, ML Kit/PDF memory limits, and Google Drive rate limits.
+  - Audits WCAG 2.1 touch targets (>= 48dp), visual contrast ratios, and accessible typography.
+  - Enforces zero-backend privacy invariants and storage anti-clutter lifecycles.
+- **Integration & Coordination**:
+  - Coordinates with `deep_logger_guardian` to verify that all edge cases and error handling branches have high-signal telemetry.
+  - Coordinates with `github_ci_guardian` to gate CI passes against detected risk regressions.
+
+---
+
 ## 🛡️ Security, Privacy & Compliance Verification
 
 | Requirement | Implementation Mechanism | Verification Method |

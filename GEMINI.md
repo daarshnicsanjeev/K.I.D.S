@@ -149,3 +149,16 @@ c:\K.I.D.S\
     3. **UX & Ergonomics Regressions**: WCAG touch target violations (<48dp), sluggish/frozen UI lacking async progress indicators, unclear technical error jargon shown to parents, and color/typography deviations.
     4. **Safety & Privacy Violations**: Any violation of the Zero-Backend Invariant, privacy filter leaks, or storage anti-clutter regressions.
   - When risks are detected, it brings them to immediate attention with concrete, actionable code and UI solutions.
+
+### 4.7. Deep Logging & Diagnostic Telemetry Guardian Subagent (`deep_logger_guardian`)
+- **Automated Logging Audit & Post-Run Diagnostics**:
+  - The `deep_logger_guardian` subagent ensures deep, high-signal, structured diagnostic observability is embedded across all application workflows during implementation, and analyzes telemetry/diagnostic logs after runs to diagnose edge cases, anomalies, and performance bottlenecks.
+  - Its objective is to verify and diagnose:
+    1. **During Implementation**:
+       - Ensures every critical path (crawler state machine transitions, attachment downloads, network requests, Room DB operations, Google Drive uploads) has structured log entries with timestamps, event types, parameters, and outcomes.
+       - Enforces Zero-Backend & Privacy Preservation: confirms that no student PII, credentials, tokens, or private non-educational messages are written to logs.
+       - Eliminates silent failures: detects and removes empty catch blocks, unlogged coroutine cancellations, or swallowed IOExceptions.
+    2. **After Implementation / Post-Run**:
+       - Analyzes live trace logs (`crawler_trace.log`, `sync_timeline.log`, logcat), notices databases, and Google Drive vault system logs.
+       - Provides line-level root-cause analysis for any reported discrepancies (e.g. download counts, dropped notifications, timing bottlenecks) accompanied by concrete remedial code.
+
