@@ -79,14 +79,18 @@ object DownloadFolderObserver {
                     // A. Check against pending attachments needing a local file
                     var matchedPending = false
                     for (att in pendingAttachments) {
-                        val expected = att.fileName.trim().lowercase()
-                        if (expected.isBlank()) continue
+                        val rawExpected = att.fileName.trim().lowercase()
+                        val cleanExpected = rawExpected.replace("...", "").trim()
+                        if (cleanExpected.isBlank()) continue
 
-                        // Match full filename or core name prefix
-                        val isMatch = fileName == expected ||
-                                fileName.contains(expected) ||
-                                expected.contains(fileName) ||
-                                (expected.length > 8 && fileName.contains(expected.take(15)))
+                        // Match full filename, clean prefix without ellipsis, or substring
+                        val isMatch = fileName == rawExpected ||
+                                fileName.contains(rawExpected) ||
+                                rawExpected.contains(fileName) ||
+                                fileName == cleanExpected ||
+                                fileName.contains(cleanExpected) ||
+                                cleanExpected.contains(fileName) ||
+                                (cleanExpected.length > 5 && fileName.contains(cleanExpected.take(12)))
 
                         if (isMatch) {
                             val targetFile = if (isPublicDownloadDir) {

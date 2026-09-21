@@ -2,7 +2,9 @@ package com.kids.collector.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.graphics.Path
 import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
@@ -199,19 +201,19 @@ class KidsAccessibilityService : AccessibilityService() {
 
                 if (unvisitedCard != null) {
                     consecutiveZeroDiscoveryCount = 0
-                    val (title, fingerprint, clickableNode) = unvisitedCard
+                    val (title, fingerprint, clickableNode, cardBounds) = unvisitedCard
                     crawlerOverlay?.updateStatus("Status: Opening Post...", title)
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Tapping post card: \"$title\" [Fingerprint: $fingerprint]")
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Opening post card at (${cardBounds.centerX()}, ${cardBounds.centerY()}): \"$title\" [Fingerprint: $fingerprint]"
+                    )
 
-                    val clicked = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    // 1. Attempt native accessibility click
+                    clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     clickableNode.recycle()
 
-                    if (!clicked) {
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Failed to click post card \"$title\". Skipping.")
-                        visitedPostFingerprints.add(fingerprint)
-                        delay(400)
-                        continue
-                    }
+                    // 2. Dispatch physical tap gesture to guarantee detail view opens
+                    dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
 
                     // Wait up to 2500ms for Detail View to load
                     val enteredDetail = waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
@@ -375,10 +377,11 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         // 4. Discover and process attachments
+        // 4. Discover and register attachments
         val attachments = extractDetailAttachments(detailRoot)
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Discovered ${attachments.size} attachments for \"$title\"")
 
-        for ((index, att) in attachments.withIndex()) {
+        for (att in attachments) {
             val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
             val existingAtt = db.attachmentDao().findByFileHash(fileHash)
             if (existingAtt == null) {
@@ -399,37 +402,73 @@ class KidsAccessibilityService : AccessibilityService() {
                 )
                 db.attachmentDao().insert(attEntity)
             }
-
-            // Click download button or chip
-            if (att.downloadNode != null && att.downloadNode.isClickable) {
-                crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-                att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                crawlerOverlay?.incrementAttachmentCount()
-                delay(800) // Calibrated debounce between downloads
-            } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-                crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-                att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                crawlerOverlay?.incrementAttachmentCount()
-                delay(800)
-            }
-
-            att.downloadNode?.recycle()
-            att.clickableChip?.recycle()
         }
 
-        if (attachments.isNotEmpty()) {
-            delay(1000) // Allow system DownloadManager to register downloads
+        // Check for the prominent "Save all files offline" button first
+        val saveAllBtn = findSaveAllOfflineButton(detailRoot)
+        if (saveAllBtn != null) {
+            crawlerOverlay?.updateStatus("Saving all attachments offline...")
+            CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping \"Save all files offline\" for \"$title\" (${attachments.size} files)")
+            val clicked = saveAllBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val b = Rect()
+                saveAllBtn.getBoundsInScreen(b)
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            }
+            saveAllBtn.recycle()
+            val countToAdd = if (attachments.isNotEmpty()) attachments.size else 1
+            for (i in 0 until countToAdd) {
+                crawlerOverlay?.incrementAttachmentCount()
+            }
+            delay(1200) // Calibrated debounce for DownloadManager to start download
+        } else {
+            // Fallback: Click individual download buttons or chips
+            for ((index, att) in attachments.withIndex()) {
+                if (att.downloadNode != null && att.downloadNode.isClickable) {
+                    crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
+                    CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
+                    val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        att.downloadNode.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    }
+                    crawlerOverlay?.incrementAttachmentCount()
+                    delay(800) // Calibrated debounce between downloads
+                } else if (att.clickableChip != null && att.clickableChip.isClickable) {
+                    crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
+                    CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
+                    val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        att.clickableChip.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    }
+                    crawlerOverlay?.incrementAttachmentCount()
+                    delay(800)
+                }
+
+                att.downloadNode?.recycle()
+                att.clickableChip?.recycle()
+            }
+        }
+
+        if (attachments.isNotEmpty() || saveAllBtn != null) {
+            delay(1200) // Allow system DownloadManager to register downloads
             com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
         }
     }
 
-    private fun performReturnToStream(root: AccessibilityNodeInfo) {
+    private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
         val navUp = findNavigateUpButton(root)
         if (navUp != null) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
-            navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val b = Rect()
+                navUp.getBoundsInScreen(b)
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            }
             navUp.recycle()
         } else {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
@@ -437,10 +476,31 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
+    private suspend fun dispatchTap(x: Float, y: Float): Boolean {
+        val path = Path().apply {
+            moveTo(x, y)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 50)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        var completed = false
+        val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                completed = true
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                completed = false
+            }
+        }, null)
+        delay(120)
+        return dispatched && completed
+    }
+
     private data class UnvisitedCard(
         val title: String,
         val fingerprint: String,
-        val clickableNode: AccessibilityNodeInfo
+        val clickableNode: AccessibilityNodeInfo,
+        val bounds: Rect
     )
 
     private fun findNextUnvisitedPost(rootNode: AccessibilityNodeInfo): UnvisitedCard? {
@@ -480,8 +540,9 @@ class KidsAccessibilityService : AccessibilityService() {
 
             if (!visitedPostFingerprints.contains(fingerprint)) {
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
+                val cardBounds = Rect(rect)
                 card.recycle()
-                return UnvisitedCard(title, fingerprint, clickable)
+                return UnvisitedCard(title, fingerprint, clickable, cardBounds)
             }
             card.recycle()
         }
@@ -536,8 +597,12 @@ class KidsAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.trim()
         val desc = node.contentDescription?.toString()?.trim()
         val candidate = when {
-            !text.isNullOrBlank() && extensions.any { text.contains(it, ignoreCase = true) } -> text
-            !desc.isNullOrBlank() && extensions.any { desc.contains(it, ignoreCase = true) } -> desc
+            !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
+                if (text.contains('.')) text else "$text.pdf"
+            }
+            !desc.isNullOrBlank() && (extensions.any { desc.contains(it, ignoreCase = true) } || desc.contains("attachment", ignoreCase = true) || desc.contains("pdf", ignoreCase = true)) -> {
+                if (desc.contains('.')) desc else "$desc.pdf"
+            }
             else -> null
         }
 
@@ -573,12 +638,10 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("people") ||
                 combined.contains("tab 1 of 3") ||
                 combined.contains("tab 2 of 3")
-        val hasBackArrow = hasNavigateUpButton(rootNode)
-        return hasBottomTabs && !hasBackArrow
+        return hasBottomTabs
     }
 
     private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
-        val hasBackArrow = hasNavigateUpButton(rootNode)
         val textList = mutableListOf<String>()
         collectQuickText(rootNode, textList)
         val combined = textList.joinToString(" ").lowercase()
@@ -586,9 +649,18 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("class comments") ||
                 combined.contains("your work") ||
                 combined.contains("assigned") ||
-                combined.contains("attachment")
-        val hasBottomTabs = combined.contains("tab 1 of 3") && combined.contains("tab 2 of 3")
-        return hasBackArrow || (hasDetailIndicators && !hasBottomTabs)
+                combined.contains("attachments") ||
+                combined.contains("attachment") ||
+                combined.contains("save all files offline") ||
+                combined.contains("save all") ||
+                combined.contains("save offline") ||
+                combined.contains("for your reference") ||
+                combined.contains("points")
+        val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
+                combined.contains("tab 1 of 3") ||
+                combined.contains("tab 2 of 3")
+        val hasBackArrow = hasNavigateUpButton(rootNode)
+        return (hasDetailIndicators || hasBackArrow) && !hasBottomTabs
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {
@@ -601,17 +673,46 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findNavigateUpButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
         val text = node.text?.toString()?.lowercase() ?: ""
-        if (desc == "navigate up" || desc == "back" || text == "back" || desc.contains("navigate up")) {
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        if (desc == "navigate up" || desc == "back" || text == "back" ||
+            desc.contains("navigate up") || desc.contains("back") ||
+            viewId.contains("up") || viewId.contains("back") || viewId.contains("action_bar")
+        ) {
             if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
             var parent = node.parent
             while (parent != null) {
                 if (parent.isClickable) return parent
                 parent = parent.parent
             }
+            return AccessibilityNodeInfo.obtain(node)
         }
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findNavigateUpButton(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findSaveAllOfflineButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        if (text.contains("save all files offline") || desc.contains("save all files offline") ||
+            text.contains("save all") || desc.contains("save all") ||
+            text.contains("save offline") || desc.contains("save offline")
+        ) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findSaveAllOfflineButton(child)
             child.recycle()
             if (found != null) return found
         }

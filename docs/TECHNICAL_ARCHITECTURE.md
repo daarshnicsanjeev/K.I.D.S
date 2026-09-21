@@ -292,12 +292,12 @@ stateDiagram-v2
     NAVIGATING_TO_DETAIL --> IN_DETAIL_VIEW: Screen Verified (isPostDetailView, <=2.5s)
     NAVIGATING_TO_DETAIL --> SCANNING_STREAM: Timeout / Click Failed (Skip & Mark Visited)
     
-    IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: Attachments Detected (.pdf, .docx, .jpg)
-    DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: Sequential Taps (800ms Debounce)
+    IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: "Save all offline" or Attachments Detected
+    DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: Master Button (1200ms) or Chip Taps (800ms)
     DOWNLOADING_ATTACHMENTS --> RETURNING_TO_STREAM: All Attachments Handed to DownloadManager
     IN_DETAIL_VIEW --> RETURNING_TO_STREAM: Zero Attachments in Post
     
-    RETURNING_TO_STREAM --> SCANNING_STREAM: Stream Re-settled (isStreamOrClassworkView, <=2s)
+    RETURNING_TO_STREAM --> SCANNING_STREAM: Stream Re-settled (Navigate Up Tap / Back, <=2s)
     
     SCROLLING --> SCANNING_STREAM: New Unvisited Cards Found (850ms Settle Delay)
     SCROLLING --> CAPTURE_COMPLETE: 2 Consecutive Empty Scrolls (End of Stream)
@@ -348,7 +348,7 @@ sequenceDiagram
         GC-->>ACS: Unvisited post card (SHA-256 fingerprint)
         
         ACS->>OV: updateStatus("Status: Opening Post...", title)
-        ACS->>GC: NAVIGATING_TO_DETAIL: clickableNode.performAction(ACTION_CLICK)
+        ACS->>GC: NAVIGATING_TO_DETAIL: ACTION_CLICK + dispatchTap(centerX, centerY) [50ms stroke]
         GC-->>ACS: Transition to detail view (verified <=2.5s)
         
         ACS->>OV: updateStatus("Status: Reading Detail...", title)
@@ -357,19 +357,25 @@ sequenceDiagram
         ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
         ACS->>OV: incrementNoticeCount()
         
-        opt Attachments Present (.pdf, .docx, .jpg)
-            loop For each attachment (sequential)
+        alt "Save all files offline" Button Present (Prioritized Master Tap)
+            ACS->>OV: updateStatus("Saving all attachments offline...")
+            ACS->>GC: ACTION_CLICK or dispatchTap(centerX, centerY) on Save All Offline Button
+            GC->>DM: Enqueue all attachments in single batch
+            ACS->>OV: incrementAttachmentCount() for each file
+            ACS->>ACS: delay(1200ms) calibrated DownloadManager debounce
+        else Individual Attachments Present (.pdf, .docx, .jpg)
+            loop For each attachment (sequential fallback)
                 ACS->>OV: updateStatus("Status: Downloading (X/Y)...", fileName)
-                ACS->>GC: performAction(ACTION_CLICK) on download button / chip
+                ACS->>GC: ACTION_CLICK or dispatchTap on download button / chip
                 GC->>DM: Enqueue download request
                 ACS->>OV: incrementAttachmentCount()
                 ACS->>ACS: delay(800ms) calibrated debounce
             end
-            ACS->>DFO: scanLocalAttachments() -> move to vault_attachments/
         end
+        ACS->>DFO: scanLocalAttachments() -> move to vault_attachments/
         
         ACS->>OV: updateStatus("Status: Returning to Stream...")
-        ACS->>GC: RETURNING_TO_STREAM: Click Navigate Up / GLOBAL_ACTION_BACK
+        ACS->>GC: RETURNING_TO_STREAM: performReturnToStream() [Navigate Up ACTION_CLICK / dispatchTap -> fallback GLOBAL_ACTION_BACK]
         GC-->>ACS: Stream restored (verified <=2.0s + 600ms stabilization)
         
         alt All screen cards visited
@@ -419,22 +425,103 @@ sequenceDiagram
   $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
   Fingerprints are maintained in `visitedPostFingerprints` (`ConcurrentHashMap.newKeySet()`), ensuring no post is visited twice even when list recycling re-renders nodes.
 
-##### 2. `NAVIGATING_TO_DETAIL` (Guarded Entry & Verification)
-- **Click Dispatch:** Traverses up the node hierarchy via `findClickableAncestor(card)` and executes `AccessibilityNodeInfo.ACTION_CLICK`.
+##### 2. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
+- **Dual Action Click & Physical Touch Tap (`dispatchTap`):** Standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) often fail on custom `RecyclerView` item layouts, compound touch listeners, card wrappers, or OEM skins (Samsung One UI, Xiaomi HyperOS, Oppo ColorOS) that swallow accessibility clicks. To guarantee post opening across all Android devices, the crawler performs a dual-action dispatch:
+  1. Executes `clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)`.
+  2. Dispatches a physical touch tap gesture directly at the center of the post card's screen bounds:
+     ```kotlin
+     dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
+     ```
+- **Physical Tap Implementation (`dispatchTap`):** Built on Android's native gesture description framework:
+  ```kotlin
+  private suspend fun dispatchTap(x: Float, y: Float): Boolean {
+      val path = Path().apply {
+          moveTo(x, y)
+      }
+      val stroke = GestureDescription.StrokeDescription(path, 0, 50)
+      val gesture = GestureDescription.Builder().addStroke(stroke).build()
+      var completed = false
+      val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+          override fun onCompleted(gestureDescription: GestureDescription?) {
+              completed = true
+          }
+          override fun onCancelled(gestureDescription: GestureDescription?) {
+              completed = false
+          }
+      }, null)
+      delay(120) // Stabilization delay after touch injection
+      return dispatched && completed
+  }
+  ```
+  - `GestureDescription.StrokeDescription(path, 0, 50)` specifies a precise **50ms contact duration**, simulating a genuine, high-responsiveness finger tap.
+  - A post-tap stabilization delay of **120ms** allows the Android window manager and view hierarchy to dispatch the touch event before subsequent coroutine polling begins.
 - **2.5-Second Screen Verification:** Rather than assuming immediate transition, the crawler invokes `waitForCondition(timeoutMs = 2500, pollIntervalMs = 200)` and inspects `rootInActiveWindow` via `isPostDetailView(active)`.
 - **Failure Recovery:** If the card click fails or the detail screen fails to load within 2,500ms, the card is marked as visited in `visitedPostFingerprints` and skipped, preventing indefinite hangs.
 
-##### 3. `IN_DETAIL_VIEW` (Text Extraction & Sequential Attachment Downloads)
+##### 3. `IN_DETAIL_VIEW` (Text Extraction, Master "Save All Offline" Priority & Attachments)
 - **Soft Keyboard Dismissal:** Classroom frequently focuses the `"Add class comment"` input field upon entering detail view, popping up the software keyboard and occluding attachment buttons. `clearFocusIfInputFocused(detailRoot)` scans for `EditText` views and dispatches `ACTION_CLEAR_FOCUS`.
 - **Full Text Harvesting:** Recursively walks the entire node hierarchy with `collectAllText(detailRoot)` to capture the full announcement body, author name, and date header.
 - **Domain Attribution & Deduplication:** Routes notice attribution via `MultiChildRouter`, classifies category via `ContentClassifier`, computes content SHA-256, and inserts the record into SQLite Room with `SyncStatus.PENDING`.
-- **Multi-Extension Attachment Discovery:** Scans detail nodes for known educational extensions:
-  `listOf(".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4")`.
-- **Sequential Download Debounce (800ms):** For each discovered attachment, the crawler locates the download button (`findDownloadButtonNode`) or attachment chip (`clickableChip`), logs telemetry, updates overlay status (`Downloading (X/Y)...`), and executes `ACTION_CLICK`. It enforces a **calibrated 800ms debounce delay** between files to allow Android's IPC `DownloadManager` service to enqueue the download request without dropped intents.
-- **Storage Staging Trigger:** Upon completing attachment clicks, it triggers `DownloadFolderObserver.scanLocalAttachments(applicationContext)` to begin moving incoming files to private vault staging.
+- **Master "Save all files offline" Button Priority (`findSaveAllOfflineButton`):**
+  When multiple files are attached to a post, Google Classroom renders a prominent master button labeled `"Save all files offline"`. Auto-Capture actively detects and prioritizes this button over individual attachment chips:
+  ```kotlin
+  private fun findSaveAllOfflineButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+      val text = node.text?.toString()?.lowercase() ?: ""
+      val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+      if (text.contains("save all files offline") || desc.contains("save all files offline") ||
+          text.contains("save all") || desc.contains("save all") ||
+          text.contains("save offline") || desc.contains("save offline")
+      ) {
+          if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+          var parent = node.parent
+          while (parent != null) {
+              if (parent.isClickable) return parent
+              parent = parent.parent
+          }
+          return AccessibilityNodeInfo.obtain(node)
+      }
+      for (i in 0 until node.childCount) {
+          val child = node.getChild(i) ?: continue
+          val found = findSaveAllOfflineButton(child)
+          child.recycle()
+          if (found != null) return found
+      }
+      return null
+  }
+  ```
+  - **Priority Execution:** Evaluated immediately after attachment registration.
+  - **Single High-Efficiency Tap:** If found, the crawler clicks the button (`saveAllBtn.performAction(ACTION_CLICK)`), with a fallback to `dispatchTap(b.centerX(), b.centerY())` if the accessibility click fails.
+  - **Single Batching Debounce (1,200ms):** Increments overlay counters for all discovered attachments at once and delays **1,200ms** to allow Android's system `DownloadManager` to register the batch download request. This bypasses opening individual files or triggering disruptive in-app document previewers.
+- **Individual Attachment Fallback:** If `findSaveAllOfflineButton` returns null, the crawler iterates sequentially through each discovered attachment (`extractDetailAttachments`):
+  - Resolves `att.downloadNode` or `att.clickableChip`.
+  - Dispatches `ACTION_CLICK`, with fallback to `dispatchTap(b.centerX(), b.centerY())`.
+  - Increments attachment metrics and enforces a calibrated **800ms debounce delay** between files.
+- **Storage Staging Trigger:** After dispatching downloads (via master button or individual chips), a 1,200ms delay elapses before triggering `DownloadFolderObserver.scanLocalAttachments(applicationContext)` to begin moving files into private sandbox staging.
 
-##### 4. `RETURNING_TO_STREAM` (Guarded Return & View Stabilization)
-- **Guarded Navigation:** Inspects the toolbar for Classroom's native Navigate Up button (`findNavigateUpButton`) matching `"navigate up"` or `"back"`. If present, it dispatches `ACTION_CLICK`; otherwise, it issues `performGlobalAction(GLOBAL_ACTION_BACK)`.
+##### 4. `RETURNING_TO_STREAM` (Guarded Return with Physical Tap & Global Back Fallback)
+- **Three-Tier Fallback Navigation (`performReturnToStream`):**
+  Returning reliably from deep detail screens back to the parent stream is critical to prevent getting trapped inside posts:
+  ```kotlin
+  private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
+      val navUp = findNavigateUpButton(root)
+      if (navUp != null) {
+          CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
+          val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+          if (!clicked) {
+              val b = Rect()
+              navUp.getBoundsInScreen(b)
+              dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+          }
+          navUp.recycle()
+      } else {
+          CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
+          performGlobalAction(GLOBAL_ACTION_BACK)
+      }
+  }
+  ```
+  1. **Tier 1 (Navigate Up Accessibility Click):** Locates the top toolbar navigation button matching `"navigate up"` or `"back"` and calls `ACTION_CLICK`.
+  2. **Tier 2 (Physical Touch Tap Fallback):** If `ACTION_CLICK` returns false or fails to trigger navigation, dispatches a physical touch tap `dispatchTap(b.centerX(), b.centerY())` directly at the button's screen coordinates.
+  3. **Tier 3 (System Global Back Fallback):** If no toolbar navigation node is discovered in the active window hierarchy, executes Android's system-level `performGlobalAction(GLOBAL_ACTION_BACK)`.
 - **Post-Return Verification:** Calls `waitForCondition(timeoutMs = 2000, pollIntervalMs = 200)` checking `isStreamOrClassworkView(active)` to verify that bottom tabs are visible and the back arrow is gone.
 - **Stabilization Delay:** Applies a **600ms delay** post-return, giving the Android `RecyclerView` time to rebind views and settle scroll physics before resuming the scan.
 
@@ -612,18 +699,95 @@ AndroidX `WorkManager` provides three primary policies for unique work chains (`
 
 ---
 
-### 3. `DownloadFolderObserver`: Staging & Anti-Clutter Lifecycle
-Android downloads files to public directories (`Environment.DIRECTORY_DOWNLOADS` or `DIRECTORY_DOWNLOADS/Classroom`). Without management, these files pollute the parent's phone.
+### 3. `DownloadFolderObserver`: Truncated Name Resolution & Anti-Clutter Staging Lifecycle
 
-`DownloadFolderObserver` enforces an autonomous lifecycle:
-1. **Directory Scanning:** Scans `Downloads/`, `Downloads/Classroom/`, and WhatsApp Media directories.
-2. **Pending Match:** Compares filenames against `AttachmentEntity` records where `driveFileId` is null or starts with `virtual_`.
-3. **Move to Private Sandbox Staging:** If the file is in public `Downloads/`, it is **moved** (renamed or copied and deleted) to:
-   `context.getExternalFilesDir(null)/vault_attachments/`.
-   **Result:** The parent's personal Download directory is instantly cleaned of school clutter.
-4. **Hashing & Database Update:** `DeduplicationEngine` computes the SHA-256 checksum of the staged file and updates `localUri`, `sizeBytes`, and `fileHash` in Room.
-5. **Lingering File Cleanup:** It also scans for files matching *already-synced* attachments (`driveFileId != null`) still residing in public `Downloads/` and deletes them.
-6. **WhatsApp Media Non-Destruction:** Files detected in WhatsApp Media folders are left intact in place to preserve chat media within the WhatsApp client.
+When Google Classroom or other school apps download attachments, Android's `DownloadManager` places files into public shared directories (`Environment.DIRECTORY_DOWNLOADS` or `DIRECTORY_DOWNLOADS/Classroom`). This presents two major engineering challenges:
+1. **Filename Truncation Mismatch:** Classroom UI attachment chips often truncate long filenames using ellipses (`...` or `…`), e.g., displaying `'Formatting Te...'` or `'Mathematics Work...'`, whereas Android's `DownloadManager` saves files using their un-truncated original filenames on disk, e.g., `'Formatting Text in Word 2016 WS with Answerkey.pdf'`. A naive exact-string match fails to associate the downloaded file with the pending database record.
+2. **Device Storage Clutter:** Unchecked downloads quickly accumulate hundreds of megabytes of school worksheets, PDFs, and circulars in the parent's personal Downloads directory.
+
+`DownloadFolderObserver` resolves both challenges through an autonomous scanning, cleaning, and staging pipeline.
+
+#### Ellipsis Stripping & Heuristic Match Architecture
+
+When scanning storage directories, `DownloadFolderObserver` extracts the expected name registered from the UI chip (`rawExpected`) and strips trailing ellipses to isolate the substantive prefix:
+```kotlin
+val rawExpected = att.fileName.trim().lowercase()
+val cleanExpected = rawExpected.replace("...", "").trim()
+```
+
+It then evaluates incoming candidate files using a 4-tier match expression:
+```kotlin
+val isMatch = fileName == rawExpected ||
+        fileName.contains(rawExpected) ||
+        rawExpected.contains(fileName) ||
+        fileName == cleanExpected ||
+        fileName.contains(cleanExpected) ||
+        cleanExpected.contains(fileName) ||
+        (cleanExpected.length > 5 && fileName.contains(cleanExpected.take(12)))
+```
+
+##### Match Tier Rationale:
+- **Tier 1 (Exact Match):** Handles attachments where the UI chip displayed the full un-truncated filename (`fileName == rawExpected`).
+- **Tier 2 (Bidirectional Substring Match):** Handles cases where either the chip string or the on-disk filename embeds minor formatting variants or parenthetical tags (`fileName.contains(rawExpected) || rawExpected.contains(fileName)`).
+- **Tier 3 (Ellipsis-Free Equivalence):** Matches the clean prefix directly against the filesystem name after eliminating `"..."` (`fileName.contains(cleanExpected)`).
+- **Tier 4 (Truncated Prefix Anchor):** For severely truncated names (e.g. `'Formatting Te...'`), takes the first 12 characters of the clean prefix and verifies that the on-disk filename starts with or contains those 12 characters (`fileName.contains(cleanExpected.take(12))`). For example, `'formatting text in word 2016 ws with answerkey.pdf'` cleanly matches `'formatting te...'` anchored on `'formatting t'`.
+
+#### The 5-Stage Anti-Clutter Staging & Cloud Sync Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant GC as Google Classroom UI
+    participant DM as Android DownloadManager
+    participant PUB as Public Storage (Downloads/Classroom)
+    participant DFO as DownloadFolderObserver
+    participant ROOM as SQLite Room DB (AttachmentEntity)
+    participant STAGE as Private Sandbox (vault_attachments/)
+    participant DSW as DriveSyncWorker
+    participant DRIVE as Google Drive Vault (Google Classroom/attachments/)
+
+    GC->>DM: Dispatches download intent (Save all offline / chip tap)
+    DM->>PUB: Saves full filename (e.g. Formatting Text in Word 2016 WS with Answerkey.pdf)
+    
+    DFO->>PUB: scanLocalAttachments() scans candidate folders
+    DFO->>DFO: Strips ellipsis & matches 'Formatting Te...' to full filename
+    
+    alt In Public Downloads Directory
+        DFO->>STAGE: file.renameTo(destFile) / copyTo + delete()
+        Note over PUB: Public Downloads is kept 100% clean of school files!
+    else In WhatsApp Media Folder
+        Note over DFO: Retains file in-place to preserve chat media
+    end
+    
+    DFO->>ROOM: updateLocalFile(localUri, sizeBytes, fileHash)
+    
+    DSW->>STAGE: ML Kit streaming OCR (PdfRenderer)
+    DSW->>DRIVE: Uploads file to 'Google Classroom/attachments/' (or attachments/)
+    DRIVE-->>DSW: Upload confirmed (HTTP 200, driveFileId returned)
+    DSW->>ROOM: updateDriveFileId(driveFileId, SYNCED)
+    DSW->>STAGE: file.delete() -> permanently cleared from phone storage
+    Note over STAGE: Local private storage drops back to 0MB!
+    
+    DFO->>PUB: Scans for lingering already-synced files and deletes them
+```
+
+1. **Local Public Download:** Android's `DownloadManager` writes incoming files to `Environment.DIRECTORY_DOWNLOADS` or `Downloads/Classroom`.
+2. **Autonomous Scan & Ellipsis Matching:** `DownloadFolderObserver.scanLocalAttachments(context)` inspects `Downloads/`, `Downloads/Classroom/`, and WhatsApp Media folders, matching files against pending `AttachmentEntity` records using the ellipsis-cleaning algorithm.
+3. **Atomic Move to Private Sandbox Staging:** If the file resides in a public Download directory, it is physically moved to private sandbox staging:
+   `context.getExternalFilesDir(null)/vault_attachments/`
+   The move executes via `file.renameTo(destFile)` (or falls back to `copyTo(destFile, overwrite = true)` followed by `file.delete()`). The public `Downloads` folder is immediately sanitized, preventing storage clutter.
+4. **Hashing & Database Persistence:** `DeduplicationEngine.computeFileHash(targetFile)` computes the file's SHA-256 hash. Room's `AttachmentDao` is updated with `localUri`, `sizeBytes`, and `fileHash`.
+5. **Drive Vault Upload & Phone Storage Clearance:**
+   - During the background synchronization cycle, `DriveSyncWorker` reads the staged file, runs streaming ML Kit OCR, and uploads it to Google Drive under `'Google Classroom/attachments/'` (or channel folder).
+   - Upon successful upload (HTTP 200), the local staged file in `vault_attachments/` is **permanently deleted**.
+   - **Lingering File Cleanup:** During subsequent scans, `DownloadFolderObserver` also checks for files matching *already-synced* attachments (`driveFileId != null`) that may have lingered or been redownloaded in public Downloads, matching them with an extended prefix test:
+     ```kotlin
+     val isMatch = fileName == expected ||
+             fileName.contains(expected) ||
+             expected.contains(fileName) ||
+             (expected.length > 8 && fileName.contains(expected.take(15)))
+     ```
+     and deleting them from public storage.
+6. **WhatsApp Media Preservation:** Files detected in WhatsApp Media folders are referenced in place (`localUri` points to the existing media file) and are never moved or deleted, maintaining full functionality in WhatsApp chat history.
 
 ---
 
