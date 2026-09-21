@@ -28,6 +28,7 @@ object DownloadFolderObserver {
                 .filter { it.localUri.isBlank() || !File(it.localUri).exists() }
 
             if (pendingAttachments.isEmpty()) {
+                CrawlerTraceLogger.log("DOWNLOAD_SCAN", "No pending attachments awaiting local files.")
                 return@withContext 0
             }
 
@@ -49,6 +50,8 @@ object DownloadFolderObserver {
                 val waImages = File(externalStorage, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Images")
                 if (waImages.exists()) candidateDirs.add(waImages)
             }
+
+            CrawlerTraceLogger.log("DOWNLOAD_SCAN", "Scanning ${candidateDirs.size} storage folders for ${pendingAttachments.size} pending attachments...")
 
             for (dir in candidateDirs) {
                 val files = dir.listFiles() ?: continue
@@ -84,6 +87,7 @@ object DownloadFolderObserver {
                     }
                 }
             }
+            CrawlerTraceLogger.log("DOWNLOAD_SCAN", "Scan finished: Matched $matchedCount local files.")
         } catch (e: Exception) {
             Log.e(TAG, "Error scanning local attachment folders", e)
             CrawlerTraceLogger.log("DOWNLOAD_SCAN_ERROR", "Error scanning local folders: ${e.message}")

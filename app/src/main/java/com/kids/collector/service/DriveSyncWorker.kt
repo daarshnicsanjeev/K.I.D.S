@@ -276,17 +276,24 @@ class DriveSyncWorker(
                     Log.w(TAG, "Non-fatal error generating Knowledge Graph and digests", graphEx)
                     CrawlerTraceLogger.log("GRAPHIFY_WARN", "Digest generation warning: ${graphEx.message}")
                 }
+
+                CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
+                val finalLogs = CrawlerTraceLogger.drainPendingLogs()
+                if (finalLogs.isNotEmpty()) {
+                    driveClient.appendCrawlerTraceLog(vault.logsFolderId, finalLogs)
+                    CrawlerTraceLogger.appendToLocalFile(applicationContext, finalLogs)
+                }
             } else {
                 Log.w(TAG, "No Google Drive account email configured. Skipping remote upload.")
                 CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
             }
 
-            CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
             Result.success()
 
         } catch (t: Throwable) {
             Log.e(TAG, "Error during Drive sync worker execution", t)
             CrawlerTraceLogger.log("SYNC_WORKER", "Sync failed: ${t.message}")
+            CrawlerTraceLogger.appendToLocalFile(applicationContext, CrawlerTraceLogger.drainPendingLogs())
             Result.retry()
         }
     }
