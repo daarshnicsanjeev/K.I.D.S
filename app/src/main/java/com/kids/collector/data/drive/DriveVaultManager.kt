@@ -9,7 +9,9 @@ import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecovera
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -70,9 +72,37 @@ object DriveVaultManager {
         ).setApplicationName("K.I.D.S.").build()
     }
 
+    fun saveVaultFolderPrefs(context: Context, accountEmail: String, academicYear: String, childName: String, folders: ChildVaultFolders) {
+        val prefix = "vault_${accountEmail}_${academicYear}_${childName.trim().lowercase()}_"
+        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+            .putString("account_email", accountEmail)
+            .putString("academic_year", academicYear)
+            .putString("child_name", childName)
+            .putString("${prefix}rootKidsFolderId", folders.rootKidsFolderId)
+            .putString("${prefix}yearFolderId", folders.yearFolderId)
+            .putString("${prefix}childFolderId", folders.childFolderId)
+            .putString("${prefix}attachmentsFolderId", folders.attachmentsFolderId)
+            .putString("${prefix}systemFolderId", folders.systemFolderId)
+            .putString("${prefix}logsFolderId", folders.logsFolderId)
+            .apply()
+    }
+
+    fun getSavedVaultFolders(context: Context, accountEmail: String, academicYear: String, childName: String): ChildVaultFolders? {
+        val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        val prefix = "vault_${accountEmail}_${academicYear}_${childName.trim().lowercase()}_"
+        val rootId = prefs.getString("${prefix}rootKidsFolderId", null) ?: return null
+        val yearId = prefs.getString("${prefix}yearFolderId", null) ?: return null
+        val childId = prefs.getString("${prefix}childFolderId", null) ?: return null
+        val attId = prefs.getString("${prefix}attachmentsFolderId", null) ?: return null
+        val sysId = prefs.getString("${prefix}systemFolderId", null) ?: return null
+        val logsId = prefs.getString("${prefix}logsFolderId", null) ?: return null
+        return ChildVaultFolders(rootId, yearId, childId, attId, sysId, logsId)
+    }
+
     /**
      * Step 1: Provisions K.I.D.S. Data/{AcademicYear}/{ChildName}/ folders
-     * and initializes notices.jsonl, MASTER_DIGEST.md, sync_timeline.log, and knowledge_graph.json
+     * and seeds initial template files. Transitions to Step 2 within ~1-2 seconds
+     * (or < 50ms if cached) by seeding template files asynchronously in the background.
      */
     suspend fun provisionStep1(
         context: Context,
@@ -88,70 +118,89 @@ object DriveVaultManager {
         }
 
         try {
+            // Fast-path: If vault folders are already cached, transition immediately without network lag
+            val cachedFolders = getSavedVaultFolders(context, accountEmail, academicYear, childName)
+            if (cachedFolders != null) {
+                currentChildVault = cachedFolders
+                currentAccountEmail = accountEmail
+                saveVaultPrefs(context, accountEmail, academicYear, childName)
+                Log.i(TAG, "Step 1: Found existing cached vault folders. Transitioning immediately.")
+                return@withContext ProvisionStep1Result.Success(cachedFolders)
+            }
+
             val driveService = getDriveService(context, accountEmail)
             val driveClient = GoogleDriveClient(driveService)
 
-            Log.i(TAG, "Step 1: Provisioning child vault on Google Drive for $childName ($academicYear)...")
+            Log.i(TAG, "Step 1: Rapidly provisioning child vault folders on Google Drive for $childName ($academicYear)...")
             val folders = driveClient.provisionChildVault(academicYear, childName)
             currentChildVault = folders
             currentAccountEmail = accountEmail
-            saveVaultPrefs(context, accountEmail, academicYear, childName)
+            saveVaultFolderPrefs(context, accountEmail, academicYear, childName, folders)
 
-            val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
+            // Seed initial placeholder files asynchronously in background without blocking UI
+            CoroutineScope(Dispatchers.IO).launch {
+                try {
+                    val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
 
-            // 1. Initial MASTER_DIGEST.md
-            val initialDigest = """
-                # K.I.D.S. Master Digest — $childName
-                **Academic Year:** $academicYear
-                **Vault Initialized:** $timeStampStr
-                
-                ---
-                
-                ## Active Channels
-                * Profile established via Onboarding Step 1.
-                
-                ## Recent Notices & Homework
-                * Real-time push notification listener ready.
-            """.trimIndent()
-            driveClient.uploadOrUpdateMasterDigest(folders.childFolderId, initialDigest)
+                    // 1. Initial MASTER_DIGEST.md
+                    val initialDigest = """
+                        # K.I.D.S. Master Digest — $childName
+                        **Academic Year:** $academicYear
+                        **Vault Initialized:** $timeStampStr
+                        
+                        ---
+                        
+                        ## Active Channels
+                        * Profile established via Onboarding Step 1.
+                        
+                        ## Recent Notices & Homework
+                        * Real-time push notification listener ready.
+                    """.trimIndent()
+                    driveClient.uploadOrUpdateMasterDigest(folders.childFolderId, initialDigest)
 
-            // 2. Initial notices.jsonl
-            val initialJsonl = """{"event":"VAULT_INITIALIZED","childName":"$childName","academicYear":"$academicYear","timestamp":${System.currentTimeMillis()}}"""
-            driveClient.appendNoticeToJsonl(folders.childFolderId, initialJsonl)
+                    // 2. Initial notices.jsonl
+                    val initialJsonl = """{"event":"VAULT_INITIALIZED","childName":"$childName","academicYear":"$academicYear","timestamp":${System.currentTimeMillis()}}"""
+                    driveClient.appendNoticeToJsonl(folders.childFolderId, initialJsonl)
 
-            // 3. Initial _system/logs/sync_timeline.log
-            driveClient.appendTimelineLog(
-                folders.logsFolderId,
-                "[STEP 1 COMPLETE] Child vault provisioned for $childName in $academicYear ($timeStampStr)"
-            )
+                    // 3. Initial _system/logs/sync_timeline.log
+                    driveClient.appendTimelineLog(
+                        folders.logsFolderId,
+                        "[STEP 1 COMPLETE] Child vault provisioned for $childName in $academicYear ($timeStampStr)"
+                    )
 
-            // 4. Initial _system/knowledge_graph.json
-            val initialGraph = """
-                {
-                  "child": "$childName",
-                  "academicYear": "$academicYear",
-                  "nodes": [
-                    {"id": "child_$childName", "label": "$childName", "type": "CHILD"},
-                    {"id": "year_$academicYear", "label": "$academicYear", "type": "ACADEMIC_YEAR"}
-                  ],
-                  "edges": [
-                    {"source": "child_$childName", "target": "year_$academicYear", "relation": "ENROLLED_IN"}
-                  ]
+                    // 4. Initial _system/knowledge_graph.json
+                    val initialGraph = """
+                        {
+                          "child": "$childName",
+                          "academicYear": "$academicYear",
+                          "nodes": [
+                            {"id": "child_$childName", "label": "$childName", "type": "CHILD"},
+                            {"id": "year_$academicYear", "label": "$academicYear", "type": "ACADEMIC_YEAR"}
+                          ],
+                          "edges": [
+                            {"source": "child_$childName", "target": "year_$academicYear", "relation": "ENROLLED_IN"}
+                          ]
+                        }
+                    """.trimIndent()
+                    driveClient.uploadOrUpdateKnowledgeGraph(folders.systemFolderId, initialGraph)
+
+                    // 5. Initial FAMILY_DIGEST.md at academic year root
+                    val familyDigest = """
+                        # K.I.D.S. Family Rollup Digest — $academicYear
+                        **Last Updated:** $timeStampStr
+                        
+                        ## Enrolled Children
+                        * **$childName** (Vault: `$academicYear/$childName/`)
+                    """.trimIndent()
+                    driveClient.uploadOrUpdateFamilyDigest(folders.yearFolderId, familyDigest)
+
+                    Log.i(TAG, "Step 1: Background initial file seeding completed successfully.")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Step 1: Non-fatal error during background initial file seeding: ${e.message}")
                 }
-            """.trimIndent()
-            driveClient.uploadOrUpdateKnowledgeGraph(folders.systemFolderId, initialGraph)
+            }
 
-            // 5. Initial FAMILY_DIGEST.md at academic year root
-            val familyDigest = """
-                # K.I.D.S. Family Rollup Digest — $academicYear
-                **Last Updated:** $timeStampStr
-                
-                ## Enrolled Children
-                * **$childName** (Vault: `$academicYear/$childName/`)
-            """.trimIndent()
-            driveClient.uploadOrUpdateFamilyDigest(folders.yearFolderId, familyDigest)
-
-            Log.i(TAG, "Step 1: Successfully created Google Drive vault folders and initial files.")
+            Log.i(TAG, "Step 1: Vault folders verified. Transitioning to Step 2 immediately.")
             ProvisionStep1Result.Success(folders)
         } catch (e: UserRecoverableAuthIOException) {
             Log.w(TAG, "User consent required for Google Drive access via UserRecoverableAuthIOException", e)

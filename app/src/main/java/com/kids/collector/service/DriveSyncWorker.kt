@@ -46,7 +46,10 @@ class DriveSyncWorker(
             if (!savedEmail.isNullOrBlank()) {
                 val driveService = com.kids.collector.data.drive.DriveVaultManager.getDriveService(applicationContext, savedEmail)
                 val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
-                val vault = driveClient.provisionChildVault(academicYear, childName)
+                val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(applicationContext, savedEmail, academicYear, childName)
+                    ?: driveClient.provisionChildVault(academicYear, childName).also {
+                        com.kids.collector.data.drive.DriveVaultManager.saveVaultFolderPrefs(applicationContext, savedEmail, academicYear, childName, it)
+                    }
 
                 // 1. Flush crawler deep trace logs to _system/logs/crawler_trace.log
                 if (pendingLogs.isNotEmpty()) {

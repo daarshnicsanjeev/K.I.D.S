@@ -5,12 +5,14 @@ import com.google.api.client.http.FileContent
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
+import java.util.concurrent.ConcurrentHashMap
 
 data class ChildVaultFolders(
     val rootKidsFolderId: String,
@@ -58,8 +60,13 @@ class GoogleDriveClient(
         val rootKidsFolderId = getOrCreateFolder("K.I.D.S. Data", null)
         val yearFolderId = getOrCreateFolder(academicYear, rootKidsFolderId)
         val childFolderId = getOrCreateFolder(childName, yearFolderId)
-        val attachmentsFolderId = getOrCreateFolder("attachments", childFolderId)
-        val systemFolderId = getOrCreateFolder("_system", childFolderId)
+
+        // Resolve sibling child folders concurrently for maximum speed
+        val attachmentsDeferred = async { getOrCreateFolder("attachments", childFolderId) }
+        val systemDeferred = async { getOrCreateFolder("_system", childFolderId) }
+
+        val attachmentsFolderId = attachmentsDeferred.await()
+        val systemFolderId = systemDeferred.await()
         val logsFolderId = getOrCreateFolder("logs", systemFolderId)
 
         ChildVaultFolders(
@@ -73,7 +80,12 @@ class GoogleDriveClient(
     }
 
     suspend fun getOrCreateFolder(folderName: String, parentFolderId: String? = null): String = withContext(Dispatchers.IO) {
+        val cacheKey = "${parentFolderId ?: "root"}/$folderName"
+        folderCache[cacheKey]?.let { return@withContext it }
+
         folderMutex.withLock {
+            folderCache[cacheKey]?.let { return@withLock it }
+
             var query = "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             if (parentFolderId != null) {
                 query += " and '$parentFolderId' in parents"
@@ -86,7 +98,9 @@ class GoogleDriveClient(
                 .execute()
 
             if (!existing.files.isNullOrEmpty()) {
-                return@withLock existing.files[0].id
+                val foundId = existing.files[0].id
+                folderCache[cacheKey] = foundId
+                return@withLock foundId
             }
 
             val folderMetadata = File().apply {
@@ -101,7 +115,9 @@ class GoogleDriveClient(
                 .setFields("id")
                 .execute()
 
-            created.id
+            val createdId = created.id
+            folderCache[cacheKey] = createdId
+            createdId
         }
     }
 
@@ -309,9 +325,16 @@ class GoogleDriveClient(
     }
 
     private fun findFileIdByName(name: String, parentFolderId: String): String? {
+        val cacheKey = "$parentFolderId/$name"
+        fileIdCache[cacheKey]?.let { return it }
+
         val query = "name = '$name' and '$parentFolderId' in parents and trashed = false"
         val list = driveService.files().list().setQ(query).setOrderBy("modifiedTime desc").setFields("files(id)").execute()
-        return list.files?.firstOrNull()?.id
+        val foundId = list.files?.firstOrNull()?.id
+        if (foundId != null) {
+            fileIdCache[cacheKey] = foundId
+        }
+        return foundId
     }
 
     private fun uploadOrUpdateTextFile(
@@ -331,14 +354,25 @@ class GoogleDriveClient(
                 this.mimeType = mimeType
             }
             val created = driveService.files().create(fileMetadata, mediaContent).setFields("id").execute()
-            created.id
+            val createdId = created.id
+            fileIdCache["$parentFolderId/$fileName"] = createdId
+            createdId
         } else {
             val updated = driveService.files().update(existingFileId, File(), mediaContent).setFields("id").execute()
-            updated.id
+            val updatedId = updated.id
+            fileIdCache["$parentFolderId/$fileName"] = updatedId
+            updatedId
         }
     }
 
     companion object {
         private val folderMutex = Mutex()
+        private val folderCache = ConcurrentHashMap<String, String>()
+        private val fileIdCache = ConcurrentHashMap<String, String>()
+
+        fun clearCaches() {
+            folderCache.clear()
+            fileIdCache.clear()
+        }
     }
 }
