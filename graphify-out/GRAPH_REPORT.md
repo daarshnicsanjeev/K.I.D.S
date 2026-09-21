@@ -9,7 +9,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `8e16acc9`
+- Built from commit: `8ca5bcde`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -48,9 +48,9 @@
 10. `DeduplicationEngine` - 12 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `K.I.D.S. Android Collector (PRD)` --backfills_with--> `Dual WhatsApp Catch-Up Engine`  [EXTRACTED]
-  prd.md → README.md
 - `K.I.D.S. Android Collector (PRD)` --stores_in--> `AI-Native Storage (JSONL & Markdown)`  [EXTRACTED]
+  prd.md → README.md
+- `K.I.D.S. Android Collector (PRD)` --backfills_with--> `Dual WhatsApp Catch-Up Engine`  [EXTRACTED]
   prd.md → README.md
 - `K.I.D.S. Android Collector (PRD)` --monitored_by--> `5-Point Cloud Health Probe`  [EXTRACTED]
   prd.md → README.md
@@ -125,7 +125,7 @@ Cohesion: 0.83
 Nodes (3): gradlew script, die(), warn()
 
 ## Knowledge Gaps
-- **31 isolated node(s):** `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `AttachmentEntity` (+26 more)
+- **31 isolated node(s):** `CloudHealthReport`, `AttachmentEntity`, `ChildProfileEntity`, `NoticeEntity`, `NoticeFtsEntity` (+26 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 168 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **8 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -138,7 +138,7 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.124) - this node is a cross-community bridge._
 - **Are the 4 inferred relationships involving `GoogleDriveClient` (e.g. with `.provisionStep1()` and `.provisionStep2Classroom()`) actually correct?**
   _`GoogleDriveClient` has 4 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics` to the rest of the system?**
+- **What connects `CloudHealthReport`, `AttachmentEntity`, `ChildProfileEntity` to the rest of the system?**
   _31 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `GoogleDriveClient` be split into smaller, more focused modules?**
   _Cohesion score 0.06936026936026936 - nodes in this community are weakly interconnected._
