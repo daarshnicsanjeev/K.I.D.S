@@ -188,6 +188,7 @@ class DriveSyncWorker(
                             localUri = a.localUri,
                             mimeType = a.mimeType,
                             sizeBytes = a.sizeBytes,
+                            fileHash = a.fileHash,
                             ocrText = a.ocrText,
                             pageCount = a.pageCount
                         )
