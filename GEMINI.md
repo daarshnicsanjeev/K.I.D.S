@@ -120,3 +120,12 @@ c:\K.I.D.S\
   - Text Secondary: `Color(0xFF475569)` (5.5:1 contrast on canvas)
 - Always specify `minHeight = 48.dp, minWidth = 48.dp` on touch targets.
 - Headings must use `KanitFontFamily`; body copy and controls must use `PoppinsFontFamily`.
+
+### 4.4. GitHub CI/CD & Graphify Pipeline Guardian (`github_ci_guardian`)
+- **Automated Subagent Delegation**:
+  - The `github_ci_guardian` subagent manages GitHub repository activity, keeps codebase knowledge graphs (`graphify-out/`) synchronized with every commit, and monitors CI/CD pipelines.
+  - On every build:
+    1. Synchronizes AST extraction & community clustering via `graphify extract . --code-only` and `graphify cluster-only .`.
+    2. Validates `graphify-out/graph.json` integrity (500+ nodes, valid edges, 20+ clusters).
+    3. Runs `scripts/ci_watch.py` to monitor GitHub Actions (`Android CI & Quality Gates` and `Knowledge Graph Validation & Graphify Pipeline`).
+    4. Confirms GitHub Release delivery of `app-debug.apk` with zero assumption of success.
