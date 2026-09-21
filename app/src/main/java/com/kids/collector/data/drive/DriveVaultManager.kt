@@ -189,12 +189,19 @@ object DriveVaultManager {
         studentEmail: String,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        // Also update SAF vault if active
-        SafVaultManager.provisionStep2ClassroomSaf(context, studentEmail, isSkipped)
-
         try {
-            val email = accountEmail ?: currentAccountEmail
-            val vault = folders ?: currentChildVault
+            // Also update SAF vault if active
+            SafVaultManager.provisionStep2ClassroomSaf(context, studentEmail, isSkipped)
+
+            val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
+            var vault = folders ?: currentChildVault
+            if (vault == null && !email.isNullOrBlank()) {
+                val (_, academicYear, childName) = getSavedVaultPrefs(context)
+                val driveClient = GoogleDriveClient(getDriveService(context, email))
+                vault = driveClient.provisionChildVault(academicYear, childName)
+                currentChildVault = vault
+                currentAccountEmail = email
+            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
@@ -236,9 +243,9 @@ object DriveVaultManager {
                 driveClient.uploadOrUpdateKnowledgeGraph(vault.systemFolderId, graphUpdate)
             }
             Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Step 2: Failed to update Google Classroom vault files", e)
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Step 2: Failed to update Google Classroom vault files", t)
+            Result.failure(Exception(t.message ?: "Step 2 update warning", t))
         }
     }
 
@@ -254,12 +261,19 @@ object DriveVaultManager {
         tabs: List<String>,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        // Also update SAF vault if active
-        SafVaultManager.provisionStep3ErpSaf(context, appName, appPkg, tabs, isSkipped)
-
         try {
-            val email = accountEmail ?: currentAccountEmail
-            val vault = folders ?: currentChildVault
+            // Also update SAF vault if active
+            SafVaultManager.provisionStep3ErpSaf(context, appName, appPkg, tabs, isSkipped)
+
+            val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
+            var vault = folders ?: currentChildVault
+            if (vault == null && !email.isNullOrBlank()) {
+                val (_, academicYear, childName) = getSavedVaultPrefs(context)
+                val driveClient = GoogleDriveClient(getDriveService(context, email))
+                vault = driveClient.provisionChildVault(academicYear, childName)
+                currentChildVault = vault
+                currentAccountEmail = email
+            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
@@ -271,9 +285,9 @@ object DriveVaultManager {
             }
             driveClient.appendTimelineLog(vault.logsFolderId, statusMsg)
             Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Step 3: Failed to update School ERP vault files", e)
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Step 3: Failed to update School ERP vault files", t)
+            Result.failure(Exception(t.message ?: "Step 3 update warning", t))
         }
     }
 
@@ -289,12 +303,19 @@ object DriveVaultManager {
         groupName: String,
         isSkipped: Boolean
     ): Result<Unit> = withContext(Dispatchers.IO) {
-        // Also update SAF vault if active
-        SafVaultManager.provisionStep4WhatsAppSaf(context, childName, academicYear, groupName, isSkipped)
-
         try {
-            val email = accountEmail ?: currentAccountEmail
-            val vault = folders ?: currentChildVault
+            // Also update SAF vault if active
+            SafVaultManager.provisionStep4WhatsAppSaf(context, childName, academicYear, groupName, isSkipped)
+
+            val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
+            var vault = folders ?: currentChildVault
+            if (vault == null && !email.isNullOrBlank()) {
+                val (_, year, name) = getSavedVaultPrefs(context)
+                val driveClient = GoogleDriveClient(getDriveService(context, email))
+                vault = driveClient.provisionChildVault(year, name)
+                currentChildVault = vault
+                currentAccountEmail = email
+            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
@@ -334,9 +355,9 @@ object DriveVaultManager {
             driveClient.uploadOrUpdateGraphHtml(vault.childFolderId, graphHtml)
 
             Result.success(Unit)
-        } catch (e: Exception) {
-            Log.e(TAG, "Step 4: Failed to finalize vault files", e)
-            Result.failure(e)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Step 4: Failed to finalize vault files", t)
+            Result.failure(Exception(t.message ?: "Step 4 update warning", t))
         }
     }
 }

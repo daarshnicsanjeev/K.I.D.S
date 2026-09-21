@@ -29,6 +29,12 @@ interface NoticeDao {
     @Query("SELECT * FROM notices WHERE childId = :childId ORDER BY timestampMs DESC")
     fun getNoticesForChild(childId: String): Flow<List<NoticeEntity>>
 
+    @Query("SELECT * FROM notices WHERE childId = :childId ORDER BY timestampMs DESC")
+    suspend fun getNoticesForChildDirect(childId: String): List<NoticeEntity>
+
+    @Query("SELECT * FROM notices ORDER BY timestampMs DESC")
+    suspend fun getAllNoticesDirect(): List<NoticeEntity>
+
     @Query("SELECT * FROM notices ORDER BY timestampMs DESC LIMIT 50")
     fun getRecentNotices(): Flow<List<NoticeEntity>>
 
@@ -70,6 +76,9 @@ interface NoticeDao {
 interface AttachmentDao {
     @Query("SELECT * FROM attachments WHERE noticeId = :noticeId")
     suspend fun getAttachmentsForNotice(noticeId: String): List<AttachmentEntity>
+
+    @Query("SELECT * FROM attachments")
+    suspend fun getAllAttachmentsDirect(): List<AttachmentEntity>
 
     @Query("SELECT * FROM attachments WHERE fileHash = :fileHash LIMIT 1")
     suspend fun findByFileHash(fileHash: String): AttachmentEntity?

@@ -97,6 +97,13 @@ fun OnboardingWizardScreen(
     var selectedYear by rememberSaveable { mutableStateOf(savedYear) }
     var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
+    LaunchedEffect(savedEmail) {
+        if (savedEmail.isNotBlank() && driveAccountEmail.isBlank()) {
+            driveAccountEmail = savedEmail
+            isDriveConnected = true
+        }
+    }
+
     // Step 1 Direct Google Drive Account Picker Launcher (native Android AccountManager)
     val driveAccountPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartActivityForResult()
@@ -107,6 +114,7 @@ fun OnboardingWizardScreen(
             isDriveConnected = true
             driveErrorMessage = null
             DriveVaultManager.currentAccountEmail = selectedEmail
+            prefs.edit().putString("account_email", selectedEmail).apply()
             Toast.makeText(context, "Google Account connected: $selectedEmail", Toast.LENGTH_SHORT).show()
         }
     }
@@ -670,17 +678,23 @@ fun OnboardingWizardScreen(
                         Button(
                             onClick = {
                                 scope.launch {
-                                    isProvisioning = true
-                                    provisioningMessage = "Updating Google Drive with Classroom mapping..."
-                                    val res = DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
-                                    isProvisioning = false
-                                    if (res.isSuccess) {
-                                        Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to update Google Drive"
-                                        Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
+                                    try {
+                                        isProvisioning = true
+                                        provisioningMessage = "Updating Google Drive with Classroom mapping..."
+                                        val res = DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
+                                        isProvisioning = false
+                                        if (res.isSuccess) {
+                                            Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            val err = res.exceptionOrNull()?.localizedMessage ?: "Drive update warning"
+                                            Toast.makeText(context, "Drive note: $err", Toast.LENGTH_SHORT).show()
+                                        }
+                                        currentStep = WizardStep.STEP_3_PORTALS
+                                    } catch (t: Throwable) {
+                                        isProvisioning = false
+                                        Log.e("OnboardingWizardScreen", "Error during Step 2 next", t)
+                                        currentStep = WizardStep.STEP_3_PORTALS
                                     }
-                                    currentStep = WizardStep.STEP_3_PORTALS
                                 }
                             },
                             enabled = !isProvisioning,

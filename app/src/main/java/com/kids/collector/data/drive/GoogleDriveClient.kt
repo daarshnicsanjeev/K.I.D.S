@@ -5,6 +5,8 @@ import com.google.api.client.http.FileContent
 import com.google.api.services.drive.Drive
 import com.google.api.services.drive.model.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
@@ -71,33 +73,36 @@ class GoogleDriveClient(
     }
 
     suspend fun getOrCreateFolder(folderName: String, parentFolderId: String? = null): String = withContext(Dispatchers.IO) {
-        var query = "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        if (parentFolderId != null) {
-            query += " and '$parentFolderId' in parents"
-        }
-
-        val existing = driveService.files().list()
-            .setQ(query)
-            .setFields("files(id, name)")
-            .execute()
-
-        if (!existing.files.isNullOrEmpty()) {
-            return@withContext existing.files[0].id
-        }
-
-        val folderMetadata = File().apply {
-            name = folderName
-            mimeType = "application/vnd.google-apps.folder"
+        folderMutex.withLock {
+            var query = "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             if (parentFolderId != null) {
-                parents = listOf(parentFolderId)
+                query += " and '$parentFolderId' in parents"
             }
+
+            val existing = driveService.files().list()
+                .setQ(query)
+                .setOrderBy("modifiedTime desc")
+                .setFields("files(id, name)")
+                .execute()
+
+            if (!existing.files.isNullOrEmpty()) {
+                return@withLock existing.files[0].id
+            }
+
+            val folderMetadata = File().apply {
+                name = folderName
+                mimeType = "application/vnd.google-apps.folder"
+                if (parentFolderId != null) {
+                    parents = listOf(parentFolderId)
+                }
+            }
+
+            val created = driveService.files().create(folderMetadata)
+                .setFields("id")
+                .execute()
+
+            created.id
         }
-
-        val created = driveService.files().create(folderMetadata)
-            .setFields("id")
-            .execute()
-
-        created.id
     }
 
     /**
@@ -305,7 +310,7 @@ class GoogleDriveClient(
 
     private fun findFileIdByName(name: String, parentFolderId: String): String? {
         val query = "name = '$name' and '$parentFolderId' in parents and trashed = false"
-        val list = driveService.files().list().setQ(query).setFields("files(id)").execute()
+        val list = driveService.files().list().setQ(query).setOrderBy("modifiedTime desc").setFields("files(id)").execute()
         return list.files?.firstOrNull()?.id
     }
 
@@ -331,5 +336,9 @@ class GoogleDriveClient(
             val updated = driveService.files().update(existingFileId, File(), mediaContent).setFields("id").execute()
             updated.id
         }
+    }
+
+    companion object {
+        private val folderMutex = Mutex()
     }
 }

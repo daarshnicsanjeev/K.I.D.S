@@ -8,6 +8,7 @@ import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
@@ -207,16 +208,10 @@ class KidsAccessibilityService : AccessibilityService() {
                             // Update overlay counter badge in real time
                             crawlerOverlay?.incrementNoticeCount()
 
-                            // 2. Schedule WorkManager Expedited Sync to Google Drive
-                            val constraints = Constraints.Builder()
-                                .setRequiredNetworkType(NetworkType.CONNECTED)
-                                .build()
-
-                            val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
-                                .setConstraints(constraints)
-                                .build()
-
-                            WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                            // Schedule WorkManager Sync if not auto-scrolling
+                            if (crawlerOverlay?.isAutoScrollingActive() != true) {
+                                triggerDriveSync(applicationContext)
+                            }
                         } else {
                             CrawlerTraceLogger.log("SCROLLER_REJECTED", "Duplicate notice dropped: $hash (\"$title\")")
                         }
@@ -298,6 +293,22 @@ class KidsAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "KidsAccessibilityService"
+
+        fun triggerDriveSync(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "DriveVaultSyncWork",
+                ExistingWorkPolicy.KEEP,
+                syncRequest
+            )
+        }
 
         fun isEnabled(context: Context): Boolean {
             val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false

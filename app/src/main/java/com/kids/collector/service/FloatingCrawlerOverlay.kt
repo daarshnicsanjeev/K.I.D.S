@@ -257,6 +257,8 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun isAutoScrollingActive(): Boolean = isAutoScrolling
+
     fun incrementNoticeCount() {
         capturedCount++
         handler.post {
@@ -303,7 +305,7 @@ class FloatingCrawlerOverlay(
 
     private fun stopAutoScroll() {
         isAutoScrolling = false
-        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture")
+        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture. Triggering background Drive sync.")
         handler.removeCallbacks(autoScrollRunnable)
         autoButton?.text = "▶ Start Auto-Capture"
         autoButton?.setTextColor(Color.parseColor("#0F172A"))
@@ -312,6 +314,8 @@ class FloatingCrawlerOverlay(
             cornerRadius = dpToPx(8).toFloat()
             setColor(Color.parseColor("#ED8936")) // Amber
         }
+        // Trigger a single background sync cycle to Google Drive now that capture finished
+        KidsAccessibilityService.triggerDriveSync(service.applicationContext)
     }
 
     private fun minimize() {

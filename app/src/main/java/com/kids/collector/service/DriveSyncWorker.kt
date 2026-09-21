@@ -125,31 +125,112 @@ class DriveSyncWorker(
                     }
                 }
 
-                // 3. Upload pending attachments
-                for (att in pendingAttachments) {
-                    val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
-                    val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
+                // 3. Upload pending attachments (Batch synchronized)
+                if (pendingAttachments.isNotEmpty()) {
+                    var uploadedCount = 0
+                    for (att in pendingAttachments) {
+                        val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
+                        val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
 
-                    val uploadedAttId = if (localFile != null && localFile.exists()) {
-                        driveClient.uploadAttachment(
-                            parentFolderId = targetFolderId,
-                            file = localFile,
-                            mimeType = att.mimeType
+                        val uploadedAttId = if (localFile != null && localFile.exists()) {
+                            driveClient.uploadAttachment(
+                                parentFolderId = targetFolderId,
+                                file = localFile,
+                                mimeType = att.mimeType
+                            )
+                        } else {
+                            "virtual_${att.attachmentId.take(8)}"
+                        }
+
+                        db.attachmentDao().updateSyncStatus(
+                            attachmentId = att.attachmentId,
+                            newStatus = SyncStatus.SYNCED.name,
+                            driveFileId = uploadedAttId
                         )
-                    } else {
-                        "virtual_${att.attachmentId.take(8)}"
+                        uploadedCount++
                     }
-
-                    db.attachmentDao().updateSyncStatus(
-                        attachmentId = att.attachmentId,
-                        newStatus = SyncStatus.SYNCED.name,
-                        driveFileId = uploadedAttId
-                    )
 
                     driveClient.appendTimelineLog(
                         vault.logsFolderId,
-                        "[ATTACHMENT SYNC] Attachment uploaded to Google Classroom/attachments/: \"${att.fileName}\""
+                        "[ATTACHMENT BATCH SYNC] Synced $uploadedCount attachments into Google Classroom/attachments/"
                     )
+                }
+
+                // 4. Synthesize and update Knowledge Graph, Master Digest, Family Digest, and graph.html
+                try {
+                    val allNoticeEntities = db.noticeDao().getNoticesForChildDirect("child_$childName")
+                        .ifEmpty { db.noticeDao().getAllNoticesDirect() }
+                    val allAttachmentEntities = db.attachmentDao().getAllAttachmentsDirect()
+
+                    val allNotices = allNoticeEntities.map { n ->
+                        com.kids.collector.domain.model.Notice(
+                            noticeId = n.noticeId,
+                            childId = n.childId,
+                            sourceApp = n.sourceApp,
+                            category = try {
+                                com.kids.collector.domain.model.ContentCategory.valueOf(n.category)
+                            } catch (_: Exception) {
+                                com.kids.collector.domain.model.ContentCategory.UNKNOWN
+                            },
+                            title = n.title,
+                            body = n.body,
+                            sender = n.sender,
+                            timestampMs = n.timestampMs,
+                            hashSha256 = n.hashSha256
+                        )
+                    }
+
+                    val allAttachments = allAttachmentEntities.map { a ->
+                        com.kids.collector.domain.model.Attachment(
+                            attachmentId = a.attachmentId,
+                            noticeId = a.noticeId,
+                            fileName = a.fileName,
+                            localUri = a.localUri,
+                            mimeType = a.mimeType,
+                            sizeBytes = a.sizeBytes,
+                            ocrText = a.ocrText,
+                            pageCount = a.pageCount
+                        )
+                    }
+
+                    val childProfile = com.kids.collector.domain.model.ChildProfile(
+                        childId = "child_$childName",
+                        firstName = childName,
+                        grade = "Grade 3",
+                        academicYear = academicYear,
+                        schoolName = "School Vault",
+                        accountEmail = savedEmail
+                    )
+
+                    val knowledgeGraph = graphifyEngine.buildGraph(childProfile, allNotices, allAttachments)
+                    val graphJson = graphifyEngine.exportToJson(knowledgeGraph)
+                    val masterDigest = graphifyEngine.generateMasterDigest(childProfile, allNotices, allAttachments)
+                    val familyDigest = graphifyEngine.generateFamilyDigest(listOf(childProfile to allNotices))
+                    val graphHtml = graphifyEngine.generateInteractiveHtml(childProfile, knowledgeGraph)
+
+                    // Upload / Update the core AI files (Self-Healing on every sync cycle)
+                    driveClient.uploadOrUpdateKnowledgeGraph(vault.systemFolderId, graphJson)
+                    driveClient.uploadOrUpdateMasterDigest(vault.childFolderId, masterDigest)
+                    driveClient.uploadOrUpdateFamilyDigest(vault.yearFolderId, familyDigest)
+                    driveClient.uploadOrUpdateGraphHtml(vault.childFolderId, graphHtml)
+
+                    if (classroomVault != null) {
+                        val classroomNotices = allNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
+                        val classroomDigest = graphifyEngine.generateMasterDigest(childProfile, classroomNotices, allAttachments)
+                        driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, classroomDigest)
+                    }
+
+                    // Check and upload crash log if present
+                    val localCrashLog = File(applicationContext.filesDir, "crash.log")
+                    if (localCrashLog.exists() && localCrashLog.length() > 0) {
+                        driveClient.uploadDiagnosticSnapshot(vault.logsFolderId, localCrashLog.readText())
+                        localCrashLog.delete()
+                    }
+
+                    CrawlerTraceLogger.log("GRAPHIFY", "Synthesized Knowledge Graph (${knowledgeGraph.nodes.size} nodes, ${knowledgeGraph.edges.size} edges) & Digests updated.")
+                } catch (graphEx: Throwable) {
+                    Log.w(TAG, "Non-fatal error generating Knowledge Graph and digests", graphEx)
+                    CrawlerTraceLogger.log("GRAPHIFY_WARN", "Digest generation warning: ${graphEx.message}")
                 }
             } else {
                 Log.w(TAG, "No Google Drive account email configured. Skipping remote upload.")
@@ -159,9 +240,9 @@ class DriveSyncWorker(
             CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
             Result.success()
 
-        } catch (e: Exception) {
-            Log.e(TAG, "Error during Drive sync worker execution", e)
-            CrawlerTraceLogger.log("SYNC_WORKER", "Sync failed: ${e.message}")
+        } catch (t: Throwable) {
+            Log.e(TAG, "Error during Drive sync worker execution", t)
+            CrawlerTraceLogger.log("SYNC_WORKER", "Sync failed: ${t.message}")
             Result.retry()
         }
     }

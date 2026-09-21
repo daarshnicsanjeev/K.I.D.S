@@ -125,16 +125,8 @@ class KidsNotificationListenerService : NotificationListenerService() {
                 db.noticeDao().insert(noticeEntity)
                 Log.i(TAG, "Notice ingested: \"${parsed.title}\" ($category) -> Child: ${targetChild?.firstName ?: "Default"}")
 
-                // 7. Schedule WorkManager Expedited Sync
-                val constraints = Constraints.Builder()
-                    .setRequiredNetworkType(NetworkType.CONNECTED)
-                    .build()
-
-                val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
-                    .setConstraints(constraints)
-                    .build()
-
-                WorkManager.getInstance(applicationContext).enqueue(syncRequest)
+                // 7. Schedule WorkManager Expedited Sync (Single Unique Worker)
+                KidsAccessibilityService.triggerDriveSync(applicationContext)
 
             } catch (e: Exception) {
                 Log.e(TAG, "Error in notification ingestion pipeline", e)
