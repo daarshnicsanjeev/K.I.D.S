@@ -129,3 +129,11 @@ c:\K.I.D.S\
     2. Validates `graphify-out/graph.json` integrity (500+ nodes, valid edges, 20+ clusters).
     3. Runs `scripts/ci_watch.py` to monitor GitHub Actions (`Android CI & Quality Gates` and `Knowledge Graph Validation & Graphify Pipeline`).
     4. Confirms GitHub Release delivery of `app-debug.apk` with zero assumption of success.
+
+### 4.5. Documentation Guardian Subagent (`docs_maintainer`)
+- **Automated Documentation Maintenance**:
+  - The `docs_maintainer` subagent maintains and updates both the parent-facing User Manual (`docs/USER_MANUAL.md`) and the engineering specification (`docs/TECHNICAL_ARCHITECTURE.md`) on every build.
+  - On every build/release:
+    1. Updates `docs/USER_MANUAL.md` to reflect new user-facing features, permission requirements, UI interactions, Classroom auto-capture modes (Stream vs. Classwork), autonomous attachment handling, and troubleshooting tips.
+    2. Updates `docs/TECHNICAL_ARCHITECTURE.md` to reflect Clean Architecture layers, Room SQLite/FTS4 schema, background services (`KidsAccessibilityService`, `DownloadFolderObserver`, `DriveSyncWorker`), Graphify pipeline, and privacy boundary invariants.
+    3. Keeps technical architecture and user guides 100% synchronized with actual code implementation.
