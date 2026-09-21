@@ -59,6 +59,13 @@ class FloatingCrawlerOverlay(
         handler.post {
             if (overlayView != null) {
                 overlayView?.visibility = View.VISIBLE
+                autoButton?.visibility = View.VISIBLE
+                expandedContent?.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dpToPx(16).toFloat()
+                    setColor(Color.parseColor("#1A365D")) // DeepNavy
+                    setStroke(dpToPx(2), Color.parseColor("#ED8936")) // AmberOrange border
+                }
                 overlayView?.bringToFront()
                 return@post
             }
@@ -166,7 +173,7 @@ class FloatingCrawlerOverlay(
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                     setPadding(dpToPx(6), 0, 0, 0)
                     setOnClickListener {
-                        hide()
+                        dismissAndRemove()
                     }
                 }
 
@@ -276,13 +283,61 @@ class FloatingCrawlerOverlay(
     }
 
     fun hide() {
+        dismissAndRemove()
+    }
+
+    fun dismissAndRemove() {
         handler.post {
-            stopAutoScroll()
-            overlayView?.visibility = View.GONE
+            if (isAutoScrolling) {
+                stopAutoScroll()
+            }
+            overlayView?.let { view ->
+                try {
+                    windowManager.removeViewImmediate(view)
+                } catch (e: Exception) {
+                    try {
+                        windowManager.removeView(view)
+                    } catch (e2: Exception) {
+                        Log.w(TAG, "Error removing overlay view: ${e2.message}")
+                    }
+                }
+            }
+            overlayView = null
+            isMinimized = false
         }
     }
 
+    fun isShowing(): Boolean = overlayView != null && overlayView?.visibility == View.VISIBLE
+
     fun isAutoScrollingActive(): Boolean = isAutoScrolling
+
+    fun getCapturedCount(): Int = capturedCount
+
+    fun getCapturedAttachmentsCount(): Int = capturedAttachmentsCount
+
+    fun showCompletion(countNotices: Int, countFiles: Int, onDismissed: () -> Unit = {}) {
+        handler.post {
+            isAutoScrolling = false
+            statusTextView?.text = "✓ Backfill Complete!"
+            statusTextView?.setTextColor(Color.parseColor("#86EFAC")) // Light Green
+            detailTextView?.visibility = View.VISIBLE
+            detailTextView?.text = "$countNotices Notices • $countFiles Files Saved"
+            detailTextView?.setTextColor(Color.WHITE)
+            expandedContent?.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dpToPx(16).toFloat()
+                setColor(Color.parseColor("#1B4D3E")) // Deep Success Green
+                setStroke(dpToPx(2), Color.parseColor("#4ADE80")) // Bright Green border
+            }
+            autoButton?.visibility = View.GONE
+
+            // Automatically dismiss and remove overlay after 2.5 seconds with zero clicks needed
+            handler.postDelayed({
+                dismissAndRemove()
+                onDismissed()
+            }, 2500)
+        }
+    }
 
     fun updateStatus(status: String, detail: String? = null) {
         handler.post {
@@ -319,17 +374,7 @@ class FloatingCrawlerOverlay(
     }
 
     fun destroy() {
-        handler.post {
-            stopAutoScroll()
-            overlayView?.let {
-                try {
-                    windowManager.removeView(it)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error removing overlay", e)
-                }
-            }
-            overlayView = null
-        }
+        dismissAndRemove()
     }
 
     private fun toggleAutoScroll() {

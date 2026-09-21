@@ -52,6 +52,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private var crawlerOverlay: FloatingCrawlerOverlay? = null
     private var lastActiveSchoolPackage: String? = null
+    private var exitDebounceJob: Job? = null
 
     private var crawlerJob: Job? = null
     private val visitedPostFingerprints = ConcurrentHashMap.newKeySet<String>()
@@ -95,16 +96,43 @@ class KidsAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 1. Ignore system background events
-        if (isSystemPackage(packageName)) {
+        // 1. If in an authorized school app, maintain/restore active session
+        if (isAuthorizedSchoolApp(packageName)) {
+            exitDebounceJob?.cancel()
+            exitDebounceJob = null
+            lastActiveSchoolPackage = packageName
+
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                getOrCreateOverlay().show()
+            }
             return
         }
 
-        if (isAuthorizedSchoolApp(packageName)) {
-            lastActiveSchoolPackage = packageName
-            getOrCreateOverlay().show()
-        } else if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isHomeScreenOrLauncher(packageName)) {
-            crawlerOverlay?.hide()
+        // 2. Ignore transient system surfaces (keyboards, system dialogs, document viewers)
+        if (isTransientOrSystemPackage(packageName)) {
+            return
+        }
+
+        // 3. User transitioned away to non-school app (Home launcher, WhatsApp, Settings, Recents)
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            handleAppExitEvent(packageName)
+        }
+    }
+
+    private fun handleAppExitEvent(foreignPackage: String) {
+        if (exitDebounceJob?.isActive == true) return
+
+        exitDebounceJob = serviceScope.launch {
+            delay(1200) // 1.2-second debounce for stability against transient window changes
+            if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
+                CrawlerTraceLogger.log(
+                    "DEEP_CRAWLER",
+                    "Exited school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
+                )
+                stopDeepCrawl()
+                crawlerOverlay?.dismissAndRemove()
+                triggerDriveSync(applicationContext)
+            }
         }
     }
 
@@ -134,7 +162,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun stopDeepCrawl() {
         crawlerJob?.cancel()
         crawlerJob = null
-        CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted by user. All pending actions cancelled.")
+        CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
     }
 
     private suspend fun runDeepCrawlLoop() {
@@ -257,8 +285,12 @@ class KidsAccessibilityService : AccessibilityService() {
                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Scroll yielded 0 new cards ($consecutiveZeroDiscoveryCount/2)")
                         if (consecutiveZeroDiscoveryCount >= 2) {
                             CrawlerTraceLogger.log("DEEP_CRAWLER", "End of stream reached. Completing capture.")
-                            crawlerOverlay?.updateStatus("Status: Capture Complete!", "All posts backfilled")
-                            crawlerOverlay?.stopAutoScroll()
+                            val totalNotices = crawlerOverlay?.getCapturedCount() ?: visitedPostFingerprints.size
+                            val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
+                            crawlerOverlay?.showCompletion(totalNotices, totalFiles) {
+                                stopDeepCrawl()
+                                triggerDriveSync(applicationContext)
+                            }
                             break
                         }
                     } else {
@@ -733,14 +765,20 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("edunext")
     }
 
-    private fun isSystemPackage(pkg: String): Boolean {
+    private fun isTransientOrSystemPackage(pkg: String): Boolean {
         val lower = pkg.lowercase()
         return lower.contains("systemui") ||
                 lower.contains("inputmethod") ||
                 lower.contains("gboard") ||
                 lower.contains("keyboard") ||
+                lower.contains("swiftkey") ||
+                lower.contains("samsungime") ||
                 lower == "android" ||
-                lower.contains("miui.securitycenter")
+                lower.contains("resolver") ||
+                lower.contains("chooser") ||
+                lower.contains("documentsui") ||
+                lower.contains("miui.securitycenter") ||
+                lower.contains("google.android.apps.docs")
     }
 
     private fun isHomeScreenOrLauncher(pkg: String): Boolean {
@@ -752,13 +790,18 @@ class KidsAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.w(TAG, "KidsAccessibilityService interrupted")
+        exitDebounceJob?.cancel()
+        exitDebounceJob = null
         stopDeepCrawl()
+        crawlerOverlay?.dismissAndRemove()
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        exitDebounceJob?.cancel()
+        exitDebounceJob = null
         stopDeepCrawl()
-        crawlerOverlay?.destroy()
+        crawlerOverlay?.dismissAndRemove()
         crawlerOverlay = null
     }
 
@@ -776,7 +819,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 "DriveVaultSyncWork",
-                ExistingWorkPolicy.KEEP,
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
                 syncRequest
             )
         }

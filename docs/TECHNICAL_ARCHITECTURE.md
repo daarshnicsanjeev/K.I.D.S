@@ -302,10 +302,19 @@ stateDiagram-v2
     SCROLLING --> SCANNING_STREAM: New Unvisited Cards Found (850ms Settle Delay)
     SCROLLING --> CAPTURE_COMPLETE: 2 Consecutive Empty Scrolls (End of Stream)
     
-    CAPTURE_COMPLETE --> IDLE: Auto-Stop & Trigger Drive Sync
+    CAPTURE_COMPLETE --> SHOW_COMPLETION: showCompletion(notices, files)
+    SHOW_COMPLETION --> AUTO_DISMISS: 2.5s Display ("✓ Backfill Complete!")
+    AUTO_DISMISS --> TERMINAL_SYNC: dismissAndRemove() -> removeViewImmediate()
+    TERMINAL_SYNC --> IDLE: WorkManager APPEND_OR_REPLACE Enqueued
     
-    SCANNING_STREAM --> PAUSED_EXTERNAL: Package != com.google.android.apps.classroom
-    PAUSED_EXTERNAL --> SCANNING_STREAM: Classroom Returned to Foreground
+    SCANNING_STREAM --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    NAVIGATING_TO_DETAIL --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    IN_DETAIL_VIEW --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    RETURNING_TO_STREAM --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    SCROLLING --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    
+    EXIT_DEBOUNCE --> SCANNING_STREAM: School App Re-entered (<1200ms, Job Cancelled)
+    EXIT_DEBOUNCE --> AUTO_DISMISS: 1200ms Debounce Expired (Swiped Home / App Switch)
     
     SCANNING_STREAM --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
     NAVIGATING_TO_DETAIL --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
@@ -329,6 +338,7 @@ sequenceDiagram
     participant DM as Android DownloadManager
     participant DFO as DownloadFolderObserver
     participant DB as SQLite Room DB
+    participant WM as AndroidX WorkManager
 
     USR->>OV: Taps "Start Auto-Capture"
     OV->>ACS: startDeepCrawl() -> launches crawlerJob
@@ -366,18 +376,37 @@ sequenceDiagram
             ACS->>OV: updateStatus("Status: Scrolling Stream...")
             ACS->>GC: SCROLLING: ACTION_SCROLL_FORWARD / 450ms swipe
             ACS->>ACS: delay(850ms) view settling
-            alt 2 Consecutive Scrolls with 0 New Cards
-                ACS->>OV: updateStatus("Status: Capture Complete!", "All posts backfilled")
-                ACS->>OV: stopAutoScroll()
-                ACS->>ACS: triggerDriveSync(context)
+            alt 2 Consecutive Scrolls with 0 New Cards (End of Stream)
+                ACS->>OV: showCompletion(totalNotices, totalFiles)
+                Note over OV: Pill turns Success Green (#1B4D3E / #4ADE80)<br/>Displays "✓ Backfill Complete!" for 2.5s
+                OV->>OV: delay(2500ms) visual dwell time
+                OV->>OV: dismissAndRemove() -> windowManager.removeViewImmediate(view)
+                OV->>ACS: callback onDismissed()
+                ACS->>ACS: stopDeepCrawl() -> cancels crawlerJob
+                ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
             end
         end
     end
 
-    opt User interrupts capture
+    opt Hands-Free Exit (User leaves Classroom: Swiping Home, Recents, Back)
+        USR->>GC: Navigates away from Classroom
+        GC-->>ACS: onAccessibilityEvent(TYPE_WINDOW_STATE_CHANGED, foreignPkg)
+        ACS->>ACS: handleAppExitEvent() -> launches 1200ms exitDebounceJob
+        Note over ACS: Ignores transient IMEs, dialogs, & doc viewers (Google Docs)
+        alt User returns to Classroom within 1200ms
+            GC-->>ACS: TYPE_WINDOW_STATE_CHANGED (Classroom)
+            ACS->>ACS: exitDebounceJob?.cancel() (Seamless resume)
+        else 1200ms debounce expires (Outside school app)
+            ACS->>ACS: stopDeepCrawl() -> cancels crawlerJob
+            ACS->>OV: dismissAndRemove() -> windowManager.removeViewImmediate(view)
+            ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
+        end
+    end
+
+    opt User interrupts capture manually
         USR->>OV: Taps "Stop Capture"
         OV->>ACS: stopDeepCrawl() -> crawlerJob.cancel()
-        ACS->>ACS: triggerDriveSync(context)
+        ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
     end
 ```
 
@@ -416,33 +445,70 @@ sequenceDiagram
   This guarantees the pointer never collides with or drags the floating overlay on the left side.
 - **850ms Settling Delay:** Following scroll completion, the crawler halts for **850ms** to allow view recycling, text binding, and view layout passes to finish before inspecting newly presented post cards.
 
-##### 6. `END-OF-STREAM DETECTION` (Automatic Completion)
-- After each scroll pass, the crawler checks if new unvisited cards appeared on screen.
-- If zero unvisited cards are discovered, `consecutiveZeroDiscoveryCount` increments.
-- When **2 consecutive scrolls** yield no new cards (`consecutiveZeroDiscoveryCount >= 2`), the crawler concludes the bottom of the stream has been reached.
-- It updates the overlay to `Status: Capture Complete!` (`"All posts backfilled"`), halts auto-scrolling, and immediately enqueues a Google Drive synchronization cycle.
+##### 6. `END-OF-STREAM DETECTION` & Autonomous Completion Pipeline
+- **Dual Empty Scroll Threshold:** After each scroll pass, the crawler checks if new unvisited cards appeared on screen. If zero unvisited cards are discovered, `consecutiveZeroDiscoveryCount` increments. When **2 consecutive scrolls** yield zero new cards (`consecutiveZeroDiscoveryCount >= 2`), the crawler concludes that the bottom of the historical announcement feed or classwork topic tree has been reached.
+- **Autonomous Zero-Click Completion Flow (`showCompletion`):**
+  Instead of abruptly terminating or waiting for manual confirmation, the crawler executes an autonomous 4-stage completion pipeline:
+  1. **Visual State Transformation (`showCompletion`):** The crawler invokes `crawlerOverlay?.showCompletion(totalNotices, totalFiles)`. The overlay pill's background instantly shifts from standard navy to **Deep Success Green** (`#1B4D3E` with a `#4ADE80` bright emerald stroke). The status text updates to `"✓ Backfill Complete!"` in light green (`#86EFAC`), the detail line displays `"$countNotices Notices • $countFiles Files Saved"` in crisp white, and the action button hides (`View.GONE`).
+  2. **2.5-Second Visual Dwell Delay:** The overlay schedules a 2,500ms timer via `handler.postDelayed(..., 2500)`. This guarantees that the parent can comfortably observe the final backfill tallies without feeling rushed or wondering if the operation succeeded.
+  3. **Guaranteed View Teardown (`dismissAndRemove`):** When the 2.5s timer expires, `dismissAndRemove()` executes, invoking `windowManager.removeViewImmediate(view)` to synchronously detach the overlay from Android's window hierarchy.
+  4. **Terminal Sync Enqueue (`ExistingWorkPolicy.APPEND_OR_REPLACE`):** The completion callback fires, executing `stopDeepCrawl()` (cancelling the coroutine job) and invoking `triggerDriveSync(applicationContext)`, which queues a terminal synchronization task in `WorkManager` using `ExistingWorkPolicy.APPEND_OR_REPLACE`.
+  - **Zero User Interaction Required:** The entire flow from final scroll to screen cleanup and cloud synchronization executes 100% hands-free with zero button taps.
 
 ---
 
 #### Critical Safety Invariants & IPC Robustness
 
-To guarantee parent privacy, app stability, and zero system crashes, `KidsAccessibilityService` enforces four strict architectural invariants:
+To guarantee parent privacy, app stability, and zero system crashes, `KidsAccessibilityService` enforces five strict architectural invariants:
 
 1. **Course Picker Pop-Out Prevention & Detail Trap Recovery:**
    - The crawler strictly blacklists chrome nodes (`"open navigation menu"`, `"show menu"`, `"more options"`, `"class options"`) to prevent inadvertently opening the Classroom navigation drawer or switching courses.
    - If the service is started or resumed while already inside a post detail view, `isPostDetailView(root) && !isStreamOrClassworkView(root)` immediately detects the condition and executes `performReturnToStream(root)` before starting the crawl loop.
 
-2. **External App Confinement:**
+2. **Exit Debounce & Package Transition State Machine (1200ms Shield):**
+   - **Window State Observation:** `onAccessibilityEvent` intercepts `AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED` to detect app transitions.
+   - **Self-Rejection:** Events originating from K.I.D.S.'s own package (`packageName == applicationContext.packageName`) are discarded immediately to avoid inspecting the onboarding wizard or dashboard.
+   - **Authorized School App Continuity:** When `isAuthorizedSchoolApp(packageName)` detects Google Classroom or an authorized ERP (`campuscare`, `toddle`, `edunext`), any pending exit debounce job is instantly cancelled (`exitDebounceJob?.cancel()`, `exitDebounceJob = null`), and `lastActiveSchoolPackage` is updated. If `TYPE_WINDOW_STATE_CHANGED` arrives for an authorized school app, `getOrCreateOverlay().show()` restores the overlay.
+   - **Transient & System Surface Shielding (`isTransientOrSystemPackage`):**
+     Android constantly fires window state changes for transient surfaces. K.I.D.S. filters out:
+     - *Soft Input Keyboards (IMEs):* `inputmethod`, `gboard`, `keyboard`, `swiftkey`, `samsungime`.
+     - *System UI & Dialogs:* `systemui`, `android`, `resolver`, `chooser` (intent sheets).
+     - *Device Security:* `miui.securitycenter`.
+     - *Document Viewers & Providers:* `documentsui`, `google.android.apps.docs` (triggered when tapping an attachment preview).
+     These packages are ignored during window state checks, preventing accidental crawl aborts while previewing files or typing comments.
+   - **1,200ms Exit Debounce Coroutine (`handleAppExitEvent`):**
+     When the parent genuinely navigates away from the school app (swiping up to Home launcher, switching via Recents, or pressing Back out of Classroom), `handleAppExitEvent(foreignPackage)` launches a 1.2-second debounce timer on `serviceScope`:
+     ```kotlin
+     private fun handleAppExitEvent(foreignPackage: String) {
+         if (exitDebounceJob?.isActive == true) return
+
+         exitDebounceJob = serviceScope.launch {
+             delay(1200) // 1.2-second debounce for stability against transient window changes
+             if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
+                 CrawlerTraceLogger.log(
+                     "DEEP_CRAWLER",
+                     "Exited school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
+                 )
+                 stopDeepCrawl()
+                 crawlerOverlay?.dismissAndRemove()
+                 triggerDriveSync(applicationContext)
+             }
+         }
+     }
+     ```
+     If the parent returns to the school app within 1,200ms, the job is cancelled without interruption. If 1,200ms elapses while outside the school app, the service autonomously stops the crawler job, strips the overlay from the screen via `dismissAndRemove()`, and triggers Google Drive synchronization.
+
+3. **External App Confinement (In-Loop Guard):**
    - On every loop iteration, the crawler checks `root.packageName`.
    - If `currentPkg != "com.google.android.apps.classroom"`, the crawler **immediately pauses execution**, updates the overlay to `Status: Paused (External App)`, and delays 1,000ms without clicking or scrolling.
    - It will never interact with system dialogs, personal messaging apps, or external launchers.
 
-3. **Immediate Coroutine Job Cancellation on Stop:**
+4. **Immediate Coroutine Job Cancellation on Stop:**
    - Tapping `⏹ Stop Capture` invokes `stopDeepCrawl()`, which immediately calls `crawlerJob?.cancel()` and nullifies the reference.
    - The main loop and all `waitForCondition` polling blocks continuously verify `serviceScope.isActive` and `crawlerOverlay?.isAutoScrollingActive() == true`.
    - Cancellation takes effect **instantaneously (<1ms)** with zero queued clicks, delayed gestures, or lingering navigation actions.
 
-4. **Strict `AccessibilityNodeInfo` Recycling (Zero IPC Binder Leaks):**
+5. **Strict `AccessibilityNodeInfo` Recycling (Zero IPC Binder Leaks):**
    - In Android, `AccessibilityNodeInfo` instances are heavy IPC proxies allocated across the `system_server` binder interface. Failing to recycle them causes fatal binder transaction buffer exhaustion (`TransactionTooLargeException`) and service disconnection.
    - Every node returned from `rootInActiveWindow`, `getChild()`, `findNodesWithExtensions()`, and helper lookups is recycled deterministically in `finally` blocks and traversal loops using `.recycle()`.
 
@@ -452,8 +518,8 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
 
 `FloatingCrawlerOverlay` provides the user interface for the backfill assistant. It attaches directly to Android's `WindowManager` using `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` (falling back gracefully to `TYPE_APPLICATION_OVERLAY` or `TYPE_PHONE` if restricted), requiring **zero extra overlay permissions**.
 
-##### Dynamic Status API
-The overlay exposes a clean, decoupled API used by `KidsAccessibilityService` to communicate FSM state changes to the parent in real time:
+##### Dynamic Status & Teardown API
+The overlay exposes a clean, decoupled API used by `KidsAccessibilityService` to communicate FSM state changes and manage hands-free teardown:
 
 ```kotlin
 class FloatingCrawlerOverlay(...) {
@@ -464,15 +530,47 @@ class FloatingCrawlerOverlay(...) {
     fun incrementNoticeCount()
     fun incrementAttachmentCount()
     fun resetCounts()
+    fun getCapturedCount(): Int
+    fun getCapturedAttachmentsCount(): Int
     
     // Lifecycle controls
     fun startAutoScroll()
     fun stopAutoScroll()
     fun isAutoScrollingActive(): Boolean
+    fun isShowing(): Boolean
+    
+    // Autonomous Zero-Click Completion & Clean Teardown
+    fun showCompletion(countNotices: Int, countFiles: Int, onDismissed: () -> Unit = {})
+    fun dismissAndRemove()
 }
 ```
 
-- **Decoupled from Fixed Timers:** The overlay does not use arbitrary, hardcoded countdown timers. Every status change (`Status: Scanning Stream...`, `Status: Opening Post...`, `Status: Downloading (1/2)...`, `Status: Returning to Stream...`, `Status: Capture Complete!`) is driven purely by synchronous state transitions from the accessibility FSM.
+- **Guaranteed View Teardown (`dismissAndRemove` via `removeViewImmediate`):**
+  A critical challenge with Android accessibility overlays is the risk of "ghost" windows—orphaned, invisible, or non-responsive views that linger across app switches and intercept user touches on the Home screen.
+  `FloatingCrawlerOverlay.dismissAndRemove()` resolves this deterministically:
+  ```kotlin
+  fun dismissAndRemove() {
+      handler.post {
+          if (isAutoScrolling) {
+              stopAutoScroll()
+          }
+          overlayView?.let { view ->
+              try {
+                  windowManager.removeViewImmediate(view)
+              } catch (e: Exception) {
+                  try {
+                      windowManager.removeView(view)
+                  } catch (e2: Exception) {
+                      Log.w(TAG, "Error removing overlay view: ${e2.message}")
+                  }
+              }
+          }
+          overlayView = null
+          isMinimized = false
+      }
+  }
+  ```
+  Instead of asynchronous `removeView()` (which can lag or fail if the host accessibility window is losing focus), `removeViewImmediate(view)` synchronously decouples the view from `WindowManagerService`, guaranteeing zero ghost overlays or lingering accessibility windows floating over the Android home screen or other apps.
 - **Two-Line Status Pill Layout:**
   - **Top Row:** Title (`K.I.D.S. Assistant`), real-time counter badge (`XX Notices • YY Files`), minimize (`—`), and close (`✕`).
   - **Status Row:** Live FSM state indicator (`statusTextView`).
@@ -482,6 +580,35 @@ class FloatingCrawlerOverlay(...) {
   - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with a minimum 44dp touch target.
 - **Automated Background Sync on Stop:**
   - Calling `stopAutoScroll()` automatically triggers `KidsAccessibilityService.triggerDriveSync(applicationContext)`, enqueuing `DriveSyncWorker` to upload all newly harvested notices and staged attachments to the parent's Google Drive immediately.
+
+##### WorkManager `ExistingWorkPolicy.APPEND_OR_REPLACE` Invocation
+
+Whenever the crawler completes (`showCompletion`), the user stops capture manually (`stopAutoScroll`), or the app exit debounce fires (`handleAppExitEvent`), terminal cloud synchronization is dispatched via:
+
+```kotlin
+fun triggerDriveSync(context: Context) {
+    val constraints = Constraints.Builder()
+        .setRequiredNetworkType(NetworkType.CONNECTED)
+        .build()
+
+    val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+        .setConstraints(constraints)
+        .build()
+
+    WorkManager.getInstance(context).enqueueUniqueWork(
+        "DriveVaultSyncWork",
+        ExistingWorkPolicy.APPEND_OR_REPLACE,
+        syncRequest
+    )
+}
+```
+
+###### Architectural Rationale: Why `APPEND_OR_REPLACE` is Strictly Enforced
+AndroidX `WorkManager` provides three primary policies for unique work chains (`KEEP`, `REPLACE`, and `APPEND_OR_REPLACE`):
+1. **The Flaw of `ExistingWorkPolicy.KEEP`:** If an existing periodic background sync worker is already running (e.g. uploading a large PDF worksheet), `KEEP` silently drops subsequent incoming requests. If K.I.D.S. used `KEEP`, the terminal sync request triggered upon crawl completion or app exit would be completely ignored. Freshly harvested notices and staged files would sit idle on local storage until the next periodic poll hours later.
+2. **The Flaw of `ExistingWorkPolicy.REPLACE`:** If an active worker is currently mid-stream uploading a 20MB school circular to Google Drive, `REPLACE` abruptly kills the active worker process and discards its coroutine context, wasting cellular data and corrupting the upload stream.
+3. **The Guarantee of `ExistingWorkPolicy.APPEND_OR_REPLACE`:** If an existing sync task is actively executing, `APPEND_OR_REPLACE` chains the newly submitted terminal sync job to run immediately upon the current task's completion. If the existing task has failed, finished, or been cancelled, it replaces it cleanly with the fresh request.
+**Guarantee:** Terminal sync requests triggered by crawl completion or app exit are **never dropped**, ensuring 100% synchronization consistency between local SQLite storage and the Google Drive Vault.
 
 ---
 

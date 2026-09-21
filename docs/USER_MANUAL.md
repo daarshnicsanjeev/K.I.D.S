@@ -45,8 +45,10 @@ As parents, keeping up with school communications is exhausting. Homework assign
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
-   - [Immediate Stop & Automated Drive Sync](#immediate-stop--automated-drive-sync)
-   - [End-of-Stream Auto-Completion](#end-of-stream-auto-completion)
+   - [Zero-Click Hands-Free Exit & Auto-Completion](#zero-click-hands-free-exit--auto-completion)
+     - [Hands-Free Auto-Stop on App Exit](#hands-free-auto-stop-on-app-exit)
+     - [Hands-Free Auto-Close on Stream Completion](#hands-free-auto-close-on-stream-completion)
+   - [Manual Stop & Instant Coroutine Cancellation](#manual-stop--instant-coroutine-cancellation)
 5. [WhatsApp School Group Integration](#5-whatsapp-school-group-integration)
    - [Real-Time Group Capture](#real-time-group-capture)
    - [Manual Chat Export Fallback (.txt / .zip)](#manual-chat-export-fallback-txt--zip)
@@ -375,6 +377,9 @@ The floating assistant features an informative **live 2-line status pill**:
 - **— Minimize:** Collapses the assistant into a compact, floating amber **`K`** circular bubble (48dp × 48dp) that you can drag anywhere on your screen. Tap the bubble anytime to expand it back.
 - **✕ Close:** Closes the assistant overlay until you reopen Classroom.
 
+> [!TIP]
+> **Zero Button Hunting:** While minimize (`—`) and close (`✕`) buttons are available, parents **never need to manually hunt for a "stop" or "close" button**! The floating pill automatically cleans up and removes itself whenever you leave Google Classroom or when backfill finishes.
+
 ### Deep Post Traversal & Autonomous File Downloads
 
 K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of announcements, opening attachments, and downloading worksheets one by one:
@@ -409,18 +414,30 @@ flowchart TD
 5. **Guarded Return to Stream:** The assistant taps Classroom's top **Navigate Up (`←`)** button (or issues `GLOBAL_ACTION_BACK`), waits up to 2,000ms to confirm the stream view has re-anchored, and pauses for 600ms to let view layouts stabilize before scanning for the next post.
 6. **Anti-Clutter Public Storage Staging:** As files land in `Download/` or `Download/Classroom/`, the background `DownloadFolderObserver` instantly moves them to private vault staging (`vault_attachments/`), keeping your personal Downloads folder clean.
 
-### Immediate Stop & Automated Drive Sync
+### Zero-Click Hands-Free Exit & Auto-Completion
 
-You maintain absolute control over the crawler at all times:
-- **Zero Delayed Actions:** Tapping **`⏹ Stop Capture`** immediately stops the crawler. The underlying Kotlin coroutine job is cancelled instantly—there are **no queued or lingering taps**, no delayed scrolls, and no unwanted navigation actions after you tap stop.
-- **Automated Immediate Drive Sync:** The moment you tap `⏹ Stop Capture` (or when capture finishes), K.I.D.S. **automatically enqueues a background sync cycle** via AndroidX `WorkManager`. All newly harvested notices and staged attachment files are immediately synchronized to your Google Drive Vault without requiring any manual trigger from the dashboard.
+The K.I.D.S. Auto-Capture engine is engineered with a **zero-click, hands-free philosophy**. As a busy parent, you never need to babysit your phone during a crawl, monitor progress bars, or hunt for a tiny "stop" or "close" button. The assistant manages its own lifecycle end-to-end:
 
-### End-of-Stream Auto-Completion
+#### Hands-Free Auto-Stop on App Exit
+- **Leave Anytime Without Worry:** If you exit Google Classroom at any time—by swiping up to return to your **Home screen**, switching to another application via the **Recents app switcher**, or repeatedly pressing **Back** to leave Classroom—Auto-Capture **automatically stops immediately**.
+- **Instant Clean Screen (Zero Ghost Overlays):** The floating assistant pill immediately dismisses and removes itself completely from your screen. You will never experience lingering overlay bubbles, blocked touches, or "ghost" accessibility windows over your home screen or personal apps.
+- **Automated Cloud Sync on Exit:** Exiting Google Classroom instantly triggers an automated background synchronization cycle to your Google Drive Vault via AndroidX `WorkManager`. Every notice extracted and every attachment downloaded up to the exact moment you navigated away is reliably saved and uploaded.
+- **Intelligent Transient Shield:** You do not have to worry about brief, everyday system interruptions. When a software keyboard pops up, a system permission dialog appears, or you tap an attachment that opens in a document previewer (like Google Docs or Sheets), the assistant smoothly pauses without shutting down. The moment you return to Classroom, capture continues seamlessly.
 
-You do not need to babysit your phone or guess when the crawler has reached the oldest post in the class:
-- When all cards on the current screen are processed, the assistant scrolls forward and pauses for **850ms** for the new view items to bind and settle.
-- If two consecutive scrolls yield **zero new unvisited cards** (`2/2`), the assistant recognizes that the bottom of the stream or classwork list has been reached.
-- The assistant displays **`Status: Capture Complete!`** with the message *"All posts backfilled"*, stops the auto-scroller, turns the button back to `▶ Start Auto-Capture`, and immediately triggers Google Drive background synchronization.
+#### Hands-Free Auto-Close on Stream Completion
+- **End-of-Stream Detection:** When all post cards on the active screen have been visited, the assistant automatically scrolls forward and pauses for 850ms to allow newly loaded posts to bind and settle. If two consecutive scrolls discover zero new cards (`2/2`), the assistant recognizes that it has reached the very end of historical announcements in that class.
+- **2.5-Second Visual Outcome Display:** The floating pill immediately transforms into an elegant, high-visibility **Success Green** state (`#1B4D3E` background with a `#4ADE80` emerald border). The action button disappears, and the status header clearly displays:
+  $$\text{✓ Backfill Complete!}$$
+  $$\text{X Notices } \bullet\text{ Y Files Saved}$$
+  This confirmation banner stays visible on your screen for **exactly 2.5 seconds** so you can comfortably see the final tally of backfilled notices and downloaded worksheets.
+- **Zero-Click Self-Dismissal & Drive Sync:** After 2.5 seconds, the pill **automatically closes and removes itself from the screen** and dispatches a background synchronization request to Google Drive—**without requiring a single tap or confirmation from you**.
+- **100% Hands-Free:** You never need to hunt for an "OK", "Dismiss", or "Close" button. Once you tap `▶ Start Auto-Capture`, you can set your phone on your desk and let K.I.D.S. do all the heavy lifting. When it finishes, your screen is left completely clear, and your Google Drive Vault is fully up to date.
+
+### Manual Stop & Instant Coroutine Cancellation
+
+While hands-free exit and auto-close handle everyday operation autonomously, you maintain absolute manual control:
+- **Instant Cancellation:** Tapping **`⏹ Stop Capture`** immediately stops the crawler. The underlying Kotlin coroutine job is cancelled instantaneously (<1ms)—there are **no queued or lingering taps**, no delayed scrolls, and no unwanted navigation actions after you tap stop.
+- **Guaranteed Terminal Sync:** The moment you tap stop, K.I.D.S. enqueues an immediate background Google Drive synchronization cycle via AndroidX `WorkManager`, guaranteeing that all notices and staged attachment files gathered during that session are pushed to Google Drive without delay.
 
 ---
 
