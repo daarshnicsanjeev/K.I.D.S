@@ -1,4 +1,4 @@
-# Graph Report - K.I.D.S  (2026-09-22)
+# Graph Report - K.I.D.S  (2026-09-21)
 
 ## Corpus Check
 - cluster-only mode — file stats not available
@@ -9,7 +9,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `52b7bd3f`
+- Built from commit: `8050d3da`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
