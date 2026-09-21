@@ -28,9 +28,11 @@ Welcome to the **Kids Intelligent Dashboard System (K.I.D.S.)** repository. This
    - Contrast ratios MUST meet or exceed 4.5:1 for standard body text and 7:1 for headings.
    - All UI elements in Jetpack Compose MUST provide semantic descriptions for screen readers (Google TalkBack).
 
-6. **Sequential Onboarding Flow**
-   - The parent completes the full 4-step wizard for child #1 first. Once completed, the child is displayed on the Children Grid Dashboard.
-   - Children cannot be switched midway through the 4-step setup.
+6. **Sequential Onboarding Flow & Step 0 Mandatory Gate**
+   - **Step 0 (System Permissions & Setup)**: Advance Permission ("Allow restricted settings" in App Info) is required first on Android 13+ to unlock system permission toggles for sideloaded APKs.
+   - **Mandatory Accessibility Gate**: Accessibility Service enablement is strictly mandatory before entering Step 1 (Cloud Vault & Child Profile). The parent cannot proceed to Step 1 without activating Accessibility.
+   - Once Step 0 prerequisites are satisfied, the parent completes the 4-step wizard for child #1 (Cloud Vault -> Classroom -> School Portals -> WhatsApp). Once completed, the child is displayed on the Children Grid Dashboard.
+   - Children cannot be switched midway through setup.
 
 ---
 

@@ -23,13 +23,17 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import android.app.Activity
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import com.kids.collector.presentation.permission.PermissionHelper
 import com.kids.collector.data.drive.DriveVaultManager
 import com.kids.collector.data.drive.ProvisionStep1Result
@@ -43,6 +47,7 @@ import kotlinx.coroutines.launch
 import java.util.UUID
 
 enum class WizardStep(val stepNumber: Int, val title: String) {
+    STEP_0_PERMISSIONS(0, "System Permissions & Access"),
     STEP_1_VAULT(1, "Cloud Vault & Child Profile"),
     STEP_2_CLASSROOM(2, "Google Classroom Mapping"),
     STEP_3_PORTALS(3, "School App & ERP Picker"),
@@ -57,6 +62,7 @@ fun OnboardingWizardScreen(
     onCancel: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
     val prefs = remember { context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE) }
     val savedEmail = remember { prefs.getString("account_email", "") ?: "" }
@@ -64,17 +70,46 @@ fun OnboardingWizardScreen(
     val savedYear = remember { prefs.getString("academic_year", "2026-2027") ?: "2026-2027" }
     val savedStepStr = remember { prefs.getString("wizard_current_step", null) }
 
+    // Dynamic Permission Tracking with ON_RESUME observer
+    var hasAccessibility by remember {
+        mutableStateOf(PermissionHelper.isAccessibilityGranted(context))
+    }
+    var hasNotificationAccess by remember {
+        mutableStateOf(PermissionHelper.isNotificationAccessGranted(context))
+    }
+    var hasStorageAccess by remember {
+        mutableStateOf(PermissionHelper.hasStorageAccess(context))
+    }
+
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasAccessibility = PermissionHelper.isAccessibilityGranted(context)
+                hasNotificationAccess = PermissionHelper.isNotificationAccessGranted(context)
+                hasStorageAccess = PermissionHelper.hasStorageAccess(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
     val initialStep = remember {
         try {
-            if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
-                WizardStep.valueOf(savedStepStr)
+            if (!isAccessibilityActiveInitial) {
+                WizardStep.STEP_0_PERMISSIONS
+            } else if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
+                val step = WizardStep.valueOf(savedStepStr)
+                if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
             } else if (savedEmail.isNotBlank() && savedChild.isNotBlank()) {
                 WizardStep.STEP_2_CLASSROOM
             } else {
                 WizardStep.STEP_1_VAULT
             }
         } catch (e: Exception) {
-            WizardStep.STEP_1_VAULT
+            if (!isAccessibilityActiveInitial) WizardStep.STEP_0_PERMISSIONS else WizardStep.STEP_1_VAULT
         }
     }
 
@@ -83,6 +118,14 @@ fun OnboardingWizardScreen(
     LaunchedEffect(currentStep) {
         prefs.edit().putString("wizard_current_step", currentStep.name).apply()
     }
+
+    // Strict Invariant: If Accessibility is revoked or not granted, force return to STEP_0_PERMISSIONS
+    LaunchedEffect(hasAccessibility) {
+        if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
+            currentStep = WizardStep.STEP_0_PERMISSIONS
+        }
+    }
+
 
     // Real-time Drive Provisioning State
     var isProvisioning by remember { mutableStateOf(false) }
@@ -231,7 +274,11 @@ fun OnboardingWizardScreen(
                 }
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Step ${currentStep.stepNumber} of 4: ${currentStep.title}",
+                    text = if (currentStep == WizardStep.STEP_0_PERMISSIONS) {
+                        "Prerequisite: ${currentStep.title}"
+                    } else {
+                        "Step ${currentStep.stepNumber} of 4: ${currentStep.title}"
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = AmberOrange
                 )
@@ -270,10 +317,7 @@ fun OnboardingWizardScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(18.dp)
         ) {
-            val hasNotificationAccess = remember {
-                mutableStateOf(PermissionHelper.isNotificationAccessGranted(context))
-            }
-            if (!hasNotificationAccess.value) {
+            if (currentStep != WizardStep.STEP_0_PERMISSIONS && !hasNotificationAccess) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = AmberOrange.copy(alpha = 0.12f)),
@@ -313,6 +357,341 @@ fun OnboardingWizardScreen(
             }
 
             when (currentStep) {
+                WizardStep.STEP_0_PERMISSIONS -> {
+                    // SECTION 0: ADVANCE PERMISSION (ALLOW RESTRICTED SETTINGS) - FIRST
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(1.5.dp, DeepNavy)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "⚠️ Advance Permission (Android 13+)",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = DeepNavy,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    color = AmberOrange.copy(alpha = 0.2f),
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = "DO FIRST",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = DeepNavy,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Because K.I.D.S. is directly installed (sideloaded APK), Android locks Accessibility and Notification settings by default until you enable Restricted Settings in App Info.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextPrimary
+                            )
+
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(OffWhiteCanvas, RoundedCornerShape(8.dp))
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Text("1. Tap 'Open App Settings (⋮)' below.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                Text("2. Tap the 3 dots (⋮) in the top-right corner of the App Info page.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                                Text("3. Tap 'Allow restricted settings' and confirm with your PIN/fingerprint.", style = MaterialTheme.typography.bodySmall, color = TextPrimary)
+                            }
+
+                            Button(
+                                onClick = {
+                                    Toast.makeText(context, "Tap top-right 3 dots (⋮) -> 'Allow restricted settings'", Toast.LENGTH_LONG).show()
+                                    PermissionHelper.openAppDetailsSettings(context)
+                                },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .defaultMinSize(minHeight = 48.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
+                            ) {
+                                Text("Open App Settings (⋮ \u2192 Allow restricted settings)", color = SurfaceWhite)
+                            }
+                        }
+                    }
+
+                    // SECTION 1: ACCESSIBILITY SERVICE (MANDATORY BEFORE STEP 1)
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasAccessibility) SuccessGreen.copy(alpha = 0.06f) else SurfaceWhite
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.5.dp,
+                            color = if (hasAccessibility) SuccessGreen else MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "1. Accessibility Service",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = DeepNavy,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    color = if (hasAccessibility) SuccessGreen else MaterialTheme.colorScheme.error,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (hasAccessibility) "\u2713 ACTIVE" else "MANDATORY",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Powers autonomous notice backfill directly from Google Classroom & School ERPs into your personal Drive vault. 100% on-device, zero cloud proxy.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary
+                            )
+
+                            if (hasAccessibility) {
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "\u2713 Accessibility Service is active. You are ready to proceed to Step 1!",
+                                        modifier = Modifier.padding(10.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = DeepNavy,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            } else {
+                                Text(
+                                    text = "How to enable:\n1. Tap 'Enable Accessibility Service' below.\n2. Under 'Downloaded apps' or 'Installed services', tap 'K.I.D.S.'.\n3. Turn the switch ON.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = TextPrimary
+                                )
+
+                                Button(
+                                    onClick = {
+                                        Toast.makeText(context, "Under Downloaded Apps, turn on 'K.I.D.S.'", Toast.LENGTH_LONG).show()
+                                        PermissionHelper.openAccessibilitySettings(context)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("Enable Accessibility Service \u2192", color = SurfaceWhite)
+                                }
+                            }
+                        }
+                    }
+
+                    // SECTION 2: NOTIFICATION LISTENER SERVICE
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasNotificationAccess) SuccessGreen.copy(alpha = 0.06f) else SurfaceWhite
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.dp,
+                            color = if (hasNotificationAccess) SuccessGreen else LightSlate
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "2. Notification Listener Service",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = DeepNavy,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    color = if (hasNotificationAccess) SuccessGreen else AmberOrange,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (hasNotificationAccess) "\u2713 ACTIVE" else "RECOMMENDED",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Enables 24/7 background capture of homework, circulars, and announcements from school WhatsApp groups and school app push notifications.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary
+                            )
+
+                            if (hasNotificationAccess) {
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "\u2713 Notification access is active. Real-time capture is ready.",
+                                        modifier = Modifier.padding(10.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = DeepNavy,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = {
+                                        Toast.makeText(context, "Find 'K.I.D.S.' and toggle ON", Toast.LENGTH_LONG).show()
+                                        PermissionHelper.openNotificationListenerSettings(context)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Text("Enable Notification Access \u2192")
+                                }
+                            }
+                        }
+                    }
+
+                    // SECTION 3: STORAGE & DOWNLOADS ACCESS
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (hasStorageAccess) SuccessGreen.copy(alpha = 0.06f) else SurfaceWhite
+                        ),
+                        shape = RoundedCornerShape(12.dp),
+                        border = androidx.compose.foundation.BorderStroke(
+                            width = 1.dp,
+                            color = if (hasStorageAccess) SuccessGreen else LightSlate
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "3. Storage & Downloads Access",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = DeepNavy,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Surface(
+                                    color = if (hasStorageAccess) SuccessGreen else AmberOrange,
+                                    shape = RoundedCornerShape(6.dp)
+                                ) {
+                                    Text(
+                                        text = if (hasStorageAccess) "\u2713 ACTIVE" else "RECOMMENDED",
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+
+                            Text(
+                                text = "Allows K.I.D.S. to detect downloaded circulars, worksheets, and textbooks to sync them to your Drive vault without cluttering your phone storage.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = TextSecondary
+                            )
+
+                            if (hasStorageAccess) {
+                                Surface(
+                                    color = SuccessGreen.copy(alpha = 0.15f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        text = "\u2713 Storage access granted. Auto-sync for downloads is ready.",
+                                        modifier = Modifier.padding(10.dp),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = DeepNavy,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
+                            } else {
+                                OutlinedButton(
+                                    onClick = {
+                                        PermissionHelper.openStorageAccessSettings(context)
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .defaultMinSize(minHeight = 48.dp)
+                                ) {
+                                    Text("Enable Storage Access \u2192")
+                                }
+                            }
+                        }
+                    }
+
+                    // PROCEED GATE BUTTON (MANDATORY ACCESSIBILITY CHECK)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (!hasAccessibility) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.error.copy(alpha = 0.12f),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    text = "⚠️ Accessibility Service is mandatory before Step 1. Please enable it above to unlock Step 1.",
+                                    modifier = Modifier.padding(12.dp),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.error,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+
+                        Button(
+                            onClick = {
+                                currentStep = WizardStep.STEP_1_VAULT
+                            },
+                            enabled = hasAccessibility,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .defaultMinSize(minHeight = 48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
+                        ) {
+                            Text(
+                                text = "Continue to Step 1: Cloud Vault & Profile \u2192",
+                                color = SurfaceWhite,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
                 WizardStep.STEP_1_VAULT -> {
                     // SECTION 1: GOOGLE DRIVE VAULT ACCOUNT (REQUIRED 1ST)
                     Card(
@@ -542,10 +921,6 @@ fun OnboardingWizardScreen(
                 }
 
                 WizardStep.STEP_2_CLASSROOM -> {
-                    val isAccessibilityActive = remember {
-                        mutableStateOf(KidsAccessibilityService.isEnabled(context))
-                    }
-
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -610,7 +985,7 @@ fun OnboardingWizardScreen(
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    if (isAccessibilityActive.value) {
+                                    if (hasAccessibility) {
                                         Surface(
                                             color = SuccessGreen.copy(alpha = 0.15f),
                                             shape = RoundedCornerShape(8.dp)
@@ -657,9 +1032,6 @@ fun OnboardingWizardScreen(
 
                                 HorizontalDivider(color = LightSlate)
 
-                                val hasStorageAccess = remember {
-                                    mutableStateOf(PermissionHelper.hasStorageAccess(context))
-                                }
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
                                     verticalAlignment = Alignment.CenterVertically,
@@ -678,7 +1050,7 @@ fun OnboardingWizardScreen(
                                             color = TextSecondary
                                         )
                                     }
-                                    if (hasStorageAccess.value) {
+                                    if (hasStorageAccess) {
                                         Surface(color = SuccessGreen.copy(alpha = 0.15f), shape = RoundedCornerShape(8.dp)) {
                                             Text("✓ Granted", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = DeepNavy)
                                         }

@@ -26,7 +26,11 @@ As parents, keeping up with school communications is exhausting. Homework assign
 ## 📋 Table of Contents
 
 1. [System Requirements & Installation](#1-system-requirements--installation)
-2. [4-Step Sequential Onboarding Wizard](#2-4-step-sequential-onboarding-wizard)
+2. [Onboarding Wizard: Step 0 Prerequisite & 4-Step Setup](#2-onboarding-wizard-step-0-prerequisite--4-step-setup)
+   - [Step 0: System Permissions & Setup (Prerequisite Gate)](#step-0-system-permissions--setup-prerequisite-gate)
+     - [The Android 13+ 'Restricted Settings' Requirement (Sideloaded APKs)](#the-android-13-restricted-settings-requirement-sideloaded-apks)
+     - [Mandatory Accessibility Service Gate](#mandatory-accessibility-service-gate)
+     - [Live UI Refresh via Lifecycle Observation](#live-ui-refresh-via-lifecycle-observation)
    - [Step 1: Cloud Vault & Child Profile](#step-1-cloud-vault--child-profile)
    - [Step 2: Google Classroom Mapping](#step-2-google-classroom-mapping)
    - [Step 3: School App & ERP Picker](#step-3-school-app--erp-picker)
@@ -73,17 +77,65 @@ As parents, keeping up with school communications is exhausting. Homework assign
 
 ---
 
-## 2. 4-Step Sequential Onboarding Wizard
+## 2. Onboarding Wizard: Step 0 Prerequisite & 4-Step Setup
 
-When you first launch K.I.D.S., you are guided through a structured, 4-step sequential setup wizard. The wizard configures Child #1 completely before returning to the multi-child dashboard. You do not have to type school passwords or configure complex cloud credentials.
+When you first launch K.I.D.S., you are guided through a structured onboarding flow starting with a mandatory system permissions gate, followed by a 4-step sequential child setup wizard. The wizard configures Child #1 completely before returning to the multi-child dashboard. You do not have to type school passwords or configure complex cloud credentials.
 
 ```mermaid
 flowchart LR
-    S1["Step 1: Vault & Profile"] --> S2["Step 2: Classroom"]
+    S0["Step 0: System Permissions<br/>(Prerequisite Gate)"] --> S1["Step 1: Vault & Profile"]
+    S1 --> S2["Step 2: Classroom"]
     S2 --> S3["Step 3: School ERP"]
     S3 --> S4["Step 4: WhatsApp"]
     S4 --> DASH["Children Dashboard"]
 ```
+
+### Step 0: System Permissions & Setup (Prerequisite Gate)
+*The critical prerequisite gate ensuring all background capture and backfill capabilities are operational before provisioning child vaults.*
+
+#### The Android 13+ 'Restricted Settings' Requirement (Sideloaded APKs)
+> [!IMPORTANT]
+> **Why this step is required on Android 13, 14, and 15:**
+> Because K.I.D.S. is distributed directly as an APK from GitHub Releases (sideloaded), Android's enhanced security sandbox automatically disables sensitive permissions—specifically **Accessibility Service** and **Notification Listener Service**. If you try enabling them directly in settings, Android will display a greyed-out toggle with the notice:
+> *"Restricted setting: For your security, this setting is currently unavailable."*
+
+**The 3-Step Solution (DO FIRST):**
+1. In Step 0, tap the primary button: **Open App Settings (⋮ → Allow restricted settings)**.
+2. In the Android **App Info** screen that opens, tap the **three dots (⋮)** in the top-right corner.
+3. Tap **Allow restricted settings** and authenticate using your device PIN, pattern, or fingerprint.
+
+> [!TIP]
+> **Dual Unblock:** Completing this single 3-step action unblocks **both** the Accessibility Service and Notification Listener Service simultaneously, allowing both toggles in system settings to be enabled freely.
+
+#### Mandatory Accessibility Service Gate
+- **Status:** **MANDATORY** before Step 1 can be unlocked.
+- **Why it is required:** Powers the **Floating K.I.D.S. Assistant**, native list auto-scrolling, discrete post card parsing, and autonomous zero-click attachment downloads in Google Classroom and School ERP portals.
+- **The Mandatory Gate:** The **"Continue to Step 1: Cloud Vault & Profile →"** button remains strictly **locked and disabled** until Accessibility Service is turned on. A prominent warning banner alerts you:
+  *"⚠️ Accessibility Service is mandatory before Step 1. Please enable it above to unlock Step 1."*
+- **How to enable:**
+  1. Tap **Enable Accessibility Service →**.
+  2. Under **Downloaded Apps** (or **Installed Services**), tap **K.I.D.S.**.
+  3. Turn the switch **ON** and tap **Allow** on the system confirmation prompt.
+- **Architectural Guard:** If Accessibility Service is ever disabled or revoked in phone settings at any point, K.I.D.S. automatically returns you to Step 0 until it is re-enabled.
+
+#### Notification Listener Service (Recommended)
+- **Status:** **RECOMMENDED** for 24/7 background capture.
+- **What it does:** Allows K.I.D.S. to silently capture homework, circulars, and announcements from school WhatsApp groups and school app push notifications the moment they arrive.
+- **How to enable:** Tap **Enable Notification Access →**, locate **K.I.D.S.** in the list, and toggle the switch to ON.
+
+#### Storage & Downloads Access (Recommended)
+- **Status:** **RECOMMENDED** for auto-syncing attachments.
+- **What it does:** Allows K.I.D.S. to detect downloaded circular PDFs and worksheets in your device's public Downloads directory, move them into private vault staging, and sync them to Google Drive without cluttering your phone.
+- **How to enable:** Tap **Enable Storage Access →** and grant All Files Access (`MANAGE_EXTERNAL_STORAGE`).
+
+#### Live UI Refresh via Lifecycle Observation
+You never have to tap a "Refresh" button or restart K.I.D.S. after granting permissions in phone settings:
+- K.I.D.S. monitors system lifecycle transitions (`Lifecycle.Event.ON_RESUME`).
+- The moment you finish granting a permission and press Back to return to K.I.D.S., the screen **instantly refreshes**.
+- Permission status badges transition live from red/orange to a bright green **✓ ACTIVE** chip.
+- As soon as Accessibility Service is active, the **Continue to Step 1** button instantly unlocks and turns deep navy.
+
+---
 
 ### Step 1: Cloud Vault & Child Profile
 *The foundation of your child's private data storage.*
@@ -114,12 +166,10 @@ flowchart LR
    - Tap **Select Account** to choose the Google account that your child uses for Google Classroom (e.g., `student@school.edu` or a family account).
    - > [!TIP]
    - > **Zero Password Typing:** Because this account is already authenticated on your Android phone, K.I.D.S. maps notifications and classroom streams by email handle without requiring school IT administration passwords or OAuth approval!
-3. **Enable Historical Backfill Assistant**:
-   - Tap **Enable Backfill Assistant** to open Android's Accessibility Settings.
-   - Turn on **K.I.D.S.** under *Downloaded Apps / Accessibility*.
-4. **Enable Storage & Downloads Access**:
-   - Tap **Enable** next to *Storage & Downloads Access* to allow K.I.D.S. to detect downloaded circular PDFs and move them into private vault staging.
-5. Tap **Save & Next →**.
+3. **Historical Backfill Assistant & Storage Status**:
+   - Because you already enabled the **Accessibility Service** and **Storage Access** in Step 0, green checkmark badges confirm their active status.
+   - If either service was inadvertently switched off, quick-reconnect buttons allow instant re-enablement right within Step 2.
+4. Tap **Save & Next →**.
 
 ### Step 3: School App & ERP Picker
 *Capture notices from school management portals (CampusCare, Toddle, Edunext, Teams).*
@@ -171,10 +221,11 @@ flowchart TD
 ### Accessibility Service (Historical Backfill Assistant)
 - **Android Permission:** `BIND_ACCESSIBILITY_SERVICE`
 - **What it does:** Powers the **Floating K.I.D.S. Assistant** over Google Classroom. It scrolls through past announcements, extracts circulars and homework posted weeks or months ago, and auto-downloads attachments.
+- **Mandatory Setup Gate:** Enforced as a strict prerequisite in Step 0 before Child Profile or Vault creation. Without it, retrospective crawling of past announcements and worksheets cannot function.
 - **Safety Guarantees:**
-  - **100% Optional:** If you decline accessibility access, K.I.D.S. continues to capture all new notices 24/7 through push notifications and manual chat exports.
   - **Active Only In School Apps:** The service activates only when Google Classroom or an authorized school ERP is actively displayed on your screen. It automatically hides when you navigate to your home screen or another app.
   - **Zero Keystroke Logging:** It only inspects public text views and attachment chips in educational lists. It never inspects passwords, text fields, or personal keyboards.
+  - **100% On-Device Processing:** Node-tree inspection, chip detection, and click dispatch execute entirely in local memory with zero external transmission.
 
 ### Storage Access & The Anti-Clutter Staging Lifecycle
 - **Android Permission:** `MANAGE_EXTERNAL_STORAGE` (All Files Access) / `READ_EXTERNAL_STORAGE`

@@ -140,7 +140,7 @@ app/src/main/java/com/kids/collector/
 │   ├── MainActivity.kt                # Root activity & navigation coordinator
 │   ├── theme/                         # KidsTheme, Color tokens, Kanit & Poppins typography
 │   ├── wizard/
-│   │   └── OnboardingWizardScreen.kt  # 4-step sequential child setup wizard
+│   │   └── OnboardingWizardScreen.kt  # Step 0 prerequisite permissions gate & 4-step sequential wizard
 │   ├── dashboard/
 │   │   └── ChildrenGridDashboard.kt   # Multi-child cards, sync triggers, live stats
 │   ├── telemetry/
@@ -423,6 +423,188 @@ On every synchronization run, `DriveSyncWorker`:
 2. **`MASTER_DIGEST.md`:** Markdown document grouped into Homework, Circulars, Fees, and searchable OCR text excerpts.
 3. **`FAMILY_DIGEST.md`:** High-level summary across all enrolled children in the academic year.
 4. **`graph.html`:** Standalone HTML file embedding the graph JSON and loading D3.js v7 to render an interactive force-directed graph with drag, zoom, and node inspection.
+
+---
+
+## 📱 Presentation Architecture & Onboarding State Machine
+
+The presentation tier is implemented in Jetpack Compose adhering to Single-Activity Architecture (`MainActivity.kt`) and unidirectional data flow. The onboarding experience for configuring children profiles is driven by a sequential finite state machine in `OnboardingWizardScreen.kt`.
+
+### 1. Finite State Machine: `WizardStep`
+The onboarding lifecycle is modeled by the 5-state enum `WizardStep`:
+
+```kotlin
+enum class WizardStep(val stepNumber: Int, val title: String) {
+    STEP_0_PERMISSIONS(0, "System Permissions & Access"),
+    STEP_1_VAULT(1, "Cloud Vault & Child Profile"),
+    STEP_2_CLASSROOM(2, "Google Classroom Mapping"),
+    STEP_3_PORTALS(3, "School App & ERP Picker"),
+    STEP_4_WHATSAPP(4, "WhatsApp Group Capture")
+}
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> STEP_0_PERMISSIONS: Cold Start / Initial Run
+    
+    STEP_0_PERMISSIONS --> STEP_1_VAULT: Continue (Accessibility Granted)
+    STEP_1_VAULT --> STEP_2_CLASSROOM: Save Profile & Provision Vault
+    STEP_2_CLASSROOM --> STEP_3_PORTALS: Save Classroom Account
+    STEP_3_PORTALS --> STEP_4_WHATSAPP: Save ERP Apps / Skip
+    STEP_4_WHATSAPP --> DASHBOARD: Complete Setup
+    
+    STEP_1_VAULT --> STEP_0_PERMISSIONS: Accessibility Revoked
+    STEP_2_CLASSROOM --> STEP_0_PERMISSIONS: Accessibility Revoked
+    STEP_3_PORTALS --> STEP_0_PERMISSIONS: Accessibility Revoked
+    STEP_4_WHATSAPP --> STEP_0_PERMISSIONS: Accessibility Revoked
+```
+
+#### Step Roles:
+- **`STEP_0_PERMISSIONS` (Prerequisite Gate):** Verifies and acquires system permissions (Accessibility Service, Notification Listener, Storage Access) and unlocks Android 13+ restricted settings.
+- **`STEP_1_VAULT`:** Selects the Google Drive storage account, provisions the Drive vault folder hierarchy (`K.I.D.S. Data/{Year}/{Child}/`), and captures child profile metadata.
+- **`STEP_2_CLASSROOM`:** Maps student Google Classroom account email for notification filtering and confirms backfill crawler readiness.
+- **`STEP_3_PORTALS`:** Discovers installed school ERP packages (`CampusCare`, `Toddle`, `Edunext`, `Teams`) and selects notice categories.
+- **`STEP_4_WHATSAPP`:** Intercepts or selects school WhatsApp broadcast groups and finalizes child setup.
+
+---
+
+### 2. Mandatory Accessibility Gate & Invariant Enforcement
+
+The historical notice backfill engine (`KidsAccessibilityService`) is foundational to the application's offline extraction capability. Without it, retrospective harvesting of past notices, homework, and attachment downloads in Google Classroom and School ERP portals cannot execute.
+
+#### Invariant 1: Forward Transition Blocked Without Accessibility
+In `STEP_0_PERMISSIONS`, the forward navigation button (`"Continue to Step 1: Cloud Vault & Profile →"`) is strictly conditioned on `hasAccessibility`:
+
+```kotlin
+Button(
+    onClick = { currentStep = WizardStep.STEP_1_VAULT },
+    enabled = hasAccessibility,
+    modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+    colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
+) {
+    Text("Continue to Step 1: Cloud Vault & Profile →", color = SurfaceWhite, fontWeight = FontWeight.Bold)
+}
+```
+
+When `!hasAccessibility`, a prominent error container warns the user:
+`"⚠️ Accessibility Service is mandatory before Step 1. Please enable it above to unlock Step 1."`
+
+#### Invariant 2: Dynamic Downgrade on Permission Revocation
+If an operating system process, battery optimizer, or user revokes the Accessibility Service permission while the user is anywhere in the wizard (Steps 1 through 4), an active `LaunchedEffect` listener immediately detects the revocation and forces `currentStep` back to `STEP_0_PERMISSIONS`:
+
+```kotlin
+// Strict Invariant: If Accessibility is revoked or not granted, force return to STEP_0_PERMISSIONS
+LaunchedEffect(hasAccessibility) {
+    if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
+        currentStep = WizardStep.STEP_0_PERMISSIONS
+    }
+}
+```
+
+#### Invariant 3: Clamped Initial Step Evaluation
+When `OnboardingWizardScreen` initializes, even if previous session state exists in `SharedPreferences` (`wizard_current_step`), the initial step calculation evaluates `PermissionHelper.isAccessibilityGranted(context)` first. If false, it strictly forces `initialStep = WizardStep.STEP_0_PERMISSIONS`:
+
+```kotlin
+val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
+val initialStep = remember {
+    try {
+        if (!isAccessibilityActiveInitial) {
+            WizardStep.STEP_0_PERMISSIONS
+        } else if (savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
+            val step = WizardStep.valueOf(savedStepStr)
+            if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
+        } else if (savedEmail.isNotBlank() && savedChild.isNotBlank()) {
+            WizardStep.STEP_2_CLASSROOM
+        } else {
+            WizardStep.STEP_1_VAULT
+        }
+    } catch (e: Exception) {
+        if (!isAccessibilityActiveInitial) WizardStep.STEP_0_PERMISSIONS else WizardStep.STEP_1_VAULT
+    }
+}
+```
+
+---
+
+### 3. Lifecycle-Aware Permission State Observation (`LifecycleEventObserver`)
+
+Because granting Android system permissions (Accessibility, Notification Listener, All Files Access) requires leaving the application to navigate native Android Settings, the UI must seamlessly reconcile permission status without requiring manual refresh or application restarts.
+
+`OnboardingWizardScreen` attaches a `LifecycleEventObserver` through `DisposableEffect` to monitor `Lifecycle.Event.ON_RESUME`:
+
+```kotlin
+// Dynamic Permission Tracking with ON_RESUME observer
+var hasAccessibility by remember { mutableStateOf(PermissionHelper.isAccessibilityGranted(context)) }
+var hasNotificationAccess by remember { mutableStateOf(PermissionHelper.isNotificationAccessGranted(context)) }
+var hasStorageAccess by remember { mutableStateOf(PermissionHelper.hasStorageAccess(context)) }
+
+DisposableEffect(lifecycleOwner) {
+    val observer = LifecycleEventObserver { _, event ->
+        if (event == Lifecycle.Event.ON_RESUME) {
+            hasAccessibility = PermissionHelper.isAccessibilityGranted(context)
+            hasNotificationAccess = PermissionHelper.isNotificationAccessGranted(context)
+            hasStorageAccess = PermissionHelper.hasStorageAccess(context)
+        }
+    }
+    lifecycleOwner.lifecycle.addObserver(observer)
+    onDispose {
+        lifecycleOwner.lifecycle.removeObserver(observer)
+    }
+}
+```
+
+#### Synchronous UI Reactivity:
+When the user grants a permission in system settings and returns to K.I.D.S. via the Back gesture:
+1. The host Activity receives an `ON_RESUME` lifecycle event.
+2. The observer synchronously re-evaluates all three `PermissionHelper` inspection queries.
+3. Compose mutable state variables (`hasAccessibility`, `hasNotificationAccess`, `hasStorageAccess`) mutate on the main thread.
+4. Compose recomposition occurs immediately: status chips flip from red (`MANDATORY`) / orange (`RECOMMENDED`) to green (`✓ ACTIVE`), and the `"Continue to Step 1"` action button activates instantaneously.
+
+---
+
+### 4. `PermissionHelper` & Android 13+ Restricted Settings Sandbox
+
+Android 13 (API 33, Tiramisu) introduced a security mechanism (`APP_OPS_ACCESS_RESTRICTED_SETTINGS`) that disables Accessibility and Notification Listener permissions for sideloaded applications (installed via APK rather than an authorized app store).
+
+`PermissionHelper` encapsulates API detection, state checks, and explicit settings intent dispatches:
+
+```kotlin
+object PermissionHelper {
+    fun isAccessibilityGranted(context: Context): Boolean =
+        KidsAccessibilityService.isEnabled(context)
+
+    fun isNotificationAccessGranted(context: Context): Boolean =
+        NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+
+    fun hasStorageAccess(context: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Environment.isExternalStorageManager()
+        } else {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        }
+
+    fun isRestrictedSettingsLikelyRequired(): Boolean =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+
+    fun openAppDetailsSettings(context: Context) {
+        val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = Uri.fromParts("package", context.packageName, null)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK
+        }
+        context.startActivity(intent)
+    }
+
+    fun openAccessibilitySettings(context: Context) { ... }
+    fun openNotificationListenerSettings(context: Context) { ... }
+    fun openStorageAccessSettings(context: Context) { ... }
+}
+```
+
+#### Unblocking Restricted Settings:
+1. `isRestrictedSettingsLikelyRequired()` verifies if the host device runs Android 13+ (`Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU`).
+2. `openAppDetailsSettings(context)` directs the user to `ACTION_APPLICATION_DETAILS_SETTINGS` with the app package URI.
+3. The parent taps the top-right overflow menu (**⋮**) in App Info and selects **"Allow restricted settings"**, authenticating via device lock.
+4. This removes the sandbox lock on **both** `KidsAccessibilityService` and `KidsNotificationListenerService`, allowing standard system toggles to succeed.
 
 ---
 
