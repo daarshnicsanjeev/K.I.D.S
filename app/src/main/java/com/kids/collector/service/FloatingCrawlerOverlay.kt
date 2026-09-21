@@ -331,17 +331,37 @@ class FloatingCrawlerOverlay(
     }
 
     private fun performScrollGesture(onComplete: () -> Unit) {
+        // 1. Primary: Native ACTION_SCROLL_FORWARD on the primary scrollable list container
+        try {
+            val rootNode = service.rootInActiveWindow
+            if (rootNode != null) {
+                val scrollableNode = findPrimaryScrollableNode(rootNode)
+                if (scrollableNode != null) {
+                    val scrolled = scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    scrollableNode.recycle()
+                    if (scrolled) {
+                        CrawlerTraceLogger.log("SCROLLER_ACTION", "Native ACTION_SCROLL_FORWARD succeeded on list container")
+                        onComplete()
+                        return
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("SCROLLER_ACTION_ERROR", "Error attempting native scroll: ${e.message}")
+        }
+
+        // 2. Fallback: Touch swipe offset to the right side (75% width) away from floating overlay
         val displayMetrics = service.resources.displayMetrics
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        val startX = width / 2f
-        val startY = height * 0.72f
-        val endY = height * 0.28f
+        val startX = width * 0.75f
+        val startY = height * 0.70f
+        val endY = height * 0.25f
 
         CrawlerTraceLogger.log(
             "SCROLLER_SWIPE",
-            "Dispatching swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}, density=${displayMetrics.density}"
+            "Dispatching swipe fallback: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}, density=${displayMetrics.density}"
         )
 
         val path = Path().apply {
@@ -349,7 +369,7 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        // Calibrated 450ms swipe for smooth RecyclerView scroll
+        // Calibrated 450ms swipe
         val stroke = GestureDescription.StrokeDescription(path, 0, 450)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
@@ -369,6 +389,19 @@ class FloatingCrawlerOverlay(
             CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch gesture (service or window not ready)")
             onComplete()
         }
+    }
+
+    private fun findPrimaryScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isScrollable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findPrimaryScrollableNode(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
     }
 
     private fun setupDragListener(view: View, p: WindowManager.LayoutParams) {

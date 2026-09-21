@@ -125,34 +125,77 @@ class DriveSyncWorker(
                     }
                 }
 
-                // 3. Upload pending attachments (Batch synchronized)
-                if (pendingAttachments.isNotEmpty()) {
-                    var uploadedCount = 0
-                    for (att in pendingAttachments) {
+                // 3. Scan local download directories and upload pending attachments
+                try {
+                    com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Error scanning local downloads: ${e.message}")
+                }
+
+                val refreshedPendingAttachments = db.attachmentDao().getPendingAttachments()
+                if (refreshedPendingAttachments.isNotEmpty()) {
+                    var physicalUploadCount = 0
+                    var virtualCount = 0
+                    val ocrParser = com.kids.collector.data.ocr.MLKitOcrParser(applicationContext)
+
+                    for (att in refreshedPendingAttachments) {
                         val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
                         val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
 
-                        val uploadedAttId = if (localFile != null && localFile.exists()) {
-                            driveClient.uploadAttachment(
+                        if (localFile != null && localFile.exists()) {
+                            // Run on-device ML Kit OCR for AI knowledge graph if missing
+                            if (att.ocrText.isNullOrBlank()) {
+                                try {
+                                    val ocrResult = if (att.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
+                                        ocrParser.extractTextFromPdfFile(localFile)
+                                    } else if (att.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
+                                        ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
+                                    } else null
+
+                                    if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
+                                        db.attachmentDao().updateOcrText(
+                                            attachmentId = att.attachmentId,
+                                            ocrText = ocrResult.fullText,
+                                            pageCount = ocrResult.pageCount
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "OCR extraction skipped for ${localFile.name}: ${e.message}")
+                                }
+                            }
+
+                            val uploadedAttId = driveClient.uploadAttachment(
                                 parentFolderId = targetFolderId,
                                 file = localFile,
                                 mimeType = att.mimeType
                             )
-                        } else {
-                            "virtual_${att.attachmentId.take(8)}"
-                        }
 
-                        db.attachmentDao().updateSyncStatus(
-                            attachmentId = att.attachmentId,
-                            newStatus = SyncStatus.SYNCED.name,
-                            driveFileId = uploadedAttId
-                        )
-                        uploadedCount++
+                            db.attachmentDao().updateSyncStatus(
+                                attachmentId = att.attachmentId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedAttId
+                            )
+                            physicalUploadCount++
+                        } else {
+                            db.attachmentDao().updateSyncStatus(
+                                attachmentId = att.attachmentId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = "virtual_${att.attachmentId.take(8)}"
+                            )
+                            virtualCount++
+                        }
+                    }
+
+                    val targetPrefix = if (classroomVault != null) "Google Classroom/attachments/" else "attachments/"
+                    val logMessage = if (physicalUploadCount > 0) {
+                        "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix (plus $virtualCount indexed references)"
+                    } else {
+                        "[ATTACHMENT BATCH SYNC] Indexed $virtualCount attachment references in digest (0 physical files on disk yet)"
                     }
 
                     driveClient.appendTimelineLog(
                         vault.logsFolderId,
-                        "[ATTACHMENT BATCH SYNC] Synced $uploadedCount attachments into Google Classroom/attachments/"
+                        logMessage
                     )
                 }
 

@@ -103,4 +103,10 @@ interface AttachmentDao {
 
     @Query("UPDATE attachments SET syncStatus = :newStatus, driveFileId = :driveFileId WHERE attachmentId = :attachmentId")
     suspend fun updateSyncStatus(attachmentId: String, newStatus: String, driveFileId: String?)
+
+    @Query("SELECT * FROM attachments WHERE fileName LIKE '%' || :name || '%' LIMIT 1")
+    suspend fun findByFileNameLike(name: String): AttachmentEntity?
+
+    @Query("UPDATE attachments SET localUri = :localUri, sizeBytes = :sizeBytes, fileHash = :fileHash, syncStatus = 'PENDING' WHERE attachmentId = :attachmentId")
+    suspend fun updateLocalFile(attachmentId: String, localUri: String, sizeBytes: Long, fileHash: String)
 }

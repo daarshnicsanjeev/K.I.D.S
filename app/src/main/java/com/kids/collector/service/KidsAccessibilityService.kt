@@ -47,10 +47,33 @@ class KidsAccessibilityService : AccessibilityService() {
     private var crawlerOverlay: FloatingCrawlerOverlay? = null
     private var lastActiveSchoolPackage: String? = null
 
+    @Volatile
+    private var isHandlingAttachmentDownload = false
+    @Volatile
+    private var pendingAttachmentDownloadName: String? = null
+    private val capturedAttachmentNames = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    data class ExtractedAttachment(
+        val fileName: String,
+        val clickableNode: AccessibilityNodeInfo?
+    )
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "KidsAccessibilityService connected")
         getOrCreateOverlay()
+
+        serviceScope.launch {
+            try {
+                val db = KidsDatabase.getInstance(applicationContext)
+                val allAtts = db.attachmentDao().getAllAttachmentsDirect()
+                for (att in allAtts) {
+                    capturedAttachmentNames.add(att.fileName)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error pre-loading attachment names: ${e.message}")
+            }
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -63,8 +86,29 @@ class KidsAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 1. Ignore system background events (clock ticks, network meter, battery, keyboard)
-        // so they do not inadvertently hide the overlay while inside Google Classroom
+        // 1. If currently handling an autonomous attachment download, inspect preview screen
+        if (isHandlingAttachmentDownload) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                val downloadBtn = findDownloadButtonNode(root)
+                if (downloadBtn != null) {
+                    CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Found download control for $pendingAttachmentDownloadName. Triggering download.")
+                    val clicked = downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    downloadBtn.recycle()
+                    if (clicked) {
+                        serviceScope.launch {
+                            kotlinx.coroutines.delay(400)
+                            performGlobalAction(GLOBAL_ACTION_BACK)
+                            isHandlingAttachmentDownload = false
+                            pendingAttachmentDownloadName = null
+                        }
+                        return
+                    }
+                }
+            }
+        }
+
+        // 2. Ignore system background events
         if (isSystemPackage(packageName)) {
             return
         }
@@ -79,7 +123,6 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             processRootNode(rootNode, packageName)
         } else if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED && isHomeScreenOrLauncher(packageName)) {
-            // Only hide when user explicitly navigates to the home screen launcher
             crawlerOverlay?.hide()
         }
     }
@@ -87,7 +130,6 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun getOrCreateOverlay(): FloatingCrawlerOverlay {
         if (crawlerOverlay == null) {
             crawlerOverlay = FloatingCrawlerOverlay(this) {
-                // Manual "Grab Screen" trigger from floating button
                 val root = rootInActiveWindow ?: return@FloatingCrawlerOverlay
                 if (root.packageName?.toString() == applicationContext.packageName) return@FloatingCrawlerOverlay
                 val pkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
@@ -103,123 +145,161 @@ class KidsAccessibilityService : AccessibilityService() {
         serviceScope.launch {
             try {
                 val db = KidsDatabase.getInstance(applicationContext)
-                val crawledItems = mutableListOf<String>()
 
-                extractNodeText(rootNode, crawledItems)
-                val detectedAttachments = extractAttachments(crawledItems)
+                // 1. Fetch children for multi-child attribution
+                val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
+                val children = childEntities.map { e ->
+                    ChildProfile(
+                        childId = e.childId,
+                        firstName = e.firstName,
+                        grade = e.grade,
+                        academicYear = e.academicYear,
+                        schoolName = e.schoolName,
+                        accountEmail = e.accountEmail,
+                        disambiguationTag = e.disambiguationTag,
+                        photoUri = e.photoUri,
+                        channels = e.channels,
+                        createdAtMs = e.createdAtMs
+                    )
+                }
 
-                CrawlerTraceLogger.log(
-                    "SCROLLER_EXTRACT",
-                    "Extracted ${crawledItems.size} text elements, ${detectedAttachments.size} attachments found. Items: ${crawledItems.take(3).joinToString("; ")}"
+                val (_, savedYear, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+                val router = MultiChildRouter(children)
+
+                val excludedChrome = setOf(
+                    "open navigation menu", "show menu", "more options", "navigate up", "back",
+                    "stream", "classwork", "people", "about", "join course", "view to-do list",
+                    "classroom", "google classroom", "class options"
                 )
 
-                if (crawledItems.isNotEmpty()) {
-                    val combinedText = crawledItems.joinToString(" ")
-                    if (combinedText.length > 30) {
-                        val excludedChrome = setOf(
-                            "open navigation menu", "show menu", "more options", "navigate up", "back",
-                            "stream", "classwork", "people", "about", "join course", "view to-do list",
-                            "classroom", "google classroom", "class options"
-                        )
+                // 2. Discover post cards in the list container (or fallback to full window)
+                val postCards = findPostCards(rootNode)
+                CrawlerTraceLogger.log("SCROLLER_CARDS", "Identified ${postCards.size} discrete post cards on active screen")
 
-                        val titleCandidate = crawledItems.firstOrNull { item ->
-                            val lower = item.trim().lowercase()
-                            !excludedChrome.contains(lower) &&
-                            !lower.startsWith("tab ") &&
-                            !lower.startsWith("signed in as") &&
-                            !lower.startsWith("tasks due") &&
-                            !lower.startsWith("class options for") &&
-                            item.trim().length > 3
-                        }
-                        val title = titleCandidate?.take(80) ?: "Historical Classroom Notice"
-                        val body = combinedText
-                        val category = classifier.classify(title, body)
+                var newlyBackfilled = 0
+                for (card in postCards) {
+                    val cardItems = mutableListOf<String>()
+                    val cardAttachments = mutableListOf<ExtractedAttachment>()
+                    extractCardDetails(card, cardItems, cardAttachments)
 
-                        // 1. Fetch children for multi-child attribution
-                        val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
-                        val children = childEntities.map { e ->
-                            ChildProfile(
-                                childId = e.childId,
-                                firstName = e.firstName,
-                                grade = e.grade,
-                                academicYear = e.academicYear,
-                                schoolName = e.schoolName,
-                                accountEmail = e.accountEmail,
-                                disambiguationTag = e.disambiguationTag,
-                                photoUri = e.photoUri,
-                                channels = e.channels,
-                                createdAtMs = e.createdAtMs
-                            )
-                        }
+                    if (cardItems.isEmpty()) {
+                        card.recycle()
+                        continue
+                    }
 
-                        val (_, savedYear, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
-                        val router = MultiChildRouter(children)
-                        val targetChild = router.route(packageName, title, body)
-                        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+                    val combinedText = cardItems.joinToString(" ")
+                    if (combinedText.length <= 25) {
+                        card.recycle()
+                        continue
+                    }
 
-                        val hash = deduplicationEngine.computeNoticeHash(
+                    val titleCandidate = cardItems.firstOrNull { item ->
+                        val lower = item.trim().lowercase()
+                        !excludedChrome.contains(lower) &&
+                                !lower.startsWith("tab ") &&
+                                !lower.startsWith("signed in as") &&
+                                !lower.startsWith("tasks due") &&
+                                !lower.startsWith("class options for") &&
+                                item.trim().length > 3
+                    }
+                    val title = titleCandidate?.take(80) ?: "Historical Classroom Notice"
+                    val body = combinedText
+                    val category = classifier.classify(title, body)
+
+                    val targetChild = router.route(packageName, title, body)
+                    val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+
+                    val hash = deduplicationEngine.computeNoticeHash(
+                        childId = targetChildId,
+                        sourceApp = packageName,
+                        title = title,
+                        body = body
+                    )
+
+                    val existing = db.noticeDao().findByHash(hash)
+                    if (existing == null) {
+                        val noticeId = UUID.randomUUID().toString()
+                        val noticeEntity = NoticeEntity(
+                            noticeId = noticeId,
                             childId = targetChildId,
                             sourceApp = packageName,
+                            category = category.name,
                             title = title,
-                            body = body
+                            body = body,
+                            sender = packageName,
+                            timestampMs = System.currentTimeMillis(),
+                            hashSha256 = hash,
+                            syncStatus = SyncStatus.PENDING.name,
+                            driveFileId = null,
+                            attachmentCount = cardAttachments.size
                         )
+                        db.noticeDao().insert(noticeEntity)
 
-                        val existing = db.noticeDao().findByHash(hash)
-                        if (existing == null) {
-                            val noticeId = UUID.randomUUID().toString()
-                            val noticeEntity = NoticeEntity(
+                        for (att in cardAttachments) {
+                            val attEntity = com.kids.collector.data.db.AttachmentEntity(
+                                attachmentId = UUID.randomUUID().toString(),
                                 noticeId = noticeId,
-                                childId = targetChildId,
-                                sourceApp = packageName,
-                                category = category.name,
-                                title = title,
-                                body = body,
-                                sender = packageName,
-                                timestampMs = System.currentTimeMillis(),
-                                hashSha256 = hash,
-                                syncStatus = SyncStatus.PENDING.name,
+                                fileName = att.fileName.take(60),
+                                localUri = "",
+                                mimeType = if (att.fileName.contains(".pdf", true)) "application/pdf"
+                                else if (att.fileName.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) "image/jpeg"
+                                else "application/octet-stream",
+                                sizeBytes = 0L,
+                                fileHash = att.fileName.hashCode().toString(),
+                                ocrText = null,
+                                pageCount = 1,
                                 driveFileId = null,
-                                attachmentCount = detectedAttachments.size
+                                syncStatus = SyncStatus.PENDING.name
                             )
-                            db.noticeDao().insert(noticeEntity)
-
-                            for (att in detectedAttachments) {
-                                val attEntity = com.kids.collector.data.db.AttachmentEntity(
-                                    attachmentId = UUID.randomUUID().toString(),
-                                    noticeId = noticeId,
-                                    fileName = att.take(60),
-                                    localUri = "",
-                                    mimeType = if (att.contains(".pdf", true)) "application/pdf" else "application/octet-stream",
-                                    sizeBytes = 0L,
-                                    fileHash = att.hashCode().toString(),
-                                    ocrText = null,
-                                    pageCount = 1,
-                                    driveFileId = null,
-                                    syncStatus = SyncStatus.PENDING.name
-                                )
-                                db.attachmentDao().insert(attEntity)
-                            }
-
-                            CrawlerTraceLogger.log(
-                                "SCROLLER_ACCEPTED",
-                                "Notice backfilled: \"$title\" ($category) [Attachments: ${detectedAttachments.size}]"
-                            )
-
-                            // Update overlay counter badge in real time
-                            crawlerOverlay?.incrementNoticeCount()
-
-                            // Schedule WorkManager Sync if not auto-scrolling
-                            if (crawlerOverlay?.isAutoScrollingActive() != true) {
-                                triggerDriveSync(applicationContext)
-                            }
-                        } else {
-                            CrawlerTraceLogger.log("SCROLLER_REJECTED", "Duplicate notice dropped: $hash (\"$title\")")
+                            db.attachmentDao().insert(attEntity)
                         }
-                    } else {
-                        CrawlerTraceLogger.log("SCROLLER_REJECTED", "Combined text too short (${combinedText.length} <= 30 chars): \"$combinedText\"")
+
+                        newlyBackfilled++
+                        CrawlerTraceLogger.log(
+                            "SCROLLER_ACCEPTED",
+                            "Notice backfilled: \"$title\" ($category) [Attachments: ${cardAttachments.size}]"
+                        )
+                        crawlerOverlay?.incrementNoticeCount()
                     }
-                } else {
-                    CrawlerTraceLogger.log("SCROLLER_REJECTED", "No readable text extracted from active screen")
+
+                    // 3. Autonomous attachment download check (zero parent clicking)
+                    if (crawlerOverlay?.isAutoScrollingActive() == true && !isHandlingAttachmentDownload && cardAttachments.isNotEmpty()) {
+                        val uncaptured = cardAttachments.firstOrNull { att ->
+                            !capturedAttachmentNames.contains(att.fileName)
+                        }
+                        if (uncaptured != null && uncaptured.clickableNode != null && uncaptured.clickableNode.isClickable) {
+                            capturedAttachmentNames.add(uncaptured.fileName)
+                            CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Autonomously tapping attachment chip: \"${uncaptured.fileName}\"")
+                            isHandlingAttachmentDownload = true
+                            pendingAttachmentDownloadName = uncaptured.fileName
+                            uncaptured.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+
+                            // Safety timeout: if preview screen doesn't resolve within 3.5s, reset state and return
+                            serviceScope.launch {
+                                kotlinx.coroutines.delay(3500)
+                                if (isHandlingAttachmentDownload) {
+                                    CrawlerTraceLogger.log("ATTACHMENT_TIMEOUT", "Preview did not trigger download within 3.5s; pressing back")
+                                    performGlobalAction(GLOBAL_ACTION_BACK)
+                                    isHandlingAttachmentDownload = false
+                                    pendingAttachmentDownloadName = null
+                                }
+                            }
+                        }
+                    }
+
+                    // Clean up card references
+                    for (att in cardAttachments) {
+                        att.clickableNode?.recycle()
+                    }
+                    card.recycle()
+                }
+
+                // 4. Scan download folders for newly saved files
+                com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+
+                // 5. Trigger sync if manual capture or idle
+                if (crawlerOverlay?.isAutoScrollingActive() != true && newlyBackfilled > 0) {
+                    triggerDriveSync(applicationContext)
                 }
             } catch (e: Exception) {
                 CrawlerTraceLogger.log("SCROLLER_ERROR", "Error during accessibility crawl: ${e.message}")
@@ -228,31 +308,116 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun extractNodeText(node: AccessibilityNodeInfo, outList: MutableList<String>) {
+    private fun extractCardDetails(
+        node: AccessibilityNodeInfo,
+        outText: MutableList<String>,
+        outAttachments: MutableList<ExtractedAttachment>
+    ) {
         val directText = node.text?.toString()?.trim()
         val descText = node.contentDescription?.toString()?.trim()
 
         val candidate = when {
-            !directText.isNullOrBlank() && directText.length > 3 -> directText
-            !descText.isNullOrBlank() && descText.length > 3 -> descText
+            !directText.isNullOrBlank() && directText.length > 2 -> directText
+            !descText.isNullOrBlank() && descText.length > 2 -> descText
             else -> null
         }
 
-        if (candidate != null && !outList.contains(candidate)) {
-            outList.add(candidate)
+        if (candidate != null && !outText.contains(candidate)) {
+            outText.add(candidate)
+            val attachmentExts = listOf(".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4")
+            if (attachmentExts.any { candidate.contains(it, ignoreCase = true) }) {
+                val clickableNode = findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node)
+                outAttachments.add(ExtractedAttachment(candidate.take(60), clickableNode))
+            }
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            extractNodeText(child, outList)
+            extractCardDetails(child, outText, outAttachments)
             child.recycle()
         }
     }
 
-    private fun extractAttachments(crawledItems: List<String>): List<String> {
-        val attachmentExts = listOf(".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4", "drive.google.com")
-        return crawledItems.filter { item ->
-            attachmentExts.any { ext -> item.contains(ext, ignoreCase = true) }
+    private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node
+        while (current != null) {
+            if (current.isClickable) {
+                return AccessibilityNodeInfo.obtain(current)
+            }
+            current = current.parent
+        }
+        return null
+    }
+
+    private fun findDownloadButtonNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        if (text == "download" || desc.contains("download") || desc.contains("save to device") || viewId.contains("download")) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findDownloadButtonNode(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findPostCards(rootNode: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
+        val scrollable = findScrollableNode(rootNode)
+        if (scrollable != null && scrollable.childCount > 0) {
+            val cards = mutableListOf<AccessibilityNodeInfo>()
+            for (i in 0 until scrollable.childCount) {
+                val child = scrollable.getChild(i) ?: continue
+                if (hasSubstantialContent(child)) {
+                    cards.add(child)
+                } else {
+                    child.recycle()
+                }
+            }
+            scrollable.recycle()
+            if (cards.isNotEmpty()) {
+                return cards
+            }
+        }
+        return listOf(AccessibilityNodeInfo.obtain(rootNode))
+    }
+
+    private fun findScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        if (node.isScrollable) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findScrollableNode(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun hasSubstantialContent(node: AccessibilityNodeInfo): Boolean {
+        val textList = mutableListOf<String>()
+        collectQuickText(node, textList)
+        return textList.joinToString(" ").length > 20
+    }
+
+    private fun collectQuickText(node: AccessibilityNodeInfo, outList: MutableList<String>) {
+        node.text?.toString()?.trim()?.let { if (it.length > 2) outList.add(it) }
+        node.contentDescription?.toString()?.trim()?.let { if (it.length > 2) outList.add(it) }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectQuickText(child, outList)
+            child.recycle()
         }
     }
 

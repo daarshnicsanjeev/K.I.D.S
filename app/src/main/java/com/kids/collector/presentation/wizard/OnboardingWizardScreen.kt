@@ -654,6 +654,60 @@ fun OnboardingWizardScreen(
                                         }
                                     }
                                 }
+
+                                HorizontalDivider(color = LightSlate)
+
+                                val hasStorageAccess = remember {
+                                    mutableStateOf(PermissionHelper.hasStorageAccess(context))
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(
+                                            text = "Storage & Downloads Access",
+                                            style = MaterialTheme.typography.labelLarge,
+                                            color = DeepNavy,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                        Text(
+                                            text = "Allows K.I.D.S. to detect downloaded circulars & worksheets to sync physical PDFs into your vault.",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextSecondary
+                                        )
+                                    }
+                                    if (hasStorageAccess.value) {
+                                        Surface(color = SuccessGreen.copy(alpha = 0.15f), shape = RoundedCornerShape(8.dp)) {
+                                            Text("✓ Granted", modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = DeepNavy)
+                                        }
+                                    } else {
+                                        OutlinedButton(
+                                            onClick = {
+                                                PermissionHelper.openStorageAccessSettings(context)
+                                            },
+                                            modifier = Modifier.defaultMinSize(minHeight = 40.dp)
+                                        ) {
+                                            Text("Enable")
+                                        }
+                                    }
+                                }
+
+                                Surface(
+                                    color = DeepNavy.copy(alpha = 0.05f),
+                                    shape = RoundedCornerShape(8.dp),
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Row(modifier = Modifier.padding(10.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        Text("💡", style = MaterialTheme.typography.bodyMedium)
+                                        Text(
+                                            text = "Tip: Run Auto-Capture across both the Stream tab (for circulars & announcements) and the Classwork tab (for all subject worksheets & textbooks).",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = TextPrimary
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
