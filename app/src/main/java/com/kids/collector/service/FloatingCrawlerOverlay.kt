@@ -2,7 +2,6 @@ package com.kids.collector.service
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
-import android.view.accessibility.AccessibilityNodeInfo
 import android.content.Context
 import android.graphics.Color
 import android.graphics.Path
@@ -10,12 +9,14 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.text.TextUtils
 import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
@@ -25,14 +26,15 @@ import android.widget.TextView
  *
  * Uses TYPE_ACCESSIBILITY_OVERLAY (zero extra permissions needed).
  * Provides a minimal, draggable floating pill over Google Classroom with:
- * - Real-time captured notices counter
- * - Single-tap "Auto-Capture" that scrolls at the optimal calibrated pace (~1.3s)
- * - "Grab Screen" for manual on-demand snapshot
+ * - Real-time captured notices and physical file download counters
+ * - Live Finite State Machine status indicator (Scanning, Reading, Downloading, Returning)
+ * - Single-tap "Auto-Capture" with immediate cancellable lifecycle
  * - Draggable anywhere on the screen & minimizable to a compact circle
  */
 class FloatingCrawlerOverlay(
     private val service: AccessibilityService,
-    private val onManualCaptureRequested: () -> Unit
+    private val onStartAutoCapture: () -> Unit,
+    private val onStopAutoCapture: () -> Unit
 ) {
 
     private val windowManager = service.getSystemService(Context.WINDOW_SERVICE) as WindowManager
@@ -44,25 +46,14 @@ class FloatingCrawlerOverlay(
     private var isAutoScrolling = false
     private var isMinimized = false
     private var capturedCount = 0
+    private var capturedAttachmentsCount = 0
 
     private var counterTextView: TextView? = null
+    private var statusTextView: TextView? = null
+    private var detailTextView: TextView? = null
     private var autoButton: Button? = null
     private var expandedContent: LinearLayout? = null
     private var minimizedBubble: TextView? = null
-
-    private val autoScrollRunnable = object : Runnable {
-        override fun run() {
-            if (!isAutoScrolling) return
-
-            performScrollGesture {
-                // After scroll completes, wait 850ms for views to settle and nodes to bind
-                if (isAutoScrolling) {
-                    onManualCaptureRequested()
-                    handler.postDelayed(this, 850)
-                }
-            }
-        }
-    }
 
     fun show() {
         handler.post {
@@ -146,9 +137,9 @@ class FloatingCrawlerOverlay(
                 }
 
                 val counter = TextView(service).apply {
-                    text = "0 Captured"
+                    text = "0 Notices • 0 Files"
                     setTextColor(Color.parseColor("#ED8936")) // Amber
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10.5f)
                     setTypeface(typeface, android.graphics.Typeface.BOLD)
                     setPadding(dpToPx(6), dpToPx(2), dpToPx(6), dpToPx(2))
                     background = GradientDrawable().apply {
@@ -185,19 +176,52 @@ class FloatingCrawlerOverlay(
                 headerRow.addView(btnClose)
                 expanded.addView(headerRow)
 
+                // Status Row (Live FSM State Indicator)
+                val statusText = TextView(service).apply {
+                    text = "Status: Ready"
+                    setTextColor(Color.parseColor("#94A3B8")) // Slate
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f)
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dpToPx(4)
+                    }
+                }
+                statusTextView = statusText
+                expanded.addView(statusText)
+
+                // Detail snippet row (Current post or file being processed)
+                val detailText = TextView(service).apply {
+                    text = ""
+                    setTextColor(Color.parseColor("#E2E8F0")) // Light Slate
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f)
+                    maxLines = 1
+                    ellipsize = TextUtils.TruncateAt.END
+                    visibility = View.GONE
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT
+                    ).apply {
+                        topMargin = dpToPx(2)
+                    }
+                }
+                detailTextView = detailText
+                expanded.addView(detailText)
+
                 // Button Row
                 val buttonRow = LinearLayout(service).apply {
                     orientation = LinearLayout.HORIZONTAL
                     gravity = Gravity.CENTER
                     layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.WRAP_CONTENT,
+                        LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     ).apply {
                         topMargin = dpToPx(8)
                     }
                 }
 
-                // Single Clear Action Button (Zero Confusion)
+                // Single Clear Action Button
                 val btnAuto = Button(service).apply {
                     text = "▶ Start Auto-Capture"
                     setTextColor(Color.parseColor("#0F172A"))
@@ -260,10 +284,37 @@ class FloatingCrawlerOverlay(
 
     fun isAutoScrollingActive(): Boolean = isAutoScrolling
 
+    fun updateStatus(status: String, detail: String? = null) {
+        handler.post {
+            statusTextView?.text = status
+            if (!detail.isNullOrBlank()) {
+                detailTextView?.text = detail
+                detailTextView?.visibility = View.VISIBLE
+            } else {
+                detailTextView?.visibility = View.GONE
+            }
+        }
+    }
+
     fun incrementNoticeCount() {
         capturedCount++
+        updateCountDisplay()
+    }
+
+    fun incrementAttachmentCount() {
+        capturedAttachmentsCount++
+        updateCountDisplay()
+    }
+
+    fun resetCounts() {
+        capturedCount = 0
+        capturedAttachmentsCount = 0
+        updateCountDisplay()
+    }
+
+    private fun updateCountDisplay() {
         handler.post {
-            counterTextView?.text = "$capturedCount Captured"
+            counterTextView?.text = "$capturedCount Notices • $capturedAttachmentsCount Files"
         }
     }
 
@@ -289,7 +340,8 @@ class FloatingCrawlerOverlay(
         }
     }
 
-    private fun startAutoScroll() {
+    fun startAutoScroll() {
+        if (isAutoScrolling) return
         isAutoScrolling = true
         CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
         autoButton?.text = "⏹ Stop Capture"
@@ -297,17 +349,16 @@ class FloatingCrawlerOverlay(
         autoButton?.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
             cornerRadius = dpToPx(8).toFloat()
-            setColor(Color.parseColor("#334155")) // Slate Dark
+            setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
         }
-        // Grab current screen first, then start loop
-        onManualCaptureRequested()
-        handler.postDelayed(autoScrollRunnable, 600)
+        updateStatus("Status: Scanning Stream...")
+        onStartAutoCapture()
     }
 
-    private fun stopAutoScroll() {
+    fun stopAutoScroll() {
+        if (!isAutoScrolling) return
         isAutoScrolling = false
-        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture. Triggering background Drive sync.")
-        handler.removeCallbacks(autoScrollRunnable)
+        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture. Halting crawler and triggering Drive sync.")
         autoButton?.text = "▶ Start Auto-Capture"
         autoButton?.setTextColor(Color.parseColor("#0F172A"))
         autoButton?.background = GradientDrawable().apply {
@@ -315,6 +366,8 @@ class FloatingCrawlerOverlay(
             cornerRadius = dpToPx(8).toFloat()
             setColor(Color.parseColor("#ED8936")) // Amber
         }
+        updateStatus("Status: Capture Stopped")
+        onStopAutoCapture()
         // Trigger a single background sync cycle to Google Drive now that capture finished
         KidsAccessibilityService.triggerDriveSync(service.applicationContext)
     }
@@ -329,6 +382,12 @@ class FloatingCrawlerOverlay(
         isMinimized = false
         minimizedBubble?.visibility = View.GONE
         expandedContent?.visibility = View.VISIBLE
+    }
+
+    fun performScroll(onComplete: () -> Unit) {
+        handler.post {
+            performScrollGesture(onComplete)
+        }
     }
 
     private fun performScrollGesture(onComplete: () -> Unit) {

@@ -41,10 +41,12 @@ As parents, keeping up with school communications is exhausting. Homework assign
    - [Notification Listener Service (24/7 Passive Capture)](#notification-listener-service-247-passive-capture)
    - [Accessibility Service (Historical Backfill Assistant)](#accessibility-service-historical-backfill-assistant)
    - [Storage Access & The Anti-Clutter Staging Lifecycle](#storage-access--the-anti-clutter-staging-lifecycle)
-4. [Google Classroom Auto-Capture Guide](#4-google-classroom-auto-capture-guide)
+4. [Google Classroom Deep Auto-Capture Guide](#4-google-classroom-deep-auto-capture-guide)
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
-   - [The Floating K.I.D.S. Assistant Overlay](#the-floating-kids-assistant-overlay)
-   - [Autonomous Zero-Click Attachment Downloads](#autonomous-zero-click-attachment-downloads)
+   - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
+   - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
+   - [Immediate Stop & Automated Drive Sync](#immediate-stop--automated-drive-sync)
+   - [End-of-Stream Auto-Completion](#end-of-stream-auto-completion)
 5. [WhatsApp School Group Integration](#5-whatsapp-school-group-integration)
    - [Real-Time Group Capture](#real-time-group-capture)
    - [Manual Chat Export Fallback (.txt / .zip)](#manual-chat-export-fallback-txt--zip)
@@ -306,9 +308,11 @@ sequenceDiagram
 
 ---
 
-## 4. Google Classroom Auto-Capture Guide
+## 4. Google Classroom Deep Auto-Capture Guide
 
-When setting up a child or catching up on previous weeks of schoolwork, Google Classroom contains a treasure trove of past announcements, circulars, worksheets, and syllabus PDFs.
+When setting up a child or catching up on previous weeks of schoolwork, Google Classroom contains a treasure trove of past announcements, circulars, worksheets, and syllabus PDFs. 
+
+Rather than simply skimming visible surface summaries, K.I.D.S. features an autonomous **Deep Auto-Capture Engine**. The assistant systematically navigates into each individual post card, extracts the full announcement text, downloads every attached document directly to your device, and safely returns to the stream to continue traversing historical records.
 
 ### Stream Tab vs. Classwork Tab
 
@@ -324,35 +328,99 @@ Google Classroom organizes content into two distinct tabs:
 > **Recommended Workflow:**
 > Run Auto-Capture **twice**: first on the **Stream** tab to capture administrative circulars, and second on the **Classwork** tab to capture all subject worksheets and study materials!
 
-### The Floating K.I.D.S. Assistant Overlay
+### The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill
 
-When you open Google Classroom, K.I.D.S. automatically displays the **Floating Assistant** on the screen:
+When you open Google Classroom, K.I.D.S. automatically displays the **Floating Assistant** on the screen using Android's lightweight accessibility overlay layer (`TYPE_ACCESSIBILITY_OVERLAY`), requiring **zero extra permissions** like "Draw over other apps":
 
 ```
-+------------------------------------------+
-|  K.I.D.S. Assistant         [14 Captured]|
-|  --------------------------------------- |
-|  [▶ Start Auto-Capture]   [📸 Grab Screen]|
-|  [ — Minimize ]              [ ✕ Close ] |
-+------------------------------------------+
++-------------------------------------------------------+
+|  K.I.D.S. Assistant         [ 14 Notices • 6 Files ]  — ✕ |
+|  Status: Scanning Stream...                           |
+|  "Mathematics Worksheet - Fractions Chapter 4"         |
+|  +-------------------------------------------------+  |
+|  |             ▶ Start Auto-Capture                |  |
+|  +-------------------------------------------------+  |
++-------------------------------------------------------+
 ```
 
-- **Live Counter:** Shows the exact number of notices captured and deduplicated in real-time.
-- **▶ Start Auto-Capture:** Starts automated scrolling and continuous notice extraction at the calibrated optimal speed (~1.3 seconds per screen).
-- **📸 Grab Screen:** Captures the currently visible posts immediately without auto-scrolling.
-- **— Minimize:** Collapses the assistant into a small, floating **`K`** circular bubble (48dp × 48dp) that you can drag anywhere on your screen. Tap the bubble anytime to expand it.
-- **✕ Close:** Closes the assistant until you reopen Classroom.
+When active, the action button dynamically changes to a prominent red stop button:
 
-### Autonomous Zero-Click Attachment Downloads
+```
++-------------------------------------------------------+
+|  K.I.D.S. Assistant         [ 15 Notices • 7 Files ]  — ✕ |
+|  Status: Downloading (1/2)...                         |
+|  fraction_practice_sheet_grade5.pdf                   |
+|  +-------------------------------------------------+  |
+|  |             ⏹ Stop Capture                      |  |
+|  +-------------------------------------------------+  |
++-------------------------------------------------------+
+```
 
-K.I.D.S. eliminates the chore of tapping into every single post and downloading attachments one by one:
+#### Real-Time Status & Metrics Display
+The floating assistant features an informative **live 2-line status pill**:
+- **Top Status Line (Active FSM State):** Reflects the exact operation the crawler is performing in real time:
+  - `Status: Ready` — Idle and ready to start.
+  - `Status: Scanning Stream...` — Inspecting the current screen viewport for unvisited post cards.
+  - `Status: Opening Post...` — Tapping into a specific post card to view its full details.
+  - `Status: Reading Detail...` — Extracting complete announcement text, author, timestamp, and attachment metadata.
+  - `Status: Downloading (X/Y)...` — Disagreeing with manual clicks: autonomously downloading the $X$-th attachment out of $Y$ total files attached to the current post.
+  - `Status: Opening (X/Y)...` — Tapping an attachment chip when direct download buttons are nested.
+  - `Status: Returning to Stream...` — Safely pressing Navigate Up or system Back to re-anchor in the list view.
+  - `Status: Scrolling Stream...` — Advancing the stream list once all visible cards have been processed.
+  - `Status: Capture Complete!` — Backfill completed after end-of-stream detection.
+  - `Status: Capture Stopped` — Manually stopped by the parent.
+  - `Status: Paused (External App)` — Pauses immediately if an external app or dialog comes to foreground.
+- **Bottom Metrics Badge (`XX Notices • YY Files`):** Kept up to date live. Displays the exact tally of unique school notices backfilled and physical attachment files (.pdf, .docx, .jpg) triggered for download during this session.
+- **Detail Snippet Line:** An auto-truncating preview line that displays the exact post headline or filename currently being processed (e.g., `"Circular No. 14 - Annual Sports Day Schedule"` or `"worksheet_fractions_ch4.pdf"`).
+- **— Minimize:** Collapses the assistant into a compact, floating amber **`K`** circular bubble (48dp × 48dp) that you can drag anywhere on your screen. Tap the bubble anytime to expand it back.
+- **✕ Close:** Closes the assistant overlay until you reopen Classroom.
 
-1. As the assistant auto-scrolls down the Classroom feed, it identifies any post cards that contain attachment chips (`.pdf`, `.docx`, `.jpg`, etc.).
-2. When an uncaptured attachment is detected, the assistant **autonomously taps the attachment chip**.
-3. It waits for the Classroom preview screen to load, detects the native download button (`Download` or `Save to device`), and triggers the download.
-4. It waits 400 milliseconds for the download task to hand off to Android's download manager, and automatically presses the system **Back** button to return to the Classroom list.
-5. If a preview takes longer than 3.5 seconds to open, a safety timeout automatically presses Back, ensuring the crawler never gets stuck.
-6. Meanwhile, the `DownloadFolderObserver` catches the downloaded file, moves it into private vault staging, and schedules it for Google Drive synchronization.
+### Deep Post Traversal & Autonomous File Downloads
+
+K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of announcements, opening attachments, and downloading worksheets one by one:
+
+```mermaid
+flowchart TD
+    A["Scan Stream Viewport<br/>(Exclude TopBar & Tabs)"] --> B{"Unvisited Post Found?"}
+    B -->|Yes| C["Tap Post Card<br/>(Status: Opening Post...)"]
+    C --> D["Verify Detail Screen<br/>(2.5s Safety Timeout)"]
+    D --> E["Dismiss Soft Keyboard<br/>& Extract Full Text"]
+    E --> F["Scan All Attachments<br/>(.pdf, .docx, .jpg, etc.)"]
+    F --> G{"Attachments Found?"}
+    G -->|Yes| H["Loop: Tap Download / Chip<br/>(800ms Calibrated Debounce)"]
+    G -->|No| I["Guarded Return to Stream<br/>(Navigate Up / Back)"]
+    H --> I
+    I --> J["Verify Stream Restored<br/>(Stabilize 600ms)"]
+    J --> A
+    B -->|No| K["Native Scroll Forward<br/>(Status: Scrolling Stream...)"]
+    K --> L{"New Posts Found After Scroll?<br/>(850ms Viewport Settling)"}
+    L -->|Yes (Reset Counter)| A
+    L -->|No (Counter + 1)| M{"2 Consecutive Empty Scrolls?"}
+    M -->|No| K
+    M -->|Yes| N["Status: Capture Complete!<br/>Trigger Immediate Drive Sync"]
+```
+
+1. **Deterministic Post Discovery:** The crawler scans the stream viewport, ignoring app bar chrome and bottom navigation tabs. It computes a SHA-256 fingerprint of each card's content so no post is ever processed twice or missed across scrolls.
+2. **Deep Post Entry:** The crawler clicks the post card and waits up to 2,500ms to confirm transition into the post detail view.
+3. **Keyboard Dismissal & Full Text Harvesting:** If the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
+4. **Autonomous Multi-File Downloading:**
+   - The assistant scans the post for all educational file types: `.pdf`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.ppt`, `.pptx`, `.jpg`, `.jpeg`, `.png`, and `.mp4`.
+   - It iterates through each attachment sequentially, updates the status pill (`Status: Downloading (1/2)...`), taps the download icon or attachment chip, and enforces a **calibrated 800ms debounce delay** to allow Android's `DownloadManager` to enqueue the download reliably.
+5. **Guarded Return to Stream:** The assistant taps Classroom's top **Navigate Up (`←`)** button (or issues `GLOBAL_ACTION_BACK`), waits up to 2,000ms to confirm the stream view has re-anchored, and pauses for 600ms to let view layouts stabilize before scanning for the next post.
+6. **Anti-Clutter Public Storage Staging:** As files land in `Download/` or `Download/Classroom/`, the background `DownloadFolderObserver` instantly moves them to private vault staging (`vault_attachments/`), keeping your personal Downloads folder clean.
+
+### Immediate Stop & Automated Drive Sync
+
+You maintain absolute control over the crawler at all times:
+- **Zero Delayed Actions:** Tapping **`⏹ Stop Capture`** immediately stops the crawler. The underlying Kotlin coroutine job is cancelled instantly—there are **no queued or lingering taps**, no delayed scrolls, and no unwanted navigation actions after you tap stop.
+- **Automated Immediate Drive Sync:** The moment you tap `⏹ Stop Capture` (or when capture finishes), K.I.D.S. **automatically enqueues a background sync cycle** via AndroidX `WorkManager`. All newly harvested notices and staged attachment files are immediately synchronized to your Google Drive Vault without requiring any manual trigger from the dashboard.
+
+### End-of-Stream Auto-Completion
+
+You do not need to babysit your phone or guess when the crawler has reached the oldest post in the class:
+- When all cards on the current screen are processed, the assistant scrolls forward and pauses for **850ms** for the new view items to bind and settle.
+- If two consecutive scrolls yield **zero new unvisited cards** (`2/2`), the assistant recognizes that the bottom of the stream or classwork list has been reached.
+- The assistant displays **`Status: Capture Complete!`** with the message *"All posts backfilled"*, stops the auto-scroller, turns the button back to `▶ Start Auto-Capture`, and immediately triggers Google Drive background synchronization.
 
 ---
 

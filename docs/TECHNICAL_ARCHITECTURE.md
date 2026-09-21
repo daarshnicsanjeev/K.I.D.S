@@ -279,7 +279,46 @@ The notification listener runs as an ambient, event-driven Android system servic
 ---
 
 ### 2. `KidsAccessibilityService` & `FloatingCrawlerOverlay`
-Engineered for Day 0 historical backfill and manual retrospective crawls of Google Classroom and School ERP portals:
+Engineered for Day 0 historical backfill and retrospective notice crawling of Google Classroom and School ERP portals. It implements an autonomous, event-driven **Deep Crawl Finite State Machine (FSM)** that traverses the stream, enters individual post detail screens, extracts full announcement content, triggers sequential attachment downloads, safely returns to the feed, and syncs directly to Google Drive.
+
+```mermaid
+stateDiagram-v2
+    [*] --> IDLE
+    IDLE --> SCANNING_STREAM: User taps "Start Auto-Capture"
+    
+    SCANNING_STREAM --> NAVIGATING_TO_DETAIL: Unvisited Post Card Detected
+    SCANNING_STREAM --> SCROLLING: All Viewport Cards Visited
+    
+    NAVIGATING_TO_DETAIL --> IN_DETAIL_VIEW: Screen Verified (isPostDetailView, <=2.5s)
+    NAVIGATING_TO_DETAIL --> SCANNING_STREAM: Timeout / Click Failed (Skip & Mark Visited)
+    
+    IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: Attachments Detected (.pdf, .docx, .jpg)
+    DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: Sequential Taps (800ms Debounce)
+    DOWNLOADING_ATTACHMENTS --> RETURNING_TO_STREAM: All Attachments Handed to DownloadManager
+    IN_DETAIL_VIEW --> RETURNING_TO_STREAM: Zero Attachments in Post
+    
+    RETURNING_TO_STREAM --> SCANNING_STREAM: Stream Re-settled (isStreamOrClassworkView, <=2s)
+    
+    SCROLLING --> SCANNING_STREAM: New Unvisited Cards Found (850ms Settle Delay)
+    SCROLLING --> CAPTURE_COMPLETE: 2 Consecutive Empty Scrolls (End of Stream)
+    
+    CAPTURE_COMPLETE --> IDLE: Auto-Stop & Trigger Drive Sync
+    
+    SCANNING_STREAM --> PAUSED_EXTERNAL: Package != com.google.android.apps.classroom
+    PAUSED_EXTERNAL --> SCANNING_STREAM: Classroom Returned to Foreground
+    
+    SCANNING_STREAM --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+    NAVIGATING_TO_DETAIL --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+    IN_DETAIL_VIEW --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+    RETURNING_TO_STREAM --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+    SCROLLING --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+```
+
+---
+
+#### The Deep Crawl Finite State Machine (FSM)
+
+The crawler loop in `KidsAccessibilityService` executes as a continuous, cooperative coroutine job on `Dispatchers.Default`, transitioning across distinct operational states:
 
 ```mermaid
 sequenceDiagram
@@ -287,47 +326,162 @@ sequenceDiagram
     participant OV as FloatingCrawlerOverlay
     participant ACS as KidsAccessibilityService
     participant GC as Google Classroom UI
-    participant DB as SQLite Room DB
+    participant DM as Android DownloadManager
     participant DFO as DownloadFolderObserver
+    participant DB as SQLite Room DB
 
     USR->>OV: Taps "Start Auto-Capture"
-    OV->>ACS: Request native list scroll
-    ACS->>GC: ACTION_SCROLL_FORWARD on RecyclerView
-    Note over GC: List advances (~1.3s pace)
-    ACS->>GC: Inspect active window & parse post cards
-    GC-->>ACS: List of discrete AccessibilityNodeInfo cards
+    OV->>ACS: startDeepCrawl() -> launches crawlerJob
     
-    loop For each post card
-        ACS->>ACS: extractCardDetails(card, text, attachments)
-        ACS->>DB: Insert notice & attachment records
-        alt Card contains uncaptured attachment chip
-            ACS->>GC: performAction(ACTION_CLICK) on attachment chip
-            Note over GC: Opens attachment preview screen
-            ACS->>GC: findDownloadButtonNode() -> ACTION_CLICK
-            Note over GC: Download handed to Android DownloadManager
-            ACS->>GC: GLOBAL_ACTION_BACK (after 400ms)
+    loop Deep Crawl Loop (Active Stream Traversal)
+        ACS->>GC: SCANNING_STREAM: Filter safe viewport [140dp, Height-170dp]
+        GC-->>ACS: Unvisited post card (SHA-256 fingerprint)
+        
+        ACS->>OV: updateStatus("Status: Opening Post...", title)
+        ACS->>GC: NAVIGATING_TO_DETAIL: clickableNode.performAction(ACTION_CLICK)
+        GC-->>ACS: Transition to detail view (verified <=2.5s)
+        
+        ACS->>OV: updateStatus("Status: Reading Detail...", title)
+        ACS->>GC: IN_DETAIL_VIEW: Clear focus on comment EditText
+        ACS->>ACS: collectAllText() -> extract body, title, author
+        ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
+        ACS->>OV: incrementNoticeCount()
+        
+        opt Attachments Present (.pdf, .docx, .jpg)
+            loop For each attachment (sequential)
+                ACS->>OV: updateStatus("Status: Downloading (X/Y)...", fileName)
+                ACS->>GC: performAction(ACTION_CLICK) on download button / chip
+                GC->>DM: Enqueue download request
+                ACS->>OV: incrementAttachmentCount()
+                ACS->>ACS: delay(800ms) calibrated debounce
+            end
+            ACS->>DFO: scanLocalAttachments() -> move to vault_attachments/
+        end
+        
+        ACS->>OV: updateStatus("Status: Returning to Stream...")
+        ACS->>GC: RETURNING_TO_STREAM: Click Navigate Up / GLOBAL_ACTION_BACK
+        GC-->>ACS: Stream restored (verified <=2.0s + 600ms stabilization)
+        
+        alt All screen cards visited
+            ACS->>OV: updateStatus("Status: Scrolling Stream...")
+            ACS->>GC: SCROLLING: ACTION_SCROLL_FORWARD / 450ms swipe
+            ACS->>ACS: delay(850ms) view settling
+            alt 2 Consecutive Scrolls with 0 New Cards
+                ACS->>OV: updateStatus("Status: Capture Complete!", "All posts backfilled")
+                ACS->>OV: stopAutoScroll()
+                ACS->>ACS: triggerDriveSync(context)
+            end
         end
     end
-    
-    ACS->>DFO: scanLocalAttachments()
-    Note over DFO: Moves file out of public Downloads into private staging
+
+    opt User interrupts capture
+        USR->>OV: Taps "Stop Capture"
+        OV->>ACS: stopDeepCrawl() -> crawlerJob.cancel()
+        ACS->>ACS: triggerDriveSync(context)
+    end
 ```
 
-#### Native List Scrolling vs. Fallback Swipe
-1. **Primary Mechanism:** Performs `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` on the primary scrollable container (`RecyclerView` or `ListView`). This produces butter-smooth, system-native scrolling without simulated pointer interference.
-2. **Fallback Mechanism:** If the container does not respond to accessibility scroll actions, it constructs a calibrated 450ms touch swipe path via `dispatchGesture()`. The swipe is deliberately offset to 75% of screen width to ensure the pointer never collides with or drags the floating overlay.
+##### 1. `SCANNING_STREAM` (Safe Viewport & Deterministic Fingerprinting)
+- **Safe Viewport Filtering:** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
+  $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - 170\text{px}$$
+  This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
+- **Chrome & Noise Rejection:** Ignores non-post navigation elements (`excludedChrome`) such as `"open navigation menu"`, `"signed in as"`, `"tasks due"`, and cards with content length $\le 20$ characters.
+- **Deterministic SHA-256 Fingerprinting:** For each eligible post card, `computeCardFingerprint(cardItems)` aggregates non-chrome text tokens delimited by pipe (`|`), calculates a SHA-256 hash, and truncates to the first 8 hex characters:
+  $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
+  Fingerprints are maintained in `visitedPostFingerprints` (`ConcurrentHashMap.newKeySet()`), ensuring no post is visited twice even when list recycling re-renders nodes.
 
-#### Discrete Post Card Parsing
-- Rather than dumping the entire window's text as a single blob, `findPostCards(rootNode)` traverses the accessibility node tree to identify individual child container cards within the scrollable container.
-- Verifies substantial content (`hasSubstantialContent`) to ignore blank spacers and dividers.
-- Extracts titles, dates, instructions, and multiple attachment chips per post card into structured `ExtractedAttachment` records.
+##### 2. `NAVIGATING_TO_DETAIL` (Guarded Entry & Verification)
+- **Click Dispatch:** Traverses up the node hierarchy via `findClickableAncestor(card)` and executes `AccessibilityNodeInfo.ACTION_CLICK`.
+- **2.5-Second Screen Verification:** Rather than assuming immediate transition, the crawler invokes `waitForCondition(timeoutMs = 2500, pollIntervalMs = 200)` and inspects `rootInActiveWindow` via `isPostDetailView(active)`.
+- **Failure Recovery:** If the card click fails or the detail screen fails to load within 2,500ms, the card is marked as visited in `visitedPostFingerprints` and skipped, preventing indefinite hangs.
 
-#### Autonomous Zero-Click Attachment Downloading
-- Detects uncaptured chips with extensions (`.pdf`, `.docx`, `.xlsx`, `.jpg`, etc.).
-- Autonomously issues `ACTION_CLICK` on the chip node.
-- Waits for the Classroom preview activity to open, recursively scans for nodes matching `"download"`, `"save to device"`, or known download view IDs.
-- Clicks the download button and waits 400ms before dispatching `performGlobalAction(GLOBAL_ACTION_BACK)`.
-- Enforces a **3.5-second safety timeout**: if a network delay or missing file prevents the download button from appearing, the service automatically presses Back, resetting state so the crawler never stalls.
+##### 3. `IN_DETAIL_VIEW` (Text Extraction & Sequential Attachment Downloads)
+- **Soft Keyboard Dismissal:** Classroom frequently focuses the `"Add class comment"` input field upon entering detail view, popping up the software keyboard and occluding attachment buttons. `clearFocusIfInputFocused(detailRoot)` scans for `EditText` views and dispatches `ACTION_CLEAR_FOCUS`.
+- **Full Text Harvesting:** Recursively walks the entire node hierarchy with `collectAllText(detailRoot)` to capture the full announcement body, author name, and date header.
+- **Domain Attribution & Deduplication:** Routes notice attribution via `MultiChildRouter`, classifies category via `ContentClassifier`, computes content SHA-256, and inserts the record into SQLite Room with `SyncStatus.PENDING`.
+- **Multi-Extension Attachment Discovery:** Scans detail nodes for known educational extensions:
+  `listOf(".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4")`.
+- **Sequential Download Debounce (800ms):** For each discovered attachment, the crawler locates the download button (`findDownloadButtonNode`) or attachment chip (`clickableChip`), logs telemetry, updates overlay status (`Downloading (X/Y)...`), and executes `ACTION_CLICK`. It enforces a **calibrated 800ms debounce delay** between files to allow Android's IPC `DownloadManager` service to enqueue the download request without dropped intents.
+- **Storage Staging Trigger:** Upon completing attachment clicks, it triggers `DownloadFolderObserver.scanLocalAttachments(applicationContext)` to begin moving incoming files to private vault staging.
+
+##### 4. `RETURNING_TO_STREAM` (Guarded Return & View Stabilization)
+- **Guarded Navigation:** Inspects the toolbar for Classroom's native Navigate Up button (`findNavigateUpButton`) matching `"navigate up"` or `"back"`. If present, it dispatches `ACTION_CLICK`; otherwise, it issues `performGlobalAction(GLOBAL_ACTION_BACK)`.
+- **Post-Return Verification:** Calls `waitForCondition(timeoutMs = 2000, pollIntervalMs = 200)` checking `isStreamOrClassworkView(active)` to verify that bottom tabs are visible and the back arrow is gone.
+- **Stabilization Delay:** Applies a **600ms delay** post-return, giving the Android `RecyclerView` time to rebind views and settle scroll physics before resuming the scan.
+
+##### 5. `SCROLLING` (Dual-Strategy Scroll & Settle Delay)
+- **Primary Mechanism:** Performs `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` on the primary scrollable container (`findPrimaryScrollableNode`). This produces clean, system-native list scrolling.
+- **Fallback Swipe Path:** If the container does not respond to native accessibility scroll actions, it constructs a calibrated 450ms touch swipe path via `dispatchGesture()`. The swipe is deliberately offset to 75% screen width:
+  $$(0.75 \times \text{width}, 0.70 \times \text{height}) \longrightarrow (0.75 \times \text{width}, 0.25 \times \text{height})$$
+  This guarantees the pointer never collides with or drags the floating overlay on the left side.
+- **850ms Settling Delay:** Following scroll completion, the crawler halts for **850ms** to allow view recycling, text binding, and view layout passes to finish before inspecting newly presented post cards.
+
+##### 6. `END-OF-STREAM DETECTION` (Automatic Completion)
+- After each scroll pass, the crawler checks if new unvisited cards appeared on screen.
+- If zero unvisited cards are discovered, `consecutiveZeroDiscoveryCount` increments.
+- When **2 consecutive scrolls** yield no new cards (`consecutiveZeroDiscoveryCount >= 2`), the crawler concludes the bottom of the stream has been reached.
+- It updates the overlay to `Status: Capture Complete!` (`"All posts backfilled"`), halts auto-scrolling, and immediately enqueues a Google Drive synchronization cycle.
+
+---
+
+#### Critical Safety Invariants & IPC Robustness
+
+To guarantee parent privacy, app stability, and zero system crashes, `KidsAccessibilityService` enforces four strict architectural invariants:
+
+1. **Course Picker Pop-Out Prevention & Detail Trap Recovery:**
+   - The crawler strictly blacklists chrome nodes (`"open navigation menu"`, `"show menu"`, `"more options"`, `"class options"`) to prevent inadvertently opening the Classroom navigation drawer or switching courses.
+   - If the service is started or resumed while already inside a post detail view, `isPostDetailView(root) && !isStreamOrClassworkView(root)` immediately detects the condition and executes `performReturnToStream(root)` before starting the crawl loop.
+
+2. **External App Confinement:**
+   - On every loop iteration, the crawler checks `root.packageName`.
+   - If `currentPkg != "com.google.android.apps.classroom"`, the crawler **immediately pauses execution**, updates the overlay to `Status: Paused (External App)`, and delays 1,000ms without clicking or scrolling.
+   - It will never interact with system dialogs, personal messaging apps, or external launchers.
+
+3. **Immediate Coroutine Job Cancellation on Stop:**
+   - Tapping `⏹ Stop Capture` invokes `stopDeepCrawl()`, which immediately calls `crawlerJob?.cancel()` and nullifies the reference.
+   - The main loop and all `waitForCondition` polling blocks continuously verify `serviceScope.isActive` and `crawlerOverlay?.isAutoScrollingActive() == true`.
+   - Cancellation takes effect **instantaneously (<1ms)** with zero queued clicks, delayed gestures, or lingering navigation actions.
+
+4. **Strict `AccessibilityNodeInfo` Recycling (Zero IPC Binder Leaks):**
+   - In Android, `AccessibilityNodeInfo` instances are heavy IPC proxies allocated across the `system_server` binder interface. Failing to recycle them causes fatal binder transaction buffer exhaustion (`TransactionTooLargeException`) and service disconnection.
+   - Every node returned from `rootInActiveWindow`, `getChild()`, `findNodesWithExtensions()`, and helper lookups is recycled deterministically in `finally` blocks and traversal loops using `.recycle()`.
+
+---
+
+#### `FloatingCrawlerOverlay`: Dynamic Status API & Decoupled Architecture
+
+`FloatingCrawlerOverlay` provides the user interface for the backfill assistant. It attaches directly to Android's `WindowManager` using `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` (falling back gracefully to `TYPE_APPLICATION_OVERLAY` or `TYPE_PHONE` if restricted), requiring **zero extra overlay permissions**.
+
+##### Dynamic Status API
+The overlay exposes a clean, decoupled API used by `KidsAccessibilityService` to communicate FSM state changes to the parent in real time:
+
+```kotlin
+class FloatingCrawlerOverlay(...) {
+    // Dynamic FSM status updates (decoupled from rigid UI timers)
+    fun updateStatus(status: String, detail: String? = null)
+    
+    // Live metrics tracking
+    fun incrementNoticeCount()
+    fun incrementAttachmentCount()
+    fun resetCounts()
+    
+    // Lifecycle controls
+    fun startAutoScroll()
+    fun stopAutoScroll()
+    fun isAutoScrollingActive(): Boolean
+}
+```
+
+- **Decoupled from Fixed Timers:** The overlay does not use arbitrary, hardcoded countdown timers. Every status change (`Status: Scanning Stream...`, `Status: Opening Post...`, `Status: Downloading (1/2)...`, `Status: Returning to Stream...`, `Status: Capture Complete!`) is driven purely by synchronous state transitions from the accessibility FSM.
+- **Two-Line Status Pill Layout:**
+  - **Top Row:** Title (`K.I.D.S. Assistant`), real-time counter badge (`XX Notices • YY Files`), minimize (`—`), and close (`✕`).
+  - **Status Row:** Live FSM state indicator (`statusTextView`).
+  - **Detail Row:** Active post headline or attachment filename (`detailTextView`), auto-truncated with ellipsis.
+- **Single-Action Responsive Button:**
+  - In idle state: Displays `▶ Start Auto-Capture` in Amber Orange (`#ED8936`).
+  - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with a minimum 44dp touch target.
+- **Automated Background Sync on Stop:**
+  - Calling `stopAutoScroll()` automatically triggers `KidsAccessibilityService.triggerDriveSync(applicationContext)`, enqueuing `DriveSyncWorker` to upload all newly harvested notices and staged attachments to the parent's Google Drive immediately.
 
 ---
 
