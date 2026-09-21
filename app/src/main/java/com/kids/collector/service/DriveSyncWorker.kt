@@ -176,6 +176,18 @@ class DriveSyncWorker(
                                 driveFileId = uploadedAttId
                             )
                             physicalUploadCount++
+
+                            // Clear private staging file now that it is safely uploaded to Google Drive
+                            val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
+                            if (localFile.parentFile == stagingDir) {
+                                try {
+                                    if (localFile.delete()) {
+                                        CrawlerTraceLogger.log("STAGING_CLEANUP", "Uploaded \"${localFile.name}\" to Drive and cleared staging copy.")
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w(TAG, "Could not clean staging file: ${e.message}")
+                                }
+                            }
                         } else {
                             db.attachmentDao().updateSyncStatus(
                                 attachmentId = att.attachmentId,
