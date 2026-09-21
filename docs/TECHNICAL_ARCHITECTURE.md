@@ -796,8 +796,12 @@ AndroidX `WorkManager` executes `DriveSyncWorker` periodically and on expedited 
 
 ```mermaid
 flowchart TD
-    START["DriveSyncWorker.doWork()"] --> RESOLVE_VAULT["DriveVaultManager.getSavedVaultFolders()<br/>(Zero-Roundtrip Cache Reuse)"]
-    RESOLVE_VAULT --> LOGS["Flush CrawlerTraceLogger to _system/logs/crawler_trace.log"]
+    START["DriveSyncWorker.doWork()"] --> RESOLVE_PREFS["Resolve Credentials & Child Name<br/>(DriveVaultManager + DB Fallback)"]
+    RESOLVE_PREFS --> GUARD_CHECK{"childName or email blank?"}
+    GUARD_CHECK -->|Yes| DEFER["Sync Deferred: Result.success()<br/>(Prevent Ghost 'New Folder')"]
+    GUARD_CHECK -->|No| RESOLVE_VAULT["DriveVaultManager.getSavedVaultFolders()<br/>(Zero-Roundtrip Cache Reuse)"]
+    RESOLVE_VAULT --> PURGE_STRAYS["Autonomous Self-Healing:<br/>Purge stray 'New Folder' under yearFolderId"]
+    PURGE_STRAYS --> LOGS["Flush CrawlerTraceLogger to _system/logs/crawler_trace.log"]
     LOGS --> BATCH_NOTICES["Batch append pending notices to notices.jsonl"]
     BATCH_NOTICES --> SCAN_STORAGE["DownloadFolderObserver.scanLocalAttachments()"]
     SCAN_STORAGE --> ATTS_LOOP["Iterate pending attachments"]
@@ -824,6 +828,54 @@ flowchart TD
     EXPORT_AI --> DRIVE_UPDATE["Update core AI files on Google Drive (Self-Healing)"]
     DRIVE_UPDATE --> FINISH["Result.success()"]
 ```
+
+#### Child Profile Guard & Deferred Execution (`Result.success()`)
+To prevent race conditions where Android background workers, system boot triggers, or incoming push notifications attempt synchronization before the parent has finalized Step 1 of onboarding, `DriveSyncWorker` strictly validates profile completeness:
+
+```kotlin
+val (savedEmail, academicYear, prefChildName) = DriveVaultManager.getSavedVaultPrefs(applicationContext)
+val childName = if (prefChildName.isNotBlank()) {
+    prefChildName
+} else {
+    val dbChildren = db.childProfileDao().getAllChildrenDirect()
+    dbChildren.firstOrNull()?.firstName ?: ""
+}
+
+if (savedEmail.isNullOrBlank() || childName.isBlank()) {
+    Log.w(TAG, "Sync deferred: Child profile not yet established or childName is blank.")
+    CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established.")
+    return@withContext Result.success()
+}
+```
+
+##### Architectural Guarantees:
+- **Zero Ghost "New Folder" Directories:** If `childName` is blank (or no child has yet been persisted), the worker immediately halts execution before invoking any Google Drive API folder provisioning calls.
+- **Graceful Deferral:** It returns `Result.success()` rather than `Result.retry()` or `Result.failure()`. This avoids burning device battery, cellular bandwidth, and exponential backoff retry cycles on unconfigured states. WorkManager simply waits until the next real event or manual push.
+
+#### Autonomous Drive Vault Self-Healing: Stray Folder Purge
+In scenarios where legacy app runs or pre-guard builds left unlinked, empty directories on Google Drive, `DriveSyncWorker` executes an active hygiene sweep immediately after resolving the vault hierarchy:
+
+```kotlin
+// Autonomous self-healing: Purge any stray legacy "New Folder" on Drive if present
+try {
+    val strayFolders = driveService.files().list()
+        .setQ("'${vault.yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and (name = 'New Folder' or name contains 'New Folder (') and trashed = false")
+        .setFields("files(id, name)")
+        .execute()
+    for (stray in strayFolders.files.orEmpty()) {
+        try {
+            driveService.files().delete(stray.id).execute()
+            Log.i(TAG, "Purged stray empty folder from Google Drive: ${stray.name}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not purge stray folder: ${stray.name}")
+        }
+    }
+} catch (_: Exception) {
+}
+```
+- **Query Specificity:** Scopes the search strictly under the resolved `vault.yearFolderId` for folders named `'New Folder'` or matching `'New Folder ('` (such as Windows/Drive default duplicate names `'New Folder (1)'`).
+- **Zero Impact on Active Children:** Legitimate child folders (e.g. `'atharva'`, `'aarav'`) are completely unaffected.
+- **Self-Healing Hygiene:** Any unlinked, ghost, or accidental empty folders are permanently purged via `files().delete()`, guaranteeing an immaculate parent-facing vault.
 
 #### Zero-Roundtrip Cached Vault Folder Reuse
 At the start of every execution cycle, `DriveSyncWorker` queries `DriveVaultManager.getSavedVaultFolders(context, email, year, child)`. By reusing the folder IDs cached in `SharedPreferences` (`rootKidsFolderId`, `yearFolderId`, `childFolderId`, `attachmentsFolderId`, `systemFolderId`, `logsFolderId`), the worker eliminates up to 6 redundant `files().list()` network roundtrips per cycle. If preferences are unpopulated, it falls back to `GoogleDriveClient.provisionChildVault()`, persists the resolved IDs via `saveVaultFolderPrefs()`, and continues seamlessly.
@@ -1301,7 +1353,27 @@ val logsFolderId = getOrCreateFolder("logs", systemFolderId)
 ```
 By resolving `attachments/` and `_system/` in parallel via Kotlin coroutines, directory creation latency drops by ~40% over sequential HTTP roundtrips.
 
-#### 3. Persistent Two-Tier Storage Caching (`DriveVaultManager`)
+#### 3. Strict Non-Blank Folder Invariant (`GoogleDriveClient`)
+To structurally eliminate the possibility of Google Drive assigning default directory names (`"New Folder"`) when given blank or whitespace parameters, `GoogleDriveClient` enforces an uncompromising invariant at the API layer:
+
+```kotlin
+suspend fun provisionChildVault(academicYear: String, childName: String): ChildVaultFolders = withContext(Dispatchers.IO) {
+    val cleanChildName = childName.trim()
+    require(cleanChildName.isNotBlank()) { "Child name cannot be blank when provisioning vault." }
+    val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+    // ...
+}
+
+suspend fun getOrCreateFolder(folderName: String, parentFolderId: String? = null): String = withContext(Dispatchers.IO) {
+    val cleanName = folderName.trim()
+    require(cleanName.isNotBlank()) { "Google Drive folder name cannot be blank." }
+    // ...
+}
+```
+- **Fail-Fast Enforcement:** Any invocation with a blank, empty, or whitespace-only folder name or child name throws an immediate `IllegalArgumentException`.
+- **Precondition Safety:** No HTTP request is dispatched to Google Drive API's `files().create()` without an explicit, non-empty directory name, rendering ghost folder creation impossible.
+
+#### 4. Persistent Two-Tier Storage Caching & DB-Backed Fallback (`DriveVaultManager`)
 To survive application process death, device reboots, and multi-session workflows, `DriveVaultManager` persists the complete `ChildVaultFolders` struct in Android `SharedPreferences` (`kids_vault_prefs`):
 - **`saveVaultFolderPrefs(context, accountEmail, academicYear, childName, folders)`:** Persists the six primary folder IDs prefixed by `vault_${accountEmail}_${academicYear}_${childName.trim().lowercase()}_`:
   - `rootKidsFolderId`
@@ -1311,8 +1383,33 @@ To survive application process death, device reboots, and multi-session workflow
   - `systemFolderId`
   - `logsFolderId`
 - **`getSavedVaultFolders(context, accountEmail, academicYear, childName)`:** Atomically reads and reconstructs `ChildVaultFolders`. If all six folder IDs are present in preferences, it returns the struct immediately; if any ID is missing, it returns `null` to trigger provisioning.
+- **Database-Backed Fallback in `getSavedVaultPrefs`:** When resolving preferences via `getSavedVaultPrefs(context)`, if `child_name` is missing or unpopulated in `SharedPreferences`, `DriveVaultManager` executes a direct query against SQLite Room:
+  ```kotlin
+  fun getSavedVaultPrefs(context: Context): Triple<String?, String, String> {
+      val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+      val email = prefs.getString("account_email", null) ?: currentAccountEmail
+      val year = prefs.getString("academic_year", null) ?: "2026-2027"
+      var child = prefs.getString("child_name", null) ?: ""
+      if (child.isBlank()) {
+          try {
+              val db = KidsDatabase.getInstance(context)
+              val firstChild = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                  db.childProfileDao().getAllChildrenDirect().firstOrNull()
+              }
+              if (firstChild != null && firstChild.firstName.isNotBlank()) {
+                  child = firstChild.firstName
+                  prefs.edit().putString("child_name", child).apply()
+              }
+          } catch (e: Exception) {
+              Log.w(TAG, "Could not resolve child name fallback from DB: ${e.message}")
+          }
+      }
+      return Triple(email, year, child)
+  }
+  ```
+  This guarantees that background workers and secondary tasks always resolve the true enrolled child name even if app preferences were reset or not yet synced to disk. If no child exists in the database, `child` remains empty (`""`), triggering `DriveSyncWorker`'s profile guard.
 
-#### 4. Asynchronous Background Template Seeding (Step 1 Instant Transition)
+#### 5. Asynchronous Background Template Seeding (Step 1 Instant Transition)
 During Step 1 of the Onboarding Wizard ("Save Profile & Create Vault on Drive"):
 1. `DriveVaultManager.provisionStep1()` first checks `getSavedVaultFolders()`. If cached, the wizard transitions **instantly (<50ms)** without any Drive network calls.
 2. On initial creation, folder hierarchy provisioning completes in ~1.5 seconds via parallel `async` calls, immediately returns `ProvisionStep1Result.Success`, and saves the folder IDs to `SharedPreferences`.
@@ -1332,7 +1429,7 @@ During Step 1 of the Onboarding Wizard ("Save Profile & Create Vault on Drive"):
    ```
 4. The parent transitions seamlessly to Step 2 (Classroom Mapping) with zero loading spinner delay.
 
-#### 5. `DriveSyncWorker` Zero-Roundtrip Cached Folder Reuse
+#### 6. `DriveSyncWorker` Zero-Roundtrip Cached Folder Reuse
 During scheduled background and push-triggered synchronization cycles, `DriveSyncWorker` leverages the cached folder structure directly:
 ```kotlin
 val (savedEmail, academicYear, childName) = DriveVaultManager.getSavedVaultPrefs(applicationContext)

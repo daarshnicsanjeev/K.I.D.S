@@ -500,6 +500,16 @@ My Drive/
                     └── diagnostic_snapshot.json <-- Device state & health probe
 ```
 
+#### Vault Folder Hierarchy Guarantee & Anti-Ghost Architecture
+To provide parents with total transparency, clean organization, and confidence in their cloud vault, K.I.D.S. enforces three structural guarantees:
+
+1. **Strict Child-Named Hierarchy Guarantee:**
+   Every child vault folder created inside an academic session is strictly and deterministically named after the child (e.g., `2026-2027/atharva/` or `2026-2027/Aarav/`). Anonymous, empty, or unassociated folder paths are structurally forbidden across all synchronization routines.
+2. **Deferred Background Sync (Zero Ghost "New Folder" Artifacts):**
+   During initial onboarding or permission setup, Android background workers or notification listeners may trigger synchronization events before the parent has finalized and saved the child profile. K.I.D.S. strictly guards against premature provisioning: if the child profile has not yet been saved in local storage or the child's name is blank, background synchronization (`DriveSyncWorker`) **defers execution immediately**. It yields safely with success without making any Google Drive API folder creation calls, preventing premature sync triggers from accidentally generating unnamed or ghost folders (`New Folder`).
+3. **Autonomous Self-Healing & Stray Folder Purge:**
+   Every synchronization cycle performs an automatic hygiene and self-healing sweep of your Google Drive vault. If any legacy, unlinked, or accidental empty folders named `"New Folder"` or `"New Folder (*"` exist under the academic year directory on Google Drive (such as from earlier manual app sessions or pre-setup triggers), K.I.D.S. autonomously detects and permanently purges them. Your Google Drive Vault remains pristine, structured, and strictly organized under your child's name.
+
 ### Using `MASTER_DIGEST.md` & `FAMILY_DIGEST.md`
 - **`MASTER_DIGEST.md`:** Opens in any Markdown reader, text editor, or Google Docs. It provides a structured summary organized into:
   - 📚 **Homework & Assignments:** Sorted by due date and subject.

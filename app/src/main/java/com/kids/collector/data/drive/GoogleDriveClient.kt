@@ -57,9 +57,13 @@ class GoogleDriveClient(
      * Provisions the complete nested folder structure for a given child.
      */
     suspend fun provisionChildVault(academicYear: String, childName: String): ChildVaultFolders = withContext(Dispatchers.IO) {
+        val cleanChildName = childName.trim()
+        require(cleanChildName.isNotBlank()) { "Child name cannot be blank when provisioning vault." }
+        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+
         val rootKidsFolderId = getOrCreateFolder("K.I.D.S. Data", null)
-        val yearFolderId = getOrCreateFolder(academicYear, rootKidsFolderId)
-        val childFolderId = getOrCreateFolder(childName, yearFolderId)
+        val yearFolderId = getOrCreateFolder(cleanYear, rootKidsFolderId)
+        val childFolderId = getOrCreateFolder(cleanChildName, yearFolderId)
 
         // Resolve sibling child folders concurrently for maximum speed
         val attachmentsDeferred = async { getOrCreateFolder("attachments", childFolderId) }
@@ -80,13 +84,16 @@ class GoogleDriveClient(
     }
 
     suspend fun getOrCreateFolder(folderName: String, parentFolderId: String? = null): String = withContext(Dispatchers.IO) {
-        val cacheKey = "${parentFolderId ?: "root"}/$folderName"
+        val cleanName = folderName.trim()
+        require(cleanName.isNotBlank()) { "Google Drive folder name cannot be blank." }
+
+        val cacheKey = "${parentFolderId ?: "root"}/$cleanName"
         folderCache[cacheKey]?.let { return@withContext it }
 
         folderMutex.withLock {
             folderCache[cacheKey]?.let { return@withLock it }
 
-            var query = "name = '$folderName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+            var query = "name = '$cleanName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             if (parentFolderId != null) {
                 query += " and '$parentFolderId' in parents"
             }
@@ -104,7 +111,7 @@ class GoogleDriveClient(
             }
 
             val folderMetadata = File().apply {
-                name = folderName
+                name = cleanName
                 mimeType = "application/vnd.google-apps.folder"
                 if (parentFolderId != null) {
                     parents = listOf(parentFolderId)

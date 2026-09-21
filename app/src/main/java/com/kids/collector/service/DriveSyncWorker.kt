@@ -36,26 +36,55 @@ class DriveSyncWorker(
         val db = KidsDatabase.getInstance(applicationContext)
 
         return@withContext try {
-            val (savedEmail, academicYear, childName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+            val (savedEmail, academicYear, prefChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+            val childName = if (prefChildName.isNotBlank()) {
+                prefChildName
+            } else {
+                val dbChildren = db.childProfileDao().getAllChildrenDirect()
+                dbChildren.firstOrNull()?.firstName ?: ""
+            }
+
+            if (savedEmail.isNullOrBlank() || childName.isBlank()) {
+                Log.w(TAG, "Sync deferred: Child profile not yet established or childName is blank.")
+                CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established.")
+                return@withContext Result.success()
+            }
+
             val pendingNotices = db.noticeDao().getPendingNotices()
             val pendingAttachments = db.attachmentDao().getPendingAttachments()
             val pendingLogs = CrawlerTraceLogger.drainPendingLogs()
 
             CrawlerTraceLogger.log(TAG, "Found ${pendingNotices.size} pending notices, ${pendingAttachments.size} attachments, ${pendingLogs.size} trace logs")
 
-            if (!savedEmail.isNullOrBlank()) {
-                val driveService = com.kids.collector.data.drive.DriveVaultManager.getDriveService(applicationContext, savedEmail)
-                val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
-                val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(applicationContext, savedEmail, academicYear, childName)
-                    ?: driveClient.provisionChildVault(academicYear, childName).also {
-                        com.kids.collector.data.drive.DriveVaultManager.saveVaultFolderPrefs(applicationContext, savedEmail, academicYear, childName, it)
-                    }
-
-                // 1. Flush crawler deep trace logs to _system/logs/crawler_trace.log
-                if (pendingLogs.isNotEmpty()) {
-                    driveClient.appendCrawlerTraceLog(vault.logsFolderId, pendingLogs)
-                    CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
+            val driveService = com.kids.collector.data.drive.DriveVaultManager.getDriveService(applicationContext, savedEmail)
+            val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
+            val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(applicationContext, savedEmail, academicYear, childName)
+                ?: driveClient.provisionChildVault(academicYear, childName).also {
+                    com.kids.collector.data.drive.DriveVaultManager.saveVaultFolderPrefs(applicationContext, savedEmail, academicYear, childName, it)
                 }
+
+            // Autonomous self-healing: Purge any stray legacy "New Folder" on Drive if present
+            try {
+                val strayFolders = driveService.files().list()
+                    .setQ("'${vault.yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and (name = 'New Folder' or name contains 'New Folder (') and trashed = false")
+                    .setFields("files(id, name)")
+                    .execute()
+                for (stray in strayFolders.files.orEmpty()) {
+                    try {
+                        driveService.files().delete(stray.id).execute()
+                        Log.i(TAG, "Purged stray empty folder from Google Drive: ${stray.name}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not purge stray folder: ${stray.name}")
+                    }
+                }
+            } catch (_: Exception) {
+            }
+
+            // 1. Flush crawler deep trace logs to _system/logs/crawler_trace.log
+            if (pendingLogs.isNotEmpty()) {
+                driveClient.appendCrawlerTraceLog(vault.logsFolderId, pendingLogs)
+                CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
+            }
 
                 // 2. Batch upload pending notices to Google Drive
                 var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
@@ -298,10 +327,6 @@ class DriveSyncWorker(
                     driveClient.appendCrawlerTraceLog(vault.logsFolderId, finalLogs)
                     CrawlerTraceLogger.appendToLocalFile(applicationContext, finalLogs)
                 }
-            } else {
-                Log.w(TAG, "No Google Drive account email configured. Skipping remote upload.")
-                CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
-            }
 
             Result.success()
 

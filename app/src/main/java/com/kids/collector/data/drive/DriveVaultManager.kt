@@ -53,7 +53,21 @@ object DriveVaultManager {
         val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
         val email = prefs.getString("account_email", null) ?: currentAccountEmail
         val year = prefs.getString("academic_year", null) ?: "2026-2027"
-        val child = prefs.getString("child_name", null) ?: ""
+        var child = prefs.getString("child_name", null) ?: ""
+        if (child.isBlank()) {
+            try {
+                val db = com.kids.collector.data.db.KidsDatabase.getInstance(context)
+                val firstChild = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                    db.childProfileDao().getAllChildrenDirect().firstOrNull()
+                }
+                if (firstChild != null && firstChild.firstName.isNotBlank()) {
+                    child = firstChild.firstName
+                    prefs.edit().putString("child_name", child).apply()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not resolve child name fallback from DB: ${e.message}")
+            }
+        }
         return Triple(email, year, child)
     }
 
@@ -114,6 +128,13 @@ object DriveVaultManager {
             return@withContext ProvisionStep1Result.Failure(
                 IllegalStateException("No Google Account selected."),
                 "Please select your Google Account first."
+            )
+        }
+
+        if (childName.trim().isBlank()) {
+            return@withContext ProvisionStep1Result.Failure(
+                IllegalArgumentException("Child name cannot be blank."),
+                "Please enter your child's name first."
             )
         }
 
