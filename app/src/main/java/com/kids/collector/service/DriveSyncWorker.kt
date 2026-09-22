@@ -4,7 +4,10 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import androidx.room.withTransaction
 import com.kids.collector.data.db.KidsDatabase
+import com.kids.collector.data.db.NoticeEntity
+import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.domain.graph.KotlinGraphifyEngine
 import com.kids.collector.domain.model.SyncStatus
 import com.kids.collector.telemetry.DriveDeepLogger
@@ -176,44 +179,13 @@ class DriveSyncWorker(
 
             // 3. Batch upload pending notices to Google Drive with EMBEDDED ATTACHMENTS
             if (pendingNotices.isNotEmpty()) {
-                val allAttachmentsByNotice = db.attachmentDao().getAllAttachmentsDirect().groupBy { it.noticeId }
-                val classroomNotices = pendingNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
-                val otherNotices = pendingNotices.filter { !it.sourceApp.contains("classroom", ignoreCase = true) }
+                val attachmentsByNoticeId = db.attachmentDao().getAllAttachmentsDirect().groupBy { it.noticeId }
+                val classroomNotices = pendingNotices.filter { it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
+                val standardNotices = pendingNotices.filter { !it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
 
                 if (classroomNotices.isNotEmpty()) {
-                    val actualClassroomVault = classroomVault ?: driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
-                    val batchClassroomJsonl = classroomNotices.joinToString("\n") { notice ->
-                        val noticeAtts = allAttachmentsByNotice[notice.noticeId] ?: emptyList()
-                        buildJsonObject {
-                            put("noticeId", notice.noticeId)
-                            put("childId", notice.childId)
-                            put("timestampMs", notice.timestampMs)
-                            put("sourceApp", notice.sourceApp)
-                            put("category", notice.category)
-                            put("title", notice.title)
-                            put("body", notice.body)
-                            put("sender", notice.sender)
-                            put("hashSha256", notice.hashSha256)
-                            put("attachmentCount", noticeAtts.size)
-                            put("attachments", buildJsonArray {
-                                for (att in noticeAtts) {
-                                    add(buildJsonObject {
-                                        put("attachmentId", att.attachmentId)
-                                        put("fileName", att.fileName)
-                                        put("mimeType", att.mimeType)
-                                        put("sizeBytes", att.sizeBytes)
-                                        put("driveFileId", att.driveFileId ?: "")
-                                        if (!att.driveFileId.isNullOrBlank() && !att.driveFileId.startsWith("virtual_")) {
-                                            put("driveUrl", "https://drive.google.com/file/d/${att.driveFileId}/view")
-                                        }
-                                        if (!att.ocrText.isNullOrBlank()) {
-                                            put("ocrSummary", att.ocrText.take(120))
-                                        }
-                                    })
-                                }
-                            })
-                        }.toString()
-                    }
+                    val actualClassroomVault = classroomVault ?: driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)
+                    val batchClassroomJsonl = serializeNoticesToJsonl(classroomNotices, attachmentsByNoticeId)
 
                     val uploadedFileId = driveClient.appendNoticeToChannelJsonl(actualClassroomVault.channelFolderId, batchClassroomJsonl)
                     driveClient.appendNoticeToJsonl(vault.childFolderId, batchClassroomJsonl)
@@ -223,58 +195,34 @@ class DriveSyncWorker(
                         "[CLASSROOM BATCH SYNC] Synced ${classroomNotices.size} notices into Google Classroom/ folder"
                     )
 
-                    for (notice in classroomNotices) {
-                        db.noticeDao().updateSyncStatus(
-                            noticeId = notice.noticeId,
-                            newStatus = SyncStatus.SYNCED.name,
-                            driveFileId = uploadedFileId
-                        )
+                    db.withTransaction {
+                        for (notice in classroomNotices) {
+                            db.noticeDao().updateSyncStatus(
+                                noticeId = notice.noticeId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedFileId
+                            )
+                        }
                     }
                 }
 
-                if (otherNotices.isNotEmpty()) {
-                    val batchOtherJsonl = otherNotices.joinToString("\n") { notice ->
-                        val noticeAtts = allAttachmentsByNotice[notice.noticeId] ?: emptyList()
-                        buildJsonObject {
-                            put("noticeId", notice.noticeId)
-                            put("childId", notice.childId)
-                            put("timestampMs", notice.timestampMs)
-                            put("sourceApp", notice.sourceApp)
-                            put("category", notice.category)
-                            put("title", notice.title)
-                            put("body", notice.body)
-                            put("sender", notice.sender)
-                            put("hashSha256", notice.hashSha256)
-                            put("attachmentCount", noticeAtts.size)
-                            put("attachments", buildJsonArray {
-                                for (att in noticeAtts) {
-                                    add(buildJsonObject {
-                                        put("attachmentId", att.attachmentId)
-                                        put("fileName", att.fileName)
-                                        put("mimeType", att.mimeType)
-                                        put("sizeBytes", att.sizeBytes)
-                                        put("driveFileId", att.driveFileId ?: "")
-                                        if (!att.driveFileId.isNullOrBlank() && !att.driveFileId.startsWith("virtual_")) {
-                                            put("driveUrl", "https://drive.google.com/file/d/${att.driveFileId}/view")
-                                        }
-                                    })
-                                }
-                            })
-                        }.toString()
-                    }
+                if (standardNotices.isNotEmpty()) {
+                    val batchStandardJsonl = serializeNoticesToJsonl(standardNotices, attachmentsByNoticeId)
 
-                    val uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, batchOtherJsonl)
+                    val uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, batchStandardJsonl)
                     driveClient.appendTimelineLog(
                         vault.logsFolderId,
-                        "[NOTICE BATCH SYNC] Synced ${otherNotices.size} notices"
+                        "[NOTICE BATCH SYNC] Synced ${standardNotices.size} notices"
                     )
 
-                    for (notice in otherNotices) {
-                        db.noticeDao().updateSyncStatus(
-                            noticeId = notice.noticeId,
-                            newStatus = SyncStatus.SYNCED.name,
-                            driveFileId = uploadedFileId
-                        )
+                    db.withTransaction {
+                        for (notice in standardNotices) {
+                            db.noticeDao().updateSyncStatus(
+                                noticeId = notice.noticeId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedFileId
+                            )
+                        }
                     }
                 }
             }
@@ -384,7 +332,54 @@ class DriveSyncWorker(
         }
     }
 
+    /**
+     * Serializes a batch of notices and their embedded attachments into newline-delimited JSON (JSONL).
+     */
+    private fun serializeNoticesToJsonl(
+        notices: List<NoticeEntity>,
+        attachmentsByNoticeId: Map<String, List<AttachmentEntity>>
+    ): String = notices.joinToString("\n") { notice ->
+        val noticeAttachments = attachmentsByNoticeId[notice.noticeId].orEmpty()
+        buildJsonObject {
+            put("noticeId", notice.noticeId)
+            put("childId", notice.childId)
+            put("timestampMs", notice.timestampMs)
+            put("sourceApp", notice.sourceApp)
+            put("category", notice.category)
+            put("title", notice.title)
+            put("body", notice.body)
+            put("sender", notice.sender)
+            put("hashSha256", notice.hashSha256)
+            put("attachmentCount", noticeAttachments.size)
+            put("attachments", buildJsonArray {
+                for (attachment in noticeAttachments) {
+                    add(buildJsonObject {
+                        put("attachmentId", attachment.attachmentId)
+                        put("fileName", attachment.fileName)
+                        put("mimeType", attachment.mimeType)
+                        put("sizeBytes", attachment.sizeBytes)
+                        put("driveFileId", attachment.driveFileId.orEmpty())
+                        if (!attachment.driveFileId.isNullOrBlank() && !attachment.driveFileId.startsWith(VIRTUAL_DRIVE_ID_PREFIX)) {
+                            put("driveUrl", formatDriveFileUrl(attachment.driveFileId))
+                        }
+                        if (!attachment.ocrText.isNullOrBlank()) {
+                            put("ocrSummary", attachment.ocrText.take(MAX_OCR_SUMMARY_PREVIEW_LENGTH))
+                        }
+                    })
+                }
+            })
+        }.toString()
+    }
+
+    private fun formatDriveFileUrl(driveFileId: String): String =
+        GOOGLE_DRIVE_FILE_VIEW_URL_TEMPLATE.format(driveFileId)
+
     companion object {
         private const val TAG = "DriveSyncWorker"
+        private const val APP_KEYWORD_CLASSROOM = "classroom"
+        private const val CHANNEL_NAME_CLASSROOM = "Google Classroom"
+        private const val VIRTUAL_DRIVE_ID_PREFIX = "virtual_"
+        private const val MAX_OCR_SUMMARY_PREVIEW_LENGTH = 120
+        private const val GOOGLE_DRIVE_FILE_VIEW_URL_TEMPLATE = "https://drive.google.com/file/d/%s/view"
     }
 }

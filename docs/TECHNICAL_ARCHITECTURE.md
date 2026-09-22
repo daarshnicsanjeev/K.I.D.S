@@ -2368,10 +2368,31 @@ flowchart TD
      - **Runtime Log Sanitization Verification**: Audits log outputs (`logcat`, `crawler_trace.log`, `sync_timeline.log`, Drive vault logs) to verify that zero student credentials, tokens, PII, or raw message payloads are leaked into storage or diagnostics.
      - **ProGuard / R8 Rule Enforcement**: Verifies release obfuscation and code shrinking rules to guarantee that test hooks, debug bypasses, mock data injectors, and logging trampolines are completely stripped from production release builds (`app-release.apk` / `app-debug.apk`).
 - **Integration & Coordination**:
-  - Collaborates with `workflow_risk_guardian`, `deep_logger_guardian`, `github_ci_guardian`, and `docs_maintainer` to form a comprehensive 5-guardian engineering governance quintet.
+  - Collaborates with `workflow_risk_guardian`, `deep_logger_guardian`, `github_ci_guardian`, `docs_maintainer`, and `code_quality_guardian` to form a comprehensive 6-guardian engineering governance sextet.
   - Enforces gating authority: vetoes pull requests and CI pipelines if security invariants, OAuth boundaries, or privacy filters are compromised.
   - Coordinates with `deep_logger_guardian` to verify that diagnostic logging enhancements maintain zero-PII and zero-credential leak guarantees.
   - Ensures documentation parity with `docs_maintainer` on security mechanisms, permission rationales, and parent data sovereignty.
+
+### 6. `code_quality_guardian`: Code Review, Clean Architecture & Professional Naming Guardian
+- **Role & Purpose**: Inspects architectures, code diffs, and codebase implementations to guarantee clean code standards, idiomatic Kotlin design, descriptive domain-driven naming conventions, robust null-safety, and the elimination of technical debt.
+- **Key Responsibilities**:
+  1. **Descriptive & Professional Naming Conventions**:
+     - **Elimination of Cryptic Abbreviations**: Strictly prohibits cryptic or truncated abbreviations (`tmp`, `val1`, `x2`, `chk`, `cntr`, `strArr`, `res`, `mgr`). Variables and parameters must clearly express their intent and domain context (`temporaryStorageDirectory`, `visibleCardMetadata`, `scrollDirectionHistory`).
+     - **Idiomatic Casing**: Enforces `PascalCase` for classes/interfaces/enums/objects and UI Composables, `camelCase` for functions/methods/properties/variables, and `SCREAMING_SNAKE_CASE` for constants and enum entries.
+     - **Affirmative Boolean Readability**: Enforces clear affirmative query naming for booleans (`isNoticeFullyCaptured`, `hasPendingSync`, `shouldIngestNotice`, `canNavigateUp`).
+     - **Action-Oriented Function Verbs**: Enforces strong, descriptive action verbs for methods and functions (`calculateSha256Fingerprint`, `persistDiagnosticMilestone`, `synchronizeGoogleDriveVault`).
+  2. **Clean Code & Professional Architecture**:
+     - **Single Responsibility Decomposition**: Monolithic functions exceeding 40-50 lines or mixing abstraction levels are decomposed into small, focused, pure, testable units.
+     - **Magic Constant Elimination**: Magic numbers and hardcoded strings are extracted into named constants within companion objects or domain configuration classes.
+     - **Defensive Null-Safety**: Strictly prohibits unsafe non-null assertion operator (`!!`), enforcing safe calls (`?.`), Elvis operators (`?:`), and explicit domain assertions (`checkNotNull`, `requireNotNull`).
+     - **Safe Resource Management**: Enforces safe lifecycle reclamation for Bitmaps, Cursors, and `AccessibilityNodeInfo` objects (`use {}`, explicit `recycle()`).
+  3. **Jetpack Compose & WCAG Ergonomics**:
+     - Enforces state hoisting, stable parameters, descriptive Composable nouns, and event lambda naming (`onDismissRequest`, `onValueChange`).
+     - Audits minimum touch targets (>= 48dp x 48dp) and strict adherence to `KidsTheme` color and typography tokens.
+- **Integration & Coordination**:
+  - Reviews proposed code and diffs before staging, providing structured Code Quality & Review Reports with actionable, production-ready refactorings.
+  - Coordinates with `workflow_risk_guardian` to ensure refactorings maintain UI responsiveness and process lifecycle resilience.
+  - Works with `github_ci_guardian` to ensure code committed to the repository meets the highest software engineering craftsmanship standards.
 
 ---
 

@@ -832,7 +832,9 @@ fun OnboardingWizardScreen(
 
                                 OutlinedTextField(
                                     value = childName,
-                                    onValueChange = { childName = it.replace("\n", "").replace("\r", "") },
+                                    onValueChange = { inputName ->
+                                        childName = inputName.filterNot { char -> char == '\n' || char == '\r' }
+                                    },
                                     label = { Text("Child First Name *") },
                                     placeholder = { Text("Enter child's first name") },
                                     singleLine = true,
@@ -854,11 +856,11 @@ fun OnboardingWizardScreen(
                                     modifier = Modifier.fillMaxWidth(),
                                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    academicYears.forEach { yr ->
+                                    academicYears.forEach { academicYear ->
                                         FilterChip(
-                                            selected = selectedYear == yr,
-                                            onClick = { selectedYear = yr },
-                                            label = { Text(yr) },
+                                            selected = selectedYear == academicYear,
+                                            onClick = { selectedYear = academicYear },
+                                            label = { Text(academicYear) },
                                             modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                                         )
                                     }

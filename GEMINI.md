@@ -179,4 +179,21 @@ c:\K.I.D.S\
        - Runtime log sanitization verification: ensures zero student credentials, tokens, or PII are logged to logcat, `crawler_trace.log`, or `sync_timeline.log`.
        - ProGuard / R8 rule validation to ensure test hooks, mocks, and debug bypasses are stripped from production release builds.
 
-
+### 4.9. Code Review, Clean Architecture & Professional Naming Guardian Subagent (`code_quality_guardian`)
+- **Automated Code Review, Professionalism & Naming Convention Verification**:
+  - The `code_quality_guardian` subagent inspects code diffs, architectures, and full implementations to guarantee that all code adheres to professional software engineering standards, clean architecture principles, and expressive, descriptive naming conventions.
+  - Its objective is to evaluate, audit, and verify:
+    1. **Descriptive & Professional Naming Conventions**:
+       - Strictly rejects cryptic abbreviations (e.g. `tmp`, `val1`, `x2`, `chk`, `cntr`, `strArr`, `res`, `mgr`), ambiguous single-letter variables, and colloquial identifiers.
+       - Enforces standard Kotlin casing: `PascalCase` for classes/interfaces/enums/objects, `camelCase` for functions/methods/properties/variables, and `SCREAMING_SNAKE_CASE` for constants and enum entries.
+       - Enforces affirmative boolean readability (`isNoticeFullyCaptured`, `hasPendingSync`, `shouldIngestNotice`, `canNavigateUp`).
+       - Enforces action-oriented verbs for methods and functions (`extractVisibleCardMetadata`, `persistDiagnosticMilestone`, `calculateFingerprintHash`).
+    2. **Clean Code & Professional Architecture**:
+       - Single Responsibility Principle (SRP): Decomposes monolithic functions (>40-50 lines) into focused, testable units.
+       - Eliminates magic numbers and magic strings, extracting them into named constants in companion objects or domain configuration classes.
+       - Eliminates unsafe non-null assertion operators (`!!`), enforcing idiomatic Kotlin null-safety (`?.`, `?:`, `checkNotNull`).
+       - Enforces safe resource management (`use {}`, explicit recycles of Bitmaps, Cursors, and `AccessibilityNodeInfo`).
+       - Removes dead code, commented-out remnants, and unneeded IDE warning suppressions.
+    3. **Jetpack Compose & WCAG Ergonomics**:
+       - Enforces state hoisting, stable parameters, descriptive Composable nouns, and proper callback naming (`onDismissRequest`, `onValueChange`).
+       - Validates minimum 48dp x 48dp touch targets and adherence to `KidsTheme` color and typography tokens.
