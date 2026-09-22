@@ -109,6 +109,19 @@ class StreamManifest {
             }?.let { return it }
         }
 
+        // Tier 5: Word / Token overlap (for titles with punctuation or localized script differences)
+        if (cleanTitle.length >= 8) {
+            val titleTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+            if (titleTokens.size >= 2) {
+                _items.firstOrNull { item ->
+                    val itemTokens = item.title.lowercase().split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                    val common = titleTokens.intersect(itemTokens)
+                    val overlap = common.size.toFloat() / maxOf(titleTokens.size, itemTokens.size)
+                    overlap >= 0.6f
+                }?.let { return it }
+            }
+        }
+
         return null
     }
 

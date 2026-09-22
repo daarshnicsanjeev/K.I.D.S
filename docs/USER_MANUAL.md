@@ -480,21 +480,18 @@ flowchart TD
     end
 ```
 
-#### 1. Pass 1: Pre-Flight Stream Survey
+#### 1. Pass 1: Pre-Flight Stream Survey & Complete Full-Year Discovery
 - **Swift Non-Intrusive Scanning:** The assistant glides swiftly down the entire Classroom stream using kinetic physical swipes without opening any post cards.
 - **Inventory Manifest Construction:** Every discovered announcement is fingerprinted and cataloged into an in-memory inventory manifest (`StreamManifest`).
 - **Boundary Recording:** K.I.D.S. records the exact chronological boundaries of the stream: the very first notice (`startItemTitle`), the oldest notice (`endItemTitle`), and the total post count (`totalCount`).
 - **Live Survey Progress:** The overlay status pill displays:
   $$\text{Surveying (X found)...}$$
   $$\text{Discovered X notices so far}$$
-#### 1. Pass 1: Pre-Flight Stream Survey
-- **Swift Non-Intrusive Scanning:** The assistant glides swiftly down the entire Classroom stream using kinetic physical swipes without opening any post cards.
-- **Inventory Manifest Construction:** Every discovered announcement is fingerprinted and cataloged into an in-memory inventory manifest (`StreamManifest`).
-- **Boundary Recording:** K.I.D.S. records the exact chronological boundaries of the stream: the very first notice (`startItemTitle`), the oldest notice (`endItemTitle`), and the total post count (`totalCount`).
-- **Live Survey Progress:** The overlay status pill displays:
-  $$\text{Surveying (X found)...}$$
-  $$\text{Discovered X notices so far}$$
-- **Instant Screen-Freeze Bottom Detection:** Instead of endlessly swiping against the bottom of the feed, K.I.D.S. compares visible cards across consecutive scrolls. If the screen physically stops moving (2 identical screen views) or 3 scrolls yield 0 new notices, Pass 1 concludes immediately with zero sluggish delays.
+- **Complete Full-Year Stream Survey (June to Present with Zero Premature Cutoffs):**
+  When auditing an entire academic year, Google Classroom feeds contain dozens or hundreds of notices spanning back to June or the start of the school term, intermixed with long multi-paragraph circulars. K.I.D.S. features intelligent stream survey mechanics that **never cut off prematurely**:
+  - **Separation of Viewport Movement from Screen Immobility:** While scrolling past long announcements, the list viewport continues moving even if no new card header enters view immediately. K.I.D.S. separates active viewport movement from physical screen immobility.
+  - **1,200ms Network Pagination Grace Delay:** Google Classroom fetches older historical batches over the network dynamically. When the viewport appears momentarily static, K.I.D.S. pauses for an adaptive **1,200ms network pagination delay** to give Classroom time to fetch and render the next batch of older posts.
+  - **True Bottom Confirmation:** Only after **5 consecutive scrolls where the screen remains physically static (`identicalScreenCount >= 5`)** does Pass 1 declare the true bottom of the academic year, guaranteeing that notices from earlier months (June, July, August) are completely cataloged.
 - **Instant Fast-Path Completion:** If all discovered notices already exist in local SQLite Room storage (`pendingCount == 0`), K.I.D.S. instantly displays `✓ Stream Up to Date (All X notices already captured)`, triggers background sync, and safely exits without running Pass 2.
 
 #### 2. Pass 1.5: Stream Rewind
@@ -524,12 +521,22 @@ If the target post is not immediately visible on screen after returning from det
 3. **Movement Progress Awareness:** When seeking a distant notice across multiple scrolls, K.I.D.S. monitors viewport motion. As long as the list is progressing closer toward the target notice, the engine never falsely penalizes or skips the item.
 4. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
 
-#### 2. Zero Dropped Notices & Stuck-Screen Skip Safeguard
+#### 2. Fail-Safe Bounded Capture & Recovery Escalation
+- **Bounded Target Verification (`isTargetBounded`):** When the target notice's index is bounded within the visible range of cards on screen (`targetIndex in minVisibleIndex..maxVisibleIndex`), K.I.D.S. knows the post is physically rendered on display. Swiping is halted to avoid overshooting.
+- **Bounded Recovery Escalation:** The crawler identifies the best matching candidate card and dispatches physical touch taps. If the detail view does not open (due to OEM touch event absorption, non-clickable card containers, or inline post formats), K.I.D.S. escalates attempts via `manifest.incrementAttempt(fingerprint)`.
+- **Fail-Safe Fallback Direct Ingestion (After 3 Bounded Attempts):**
+  If a bounded notice fails to transition to detail view after **3 bounded attempts**, the recovery engine activates a graceful fallback:
+  - It ingests the announcement text, title, author, and preview directly from the visible stream card into local SQLite Room storage (`NoticeEntity`).
+  - Marks the item as `COMPLETED` in the `StreamManifest` and local visited set.
+  - Increments the live notice tally on the overlay and immediately advances to the next notice in the manifest.
+  - **Zero Hang / Zero Loop Guarantee:** The assistant never stalls, loops indefinitely, or freezes the user's device.
+
+#### 3. Zero Dropped Notices & Stuck-Screen Skip Safeguard
 - In traditional screen crawlers, displaced cards cause notices to be lost or crawler loops to crash. K.I.D.S. guarantees **zero dropped notices** by keeping every notice in the manifest until positively processed.
 - Only if the screen is genuinely stuck in place for 3+ consecutive scrolls without moving closer does the recovery engine increment failure attempts.
 - If an item fails to resolve after **4 confirmed stuck-screen recovery attempts**, K.I.D.S. marks the item as `FAILED_SKIPPED` in the manifest, logs a detailed warning in `crawler_trace.log`, and immediately proceeds to the next notice in the manifest. The crawler never hangs or gets trapped in infinite loops.
 
-#### 3. Instant SQLite Synchronization Skipping (`ALREADY_SYNCED`)
+#### 4. Instant SQLite Synchronization Skipping (`ALREADY_SYNCED`)
 - When indexing cards in Pass 1, K.I.D.S. cross-references each post's SHA-256 fingerprint with notices already stored in the local SQLite Room database (`visitedPostFingerprints` and `NoticeEntity`).
 - Posts already saved from earlier crawl sessions or received via background push notifications are immediately tagged as `StreamItemStatus.ALREADY_SYNCED`.
 - In Pass 2, `getNextPendingItem()` skips `ALREADY_SYNCED` items in zero milliseconds. The assistant never wastes battery, data, or time reopening cards or redownloading worksheets that have already been backed up to your Google Drive Vault!
@@ -537,7 +544,7 @@ If the target post is not immediately visible on screen after returning from det
   $$\text{progressPercent} = \frac{\text{completedCount} + \text{alreadySyncedCount}}{\text{totalCount}} \times 100$$
   giving parents a truthful, accurate view of total vault synchronization.
 
-#### 4. Fast-Forward Seeking Mode (Zero Redundant Work)
+#### 5. Fast-Forward Seeking Mode (Zero Redundant Work)
 When you start Auto-Capture on a classroom stream where recent notices were already synchronized during prior sessions or captured via background notification listening, K.I.D.S. avoids repetitive processing:
 - **Intelligent Skip Detection:** The crawler recognizes that early notices are already safely stored in your vault (`manifest.completedCount >= (nextItem.index - 1)`).
 - **Live Status Feedback:** Rather than showing standard step-by-step processing or redundantly re-opening cards, the floating assistant dynamically switches into **Fast-Forward Seeking Mode**, displaying:
@@ -551,16 +558,30 @@ When you start Auto-Capture on a classroom stream where recent notices were alre
 
 K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of announcements, opening attachments, and downloading worksheets one by one:
 
-1. **Deterministic Post Discovery & Relaxed Viewport Tolerance:** 
-   - The crawler scans the stream viewport, ignoring app bar chrome, bottom navigation tabs, and dynamic comment widgets.
+1. **Universal Stream Post Detection (Zero Hardcoding):**
+   - **Universal Distinction (Real Posts vs. Header Banners):** At the top of Google Classroom's Stream tab sits a large course header banner containing the class name, section, and academic year (e.g., `"Grade 3B CAIE 2026-27"`, `"Class 10-A Science 2025-26"`, `"Kindergarten - Sunflower Room"`, or `"IB DP Year 1 Mathematics"`). Previous crawlers relied on fragile hardcoded string lists to ignore these banners, causing failures whenever a school changed class naming conventions.
+   - **Zero Hardcoding Architecture:** K.I.D.S. uses structural and semantic indicators with **ZERO hardcoded class names, grades, or divisions**:
+     - *Header Banner Invariant:* A course header banner contains *only* the class name and academic year; it never possesses a post category, a publication timestamp, or a comments action.
+     - *Positive Post Indicators:* A genuine educational post must satisfy at least one verified post indicator:
+       1. **Post Category Prefix:** Matches educational prefixes like `"new material"`, `"new assignment"`, `"new question"`, `"new quiz"`, `"material:"`, or `"assignment:"`.
+       2. **Date / Publication Timestamp:** Contains absolute or relative timestamps (e.g. `"yesterday"`, `"today"`, month patterns like `"Sep 18"` or `"18 Sep"`, 12-hour clock times like `"10:30 am"`, or relative markers like `"2 days ago"`).
+       3. **Comments Action / Indicator:** Contains class comments interaction cues.
+     - *Negative Exclusions:* Banners, composer input boxes (*"Announce something to your class"*, *"Share with your class"*), and navigation shortcuts (*"View to-do list"*) are definitively excluded.
+   - Works seamlessly across all educational boards (CBSE, ICSE, Cambridge / CAIE, IB, State Boards) and any custom class nomenclature worldwide.
+
+2. **Preserved Notices with Comments (Zero Dropped Announcements):**
+   - In Google Classroom, almost every announcement contains a comment prompt or counter (e.g., `"0 class comments for post by Teacher Name"`, `"class comments for post by..."`, or `"3 class comments"`).
+   - In older filtering heuristics, searching for `"class comments for"` against the entire text of a card could aggressively drop the entire notice card, mistakenly treating a real teacher announcement as a comment widget.
+   - **100% Preservation:** K.I.D.S. completely eliminates this over-aggressive drop! Standalone comment chips (where a node contains *only* `"0 class comments"` with no body text, `< 35` chars) are ignored, but whenever comment indicators appear inside a valid announcement card, the announcement is **fully preserved and never dropped**.
+   - **Dynamic Counter Stripping for Fingerprints:** When computing the post's SHA-256 fingerprint, comment counter lines are stripped before hashing. If other parents or students post new comments later, the announcement's fingerprint remains completely stable, preventing duplicate notices or false changes.
+
+3. **Deterministic Viewport Discovery & Safe Center Clamping:**
    - **Relaxed Viewport Tolerance & Safe Center Clamping:** In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the screen as the list scrolls. In previous systems, partially visible cards were often skipped, causing missed notices. K.I.D.S. implements a **relaxed viewport tolerance rule**: a card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the viewport** (`rect.centerY() in minTop..maxBottom`). To guarantee reliable physical tap dispatch, K.I.D.S. safely clamps the click target's vertical coordinate:
      $$\text{safeCenterY} = \text{rect.centerY().coerceIn}(\text{minTop} + 40, \text{maxBottom} - 40)$$
      This ensures that injected taps always land safely inside the visible screen bounds rather than striking off-screen coordinates or hitting the top app bar or bottom navigation tabs.
-   - **Automated Classroom Stream Comment Filtering:** Google Classroom posts frequently feature noisy comment counters and buttons (e.g. `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or dynamic counts like `"3 class comments"`). K.I.D.S. handles these seamlessly through a dual-layer filtering defense:
-     - **Viewport Traversal Filter:** `findNextUnvisitedPost()` checks candidate card nodes and immediately ignores any comment header chips, comment count rows, and comment input fields matching `^\d+\s+class\s+comments?.*`. Comment widgets are never mistaken for announcements and never stall scrolling.
-     - **Dynamic Counter Stripping in Fingerprinting:** Before calculating the SHA-256 card fingerprint in `computeCardFingerprint()`, K.I.D.S. strips all regex comment matches (`\b\d+\s+class\s+comments?.*`) and filters out lines containing `"class comments for"`. This ensures that when other parents or students post new comments to an announcement later, the underlying announcement fingerprint remains strictly identical, preventing duplicate notices from ever being generated.
    - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
-2. **Deep Post Entry & The Attachment Guarantee:**
+
+4. **Deep Post Entry & The Attachment Guarantee:**
    - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the clamped post card screen coordinates (`cardBounds.centerX(), safeCenterY`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
    - **Extended 2,500ms Detail View Window with Physical Center-Tap Retry:** When opening a post card, K.I.D.S. observes screen transitions with an extended 2,500ms multi-stage window:
      1. Waits up to 1,200ms for the detail screen to initialize.
@@ -571,8 +592,8 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      Even if an initial tap fails to transition immediately, K.I.D.S. strictly refuses to mark such notices as `COMPLETED` from the stream view. Instead, it preserves their `PENDING` status in the manifest, increments the attempt count, re-anchors the card, opens the notice detail view, verifies all attachments, and downloads every single file before marking the notice complete.
    - **Stream Announcement Handling (Fast Fallback for Plain-Text Alerts):**
      Many school announcements in the Stream tab—such as urgent holiday alerts, weather advisories, festival greetings, and administrative notices—are purely text-based without any attachments. For these notices, tapping does not open a separate screen. Only after the detail timeout confirms the card has no detail view and is not a study material post, K.I.D.S. safely falls back to **direct stream card ingestion**: capturing the full message body, title, author, and timestamp into local storage (`NoticeEntity`), updating the counter, and proceeding smoothly to the next notice.
-3. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
-4. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
+5. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
+6. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
    - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous.
    - **Why 'Save all files offline' is Intentionally Bypassed:** Many announcements feature a Google Classroom button labeled *"Save all files offline"*. K.I.D.S. **deliberately blacklists and ignores this button**. When Google Classroom saves files "offline", it caches them in an encrypted, inaccessible private application sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`). Parents cannot view, open, or export these files from other apps or files managers, and they permanently bloat device flash memory.
    - **Automated Viewer Detection & Share Targeting:**
@@ -585,14 +606,14 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      7. Immediate background synchronization is enqueued with Google Drive via WorkManager.
      8. The assistant dismisses the preview and executes a guarded return back to Classroom, completing the entire file capture in **under 1 second per file**!
    - **Calibrated 1,000ms Debounce:** When direct download buttons are present, a 1,000ms debounce between files gives Android's system `DownloadManager` ample time to register the download request without dropping queue items or overloading network sockets.
-5. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
+7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
    - K.I.D.S. implements a resilient **Multi-Attempt Guarded Return Loop** executing **up to 3 sequential attempts**:
      - On each attempt, it inspects the active window. If `isStreamOrClassworkView(active)` confirms the phone has returned to the main feed, it immediately exits the loop.
      - If still inside a document viewer or post detail view, it triggers `performReturnToStream`: first attempting `ACTION_CLICK` on the Navigate Up (`←`) toolbar icon, falling back to physical tap on the icon bounds, and finally dispatching Android's system-level `GLOBAL_ACTION_BACK`.
      - It allows a 600ms delay between attempts, effortlessly dismissing any document previewers before returning to the stream.
    - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
-6. **Physical Kinetic Pointer Swipes (Forward Ingestion & Backward Rewind):**
+8. **Physical Kinetic Pointer Swipes (Forward Ingestion & Backward Rewind):**
    - **Why Physical Swipes are Essential:** Modern Google Classroom `RecyclerView` implementations rely on physical finger fling momentum and `OnScrollListener` velocity callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) often return a "success" status from the Android accessibility framework without generating actual scrolling physics, leaving Classroom's pagination adapter stalled and failing to request older historical notices.
    - **Forward Kinetic Swipe (`performScroll`):** Starts at 75% screen height and sweeps upward to 20% screen height:
      $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
@@ -603,7 +624,7 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
    - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, both swipes safely avoid triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoid colliding with or dragging the floating assistant overlay.
    - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
    - **Native Scroll Fallback:** If physical gestures are cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scroll container.
-7. **Zero-Permanent-Storage Guarantee & Automatic Cloud Sync:**
+9. **Zero-Permanent-Storage Guarantee & Automatic Cloud Sync:**
    - Whether files land in staging via the **Native Share Target** or via public folder sweeping (`Downloads/`, `Documents/`), all attachments are staged exclusively in private sandbox staging (`Android/data/com.kids.collector/files/vault_attachments/`).
    - `DriveSyncWorker` performs offline ML Kit OCR and uploads the attachments directly to your Google Drive Vault under `attachments/` using your restricted `drive.file` OAuth scope ($0 cloud cost, zero third-party servers).
    - **Immediate Local Purge:** As soon as upload succeeds, the staged files are **permanently deleted from phone storage**. Net storage impact is **zero bytes**, leaving your personal download folders and phone memory pristine! Parents never have to manually share files or manage hidden app caches.

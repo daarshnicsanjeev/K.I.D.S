@@ -297,10 +297,10 @@ stateDiagram-v2
     state PASS_1_SURVEY {
         [*] --> SURVEYING_STREAM
         SURVEYING_STREAM --> SURVEY_SCROLL: Visible cards indexed into StreamManifest
-        SURVEY_SCROLL --> SURVEYING_STREAM: New post cards discovered (Reset zero count)
-        SURVEY_SCROLL --> PAGINATION_WAIT: 0 New Cards Found (consecutiveZero < 5)
-        PAGINATION_WAIT --> SURVEY_SCROLL: Delay 1,200ms (Stream pagination settling)
-        SURVEY_SCROLL --> SURVEY_COMPLETE: 5 Consecutive Empty Scrolls (Stream end confirmed)
+        SURVEY_SCROLL --> SURVEYING_STREAM: New post cards discovered (identicalScreenCount = 0)
+        SURVEY_SCROLL --> PAGINATION_WAIT: 0 New Cards / identicalScreenCount > 0
+        PAGINATION_WAIT --> SURVEY_SCROLL: Delay 1,200ms (Network pagination settling)
+        SURVEY_SCROLL --> SURVEY_COMPLETE: 5 Consecutive Identical Screens (identicalScreenCount >= 5)
     }
 
     PASS_1_SURVEY --> FAST_PATH_UP_TO_DATE: totalCount == 0 OR pendingCount == 0
@@ -339,14 +339,25 @@ stateDiagram-v2
 
         CHECK_TARGET_VISIBLE --> AUTO_RECOVERY: findCardByFingerprint() == null (Displaced)
         state AUTO_RECOVERY {
-            [*] --> CHECK_ATTEMPTS: incrementAttempt()
-            CHECK_ATTEMPTS --> SKIP_POST: attemptCount >= 4 (Unopenable post safeguard)
-            CHECK_ATTEMPTS --> EVALUATE_INDICES: attemptCount < 4
-            EVALUATE_INDICES --> RECOVERING_POSITION: minVisibleIndex > target.index (Too far down)
-            RECOVERING_POSITION --> CHECK_TARGET_VISIBLE: performScrollBackward() (Scroll upward)
-            EVALUATE_INDICES --> NAVIGATING_TO_POST: target is ahead
-            NAVIGATING_TO_POST --> CHECK_TARGET_VISIBLE: performScroll() (Scroll downward)
+            [*] --> CHECK_BOUNDED: isTargetBounded(targetIndex, visibleIndices)
+            CHECK_BOUNDED --> BOUNDED_RECOVERY: true (Target bounded in viewport)
+            state BOUNDED_RECOVERY {
+                [*] --> INC_BOUNDED: manifest.incrementAttempt(fingerprint)
+                INC_BOUNDED --> DIRECT_STREAM_FALLBACK: boundedAttempts >= 3 (Fail-Safe Ingestion)
+                INC_BOUNDED --> TAP_CANDIDATE: boundedAttempts < 3 (findBestCandidateCardOnScreen)
+            }
+            CHECK_BOUNDED --> UNBOUNDED_SEEK: false (Target not bounded)
+            state UNBOUNDED_SEEK {
+                [*] --> CHECK_ATTEMPTS: incrementAttempt()
+                CHECK_ATTEMPTS --> SKIP_POST: attemptCount >= 4 (Unopenable post safeguard)
+                CHECK_ATTEMPTS --> EVALUATE_INDICES: attemptCount < 4
+                EVALUATE_INDICES --> RECOVERING_POSITION: minVisibleIndex > target.index (Too far down)
+                RECOVERING_POSITION --> CHECK_TARGET_VISIBLE: performScrollBackward() (Scroll upward)
+                EVALUATE_INDICES --> NAVIGATING_TO_POST: target is ahead
+                NAVIGATING_TO_POST --> CHECK_TARGET_VISIBLE: performScroll() (Scroll downward)
+            }
         }
+        DIRECT_STREAM_FALLBACK --> FETCH_NEXT_PENDING: ingestNoticeDirect() & markCompleted()
         SKIP_POST --> FETCH_NEXT_PENDING: markSkipped(fingerprint) & log warning
     }
 
@@ -490,11 +501,115 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   }
   ```
   A card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the safe bounds** (`rect.centerY() in minTop..maxBottom`).
-- **Classroom Stream Comment Counter Filter:**
-  Dynamic comment rows (e.g., `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or `"3 class comments"`) are stripped prior to fingerprinting to ensure that subsequent class comments added to a post do not mutate its identity over time.
+
+- **Universal Stream Post Detection Architecture (`isStreamPostCard`):**
+  To support any educational curriculum (CBSE, ICSE, Cambridge / CAIE, IB, State Boards) worldwide with **ZERO hardcoding**, `isStreamPostCard(node)` evaluates the structural semantics of candidate nodes rather than matching hardcoded grade or division names:
+  ```kotlin
+  private fun isStreamPostCard(node: AccessibilityNodeInfo): Boolean {
+      val textList = mutableListOf<String>()
+      collectQuickText(node, textList)
+      val combinedText = textList.joinToString(" ").trim()
+      if (combinedText.length <= 15) return false
+      val lowerCombined = combinedText.lowercase()
+
+      // 1. Explicit Exclusions: Composer boxes, navigation shortcuts, or bottom tabs
+      if (lowerCombined.contains("announce something to your class") ||
+          lowerCombined.contains("share with your class") ||
+          lowerCombined.contains("view to-do list")) {
+          return false
+      }
+
+      // 2. Reject nodes that are purely standalone comment chips/counters without post body
+      val isOnlyComment = lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) ||
+              lowerCombined == "add class comment" ||
+              (lowerCombined.contains("class comment") && combinedText.length < 35)
+      if (isOnlyComment) return false
+
+      // 3. Reject explicit course header banner view IDs if exposed
+      val viewId = node.viewIdResourceName?.lowercase() ?: ""
+      if (viewId.contains("course_header") || viewId.contains("class_header") ||
+          viewId.contains("cover_view") || viewId.contains("header_banner") ||
+          viewId.contains("banner_view")) {
+          return false
+      }
+
+      // 4. Positive Post Indicators:
+      // Category A: Activity post type prefix
+      val hasPostCategory = lowerCombined.contains("new material:") || lowerCombined.contains("new material") ||
+              lowerCombined.contains("new assignment:") || lowerCombined.contains("new assignment") ||
+              lowerCombined.contains("new question:") || lowerCombined.contains("new question") ||
+              lowerCombined.contains("new quiz:") || lowerCombined.contains("assignment:") ||
+              lowerCombined.contains("material:")
+
+      // Category B: Date or relative timestamp regex
+      val hasDatePattern = hasPostDateOrTimestamp(lowerCombined)
+
+      // Category C: Comments action or indicator
+      val hasComments = lowerCombined.contains("class comment") ||
+              lowerCombined.contains("class comments") ||
+              lowerCombined.contains("add class comment")
+
+      // 5. Header Banner vs. Post Invariant:
+      // A course header banner contains ONLY class name and year (e.g. "Grade 3B CAIE 2026-27").
+      // It has NO date/timestamp, NO post category, and NO comments action.
+      // A valid stream post MUST satisfy at least one post indicator:
+      if (!hasPostCategory && !hasDatePattern && !hasComments) return false
+
+      return true
+  }
+  ```
+  - **Date & Timestamp Regex Engine (`hasPostDateOrTimestamp`):**
+    Evaluates four distinct temporal formats across school localized variants:
+    1. `streamDateKeywords`: `{"yesterday", "today", "tomorrow", "posted", "edited", "due"}`
+    2. `streamMonthRegex`: `\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|...)\b`
+    3. `streamTimeRegex`: `\b\d{1,2}:\d{2}\s*(?:am|pm)?\b`
+    4. `streamRelativeTimeRegex`: `\b\d+\s+(?:min(?:ute)?s?|hours?|days?|weeks?|months?)\s+ago\b`
+
+- **Elimination of Over-Aggressive Comment Dropping:**
+  In earlier implementations, an overly aggressive filter rule evaluated `lowerCombined.contains("class comments for")` against candidate cards. Because nearly every Google Classroom announcement displays comment metadata (e.g., `"0 class comments for post by Teacher"`), this caused valid announcement cards to be discarded prematurely.
+  This over-aggressive drop was completely eliminated across:
+  1. `surveyVisibleCards()`
+  2. `findCardForTarget()`
+  3. `findNextUnvisitedPost()`
+  Instead, cards are only dropped if the node is confirmed to be an isolated standalone comment chip:
+  ```kotlin
+  if (lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35) {
+      card.recycle()
+      continue
+  }
+  ```
+  This guarantees that all announcements containing comment rows are fully preserved, indexed, and matched. Dynamic comment strings are cleanly stripped during SHA-256 fingerprinting so that subsequent comments do not alter the announcement's cryptographic hash.
+
+- **Pass 1 Bottom Detection & Complete Full-Year Academic Traversal:**
+  To guarantee complete discovery of an entire school year (retrieving notices back to June or the start of term without premature cutoffs), Pass 1 decouples active viewport scrolling from physical screen immobility:
+  - **Tracking Viewport Motion vs. Screen Immobility:**
+    ```kotlin
+    if (newItemsCount > 0) {
+        surveyZeroCount = 0
+        identicalScreenCount = 0
+    } else {
+        surveyZeroCount++
+        if (currentVisible.isNotEmpty() && currentVisible == lastVisibleFingerprints) {
+            identicalScreenCount++
+        } else {
+            identicalScreenCount = 0
+        }
+    }
+    lastVisibleFingerprints = currentVisible
+    ```
+  - **Network Pagination Settling Delay (1,200ms):**
+    ```kotlin
+    val postScrollDelay = if (identicalScreenCount > 0) 1200L else if (surveyZeroCount > 0) 700L else 450L
+    delay(postScrollDelay)
+    ```
+    When `identicalScreenCount > 0`, the crawler grants Google Classroom a generous **1,200ms grace window** to execute asynchronous network requests and paginate older historical records.
+  - **Definitive Stream Bottom Threshold (`identicalScreenCount >= 5`):**
+    Pass 1 only terminates when **5 consecutive scrolls confirm physical immobility**, ensuring long multi-paragraph notices and network pagination delays never cause premature survey cutoffs.
+
 - **Deterministic SHA-256 Fingerprinting:**
   For each eligible card, non-chrome text tokens are delimited by pipe (`|`), hashed with SHA-256, and truncated to the first 8 hex characters:
   $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
+
 - **Cataloging into `StreamManifest` (`StreamManifest.kt`):**
   Each unique card discovered in Pass 1 is registered into the manifest with an initial status:
   ```kotlin
@@ -519,11 +634,25 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   If `db.noticeDao().findByHash(hash) != null` or `visitedPostFingerprints.contains(fingerprint)`, the card is tagged `StreamItemStatus.ALREADY_SYNCED` directly during survey. If new, it is marked `StreamItemStatus.PENDING`.
 
 - **Multi-Factor Card Matching Architecture (`findMatchingItem`):**
-  Stream cards frequently suffer minor text mutations across scrolls due to dynamic comment counts or slight Android text-view recycling variations. `StreamManifest` deploys a 4-tier resilient matching strategy:
+  Stream cards frequently suffer minor text mutations across scrolls due to dynamic comment counts or slight Android text-view recycling variations. `StreamManifest` deploys a 5-tier resilient matching strategy:
   1. **Tier 1 (Exact SHA-256 Fingerprint):** Calls `findByFingerprint(fingerprint)`. Instant $O(1)$ lookup for unmutated cards.
   2. **Tier 2 (Exact Normalized Title):** For titles with $\ge 8$ characters, performs a case-insensitive match: `it.title.trim().equals(cleanTitle, ignoreCase = true)`.
   3. **Tier 3 (25-Character Prefix & Bidirectional Overlap):** Extracts the first 25 characters of the normalized title (`cleanTitle.take(25)`). Evaluates if the manifest item starts with the prefix or vice-versa, cleanly resolving ellipsis-truncated titles on compact screens.
   4. **Tier 4 (Body Content Substring Overlap):** If `cardText.length > 30`, checks if the card body text contains any known manifest item title where `itemTitle.length >= 15`.
+  5. **Tier 5 (Word / Token Overlap $\ge 60\%$):** For titles with localized punctuation shifts or minor word order differences:
+     ```kotlin
+     if (cleanTitle.length >= 8) {
+         val titleTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+         if (titleTokens.size >= 2) {
+             _items.firstOrNull { item ->
+                 val itemTokens = item.title.lowercase().split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                 val common = titleTokens.intersect(itemTokens)
+                 val overlap = common.size.toFloat() / maxOf(titleTokens.size, itemTokens.size)
+                 overlap >= 0.6f
+             }?.let { return it }
+         }
+     }
+     ```
 
 - **Target Boundedness Check (`isTargetBounded`):**
   A recurring failure mode in list automation is swiping past a target card that is already rendered on screen. `StreamManifest.isTargetBounded()` eliminates this:
@@ -540,8 +669,8 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
 - **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
   `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. Preserving `visitedPostFingerprints` across session toggles guarantees that re-running Auto-Capture will immediately tag previously ingested notices as `ALREADY_SYNCED`, establishing full bounds without re-downloading existing media.
 
-- **Survey Completion & Screen-Freeze Bottom Detection:**
-  Pass 1 dynamically monitors viewport motion. If 2 consecutive scrolls yield identical visible card sets (the list physically stopped moving at the bottom), or if 3 consecutive scrolls yield 0 new items, Pass 1 concludes immediately with zero sluggish dwell delays. The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately.
+- **Instant Fast-Path Completion:**
+  The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately with zero Pass 2 overhead.
 
 ##### 2. `PASS 1.5: STREAM REWIND` (Calibrated Middle-Height Kinetic Scroll & Landmark Seeking)
 Once Pass 1 catalogs the inventory, the Classroom stream is resting at the historical bottom. Before Pass 2 begins, the crawler executes an autonomous rewind (`rewindStreamToTop`):
@@ -568,9 +697,30 @@ In Pass 2, the crawler processes each item sequentially using `manifest.getNextP
     $$\text{Detail: "Seeking \#X/Total (Y already synced)"}$$
   - Rapidly advances down the stream directly to the first pending notice without re-opening already synced cards.
 
-- **Autonomous Auto-Recovery Engine, Micro-Scrolling & Oscillation Breaker:**
+- **Autonomous Auto-Recovery Engine, Bounded Recovery Escalation & Oscillation Breaker:**
   If the target card is NOT currently visible on screen:
-  1. **Bounded Target Check:** Evaluates `manifest.isTargetBounded(nextItem.index, visibleIndices)`. If the target is within `[minVisibleIndex..maxVisibleIndex]`, swipes are inhibited and the candidate card on screen is inspected directly.
+  1. **Bounded Target Check & Recovery Escalation (`manifest.isTargetBounded`):**
+     If the target notice's index is bounded within visible cards (`minVisibleIndex <= target.index <= maxVisibleIndex`), the card is physically rendered on screen. The engine escalates attempts:
+     ```kotlin
+     val boundedAttempts = manifest.incrementAttempt(nextItem.fingerprint)
+     ```
+     - **Fail-Safe Direct Fallback (After 3 Bounded Attempts):**
+       If the target card fails to transition to detail view after 3 bounded attempts, rather than stalling the crawl or oscillating endlessly, the recovery engine activates graceful direct stream ingestion:
+       ```kotlin
+       if (boundedAttempts >= 3) {
+           CrawlerTraceLogger.log(
+               "AUTO_RECOVERY",
+               "Target #${nextItem.index} (\"${nextItem.title}\") failed detail transition after $boundedAttempts attempts. Ingesting directly from stream and advancing."
+           )
+           ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+           manifest.markCompleted(nextItem.fingerprint)
+           visitedPostFingerprints.add(nextItem.fingerprint)
+           crawlerOverlay?.incrementNoticeCount()
+           delay(400)
+           continue
+       }
+       ```
+       If `boundedAttempts < 3`, it selects `candidateCard = findBestCandidateCardOnScreen()` and dispatches a tap at candidate bounds.
   2. **Oscillation Breaker:** Maintains a 6-step direction history window (`recentScrollDirections`). If alternating directions $\ge 4$ times (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), oscillation around the target is confirmed. The engine logs an oscillation event, triggers a micro-nudge, and increments the item's attempt counter to prevent infinite ping-pong seek loops.
   3. **Micro-Scrolling (16% Gentle Nudge):** When target distance $\le 2$ or oscillation is detected (`val useMicroScroll = isOscillating || distance <= 2`), the crawler dispatches `performMicroScroll()` instead of full kinetic swipes:
      - **Forward Micro-Nudge:** Sweeps from $0.58h$ to $0.42h$ (16% screen height).

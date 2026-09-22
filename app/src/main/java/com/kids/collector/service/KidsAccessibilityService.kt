@@ -233,9 +233,10 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             lastVisibleFingerprints = currentVisible
 
-            // Smart bottom detection: If the screen physically didn't move for 2 scrolls,
-            // or if 3 scrolls yield 0 new items, conclude Pass 1 immediately without waiting.
-            if (identicalScreenCount >= 2 || surveyZeroCount >= 3) {
+            // Smart bottom detection:
+            // Only conclude bottom if the screen is PHYSICALLY STATIC across multiple scrolls,
+            // with a network pagination grace delay. Never terminate while the viewport is actively moving!
+            if (identicalScreenCount >= 5) {
                 val surveyDuration = System.currentTimeMillis() - surveyStartTime
                 CrawlerTraceLogger.logSurveyEnd(
                     manifest.totalCount,
@@ -249,7 +250,9 @@ class KidsAccessibilityService : AccessibilityService() {
             var scrollDone = false
             crawlerOverlay?.performScroll { scrollDone = true }
             waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-            delay(if (surveyZeroCount > 0) 800 else 500)
+            // If the screen appeared static on this swipe, give Classroom 1,200ms to fetch older posts from network
+            val postScrollDelay = if (identicalScreenCount > 0) 1200L else if (surveyZeroCount > 0) 700L else 450L
+            delay(postScrollDelay)
         }
 
         if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() != true) {
@@ -492,10 +495,25 @@ class KidsAccessibilityService : AccessibilityService() {
 
                     // Bounded target check: If target is bounded by visible cards, it IS on screen!
                     if (minVisibleIndex != null && maxVisibleIndex != null && manifest.isTargetBounded(nextItem.index, visibleIndices)) {
+                        val boundedAttempts = manifest.incrementAttempt(nextItem.fingerprint)
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Target #${nextItem.index} is bounded within visible screen range [${minVisibleIndex}..${maxVisibleIndex}]! Inspecting visible cards directly."
+                            "Target #${nextItem.index} is bounded within visible screen range [${minVisibleIndex}..${maxVisibleIndex}]! (Bounded attempt $boundedAttempts/3)"
                         )
+
+                        if (boundedAttempts >= 3) {
+                            CrawlerTraceLogger.log(
+                                "AUTO_RECOVERY",
+                                "Target #${nextItem.index} (\"${nextItem.title}\") failed detail transition after $boundedAttempts attempts. Ingesting directly from stream and advancing."
+                            )
+                            ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                            manifest.markCompleted(nextItem.fingerprint)
+                            visitedPostFingerprints.add(nextItem.fingerprint)
+                            crawlerOverlay?.incrementNoticeCount()
+                            delay(400)
+                            continue
+                        }
+
                         val candidateCard = findBestCandidateCardOnScreen(rootInActiveWindow, nextItem)
                         if (candidateCard != null) {
                             val clicked = candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -1124,11 +1142,8 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             val lowerCombined = combinedText.lowercase().trim()
-            if (lowerCombined.contains("class comments for") ||
-                lowerCombined.startsWith("0 class comments") ||
-                lowerCombined.startsWith("add class comment") ||
-                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
-            ) {
+            // Standalone comment chip check (only drop if the node contains exclusively comments and nothing else)
+            if (lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35) {
                 card.recycle()
                 continue
             }
@@ -1177,11 +1192,8 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             val lowerCombined = combinedText.lowercase().trim()
-            if (lowerCombined.contains("class comments for") ||
-                lowerCombined.startsWith("0 class comments") ||
-                lowerCombined.startsWith("add class comment") ||
-                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
-            ) {
+            // Standalone comment chip check (only drop if the node contains exclusively comments and nothing else)
+            if (lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35) {
                 card.recycle()
                 continue
             }
@@ -1235,9 +1247,17 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findBestCandidateCardOnScreen(rootNode: AccessibilityNodeInfo?, targetItem: StreamManifestItem): UnvisitedCard? {
         if (rootNode == null) return null
         val postCards = findPostCards(rootNode)
+        if (postCards.isEmpty()) return null
+
         val displayMetrics = resources.displayMetrics
         val minTop = 140
         val maxBottom = displayMetrics.heightPixels - 170
+
+        var bestCard: UnvisitedCard? = null
+        var bestScore = -1f
+
+        val cleanTargetTitle = targetItem.title.trim().lowercase()
+        val targetTokens = cleanTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
 
         val rect = Rect()
         for (card in postCards) {
@@ -1245,7 +1265,7 @@ class KidsAccessibilityService : AccessibilityService() {
             val cardItems = mutableListOf<String>()
             collectQuickText(card, cardItems)
             val combined = cardItems.joinToString(" ")
-            if (combined.length <= 20) {
+            if (combined.length <= 15) {
                 card.recycle()
                 continue
             }
@@ -1255,15 +1275,36 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
             val fp = computeCardFingerprint(cardItems)
-            val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-            val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
-            val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+
+            // Multi-factor candidate scoring
+            var score = 0f
+            if (fp == targetItem.fingerprint) score += 100f
+            val cleanTitle = title.trim().lowercase()
+            if (cleanTitle == cleanTargetTitle) score += 80f
+            else if (cleanTargetTitle.startsWith(cleanTitle.take(20)) || cleanTitle.startsWith(cleanTargetTitle.take(20))) score += 50f
+
+            if (targetTokens.isNotEmpty()) {
+                val cardTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                val commonTokens = targetTokens.intersect(cardTokens)
+                val tokenRatio = commonTokens.size.toFloat() / maxOf(targetTokens.size, 1)
+                score += tokenRatio * 40f
+            }
+
+            if (rect.centerY() in (minTop + 50)..(maxBottom - 50)) {
+                score += 10f
+            }
+
+            if (score > bestScore || bestCard == null) {
+                bestCard?.clickableNode?.recycle()
+                val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
+                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                bestCard = UnvisitedCard(title, combined, fp, clickable, cardBounds)
+                bestScore = score
+            }
             card.recycle()
-            rootNode.recycle()
-            return UnvisitedCard(title, combined, fp, clickable, cardBounds)
         }
-        rootNode.recycle()
-        return null
+        return bestCard
     }
 
     private fun getVisibleManifestItems(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): List<StreamManifestItem> {
@@ -1316,17 +1357,14 @@ class KidsAccessibilityService : AccessibilityService() {
             val cardItems = mutableListOf<String>()
             collectQuickText(card, cardItems)
             val combinedText = cardItems.joinToString(" ")
-            if (combinedText.length <= 20) {
+            if (combinedText.length <= 15) {
                 card.recycle()
                 continue
             }
 
             val lowerCombined = combinedText.lowercase().trim()
-            if (lowerCombined.contains("class comments for") ||
-                lowerCombined.startsWith("0 class comments") ||
-                lowerCombined.startsWith("add class comment") ||
-                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
-            ) {
+            // Standalone comment chip check (only drop if the node contains exclusively comments and nothing else)
+            if (lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35) {
                 card.recycle()
                 continue
             }
@@ -1694,24 +1732,106 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private val streamDateKeywords = setOf(
+        "yesterday", "today", "tomorrow", "posted", "edited", "due"
+    )
+    private val streamMonthRegex = Regex(
+        """\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+\d{1,2}\b|\b\d{1,2}(?:st|nd|rd|th)?\s+(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val streamTimeRegex = Regex("""\b\d{1,2}:\d{2}\s*(?:am|pm)?\b""", RegexOption.IGNORE_CASE)
+    private val streamRelativeTimeRegex = Regex("""\b\d+\s+(?:min(?:ute)?s?|hours?|days?|weeks?|months?)\s+ago\b""", RegexOption.IGNORE_CASE)
+
+    private fun hasPostDateOrTimestamp(lowerText: String): Boolean {
+        if (streamDateKeywords.any { lowerText.contains(it) }) return true
+        if (streamMonthRegex.containsMatchIn(lowerText)) return true
+        if (streamTimeRegex.containsMatchIn(lowerText)) return true
+        if (streamRelativeTimeRegex.containsMatchIn(lowerText)) return true
+        return false
+    }
+
+    private fun isStreamPostCard(node: AccessibilityNodeInfo): Boolean {
+        val textList = mutableListOf<String>()
+        collectQuickText(node, textList)
+        val combinedText = textList.joinToString(" ").trim()
+        if (combinedText.length <= 15) return false
+
+        val lowerCombined = combinedText.lowercase()
+
+        // 1. Explicit Exclusions: Composer boxes, navigation shortcuts, or bottom tabs
+        if (lowerCombined.contains("announce something to your class") ||
+            lowerCombined.contains("share with your class") ||
+            lowerCombined.contains("view to-do list")
+        ) {
+            return false
+        }
+
+        // 2. Reject nodes that are purely standalone comment chips/counters without post body
+        val isOnlyComment = lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) ||
+                lowerCombined == "add class comment" ||
+                (lowerCombined.contains("class comment") && combinedText.length < 35)
+        if (isOnlyComment) {
+            return false
+        }
+
+        // 3. Reject explicit course header banner view IDs if exposed
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+        if (viewId.contains("course_header") ||
+            viewId.contains("class_header") ||
+            viewId.contains("cover_view") ||
+            viewId.contains("header_banner") ||
+            viewId.contains("banner_view")
+        ) {
+            return false
+        }
+
+        // 4. Positive Post Indicators:
+        // Category A: Activity post type prefix
+        val hasPostCategory = lowerCombined.contains("new material:") ||
+                lowerCombined.contains("new material") ||
+                lowerCombined.contains("new assignment:") ||
+                lowerCombined.contains("new assignment") ||
+                lowerCombined.contains("new question:") ||
+                lowerCombined.contains("new question") ||
+                lowerCombined.contains("new quiz:") ||
+                lowerCombined.contains("assignment:") ||
+                lowerCombined.contains("material:")
+
+        // Category B: Date or relative timestamp
+        val hasDatePattern = hasPostDateOrTimestamp(lowerCombined)
+
+        // Category C: Comments action or indicator
+        val hasComments = lowerCombined.contains("class comment") ||
+                lowerCombined.contains("class comments") ||
+                lowerCombined.contains("add class comment")
+
+        // 5. Header Banner vs. Post Invariant:
+        // A course header banner contains ONLY class name and year (e.g. "Grade 3B CAIE 2026-27").
+        // It has NO date/timestamp, NO post category, and NO comments action.
+        // A valid stream post MUST satisfy at least one post indicator:
+        if (!hasPostCategory && !hasDatePattern && !hasComments) {
+            return false
+        }
+
+        return true
+    }
+
     private fun findPostCards(rootNode: AccessibilityNodeInfo): List<AccessibilityNodeInfo> {
         val scrollable = findScrollableNode(rootNode)
         if (scrollable != null && scrollable.childCount > 0) {
             val cards = mutableListOf<AccessibilityNodeInfo>()
             for (i in 0 until scrollable.childCount) {
                 val child = scrollable.getChild(i) ?: continue
-                if (hasSubstantialContent(child)) {
+                if (isStreamPostCard(child)) {
                     cards.add(child)
                 } else {
                     child.recycle()
                 }
             }
             scrollable.recycle()
-            if (cards.isNotEmpty()) {
-                return cards
-            }
+            return cards
         }
-        return listOf(AccessibilityNodeInfo.obtain(rootNode))
+        return emptyList()
     }
 
     private fun findScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -1725,12 +1845,6 @@ class KidsAccessibilityService : AccessibilityService() {
             if (found != null) return found
         }
         return null
-    }
-
-    private fun hasSubstantialContent(node: AccessibilityNodeInfo): Boolean {
-        val textList = mutableListOf<String>()
-        collectQuickText(node, textList)
-        return textList.joinToString(" ").length > 20
     }
 
     private fun collectQuickText(node: AccessibilityNodeInfo, outList: MutableList<String>) {
