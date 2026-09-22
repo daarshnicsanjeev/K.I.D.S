@@ -136,7 +136,8 @@ app/src/main/java/com/kids/collector/
 │   ├── importer/
 │   │   └── WhatsAppChatExportParser.kt# Regular expression parser for WhatsApp .txt exports
 │   ├── model/
-│   │   └── Models.kt                  # Domain models (Notice, ChildProfile, Attachment, Enums)
+│   │   ├── Models.kt                  # Domain models (Notice, ChildProfile, Attachment, Enums)
+│   │   └── StreamManifest.kt          # Stream inventory manifest, status tracking & auto-recovery model
 │   ├── parser/
 │   │   └── NotificationParser.kt      # StatusBarNotification unwrapper & extractor
 │   └── router/
@@ -286,157 +287,196 @@ The notification listener runs as an ambient, event-driven Android system servic
 ---
 
 ### 2. `KidsAccessibilityService` & `FloatingCrawlerOverlay`
-Engineered for Day 0 historical backfill and retrospective notice crawling of Google Classroom and School ERP portals. It implements an autonomous, event-driven **Deep Crawl Finite State Machine (FSM)** that traverses the stream, enters individual post detail screens, extracts full announcement content, triggers sequential attachment downloads, safely returns to the feed, and syncs directly to Google Drive.
+Engineered for Day 0 historical backfill and retrospective notice crawling of Google Classroom and School ERP portals. It implements an autonomous, event-driven **Two-Pass Stream Architecture** and **Manifest-Driven Auto-Recovery Engine** powered by `StreamManifest`, executing pre-flight stream surveys, bidirectional kinetic scrolling, discrete post card parsing, autonomous attachment downloads, and immediate synchronization to Google Drive.
 
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-    IDLE --> SCANNING_STREAM: User taps "Start Auto-Capture"
+    IDLE --> PASS_1_SURVEY: User taps "Start Auto-Capture"
     
-    SCANNING_STREAM --> NAVIGATING_TO_DETAIL: Unvisited Post Card Detected (Preserve fallbackTitle)
-    SCANNING_STREAM --> SCROLLING: All Viewport Cards Visited
-    
-    NAVIGATING_TO_DETAIL --> IN_DETAIL_VIEW: Screen Verified (isPostDetailView, <=2.5s)
-    NAVIGATING_TO_DETAIL --> SCANNING_STREAM: Timeout / Click Failed (Skip & Mark Visited)
-    
-    IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: Educational Attachments Detected (.pdf, .docx, .jpg)
-    DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: Systematic Coordinate Taps (1,000ms Calibrated Debounce)
-    DOWNLOADING_ATTACHMENTS --> GUARDED_RETURN: All Attachments Handed to DownloadManager
-    IN_DETAIL_VIEW --> GUARDED_RETURN: Zero Attachments in Post
-    
-    GUARDED_RETURN --> GUARDED_RETURN: Retry Return (Up to 3 Attempts, Dismiss In-App Viewers)
-    GUARDED_RETURN --> SCANNING_STREAM: Stream Re-settled (isStreamOrClassworkView Verified, <=2s + 600ms)
-    
-    SCROLLING --> SCANNING_STREAM: New Unvisited Cards Found (850ms Settle Delay)
-    SCROLLING --> PAGINATION_WAIT: 0 New Cards Found (consecutiveZeroDiscoveryCount < 5)
-    PAGINATION_WAIT --> SCROLLING: Delay 1,500ms (Classroom Network Pagination Wait)
-    SCROLLING --> CAPTURE_COMPLETE: 5 Consecutive Empty Scrolls (End of Stream Confirmed)
-    
-    CAPTURE_COMPLETE --> SHOW_COMPLETION: totalNotices > 0 (showCompletion)
-    CAPTURE_COMPLETE --> STREAM_UP_TO_DATE: totalNotices == 0 ("✓ Stream Up to Date")
+    state PASS_1_SURVEY {
+        [*] --> SURVEYING_STREAM
+        SURVEYING_STREAM --> SURVEY_SCROLL: Visible cards indexed into StreamManifest
+        SURVEY_SCROLL --> SURVEYING_STREAM: New post cards discovered (Reset zero count)
+        SURVEY_SCROLL --> PAGINATION_WAIT: 0 New Cards Found (consecutiveZero < 5)
+        PAGINATION_WAIT --> SURVEY_SCROLL: Delay 1,200ms (Stream pagination settling)
+        SURVEY_SCROLL --> SURVEY_COMPLETE: 5 Consecutive Empty Scrolls (Stream end confirmed)
+    }
+
+    PASS_1_SURVEY --> FAST_PATH_UP_TO_DATE: totalCount == 0 OR pendingCount == 0
+    FAST_PATH_UP_TO_DATE --> TERMINAL_SYNC: "✓ Stream Up to Date" (2.0s Dwell & Cloud Sync)
+
+    PASS_1_SURVEY --> PASS_1_5_REWIND: pendingCount > 0 (Boundaries recorded)
+
+    state PASS_1_5_REWIND {
+        [*] --> REWINDING_TO_START
+        REWINDING_TO_START --> REWIND_SWIPE: isItemVisible(firstFingerprint) == false
+        REWIND_SWIPE --> REWINDING_TO_START: performScrollBackward() (0.25h -> 0.75h downward swipe)
+        REWINDING_TO_START --> REWIND_COMPLETE: isItemVisible(firstFingerprint) == true OR attempts >= 15
+    }
+
+    PASS_1_5_REWIND --> PASS_2_DEEP_INGESTION: Stream re-anchored at top notice
+
+    state PASS_2_DEEP_INGESTION {
+        [*] --> FETCH_NEXT_PENDING: getNextPendingItem()
+        FETCH_NEXT_PENDING --> CHECK_TARGET_VISIBLE: Pending notice retrieved
+        FETCH_NEXT_PENDING --> ALL_FINISHED: nextItem == null
+        
+        CHECK_TARGET_VISIBLE --> OPENING_POST: findCardByFingerprint() != null
+        OPENING_POST --> DETAIL_VIEW_CHECK: Clamped center tap (dispatchTap)
+        
+        DETAIL_VIEW_CHECK --> IN_DETAIL_VIEW: isPostDetailView == true (<=800ms)
+        DETAIL_VIEW_CHECK --> STREAM_INGEST: Timeout (Plain-text stream announcement)
+        
+        IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: Attachments detected (.pdf, .docx, .jpg)
+        DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: 1,000ms calibrated debounce
+        DOWNLOADING_ATTACHMENTS --> GUARDED_RETURN: All attachments downloaded / shared
+        IN_DETAIL_VIEW --> GUARDED_RETURN: Zero attachments in notice
+        
+        STREAM_INGEST --> ITEM_COMPLETED: NoticeEntity saved to Room
+        GUARDED_RETURN --> ITEM_COMPLETED: performReturnToStream() (Up to 3 attempts, <=2.0s)
+        ITEM_COMPLETED --> FETCH_NEXT_PENDING: markCompleted(fingerprint) & increment counter
+
+        CHECK_TARGET_VISIBLE --> AUTO_RECOVERY: findCardByFingerprint() == null (Displaced)
+        state AUTO_RECOVERY {
+            [*] --> CHECK_ATTEMPTS: incrementAttempt()
+            CHECK_ATTEMPTS --> SKIP_POST: attemptCount >= 4 (Unopenable post safeguard)
+            CHECK_ATTEMPTS --> EVALUATE_INDICES: attemptCount < 4
+            EVALUATE_INDICES --> RECOVERING_POSITION: minVisibleIndex > target.index (Too far down)
+            RECOVERING_POSITION --> CHECK_TARGET_VISIBLE: performScrollBackward() (Scroll upward)
+            EVALUATE_INDICES --> NAVIGATING_TO_POST: target is ahead
+            NAVIGATING_TO_POST --> CHECK_TARGET_VISIBLE: performScroll() (Scroll downward)
+        }
+        SKIP_POST --> FETCH_NEXT_PENDING: markSkipped(fingerprint) & log warning
+    }
+
+    PASS_2_DEEP_INGESTION --> SHOW_COMPLETION: isAllFinished() confirmed
     SHOW_COMPLETION --> AUTO_DISMISS: 2.5s Display ("✓ Backfill Complete!")
-    STREAM_UP_TO_DATE --> TERMINAL_SYNC: Clean Overlay Halt & Background Sync
     AUTO_DISMISS --> TERMINAL_SYNC: dismissAndRemove() -> removeViewImmediate()
     TERMINAL_SYNC --> IDLE: WorkManager APPEND_OR_REPLACE Enqueued
-    
-    SCANNING_STREAM --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
-    NAVIGATING_TO_DETAIL --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
-    IN_DETAIL_VIEW --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
-    GUARDED_RETURN --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
-    SCROLLING --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
-    
-    EXIT_DEBOUNCE --> SCANNING_STREAM: School App Re-entered (<1200ms, Job Cancelled)
+
+    PASS_1_SURVEY --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    PASS_1_5_REWIND --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    PASS_2_DEEP_INGESTION --> EXIT_DEBOUNCE: TYPE_WINDOW_STATE_CHANGED (Non-School App)
+    EXIT_DEBOUNCE --> PASS_2_DEEP_INGESTION: School App Re-entered (<1200ms, Job Cancelled)
     EXIT_DEBOUNCE --> AUTO_DISMISS: 1200ms Debounce Expired (Swiped Home / App Switch)
-    
-    SCANNING_STREAM --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
-    NAVIGATING_TO_DETAIL --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
-    IN_DETAIL_VIEW --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
-    GUARDED_RETURN --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
-    SCROLLING --> IDLE: User taps "Stop Capture" (Immediate Job Cancel & Drive Sync)
+
+    PASS_1_SURVEY --> IDLE: User taps "Stop Capture" (Cancel coroutine & Drive Sync)
+    PASS_1_5_REWIND --> IDLE: User taps "Stop Capture" (Cancel coroutine & Drive Sync)
+    PASS_2_DEEP_INGESTION --> IDLE: User taps "Stop Capture" (Cancel coroutine & Drive Sync)
 ```
 
 ---
 
-#### The Deep Crawl Finite State Machine (FSM)
+#### The Deep Crawl Sequence Architecture
 
-The crawler loop in `KidsAccessibilityService` executes as a continuous, cooperative coroutine job on `Dispatchers.Default`, transitioning across distinct operational states:
+The crawler loop in `KidsAccessibilityService` executes as a continuous, cooperative coroutine job on `Dispatchers.Default`, transitioning across distinct operational phases:
 
 ```mermaid
 sequenceDiagram
     participant USR as Parent
     participant OV as FloatingCrawlerOverlay
     participant ACS as KidsAccessibilityService
+    participant MAN as StreamManifest
     participant GC as Google Classroom UI
-    participant DM as Android DownloadManager
-    participant DFO as DownloadFolderObserver
+    participant DM as Android DownloadManager / ShareTarget
     participant DB as SQLite Room DB
     participant WM as AndroidX WorkManager
 
     USR->>OV: Taps "Start Auto-Capture"
     OV->>ACS: startDeepCrawl() -> launches crawlerJob
-    
-    loop Deep Crawl Loop (Active Stream Traversal)
-        ACS->>GC: SCANNING_STREAM: Filter safe viewport [140dp, Height-170dp]
-        GC-->>ACS: Unvisited post card (Extract fallbackTitle & SHA-256 fingerprint)
-        
-        ACS->>OV: updateStatus("Status: Opening Post...", title)
-        ACS->>GC: NAVIGATING_TO_DETAIL: ACTION_CLICK + dispatchTap(centerX, centerY) [50ms stroke]
-        GC-->>ACS: Transition to detail view (verified <=2.5s)
-        
-        ACS->>OV: updateStatus("Status: Reading Detail...", title)
-        ACS->>GC: IN_DETAIL_VIEW: Clear focus on comment EditText
-        ACS->>ACS: Title Sanitization: Prioritize clean fallbackTitle over interior navigation chrome
-        ACS->>ACS: collectAllText() -> extract body, sanitized title, author
-        ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
-        ACS->>OV: incrementNoticeCount()
-        
-        opt Attachments Present (.pdf, .docx, .jpg)
-            loop Systematic Coordinate Tapping (extractDetailAttachments)
-                ACS->>OV: updateStatus("Status: Downloading (X/Y)...", fileName)
-                ACS->>GC: ACTION_CLICK or dispatchTap(centerX, centerY) on download button / chip
-                GC->>DM: Enqueue download request in system DownloadManager
-                ACS->>OV: incrementAttachmentCount()
-                ACS->>ACS: delay(1000ms) calibrated debounce
-            end
-        end
-        ACS->>DFO: scanLocalAttachments() -> move to vault_attachments/
-        
-        ACS->>OV: updateStatus("Status: Returning to Stream...")
-        loop Multi-Attempt Guarded Return (Up to 3 Attempts)
-            ACS->>GC: Inspect active window (isStreamOrClassworkView)
-            alt Already back on Stream / Classwork
-                Note over ACS: Break return loop immediately
-            else Inside Post Detail or In-App Viewer / Preview
-                ACS->>GC: performReturnToStream() [Navigate Up ACTION_CLICK / dispatchTap -> GLOBAL_ACTION_BACK]
-                ACS->>ACS: delay(600ms) inter-attempt settling
-            end
-        end
-        GC-->>ACS: Stream restored (verified <=2.0s + 600ms stabilization)
-        
-        alt All screen cards visited
-            ACS->>OV: updateStatus("Status: Scrolling Stream...")
-            ACS->>GC: SCROLLING: ACTION_SCROLL_FORWARD / 450ms swipe
-            ACS->>ACS: delay(850ms) view settling
-            alt 2 Consecutive Scrolls with 0 New Cards (End of Stream)
-                ACS->>OV: showCompletion(totalNotices, totalFiles)
-                Note over OV: Pill turns Success Green (#1B4D3E / #4ADE80)<br/>Displays "✓ Backfill Complete!" for 2.5s
-                OV->>OV: delay(2500ms) visual dwell time
-                OV->>OV: dismissAndRemove() -> windowManager.removeViewImmediate(view)
-                OV->>ACS: callback onDismissed()
-                ACS->>ACS: stopDeepCrawl() -> cancels crawlerJob
-                ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
-            end
-        end
-    end
 
-    opt Hands-Free Exit (User leaves Classroom: Swiping Home, Recents, Back)
-        USR->>GC: Navigates away from Classroom
-        GC-->>ACS: onAccessibilityEvent(TYPE_WINDOW_STATE_CHANGED, foreignPkg)
-        ACS->>ACS: handleAppExitEvent() -> launches 1200ms exitDebounceJob
-        Note over ACS: Ignores transient IMEs, dialogs, & doc viewers (Google Docs)
-        alt User returns to Classroom within 1200ms
-            GC-->>ACS: TYPE_WINDOW_STATE_CHANGED (Classroom)
-            ACS->>ACS: exitDebounceJob?.cancel() (Seamless resume)
-        else 1200ms debounce expires (Outside school app)
-            ACS->>ACS: stopDeepCrawl() -> cancels crawlerJob
-            ACS->>OV: dismissAndRemove() -> windowManager.removeViewImmediate(view)
-            ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
+    Note over ACS,MAN: ==================== PASS 1: PRE-FLIGHT STREAM SURVEY ====================
+    ACS->>OV: updateStatus("Surveying (X found)...")
+    loop Stream Survey (Until 5 Consecutive Empty Scrolls)
+        ACS->>GC: surveyVisibleCards(): scan cards in safe viewport [140dp, Height-170dp]
+        GC-->>ACS: Discovered cards with title, text, and SHA-256 fingerprint
+        ACS->>DB: Check if fingerprint already in Room DB / visitedPostFingerprints
+        alt Already in DB
+            ACS->>MAN: addItem(status = ALREADY_SYNCED)
+        else New Notice
+            ACS->>MAN: addItem(status = PENDING)
         end
+        ACS->>OV: performScroll() [400ms kinetic upward swipe]
+        GC-->>ACS: Stream scrolls forward
     end
+    ACS->>ACS: Log stream boundaries: startItemTitle, endItemTitle, totalCount
 
-    opt User interrupts capture manually
-        USR->>OV: Taps "Stop Capture"
-        OV->>ACS: stopDeepCrawl() -> crawlerJob.cancel()
+    alt totalCount == 0 OR pendingCount == 0
+        ACS->>OV: updateStatus("✓ Stream Up to Date")
+        ACS->>WM: triggerDriveSync()
+    else pendingCount > 0
+        Note over ACS,MAN: ==================== PASS 1.5: STREAM REWIND ====================
+        ACS->>OV: updateStatus("Returning to Start...", "Preparing notices")
+        loop Rewind Loop (Until firstFingerprint visible or max 15 attempts)
+            ACS->>GC: isItemVisible(firstFingerprint)?
+            alt Top notice visible
+                Note over ACS: Rewind complete!
+            else Still scrolled down
+                ACS->>OV: performScrollBackward() [0.25h -> 0.75h downward swipe]
+                GC-->>ACS: Stream scrolls backward
+            end
+        end
+
+        Note over ACS,MAN: ==================== PASS 2: MANIFEST-DRIVEN INGESTION ====================
+        loop Deep Ingestion Loop (Until getNextPendingItem() == null)
+            ACS->>MAN: getNextPendingItem()
+            MAN-->>ACS: nextItem (index, title, fingerprint)
+            ACS->>GC: findCardByFingerprint(nextItem.fingerprint)
+            alt Card Visible on Screen
+                ACS->>OV: updateStatus("Capturing (X/Total - Y%)...", title)
+                ACS->>GC: dispatchTap(centerX, safeCenterY) [50ms touch stroke]
+                alt Detail View Opened (<=800ms)
+                    ACS->>OV: updateStatus("Reading Detail (X/Total)...")
+                    ACS->>GC: Clear focus on comment EditText
+                    ACS->>GC: Extract full announcement text & author
+                    opt Attachments Present
+                        loop Download / Share Each Attachment
+                            ACS->>OV: updateStatus("Downloading (X/Y)...", fileName)
+                            ACS->>GC: Tap attachment chip / download action
+                            GC->>DM: Route to system DownloadManager or ShareTargetActivity
+                            ACS->>OV: incrementAttachmentCount()
+                        end
+                    end
+                    ACS->>GC: performReturnToStream() (Up to 3 attempts, <=2.0s)
+                else Plain Text Card (Detail check timeout 800ms)
+                    ACS->>ACS: ingestNoticeDirect(): extract fullText directly from stream
+                end
+                ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
+                ACS->>MAN: markCompleted(nextItem.fingerprint)
+                ACS->>OV: incrementNoticeCount()
+            else Card NOT Visible (Viewport Displaced - AUTO-RECOVERY)
+                ACS->>GC: getVisibleCardFingerprints()
+                ACS->>MAN: Compare visibleIndices vs nextItem.index
+                ACS->>MAN: incrementAttempt(nextItem.fingerprint)
+                alt attemptCount >= 4 (Safeguard)
+                    ACS->>MAN: markSkipped(nextItem.fingerprint) [FAILED_SKIPPED]
+                else minVisibleIndex > nextItem.index (Scrolled too far down)
+                    ACS->>OV: updateStatus("Recovering Position...", "Scrolling up")
+                    ACS->>OV: performScrollBackward() [Downward swipe]
+                else target is ahead
+                    ACS->>OV: updateStatus("Navigating to Post...", "Seeking post")
+                    ACS->>OV: performScroll() [Upward swipe]
+                end
+            end
+        end
+
+        Note over ACS,OV: ==================== COMPLETION & CLOUD SYNC ====================
+        ACS->>OV: showCompletion(totalNotices, totalFiles)
+        Note over OV: Pill turns Success Green (#1B4D3E / #4ADE80)<br/>Displays "✓ Backfill Complete!" for 2.5s
+        OV->>OV: delay(2500ms) -> dismissAndRemove()
+        ACS->>ACS: stopDeepCrawl() -> cancels crawlerJob
         ACS->>WM: triggerDriveSync() -> enqueueUniqueWork(APPEND_OR_REPLACE)
     end
 ```
 
-##### 1. `SCANNING_STREAM` (Safe Viewport, Relaxed Visibility, Stream Title Preservation & SHA-256 Fingerprinting)
+##### 1. `PASS 1: PRE-FLIGHT STREAM SURVEY & INVENTORY MANIFEST` (`StreamManifest`)
+The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaissance pass (`runStreamSurvey`). Instead of immediately entering and processing notices sequentially (which risks positioning displacement and unknown bounds), Pass 1 sweeps the entire stream from top to bottom, cataloging every announcement into an in-memory `StreamManifest`:
 - **Safe Viewport Filtering:** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
   $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - 170\text{px}$$
   This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
 - **Relaxed Card Viewport Visibility Calculation:**
-  In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the display as the list scrolls. Prematurely discarding partially occluded cards causes missed announcements. `findNextUnvisitedPost()` applies a relaxed viewport visibility formula:
+  In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the display as the list scrolls. Prematurely discarding partially occluded cards causes missed announcements. `surveyVisibleCards()` and `findCardByFingerprint()` apply a relaxed viewport visibility formula:
   ```kotlin
   val cardHeight = rect.height().coerceAtLeast(1)
   val visibleTop = rect.top.coerceAtLeast(minTop)
@@ -450,61 +490,65 @@ sequenceDiagram
   }
   ```
   A card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the safe bounds** (`rect.centerY() in minTop..maxBottom`).
-- **Safe Center Y Clamping for Click Dispatch:**
-  When dispatching physical touch injection into cards that are partially clipped at viewport edges, tapping the unconstrained geometric center (`rect.centerY()`) could cause the touch to land off-screen or strike the top app bar or bottom tabs. `KidsAccessibilityService` clamps the vertical coordinate into a guaranteed safe touch strip:
-  ```kotlin
-  val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
-  val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
-  ```
-  This guarantees that physical tap gestures always hit the interactive body of the card safely within screen boundaries.
-- **Stream Title Extraction (`fallbackTitle`):** Before navigating into any card, the scanner extracts the headline directly from the stream card (`findNextUnvisitedPost`), filtering out excluded chrome. This candidate is packaged into `UnvisitedCard(title, fingerprint, clickableNode, bounds)` and passed forward to `processPostDetailAndDownload(detailRoot, title)`.
-- **Chrome & Noise Rejection:** Ignores non-post navigation elements (`excludedChrome`) such as `"open navigation menu"`, `"signed in as"`, `"tasks due"`, `"back to stream"`, and cards with content length $\le 20$ characters.
 - **Classroom Stream Comment Counter Filter:**
-  In Google Classroom's Stream tab, each post card contains dynamic comment rows (e.g., `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or dynamic counts such as `"3 class comments"`). If evaluated naively, these comment rows can be mistakenly identified as distinct post cards or alter the post's cryptographic identity over time. `KidsAccessibilityService` deploys a dual-stage filter:
-  1. **Candidate Rejection in `findNextUnvisitedPost()`:** The card discovery loop explicitly filters out comment header and counter elements:
-     ```kotlin
-     val lowerCombined = combinedText.lowercase().trim()
-     if (lowerCombined.contains("class comments for") ||
-         lowerCombined.startsWith("0 class comments") ||
-         lowerCombined.startsWith("add class comment") ||
-         lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
-     ) {
-         card.recycle()
-         continue
-     }
-     ```
-     This prevents comment metadata from being treated as unvisited post cards, eliminating false card entries and avoiding scrolling stalls.
-  2. **Comment Stripping Prior to Fingerprinting (`computeCardFingerprint`):** Before hashing non-chrome text tokens into a SHA-256 fingerprint, dynamic comment counts are stripped:
-     ```kotlin
-     private fun computeCardFingerprint(cardItems: List<String>): String {
-         val commentPattern = Regex("""\b\d+\s+class\s+comments?.*""", RegexOption.IGNORE_CASE)
-         val content = cardItems
-             .map { it.replace(commentPattern, "").trim() }
-             .filter { item ->
-                 val lower = item.lowercase().trim()
-                 !excludedChrome.contains(lower) &&
-                         !excludedChrome.any { lower.startsWith(it) } &&
-                         !lower.contains("class comments for") &&
-                         item.isNotBlank()
-             }
-             .joinToString("|")
-         return try {
-             val md = MessageDigest.getInstance("SHA-256")
-             val digest = md.digest(content.toByteArray(Charsets.UTF_8))
-             digest.take(8).joinToString("") { "%02x".format(it) }
-         } catch (e: Exception) {
-             content.hashCode().toString()
-         }
-     }
-     ```
-     By sanitizing comment count variations, future comments added to an existing announcement do not mutate its fingerprint, strictly preserving deduplication invariance across repeated crawling sessions.
-- **Deterministic SHA-256 Fingerprinting:** For each eligible post card, `computeCardFingerprint(cardItems)` aggregates sanitized text tokens delimited by pipe (`|`), calculates a SHA-256 hash, and truncates to the first 8 hex characters:
+  Dynamic comment rows (e.g., `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or `"3 class comments"`) are stripped prior to fingerprinting to ensure that subsequent class comments added to a post do not mutate its identity over time.
+- **Deterministic SHA-256 Fingerprinting:**
+  For each eligible card, non-chrome text tokens are delimited by pipe (`|`), hashed with SHA-256, and truncated to the first 8 hex characters:
   $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
-  Fingerprints are maintained in `visitedPostFingerprints` (`ConcurrentHashMap.newKeySet()`), ensuring no post is visited twice even when list recycling re-renders nodes.
-- **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
-  `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. As an intentional architectural invariant, `visitedPostFingerprints` is **strictly preserved across crawl session toggles** (when the parent starts, stops, or re-initiates auto-capture). It is **not** cleared when stopping crawl jobs. This invariant guarantees that stopping capture to review notices or pausing and restarting will never cause the crawler to re-enter, re-read, or re-download attachments from post cards already parsed during that session, saving battery, device memory, and preventing duplicate processing.
+- **Cataloging into `StreamManifest` (`StreamManifest.kt`):**
+  Each unique card discovered in Pass 1 is registered into the manifest with an initial status:
+  ```kotlin
+  data class StreamManifestItem(
+      val index: Int,
+      val title: String,
+      val text: String,
+      val fingerprint: String,
+      var status: StreamItemStatus = StreamItemStatus.PENDING,
+      var attemptCount: Int = 0
+  )
 
-##### 2. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
+  enum class StreamItemStatus {
+      PENDING,
+      ALREADY_SYNCED,
+      IN_PROGRESS,
+      COMPLETED,
+      FAILED_SKIPPED
+  }
+  ```
+  If `db.noticeDao().findByHash(hash) != null` or `visitedPostFingerprints.contains(fingerprint)`, the card is tagged `StreamItemStatus.ALREADY_SYNCED` directly during survey. If new, it is marked `StreamItemStatus.PENDING`.
+- **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
+  `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. Preserving `visitedPostFingerprints` across session toggles guarantees that re-running Auto-Capture will immediately tag previously ingested notices as `ALREADY_SYNCED`, establishing full bounds without re-downloading existing media.
+- **Survey Completion:**
+  When **5 consecutive scrolls yield 0 new items**, Pass 1 concludes. The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately.
+
+##### 2. `PASS 1.5: STREAM REWIND` (Bidirectional Kinetic Scroll & Landmark Seeking)
+Once Pass 1 catalogs the inventory, the Classroom stream is resting at the historical bottom. Before Pass 2 begins, the crawler executes an autonomous rewind (`rewindStreamToTop`):
+- **Target Landmark:** Targets the initial notice (`manifest.startItemTitle` / `firstItem.fingerprint`).
+- **Calibrated Backward Kinetic Swipes (`performScrollBackward`):** Dispatches downward physical kinetic swipe gestures from $(0.65w, 0.25h)$ to $(0.65w, 0.75h)$ over 400ms.
+- **Landmark Visibility Check (`isItemVisible`):** After each backward swipe (with 700ms stabilization), the crawler inspects the active window for `manifest.firstItem.fingerprint`.
+- **Rewind Limit:** If the landmark is reached or after a safety maximum of 15 scrolls, rewind transitions into Pass 2.
+
+##### 3. `PASS 2: MANIFEST-DRIVEN INGESTION & AUTO-RECOVERY ENGINE`
+In Pass 2, the crawler processes each item sequentially using `manifest.getNextPendingItem()`:
+- **Card Seeking (`findCardByFingerprint`):** Scans visible post cards on the current screen matching the target item's fingerprint.
+- **Direct Processing:**
+  If the target card is visible in the safe viewport:
+  1. Sets status to `StreamItemStatus.IN_PROGRESS`.
+  2. Updates overlay status to `"Capturing (X/Total - Y%)..."`.
+  3. Dispatches physical tap gesture (`dispatchTap`) at `safeCenterY`.
+  4. Enters detail view (or falls back to direct stream ingestion if plain text notice).
+  5. Extracts full text, author, and downloads attachments.
+  6. Safely returns to the stream, marks the item `StreamItemStatus.COMPLETED`, and increments notice tallies.
+- **Autonomous Auto-Recovery Engine (Viewport Displacement Seeking):**
+  If the target card is NOT currently visible (due to dynamic list scrolling or layout reflow):
+  1. `getVisibleCardFingerprints()` catalogs all post cards currently displayed on screen and retrieves their assigned manifest indices.
+  2. **Relative Position Arithmetic:**
+     - **Over-Scrolled (Target is Above):** If `minVisibleIndex > targetItem.index`, the viewport has scrolled past the target towards older posts. The engine updates the overlay to `"Recovering Position... Scrolling up"` and dispatches `performScrollBackward()`.
+     - **Under-Scrolled (Target is Below):** If visible indices are before the target, the engine updates overlay to `"Navigating to Post... Seeking post"` and dispatches `performScroll()`.
+  3. **Safety Timeout Safeguard:**
+     Each recovery attempt increments `manifest.incrementAttempt(targetItem.fingerprint)`. If an item cannot be acquired within **4 recovery attempts**, it is marked `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs or traps the user in an infinite seek loop.
+
+##### 4. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
 - **Dual Action Click & Physical Touch Tap (`dispatchTap`):** Standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) often fail on custom `RecyclerView` item layouts, compound touch listeners, card wrappers, or OEM skins (Samsung One UI, Xiaomi HyperOS, Oppo ColorOS) that swallow accessibility clicks. To guarantee post opening across all Android devices, the crawler performs a dual-action dispatch:
   1. Executes `clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)`.
   2. Dispatches a physical touch tap gesture directly at the safe clamped center of the post card's screen bounds:
@@ -971,8 +1015,9 @@ class FloatingCrawlerOverlay(...) {
     fun isAutoScrollingActive(): Boolean
     fun isShowing(): Boolean
     
-    // Physical kinetic list scrolling
+    // Physical kinetic list scrolling (Bidirectional)
     fun performScroll(onComplete: () -> Unit)
+    fun performScrollBackward(onComplete: () -> Unit)
     
     // Autonomous Zero-Click Completion & Clean Teardown
     fun showCompletion(countNotices: Int, countFiles: Int, onDismissed: () -> Unit = {})
@@ -980,12 +1025,18 @@ class FloatingCrawlerOverlay(...) {
 }
 ```
 
-- **Physical Kinetic Scroll Dispatcher (`performScroll` & `performScrollGesture`):**
-  Classroom's `RecyclerView` requires actual pointer motion and velocity events to invoke internal pagination listeners. `performScroll()` routes gesture execution to the main UI thread via `handler.post`, where `performScrollGesture()` constructs a kinetic swipe:
+- **Bidirectional Kinetic Scroll Dispatchers (`performScroll` & `performScrollBackward`):**
+  Classroom's `RecyclerView` requires actual pointer motion and velocity events to invoke internal pagination listeners and list re-positioning. `FloatingCrawlerOverlay` provides bidirectional kinetic swipe gestures routed to the main thread:
   ```kotlin
   fun performScroll(onComplete: () -> Unit) {
       handler.post {
           performScrollGesture(onComplete)
+      }
+  }
+
+  fun performScrollBackward(onComplete: () -> Unit) {
+      handler.post {
+          performScrollBackwardGesture(onComplete)
       }
   }
 
@@ -994,61 +1045,33 @@ class FloatingCrawlerOverlay(...) {
       val width = displayMetrics.widthPixels
       val height = displayMetrics.heightPixels
 
-      // Physical touch swipe: Start at 75% height and swipe upwards to 20% height
+      // Physical touch swipe forward (downward scroll): Start at 75% height and swipe upwards to 20% height
       // Placed at 65% width to avoid right-edge back gestures and left-side overlay
       val startX = width * 0.65f
       val startY = height * 0.75f
       val endY = height * 0.20f
 
-      CrawlerTraceLogger.log(
-          "SCROLLER_SWIPE",
-          "Dispatching physical scroll swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
-      )
-
-      val path = Path().apply {
-          moveTo(startX, startY)
-          lineTo(startX, endY)
-      }
-
-      // Calibrated 400ms kinetic swipe to trigger RecyclerView fling & pagination
-      val stroke = GestureDescription.StrokeDescription(path, 0, 400)
-      val gesture = GestureDescription.Builder().addStroke(stroke).build()
-
-      val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-          override fun onCompleted(gestureDescription: GestureDescription?) {
-              CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe COMPLETED")
-              onComplete()
-          }
-
-          override fun onCancelled(gestureDescription: GestureDescription?) {
-              CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe CANCELLED, executing native fallback")
-              fallbackNativeScroll()
-              onComplete()
-          }
-      }, null)
-
-      if (!dispatched) {
-          CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch physical swipe, executing native fallback")
-          fallbackNativeScroll()
-          onComplete()
-      }
+      dispatchKineticSwipe(startX, startY, startX, endY, isForward = true, onComplete)
   }
 
-  private fun fallbackNativeScroll() {
-      try {
-          val rootNode = service.rootInActiveWindow ?: return
-          val scrollable = findPrimaryScrollableNode(rootNode)
-          scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-          scrollable?.recycle()
-          rootNode.recycle()
-      } catch (e: Exception) {
-          Log.w(TAG, "Fallback scroll error: ${e.message}")
-      }
+  private fun performScrollBackwardGesture(onComplete: () -> Unit) {
+      val displayMetrics = service.resources.displayMetrics
+      val width = displayMetrics.widthPixels
+      val height = displayMetrics.heightPixels
+
+      // Physical touch swipe backward (upward scroll/rewind): Start at 25% height and swipe downwards to 75% height
+      val startX = width * 0.65f
+      val startY = height * 0.25f
+      val endY = height * 0.75f
+
+      dispatchKineticSwipe(startX, startY, startX, endY, isForward = false, onComplete)
   }
   ```
-  - **Kinetic Fling Mechanics:** The stroke moves from $(0.65w, 0.75h)$ to $(0.65w, 0.20h)$ in 400ms. This generates authentic fling inertia that fires Android's `OnScrollListener`, triggering Classroom's pagination adapter to fetch earlier notices.
+  - **Kinetic Fling Mechanics (Forward & Backward):**
+    - *Forward Scroll (Pass 1 Survey & Pass 2 Advance):* Moves from $(0.65w, 0.75h)$ to $(0.65w, 0.20h)$ in 400ms, triggering pagination for older announcements.
+    - *Backward Scroll (Pass 1.5 Rewind & Displacement Recovery):* Moves from $(0.65w, 0.25h)$ to $(0.65w, 0.75h)$ in 400ms, smoothly scrolling back toward earlier notices.
   - **Placement Invariant (65% Screen Width):** Swiping along $x = 0.65w$ avoids Android 10+ edge back gestures (active on the outer 10-15% display bounds) and keeps the gesture clear of the left-anchored floating assistant overlay.
-  - **Graceful Native Fallback:** If gesture dispatch is cancelled or fails, `fallbackNativeScroll()` executes `ACTION_SCROLL_FORWARD` on the primary scrollable node, ensuring scrolling never halts.
+  - **Graceful Native Fallback:** If gesture dispatch is cancelled or fails, `fallbackNativeScroll(isForward)` executes `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scrollable node, ensuring scrolling never halts.
 
 - **Guaranteed View Teardown (`dismissAndRemove` via `removeViewImmediate`):**
   A critical challenge with Android accessibility overlays is the risk of "ghost" windows—orphaned, invisible, or non-responsive views that linger across app switches and intercept user touches on the Home screen.

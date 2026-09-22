@@ -21,6 +21,9 @@ import com.kids.collector.data.db.NoticeEntity
 import com.kids.collector.domain.classifier.ContentClassifier
 import com.kids.collector.domain.dedupe.DeduplicationEngine
 import com.kids.collector.domain.model.ChildProfile
+import com.kids.collector.domain.model.StreamItemStatus
+import com.kids.collector.domain.model.StreamManifest
+import com.kids.collector.domain.model.StreamManifestItem
 import com.kids.collector.domain.model.SyncStatus
 import com.kids.collector.domain.router.MultiChildRouter
 import kotlinx.coroutines.CoroutineScope
@@ -174,194 +177,277 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun runDeepCrawlLoop() {
-        var consecutiveZeroDiscoveryCount = 0
+        val manifest = StreamManifest()
+
+        // =========================================================================
+        // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
+        // =========================================================================
+        crawlerOverlay?.updateStatus("Status: Surveying Stream...", "Indexing stream notices...")
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 1: Pre-flight stream survey...")
+
+        var surveyZeroCount = 0
+        while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+            val root = rootInActiveWindow
+            if (root == null) {
+                delay(300)
+                continue
+            }
+
+            val currentPkg = root.packageName?.toString() ?: ""
+            if (currentPkg != "com.google.android.apps.classroom") {
+                crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
+                root.recycle()
+                delay(1000)
+                continue
+            }
+
+            // Survey all visible cards on current screen
+            val newItemsCount = surveyVisibleCards(root, manifest)
+            root.recycle()
+
+            if (newItemsCount > 0) {
+                surveyZeroCount = 0
+                crawlerOverlay?.updateStatus(
+                    "Surveying (${manifest.totalCount} found)...",
+                    "Discovered ${manifest.totalCount} notices so far"
+                )
+            } else {
+                surveyZeroCount++
+            }
+
+            if (surveyZeroCount >= 5) {
+                CrawlerTraceLogger.log("STREAM_SURVEY", "Survey reached end of stream after 5 stable scrolls.")
+                break
+            }
+
+            // Kinetic scroll forward to reveal next batch
+            var scrollDone = false
+            crawlerOverlay?.performScroll { scrollDone = true }
+            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+            delay(if (surveyZeroCount > 0) 1200 else 600) // Allow pagination to load if zero new
+        }
+
+        if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() != true) {
+            CrawlerTraceLogger.log("STREAM_SURVEY", "Survey aborted by user or service.")
+            return
+        }
+
+        val total = manifest.totalCount
+        val startTitle = manifest.startItemTitle ?: "First Post"
+        val endTitle = manifest.endItemTitle ?: "Last Post"
+        CrawlerTraceLogger.log(
+            "STREAM_SURVEY",
+            "Stream survey complete! Total: $total items. Start: \"$startTitle\" | End: \"$endTitle\" | Pending: ${manifest.pendingCount}"
+        )
+
+        if (total == 0 || manifest.pendingCount == 0) {
+            crawlerOverlay?.updateStatus("✓ Stream Up to Date", "All $total notices already captured")
+            delay(2000)
+            stopDeepCrawl()
+            triggerDriveSync(applicationContext)
+            return
+        }
+
+        // =========================================================================
+        // PASS 1.5: REWIND TO START
+        // =========================================================================
+        crawlerOverlay?.updateStatus("Returning to Start...", "Preparing $total notices for capture")
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Rewinding stream back to top...")
+
+        var rewindAttempts = 0
+        val firstFingerprint = manifest.items.first().fingerprint
+        while (rewindAttempts < 15 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+            val root = rootInActiveWindow
+            val startVisible = if (root != null) {
+                val isVisible = isItemVisible(root, firstFingerprint)
+                root.recycle()
+                isVisible
+            } else false
+
+            if (startVisible) {
+                CrawlerTraceLogger.log("STREAM_SURVEY", "Start item visible on screen. Rewind complete.")
+                break
+            }
+
+            var rewindDone = false
+            crawlerOverlay?.performScrollBackward { rewindDone = true }
+            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+            delay(500)
+            rewindAttempts++
+        }
+
+        // =========================================================================
+        // PASS 2: MANIFEST-DRIVEN DEEP INGESTION WITH AUTO-RECOVERY
+        // =========================================================================
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven deep ingestion...")
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-            try {
-                val root = rootInActiveWindow
-                if (root == null) {
-                    delay(300)
-                    continue
-                }
+            val nextItem = manifest.getNextPendingItem()
+            if (nextItem == null) {
+                CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
+                break
+            }
 
-                val currentPkg = root.packageName?.toString() ?: ""
-                if (currentPkg != "com.google.android.apps.classroom") {
-                    crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
-                    root.recycle()
-                    delay(1000)
-                    continue
-                }
+            val root = rootInActiveWindow
+            if (root == null) {
+                delay(300)
+                continue
+            }
 
-                // If somehow trapped in detail view on start/resume, return to stream
-                if (isPostDetailView(root) && !isStreamOrClassworkView(root)) {
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Detected post detail on stream scan, returning to stream")
-                    performReturnToStream(root)
-                    root.recycle()
-                    delay(700)
-                    continue
-                }
-
-                // 1. Scan for the first unvisited post card in the safe viewport
-                val unvisitedCard = findNextUnvisitedPost(root)
+            val currentPkg = root.packageName?.toString() ?: ""
+            if (currentPkg != "com.google.android.apps.classroom") {
+                crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
                 root.recycle()
+                delay(1000)
+                continue
+            }
 
-                if (unvisitedCard != null) {
-                    consecutiveZeroDiscoveryCount = 0
-                    val (title, fullText, fingerprint, clickableNode, cardBounds) = unvisitedCard
-                    crawlerOverlay?.updateStatus("Status: Opening Post...", title)
-                    CrawlerTraceLogger.log(
-                        "DEEP_CRAWLER",
-                        "Opening post card at (${cardBounds.centerX()}, ${cardBounds.centerY()}): \"$title\" [Fingerprint: $fingerprint]"
-                    )
+            // Check if trapped in detail view on start/resume
+            if (isPostDetailView(root) && !isStreamOrClassworkView(root)) {
+                performReturnToStream(root)
+                root.recycle()
+                delay(700)
+                continue
+            }
 
-                    // 1. Attempt native accessibility click
-                    clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    clickableNode.recycle()
+            // Find matching card for target item on screen
+            val targetCard = findCardByFingerprint(root, nextItem.fingerprint)
+            root.recycle()
 
-                    // 2. Dispatch physical tap gesture to guarantee detail view opens
-                    dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
+            if (targetCard != null) {
+                // Target is directly on screen -> Process it!
+                val (title, fullText, fingerprint, clickableNode, cardBounds) = targetCard
+                crawlerOverlay?.updateStatus(
+                    "Capturing (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+                    title
+                )
+                CrawlerTraceLogger.log(
+                    "DEEP_CRAWLER",
+                    "Opening post #${nextItem.index}/$total at (${cardBounds.centerX()}, ${cardBounds.centerY()}): \"$title\""
+                )
 
-                    // Wait up to 800ms for Detail View to load
-                    val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
-                        val active = rootInActiveWindow ?: return@waitForCondition false
-                        val isDetail = isPostDetailView(active)
-                        active.recycle()
-                        isDetail
+                // 1. Click
+                clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                clickableNode.recycle()
+                dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
+
+                // 2. Wait for Detail View
+                val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
+                    val active = rootInActiveWindow ?: return@waitForCondition false
+                    val isDetail = isPostDetailView(active)
+                    active.recycle()
+                    isDetail
+                }
+
+                if (!enteredDetail) {
+                    // Plain text stream notice
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Card did not open detail. Ingesting directly from stream: \"$title\"")
+                    ingestNoticeDirect(title, fullText, fingerprint)
+                    manifest.markCompleted(fingerprint)
+                    visitedPostFingerprints.add(fingerprint)
+                    crawlerOverlay?.incrementNoticeCount()
+                    delay(200)
+                    continue
+                }
+
+                // In detail view: Extract details and download attachments
+                crawlerOverlay?.updateStatus("Reading Detail (${nextItem.index}/$total)...", title)
+                val detailRoot = rootInActiveWindow
+                if (detailRoot != null) {
+                    try {
+                        processPostDetailAndDownload(detailRoot, title)
+                    } catch (e: Exception) {
+                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
+                    } finally {
+                        detailRoot.recycle()
                     }
+                }
 
-                    if (!enteredDetail) {
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Stream card did not open detail view (plain text notice). Ingesting directly from stream.")
-                        val db = KidsDatabase.getInstance(applicationContext)
-                        val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
-                        val children = childEntities.map { e ->
-                            ChildProfile(e.childId, e.firstName, e.grade, e.academicYear, e.schoolName, e.accountEmail, e.disambiguationTag, e.photoUri, e.channels, e.createdAtMs)
-                        }
-                        val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
-                        val router = MultiChildRouter(children)
-                        val targetChild = router.route("com.google.android.apps.classroom", title, fullText)
-                        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+                // Return to stream
+                crawlerOverlay?.updateStatus("Returning to Stream...")
+                var returnAttempts = 0
+                while (returnAttempts < 3) {
+                    val active = rootInActiveWindow ?: break
+                    if (isStreamOrClassworkView(active)) {
+                        active.recycle()
+                        break
+                    }
+                    performReturnToStream(active)
+                    active.recycle()
+                    delay(600)
+                    returnAttempts++
+                }
 
-                        val hash = deduplicationEngine.computeNoticeHash(
-                            childId = targetChildId,
-                            sourceApp = "com.google.android.apps.classroom",
-                            title = title,
-                            body = fullText
+                waitForCondition(timeoutMs = 2000, pollIntervalMs = 200) {
+                    val active = rootInActiveWindow ?: return@waitForCondition false
+                    val isStream = isStreamOrClassworkView(active)
+                    active.recycle()
+                    isStream
+                }
+
+                manifest.markCompleted(fingerprint)
+                visitedPostFingerprints.add(fingerprint)
+                crawlerOverlay?.incrementNoticeCount()
+                delay(500)
+            } else {
+                // =====================================================================
+                // AUTO-RECOVERY: Target card is not on screen! Determine displacement
+                // =====================================================================
+                val checkRoot = rootInActiveWindow
+                if (checkRoot != null) {
+                    val visibleFingerprints = getVisibleCardFingerprints(checkRoot)
+                    checkRoot.recycle()
+
+                    val visibleIndices = visibleFingerprints.mapNotNull { fp -> manifest.findByFingerprint(fp)?.index }
+                    val minVisibleIndex = visibleIndices.minOrNull()
+                    val maxVisibleIndex = visibleIndices.maxOrNull()
+
+                    val attempts = manifest.incrementAttempt(nextItem.fingerprint)
+                    if (attempts >= 4) {
+                        CrawlerTraceLogger.log(
+                            "AUTO_RECOVERY",
+                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after 4 recovery attempts."
                         )
-
-                        val existing = db.noticeDao().findByHash(hash)
-                        if (existing == null) {
-                            val noticeEntity = NoticeEntity(
-                                noticeId = UUID.randomUUID().toString(),
-                                childId = targetChildId,
-                                sourceApp = "com.google.android.apps.classroom",
-                                category = classifier.classify(title, fullText).name,
-                                title = title,
-                                body = fullText,
-                                sender = "Google Classroom",
-                                timestampMs = System.currentTimeMillis(),
-                                hashSha256 = hash,
-                                syncStatus = SyncStatus.PENDING.name,
-                                driveFileId = null,
-                                attachmentCount = 0
-                            )
-                            db.noticeDao().insert(noticeEntity)
-                            crawlerOverlay?.incrementNoticeCount()
-                            CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled from stream: \"$title\"")
-                        }
-                        visitedPostFingerprints.add(fingerprint)
-                        delay(200)
+                        manifest.markSkipped(nextItem.fingerprint)
                         continue
                     }
 
-                    // 2. We are in detail view: Extract details and download attachments
-                    crawlerOverlay?.updateStatus("Status: Reading Detail...", title)
-                    val detailRoot = rootInActiveWindow
-                    if (detailRoot != null) {
-                        try {
-                            processPostDetailAndDownload(detailRoot, title)
-                        } catch (e: Exception) {
-                            CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
-                        } finally {
-                            detailRoot.recycle()
-                        }
-                    }
-
-                    // 3. Guarded Return to Stream (up to 3 attempts to close any preview and return to Stream)
-                    crawlerOverlay?.updateStatus("Status: Returning to Stream...")
-                    var returnAttempts = 0
-                    while (returnAttempts < 3) {
-                        val active = rootInActiveWindow ?: break
-                        if (isStreamOrClassworkView(active)) {
-                            active.recycle()
-                            break
-                        }
-                        performReturnToStream(active)
-                        active.recycle()
+                    if (minVisibleIndex != null && minVisibleIndex > nextItem.index) {
+                        // We are too far down -> scroll backward (rewind)
+                        CrawlerTraceLogger.log(
+                            "AUTO_RECOVERY",
+                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Scrolling backward..."
+                        )
+                        crawlerOverlay?.updateStatus("Recovering Position...", "Scrolling up to post #${nextItem.index}")
+                        var scrollDone = false
+                        crawlerOverlay?.performScrollBackward { scrollDone = true }
+                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
                         delay(600)
-                        returnAttempts++
-                    }
-
-                    // Wait up to 2000ms for Stream to re-settle
-                    waitForCondition(timeoutMs = 2000, pollIntervalMs = 200) {
-                        val active = rootInActiveWindow ?: return@waitForCondition false
-                        val isStream = isStreamOrClassworkView(active)
-                        active.recycle()
-                        isStream
-                    }
-
-                    visitedPostFingerprints.add(fingerprint)
-                    delay(600) // Stabilization delay after returning
-                } else {
-                    // All visible cards on this screen are visited -> Scroll forward
-                    crawlerOverlay?.updateStatus("Status: Scrolling Stream...")
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "All visible cards visited. Scrolling forward...")
-
-                    var scrollFinished = false
-                    crawlerOverlay?.performScroll {
-                        scrollFinished = true
-                    }
-
-                    waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollFinished }
-                    delay(850) // Wait for views to settle and bind
-
-                    // Check if new cards appeared after scroll
-                    val checkRoot = rootInActiveWindow
-                    val hasNew = if (checkRoot != null) {
-                        val next = findNextUnvisitedPost(checkRoot)
-                        checkRoot.recycle()
-                        next != null
-                    } else false
-
-                    if (!hasNew) {
-                        consecutiveZeroDiscoveryCount++
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Scroll yielded 0 new cards ($consecutiveZeroDiscoveryCount/5)")
-                        if (consecutiveZeroDiscoveryCount < 5) {
-                            crawlerOverlay?.updateStatus("Checking for earlier posts...", "Waiting for stream pagination ($consecutiveZeroDiscoveryCount/5)")
-                            delay(1500) // Allow Classroom time to fetch older posts from network
-                        } else {
-                            CrawlerTraceLogger.log("DEEP_CRAWLER", "End of stream confirmed after 5 scrolls. Completing capture.")
-                            val totalNotices = crawlerOverlay?.getCapturedCount() ?: 0
-                            val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: 0
-                            if (totalNotices > 0) {
-                                crawlerOverlay?.showCompletion(totalNotices, totalFiles) {
-                                    stopDeepCrawl()
-                                    triggerDriveSync(applicationContext)
-                                }
-                            } else {
-                                crawlerOverlay?.updateStatus("✓ Stream Up to Date", "All current stream posts already captured")
-                                stopDeepCrawl()
-                                triggerDriveSync(applicationContext)
-                            }
-                            break
-                        }
                     } else {
-                        consecutiveZeroDiscoveryCount = 0
+                        // We are above the target or item is ahead -> scroll forward
+                        CrawlerTraceLogger.log(
+                            "AUTO_RECOVERY",
+                            "Target #${nextItem.index} is ahead. Scrolling forward..."
+                        )
+                        crawlerOverlay?.updateStatus("Navigating to Post...", "Seeking post #${nextItem.index}/$total")
+                        var scrollDone = false
+                        crawlerOverlay?.performScroll { scrollDone = true }
+                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+                        delay(600)
                     }
+                } else {
+                    delay(500)
                 }
-            } catch (e: Exception) {
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "Crawler loop error: ${e.message}")
-                delay(600)
             }
+        }
+
+        // Completion
+        val finalCompleted = manifest.completedCount
+        val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
+        CrawlerTraceLogger.log("DEEP_CRAWLER", "Auto-capture complete: $finalCompleted/$total notices processed, $totalFiles files saved.")
+        crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
+            stopDeepCrawl()
+            triggerDriveSync(applicationContext)
         }
     }
 
@@ -858,6 +944,167 @@ class KidsAccessibilityService : AccessibilityService() {
             card.recycle()
         }
         return null
+    }
+
+    private fun findCardByFingerprint(rootNode: AccessibilityNodeInfo, targetFingerprint: String): UnvisitedCard? {
+        val postCards = findPostCards(rootNode)
+        val displayMetrics = resources.displayMetrics
+        val minTop = 140
+        val maxBottom = displayMetrics.heightPixels - 170
+
+        val rect = Rect()
+        for (card in postCards) {
+            card.getBoundsInScreen(rect)
+
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            val combinedText = cardItems.joinToString(" ")
+            if (combinedText.length <= 20) {
+                card.recycle()
+                continue
+            }
+
+            val lowerCombined = combinedText.lowercase().trim()
+            if (lowerCombined.contains("class comments for") ||
+                lowerCombined.startsWith("0 class comments") ||
+                lowerCombined.startsWith("add class comment") ||
+                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
+            ) {
+                card.recycle()
+                continue
+            }
+
+            val titleCandidate = cardItems.firstOrNull { item ->
+                val lower = item.trim().lowercase()
+                !excludedChrome.contains(lower) &&
+                        !lower.startsWith("tab ") &&
+                        !lower.startsWith("signed in as") &&
+                        !lower.startsWith("tasks due") &&
+                        !lower.startsWith("class options for") &&
+                        !lower.contains("class comments") &&
+                        item.trim().length > 3
+            }
+            val title = titleCandidate?.take(80) ?: "Classroom Notice"
+            val fingerprint = computeCardFingerprint(cardItems)
+
+            if (fingerprint == targetFingerprint) {
+                val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
+                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                card.recycle()
+                return UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
+            }
+            card.recycle()
+        }
+        return null
+    }
+
+    private fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
+        val postCards = findPostCards(rootNode)
+        var addedCount = 0
+
+        for (card in postCards) {
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            val combinedText = cardItems.joinToString(" ")
+            if (combinedText.length <= 20) {
+                card.recycle()
+                continue
+            }
+
+            val lowerCombined = combinedText.lowercase().trim()
+            if (lowerCombined.contains("class comments for") ||
+                lowerCombined.startsWith("0 class comments") ||
+                lowerCombined.startsWith("add class comment") ||
+                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
+            ) {
+                card.recycle()
+                continue
+            }
+
+            val titleCandidate = cardItems.firstOrNull { item ->
+                val lower = item.trim().lowercase()
+                !excludedChrome.contains(lower) &&
+                        !lower.startsWith("tab ") &&
+                        !lower.startsWith("signed in as") &&
+                        !lower.startsWith("tasks due") &&
+                        !lower.startsWith("class options for") &&
+                        !lower.contains("class comments") &&
+                        item.trim().length > 3
+            }
+            val title = titleCandidate?.take(80) ?: "Classroom Notice"
+            val fingerprint = computeCardFingerprint(cardItems)
+
+            val isAlreadyCaptured = visitedPostFingerprints.contains(fingerprint)
+            val added = manifest.addItem(fingerprint, title, combinedText, isAlreadyCaptured)
+            if (added) {
+                addedCount++
+                CrawlerTraceLogger.log(
+                    "STREAM_SURVEY",
+                    "Discovered #${manifest.totalCount}: \"$title\" [Fingerprint: $fingerprint, Status: ${if (isAlreadyCaptured) "ALREADY_SYNCED" else "PENDING"}]"
+                )
+            }
+            card.recycle()
+        }
+        return addedCount
+    }
+
+    private fun getVisibleCardFingerprints(rootNode: AccessibilityNodeInfo): List<String> {
+        val postCards = findPostCards(rootNode)
+        val fingerprints = mutableListOf<String>()
+        for (card in postCards) {
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            if (cardItems.joinToString(" ").length > 20) {
+                val fp = computeCardFingerprint(cardItems)
+                fingerprints.add(fp)
+            }
+            card.recycle()
+        }
+        return fingerprints
+    }
+
+    private fun isItemVisible(rootNode: AccessibilityNodeInfo, targetFingerprint: String): Boolean {
+        return getVisibleCardFingerprints(rootNode).contains(targetFingerprint)
+    }
+
+    private suspend fun ingestNoticeDirect(title: String, fullText: String, fingerprint: String) {
+        val db = KidsDatabase.getInstance(applicationContext)
+        val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
+        val children = childEntities.map { e ->
+            ChildProfile(e.childId, e.firstName, e.grade, e.academicYear, e.schoolName, e.accountEmail, e.disambiguationTag, e.photoUri, e.channels, e.createdAtMs)
+        }
+        val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+        val router = MultiChildRouter(children)
+        val targetChild = router.route("com.google.android.apps.classroom", title, fullText)
+        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+
+        val hash = deduplicationEngine.computeNoticeHash(
+            childId = targetChildId,
+            sourceApp = "com.google.android.apps.classroom",
+            title = title,
+            body = fullText
+        )
+
+        val existing = db.noticeDao().findByHash(hash)
+        if (existing == null) {
+            val noticeEntity = NoticeEntity(
+                noticeId = UUID.randomUUID().toString(),
+                childId = targetChildId,
+                sourceApp = "com.google.android.apps.classroom",
+                category = classifier.classify(title, fullText).name,
+                title = title,
+                body = fullText,
+                sender = "Google Classroom",
+                timestampMs = System.currentTimeMillis(),
+                hashSha256 = hash,
+                syncStatus = SyncStatus.PENDING.name,
+                driveFileId = null,
+                attachmentCount = 0
+            )
+            db.noticeDao().insert(noticeEntity)
+            CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled from stream: \"$title\"")
+        }
     }
 
     private fun computeCardFingerprint(cardItems: List<String>): String {

@@ -44,6 +44,8 @@ As parents, keeping up with school communications is exhausting. Homework assign
 4. [Google Classroom Deep Auto-Capture Guide](#4-google-classroom-deep-auto-capture-guide)
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
+   - [Two-Pass Stream Architecture (Survey, Rewind, Ingestion)](#two-pass-stream-architecture-survey-rewind-ingestion)
+   - [Manifest-Driven Auto-Recovery & SQLite Instant Skipping](#manifest-driven-auto-recovery--sqlite-instant-skipping)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
    - [Zero-Click Hands-Free Exit & Auto-Completion](#zero-click-hands-free-exit--auto-completion)
      - [Hands-Free Auto-Stop on App Exit](#hands-free-auto-stop-on-app-exit)
@@ -375,16 +377,19 @@ When active, the action button dynamically changes to a prominent red stop butto
 
 #### Real-Time Status & Metrics Display
 The floating assistant features an informative **live 2-line status pill**:
-- **Top Status Line (Active FSM State):** Reflects the exact operation the crawler is performing in real time:
+- **Top Status Line (Active Pipeline State):** Reflects the exact operation the crawler is performing in real time:
   - `Status: Ready` — Idle and ready to start.
-  - `Status: Scanning Stream...` — Inspecting the current screen viewport for unvisited post cards.
-  - `Status: Opening Post...` — Tapping into a specific post card to view its full details.
-  - `Status: Reading Detail...` — Extracting complete announcement text, author, timestamp, and attachment metadata.
-  - `Status: Downloading (X/Y)...` — Disagreeing with manual clicks: autonomously downloading the $X$-th attachment out of $Y$ total files attached to the current post.
-  - `Status: Opening (X/Y)...` — Tapping an attachment chip when direct download buttons are nested.
-  - `Status: Returning to Stream...` — Safely pressing Navigate Up or system Back to re-anchor in the list view.
-  - `Status: Scrolling Stream...` — Advancing the stream list once all visible cards have been processed.
-  - `Status: Capture Complete!` — Backfill completed after end-of-stream detection.
+  - `Surveying (X found)...` — **Pass 1 (Pre-Flight Survey):** Swiping swiftly down the stream, compiling the inventory manifest without opening cards.
+  - `Returning to Start...` — **Pass 1.5 (Rewind):** Automatically rewinding the stream back to the top notice.
+  - `Capturing (X/Total - Y%)...` — **Pass 2 (Deep Ingestion):** Methodically processing notice $X$ of Total with live percentage completion.
+  - `Recovering Position...` — **Auto-Recovery:** Scrolling upward after detecting that the viewport was displaced below the target post.
+  - `Navigating to Post...` — **Auto-Recovery:** Scrolling downward seeking an upcoming target post in the manifest.
+  - `Reading Detail (X/Total)...` — Extracting announcement body, author, timestamp, and attachment metadata.
+  - `Downloading (X/Y)...` — Autonomously downloading attachment $X$ out of $Y$ files attached to the current post.
+  - `Opening (X/Y)...` — Tapping an attachment chip when direct download buttons are nested.
+  - `Returning to Stream...` — Safely pressing Navigate Up or system Back to re-anchor in the list view.
+  - `✓ Backfill Complete!` — All manifest notices successfully processed and saved.
+  - `✓ Stream Up to Date` — All stream posts already captured previously in SQLite Room; no pending items.
   - `Status: Capture Stopped` — Manually stopped by the parent.
   - `Status: Paused (External App)` — Pauses immediately if an external app or dialog comes to foreground.
 - **Bottom Metrics Badge (`XX Notices • YY Files`):** Kept up to date live. Displays the exact tally of unique school notices backfilled and physical attachment files (.pdf, .docx, .jpg) staged in local storage.
@@ -403,40 +408,117 @@ K.I.D.S. is engineered for complete accessibility compliance (WCAG 2.1 AA/AAA) a
 - **Dynamic Semantic Accessibility Labels (`contentDescription`):** Screen readers announce the exact current state and action of the floating button. The button's `contentDescription` dynamically transitions between `"Start Auto-Capture"` and `"Stop Auto-Capture"` as state changes.
 - **Accessible Touch Targets:** All touch targets on the overlay enforce a minimum size of 48dp × 48dp (exceeding WCAG 2.1 AAA recommendations), making them easy to locate and double-tap with TalkBack or motor impairments.
 
-### Deep Post Traversal & Autonomous File Downloads
+### Two-Pass Stream Architecture (Survey, Rewind, Ingestion)
 
-K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of announcements, opening attachments, and downloading worksheets one by one:
+To guarantee that no notice is ever overlooked, skipped, or duplicated, K.I.D.S. operates on a deterministic **Two-Pass Stream Architecture**. Instead of naively clicking posts while scrolling, the assistant divides historical backfill into three coordinated phases:
 
 ```mermaid
 flowchart TD
-    A["Scan Stream Viewport<br/>(Exclude TopBar, Tabs & Comment Noise)"] --> B{"Unvisited Post Found?<br/>(Relaxed Viewport: >=35% Visible or Center In-Bounds)"}
-    B -->|Yes| C["Preserve Stream Title (fallbackTitle)<br/>& Open Post Card via Clamped Center Tap"]
-    C --> D{"Detail Screen Loaded?<br/>(Fast 800ms Check)"}
-    D -->|Yes| E["Dismiss Soft Keyboard<br/>& Title Sanitization Priority"]
-    D -->|No (Plain Text Card)| STREAM_INGEST["Immediate Stream Ingestion<br/>(NoticeEntity • 0s Delays)"]
-    STREAM_INGEST --> A
-    E --> F{"Attachments Discovered?"}
-    F -->|Yes| G["Loop: Tap Download or Clickable Chip<br/>(Physical Tap Fallback • 1,000ms Debounce)"]
-    G --> H{"Preview / Viewer Opened?<br/>(Docs / Drive Viewer)"}
-    H -->|Direct Download Button| DLOAD["File Landed in Downloads<br/>(Moved by DownloadFolderObserver)"]
-    H -->|Viewer / Preview Sheet| SHARE_FLOW["Auto-Scan Viewer: Click Share or Overflow<br/>Auto-Select 'K.I.D.S. Vault' in System Chooser"]
-    SHARE_FLOW --> SHARE_TARGET["ShareTargetActivity Staging<br/>(Pristine Binary Staged in <50ms)"]
-    DLOAD --> RET["Guarded Return Loop (Up to 3 Attempts)<br/>Close Previews & Navigate Up / Back (<1s)"]
-    SHARE_TARGET --> RET
-    F -->|No Attachments| RET
-    RET --> I{"Stream / Classwork Restored?<br/>(isStreamOrClassworkView <=2s)"}
-    I -->|Yes (Stabilize 600ms)| A
-    I -->|No (Retry Return)| RET
-    B -->|No| K["Kinetic Physical Swipe Scroll<br/>(400ms Swipe • Trigger Fling & Pagination)"]
-    K --> L{"New Posts Found After Scroll?<br/>(850ms Viewport Settling)"}
-    L -->|Yes (Reset Counter)| A
-    L -->|No (Counter + 1)| M{"5 Consecutive Empty Scrolls?<br/>(1,500ms Network Pagination Wait)"}
-    M -->|No| WAIT_PAG["Status: Checking for earlier posts...<br/>Waiting for stream pagination (X/5) • 1,500ms"]
-    WAIT_PAG --> K
-    M -->|Yes| N{"Any Notices Captured?<br/>(totalNotices > 0)"}
-    N -->|Yes| O["Status: ✓ Backfill Complete!<br/>(2.5s Success Display & Cloud Sync)"]
-    N -->|No| P["Status: ✓ Stream Up to Date<br/>(All Current Posts Already Captured)"]
+    subgraph P1["Pass 1: Pre-Flight Survey"]
+        A1["User Taps ▶ Start Auto-Capture"] --> B1["Rapid Downward Kinetic Swipes<br/>(Overlay: 'Surveying (X found)...')"]
+        B1 --> C1["Index Post Fingerprints into StreamManifest<br/>(Exclude Comments & UI Chrome)"]
+        C1 --> D1{"SQLite Duplicate Check"}
+        D1 -->|Already in Room DB| E1["Mark Status: ALREADY_SYNCED"]
+        D1 -->|New Notice| F1["Mark Status: PENDING"]
+        B1 --> G1{"5 Consecutive Empty Scrolls?<br/>(Stream End Reached)"}
+        G1 -->|Yes| H1["Log Stream Boundaries:<br/>startItemTitle, endItemTitle, totalCount"]
+    end
+
+    subgraph FAST["Fast Up-to-Date Check"]
+        H1 --> I1{"Any Pending Notices?<br/>(pendingCount == 0)"}
+        I1 -->|All Synced| J1["Status: '✓ Stream Up to Date'<br/>Direct Cloud Sync & Clean Dismissal"]
+    end
+
+    subgraph P15["Pass 1.5: Stream Rewind"]
+        I1 -->|Pending > 0| K1["Kinetic Downward Swipes (0.25h -> 0.75h)<br/>(Overlay: 'Returning to Start...')"]
+        K1 --> L1{"Top Notice Visible?<br/>(isItemVisible(firstFingerprint))"}
+        L1 -->|Yes / Max 15 Attempts| M1["Stream Re-Anchored at Top Post"]
+    end
+
+    subgraph P2["Pass 2: Manifest-Driven Deep Ingestion"]
+        M1 --> N1["Fetch nextItem from StreamManifest<br/>(getNextPendingItem: Status == PENDING)"]
+        N1 --> O1{"Target Notice Visible on Screen?<br/>(findCardByFingerprint)"}
+        O1 -->|Yes| P1["Overlay: 'Capturing (X/Total - Y%)...'<br/>Clamped Center Tap -> Post Detail"]
+        P1 --> Q1{"Detail Loaded in 800ms?"}
+        Q1 -->|Yes| R1["Extract Body + Auto-Download Attachments<br/>Guarded Return to Stream"]
+        Q1 -->|No| S1["Direct Stream Ingestion (Plain-Text Notice)"]
+        R1 --> T1["Mark Status: COMPLETED in Manifest<br/>Increment Notice & File Counters"]
+        S1 --> T1
+        T1 --> U1{"All Items Finished?<br/>(isAllFinished())"}
+        U1 -->|No| N1
+        U1 -->|Yes| V1["Overlay: '✓ Backfill Complete!'<br/>2.5s Dwell & Automatic Google Drive Sync"]
+    end
+
+    subgraph RECOV["Auto-Recovery Engine"]
+        O1 -->|No (Displaced)| W1["Compare Visible Card Indices vs. Target Index"]
+        W1 --> X1{"minVisibleIndex > target.index?"}
+        X1 -->|Yes (Scrolled too far down)| Y1["Overlay: 'Recovering Position...'<br/>Backward Swipe (performScrollBackward)"]
+        X1 -->|No (Target is ahead)| Z1["Overlay: 'Navigating to Post...'<br/>Forward Swipe (performScroll)"]
+        Y1 --> AA1{"Attempt Count >= 4?"}
+        Z1 --> AA1
+        AA1 -->|No| O1
+        AA1 -->|Yes (Damaged / Unopenable)| AB1["Mark Status: FAILED_SKIPPED in Manifest<br/>Log Trace Warning & Proceed to Next Notice"]
+        AB1 --> N1
+    end
 ```
+
+#### 1. Pass 1: Pre-Flight Stream Survey
+- **Swift Non-Intrusive Scanning:** The assistant glides swiftly down the entire Classroom stream using kinetic physical swipes without opening any post cards.
+- **Inventory Manifest Construction:** Every discovered announcement is fingerprinted and cataloged into an in-memory inventory manifest (`StreamManifest`).
+- **Boundary Recording:** K.I.D.S. records the exact chronological boundaries of the stream: the very first notice (`startItemTitle`), the oldest notice (`endItemTitle`), and the total post count (`totalCount`).
+- **Live Survey Progress:** The overlay status pill displays:
+  $$\text{Surveying (X found)...}$$
+  $$\text{Discovered X notices so far}$$
+- **5-Scroll Termination:** When 5 consecutive scrolls yield zero new post cards (with generous 1,500ms network pagination wait between scrolls), Pass 1 confirms that the complete stream history has been inventoried.
+- **Instant Fast-Path Completion:** If all discovered notices already exist in local SQLite Room storage (`pendingCount == 0`), K.I.D.S. instantly displays `✓ Stream Up to Date (All X notices already captured)`, triggers background sync, and safely exits without running Pass 2.
+
+#### 2. Pass 1.5: Stream Rewind
+- **Automated Return to Top:** Once the stream inventory is compiled, the assistant automatically rewinds from the bottom of the feed back to the top post.
+- **Kinetic Rewind Swiping:** The assistant executes downward physical swipes (`performScrollBackward()`) starting at 25% screen height and sweeping down to 75% height over 400ms.
+- **Visual Re-Anchoring:** The status line displays:
+  $$\text{Returning to Start...}$$
+  $$\text{Preparing X notices for capture}$$
+  The crawler verifies whether the first post (`firstFingerprint`) has reappeared on screen (`isItemVisible()`). Once visible (or after reaching the 15-scroll safety ceiling), Pass 1.5 smoothly hands off to Deep Ingestion.
+
+#### 3. Pass 2: Manifest-Driven Deep Ingestion
+- **Sequential Ingestion:** The crawler systematically works down the manifest, retrieving each uncaptured post via `getNextPendingItem()`.
+- **Live Counter & Percentage Metric:** Parents can observe exact progress on the floating status pill:
+  $$\text{Capturing (X/Total - Y%)...}$$
+  $$\text{[Current Announcement Headline Preview]}$$
+- **Post Ingestion & Return:** Each notice is opened via a safe clamped center tap, attachments are downloaded autonomously, and the assistant executes a guarded return loop back to the stream before marking the item `COMPLETED`.
+
+---
+
+### Manifest-Driven Auto-Recovery & SQLite Instant Skipping
+
+One of the greatest challenges in automating school apps is visual instability: items can shift when comments render, network pagination can jump, or system notifications can nudge the scroll position. K.I.D.S. solves this with a **Manifest-Driven Auto-Recovery Engine**:
+
+#### 1. Autonomous Position Displacement Recovery
+If the target post is not immediately visible on screen after returning from detail view or during stream navigation:
+1. **Screen Fingerprint Scan:** The assistant scans all post cards currently visible in the safe viewport (`getVisibleCardFingerprints()`).
+2. **Relative Index Comparison:** It matches the visible fingerprints against their assigned indices in the `StreamManifest`:
+   - **Displaced Below Target (`minVisibleIndex > target.index`):** If the visible notices are numbered after the target notice, the crawler scrolled too far down. The overlay displays `Recovering Position...` (`Scrolling up to post #X`) and automatically triggers a kinetic backward swipe (`performScrollBackward()`) to seek upward.
+   - **Target is Ahead (`minVisibleIndex <= target.index`):** If the target notice is further down the list, the overlay displays `Navigating to Post...` (`Seeking post #X/Total`) and triggers a forward scroll (`performScroll()`).
+3. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
+
+#### 2. Zero Dropped Notices & 4-Attempt Skip Safeguard
+- In traditional screen crawlers, displaced cards cause notices to be lost or crawler loops to crash. K.I.D.S. guarantees **zero dropped notices** by keeping every notice in the manifest until positively processed.
+- If a specific post card is corrupted, unopenable, or structurally altered by an OEM rendering bug, the recovery engine increments an attempt counter (`attemptCount`).
+- If an item fails to resolve after **4 consecutive recovery attempts**, K.I.D.S. marks the item as `FAILED_SKIPPED` in the manifest, logs a detailed warning in `crawler_trace.log`, and immediately proceeds to the next notice in the manifest. The crawler never hangs or gets trapped in infinite loops.
+
+#### 3. Instant SQLite Synchronization Skipping (`ALREADY_SYNCED`)
+- When indexing cards in Pass 1, K.I.D.S. cross-references each post's SHA-256 fingerprint with notices already stored in the local SQLite Room database (`visitedPostFingerprints` and `NoticeEntity`).
+- Posts already saved from earlier crawl sessions or received via background push notifications are immediately tagged as `StreamItemStatus.ALREADY_SYNCED`.
+- In Pass 2, `getNextPendingItem()` skips `ALREADY_SYNCED` items in zero milliseconds. The assistant never wastes battery, data, or time reopening cards or redownloading worksheets that have already been backed up to your Google Drive Vault!
+- The progress calculation mathematically accounts for synced notices:
+  $$\text{progressPercent} = \frac{\text{completedCount} + \text{alreadySyncedCount}}{\text{totalCount}} \times 100$$
+  giving parents a truthful, accurate view of total vault synchronization.
+
+---
+
+### Deep Post Traversal & Autonomous File Downloads
+
+K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of announcements, opening attachments, and downloading worksheets one by one:
 
 1. **Deterministic Post Discovery & Relaxed Viewport Tolerance:** 
    - The crawler scans the stream viewport, ignoring app bar chrome, bottom navigation tabs, and dynamic comment widgets.
@@ -471,14 +553,17 @@ flowchart TD
      - If still inside a document viewer or post detail view, it triggers `performReturnToStream`: first attempting `ACTION_CLICK` on the Navigate Up (`←`) toolbar icon, falling back to physical tap on the icon bounds, and finally dispatching Android's system-level `GLOBAL_ACTION_BACK`.
      - It allows a 600ms delay between attempts, effortlessly dismissing any document previewers before returning to the stream.
    - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
-6. **Physical Kinetic Pointer Swipes & Autonomous Stream Scrolling:**
+6. **Physical Kinetic Pointer Swipes (Forward Ingestion & Backward Rewind):**
    - **Why Physical Swipes are Essential:** Modern Google Classroom `RecyclerView` implementations rely on physical finger fling momentum and `OnScrollListener` velocity callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) often return a "success" status from the Android accessibility framework without generating actual scrolling physics, leaving Classroom's pagination adapter stalled and failing to request older historical notices.
-   - **The 400ms Physical Kinetic Swipe:** K.I.D.S. dispatches an authentic physical pointer swipe gesture using Android's `GestureDescription` API:
-     - **Swipe Path:** Starts at 75% screen height and sweeps upward to 20% screen height:
-       $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
-     - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, the swipe safely avoids triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoids colliding with or dragging the floating assistant overlay.
-     - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
-     - **Native Scroll Fallback:** If the physical gesture is cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` on the primary scroll container.
+   - **Forward Kinetic Swipe (`performScroll`):** Starts at 75% screen height and sweeps upward to 20% screen height:
+     $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
+     Dispatched over 400ms to reveal upcoming historical posts during Pass 1 surveying and Pass 2 forward traversal.
+   - **Backward Kinetic Rewind Swipe (`performScrollBackward`):** Starts at 25% screen height and sweeps downward to 75% screen height:
+     $$(0.65 \times \text{width}, 0.25 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.75 \times \text{height})$$
+     Dispatched over 400ms to return to the stream start during Pass 1.5 Rewind and re-anchor upward during Auto-Recovery position correction.
+   - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, both swipes safely avoid triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoid colliding with or dragging the floating assistant overlay.
+   - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
+   - **Native Scroll Fallback:** If physical gestures are cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scroll container.
 7. **Zero-Permanent-Storage Guarantee & Automatic Cloud Sync:**
    - Whether files land in staging via the **Native Share Target** or via public folder sweeping (`Downloads/`, `Documents/`), all attachments are staged exclusively in private sandbox staging (`Android/data/com.kids.collector/files/vault_attachments/`).
    - `DriveSyncWorker` performs offline ML Kit OCR and uploads the attachments directly to your Google Drive Vault under `attachments/` using your restricted `drive.file` OAuth scope ($0 cloud cost, zero third-party servers).

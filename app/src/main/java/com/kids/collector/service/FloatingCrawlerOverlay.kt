@@ -510,6 +510,67 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun performScrollBackward(onComplete: () -> Unit) {
+        handler.post {
+            performScrollBackwardGesture(onComplete)
+        }
+    }
+
+    private fun performScrollBackwardGesture(onComplete: () -> Unit) {
+        val displayMetrics = service.resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
+
+        // Physical touch swipe downward: Start at 25% height and swipe downwards to 75% height
+        val startX = width * 0.65f
+        val startY = height * 0.25f
+        val endY = height * 0.75f
+
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching physical rewind swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
+        )
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val stroke = GestureDescription.StrokeDescription(path, 0, 400)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Rewind swipe COMPLETED")
+                onComplete()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Rewind swipe CANCELLED, executing native backward fallback")
+                fallbackNativeScrollBackward()
+                onComplete()
+            }
+        }, null)
+
+        if (!dispatched) {
+            CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch rewind swipe, executing native backward fallback")
+            fallbackNativeScrollBackward()
+            onComplete()
+        }
+    }
+
+    private fun fallbackNativeScrollBackward() {
+        try {
+            val rootNode = service.rootInActiveWindow ?: return
+            val scrollable = findPrimaryScrollableNode(rootNode)
+            scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            scrollable?.recycle()
+            rootNode.recycle()
+        } catch (e: Exception) {
+            Log.w(TAG, "Fallback backward scroll error: ${e.message}")
+        }
+    }
+
     private fun findPrimaryScrollableNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         if (node.isScrollable) {
             return AccessibilityNodeInfo.obtain(node)
