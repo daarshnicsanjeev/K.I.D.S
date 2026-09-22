@@ -186,6 +186,9 @@ class KidsAccessibilityService : AccessibilityService() {
         CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 1: Pre-flight stream survey...")
 
         var surveyZeroCount = 0
+        var lastVisibleFingerprints = listOf<String>()
+        var identicalScreenCount = 0
+
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val root = rootInActiveWindow
             if (root == null) {
@@ -202,21 +205,34 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             // Survey all visible cards on current screen
+            val currentVisible = getVisibleCardFingerprints(root)
             val newItemsCount = surveyVisibleCards(root, manifest)
             root.recycle()
 
             if (newItemsCount > 0) {
                 surveyZeroCount = 0
+                identicalScreenCount = 0
                 crawlerOverlay?.updateStatus(
                     "Surveying (${manifest.totalCount} found)...",
                     "Discovered ${manifest.totalCount} notices so far"
                 )
             } else {
                 surveyZeroCount++
+                if (currentVisible.isNotEmpty() && currentVisible == lastVisibleFingerprints) {
+                    identicalScreenCount++
+                } else {
+                    identicalScreenCount = 0
+                }
             }
+            lastVisibleFingerprints = currentVisible
 
-            if (surveyZeroCount >= 5) {
-                CrawlerTraceLogger.log("STREAM_SURVEY", "Survey reached end of stream after 5 stable scrolls.")
+            // Smart bottom detection: If the screen physically didn't move for 2 scrolls,
+            // or if 3 scrolls yield 0 new items, conclude Pass 1 immediately without waiting.
+            if (identicalScreenCount >= 2 || surveyZeroCount >= 3) {
+                CrawlerTraceLogger.log(
+                    "STREAM_SURVEY",
+                    "Survey reached end of stream (screen static=$identicalScreenCount, zeroCount=$surveyZeroCount)."
+                )
                 break
             }
 
@@ -224,7 +240,7 @@ class KidsAccessibilityService : AccessibilityService() {
             var scrollDone = false
             crawlerOverlay?.performScroll { scrollDone = true }
             waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-            delay(if (surveyZeroCount > 0) 1200 else 600) // Allow pagination to load if zero new
+            delay(if (surveyZeroCount > 0) 800 else 500)
         }
 
         if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() != true) {
@@ -256,23 +272,39 @@ class KidsAccessibilityService : AccessibilityService() {
 
         var rewindAttempts = 0
         val firstFingerprint = manifest.items.first().fingerprint
-        while (rewindAttempts < 15 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+        val maxRewindAttempts = maxOf(40, manifest.totalCount * 2)
+        var lastRewindVisible = listOf<String>()
+        var topBoundaryStaticCount = 0
+
+        while (rewindAttempts < maxRewindAttempts && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val root = rootInActiveWindow
-            val startVisible = if (root != null) {
+            val (startVisible, currentVisible) = if (root != null) {
                 val isVisible = isItemVisible(root, firstFingerprint)
+                val fps = getVisibleCardFingerprints(root)
                 root.recycle()
-                isVisible
-            } else false
+                Pair(isVisible, fps)
+            } else Pair(false, emptyList())
 
             if (startVisible) {
                 CrawlerTraceLogger.log("STREAM_SURVEY", "Start item visible on screen. Rewind complete.")
                 break
             }
 
+            if (currentVisible.isNotEmpty() && currentVisible == lastRewindVisible) {
+                topBoundaryStaticCount++
+                if (topBoundaryStaticCount >= 2 && rewindAttempts >= 3) {
+                    CrawlerTraceLogger.log("STREAM_SURVEY", "Rewind reached top boundary of stream (screen static). Rewind complete.")
+                    break
+                }
+            } else {
+                topBoundaryStaticCount = 0
+            }
+            lastRewindVisible = currentVisible
+
             var rewindDone = false
             crawlerOverlay?.performScrollBackward { rewindDone = true }
             waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-            delay(500)
+            delay(400)
             rewindAttempts++
         }
 
@@ -280,6 +312,10 @@ class KidsAccessibilityService : AccessibilityService() {
         // PASS 2: MANIFEST-DRIVEN DEEP INGESTION WITH AUTO-RECOVERY
         // =========================================================================
         CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven deep ingestion...")
+
+        val db = KidsDatabase.getInstance(applicationContext)
+        var lastRecoveryMinIndex: Int? = null
+        var consecutiveStaticRecoveryCount = 0
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val nextItem = manifest.getNextPendingItem()
@@ -310,28 +346,38 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            // Find matching card for target item on screen
-            val targetCard = findCardByFingerprint(root, nextItem.fingerprint)
+            // Look for target card on screen
+            val unvisitedCard = findCardByFingerprint(root, nextItem.fingerprint)
             root.recycle()
 
-            if (targetCard != null) {
-                // Target is directly on screen -> Process it!
-                val (title, fullText, fingerprint, clickableNode, cardBounds) = targetCard
+            if (unvisitedCard != null) {
+                // Target card found! Reset recovery tracking
+                lastRecoveryMinIndex = null
+                consecutiveStaticRecoveryCount = 0
+
+                val title = unvisitedCard.title
+                val fingerprint = unvisitedCard.fingerprint
+                val bounds = unvisitedCard.bounds
+                val clickableNode = unvisitedCard.clickableNode
+                val fullText = unvisitedCard.fullText
+
                 crawlerOverlay?.updateStatus(
                     "Capturing (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
                     title
                 )
                 CrawlerTraceLogger.log(
                     "DEEP_CRAWLER",
-                    "Opening post #${nextItem.index}/$total at (${cardBounds.centerX()}, ${cardBounds.centerY()}): \"$title\""
+                    "Opening post #${nextItem.index}/$total at (${bounds.centerX()}, ${bounds.centerY()}): \"$title\""
                 )
 
-                // 1. Click
-                clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                // Dispatch physical tap
+                val clicked = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                }
                 clickableNode.recycle()
-                dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
 
-                // 2. Wait for Detail View
+                // Check if detail view opened within 800ms
                 val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
                     val active = rootInActiveWindow ?: return@waitForCondition false
                     val isDetail = isPostDetailView(active)
@@ -340,13 +386,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
 
                 if (!enteredDetail) {
-                    // Plain text stream notice
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Card did not open detail. Ingesting directly from stream: \"$title\"")
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Card did not open detail. Ingesting directly from stream: \"$title\""
+                    )
                     ingestNoticeDirect(title, fullText, fingerprint)
                     manifest.markCompleted(fingerprint)
                     visitedPostFingerprints.add(fingerprint)
                     crawlerOverlay?.incrementNoticeCount()
-                    delay(200)
+                    delay(300)
                     continue
                 }
 
@@ -402,13 +450,31 @@ class KidsAccessibilityService : AccessibilityService() {
                     val minVisibleIndex = visibleIndices.minOrNull()
                     val maxVisibleIndex = visibleIndices.maxOrNull()
 
-                    val attempts = manifest.incrementAttempt(nextItem.fingerprint)
+                    // Check if viewport moved since last recovery step
+                    val isStatic = (minVisibleIndex != null && minVisibleIndex == lastRecoveryMinIndex)
+                    lastRecoveryMinIndex = minVisibleIndex
+
+                    if (isStatic) {
+                        consecutiveStaticRecoveryCount++
+                    } else {
+                        consecutiveStaticRecoveryCount = 0
+                    }
+
+                    // Only increment item failure count if the screen is stuck and not progressing towards target
+                    val attempts = if (isStatic && consecutiveStaticRecoveryCount >= 3) {
+                        manifest.incrementAttempt(nextItem.fingerprint)
+                    } else {
+                        manifest.findByFingerprint(nextItem.fingerprint)?.attemptCount ?: 0
+                    }
+
                     if (attempts >= 4) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after 4 recovery attempts."
+                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after screen stuck ($consecutiveStaticRecoveryCount static scrolls, $attempts attempts)."
                         )
                         manifest.markSkipped(nextItem.fingerprint)
+                        lastRecoveryMinIndex = null
+                        consecutiveStaticRecoveryCount = 0
                         continue
                     }
 
@@ -422,7 +488,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         var scrollDone = false
                         crawlerOverlay?.performScrollBackward { scrollDone = true }
                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(600)
+                        delay(500)
                     } else {
                         // We are above the target or item is ahead -> scroll forward
                         CrawlerTraceLogger.log(
@@ -433,7 +499,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         var scrollDone = false
                         crawlerOverlay?.performScroll { scrollDone = true }
                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(600)
+                        delay(500)
                     }
                 } else {
                     delay(500)
@@ -529,12 +595,52 @@ class KidsAccessibilityService : AccessibilityService() {
             CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled: \"$title\" ($category)")
         }
 
-        // 4. Discover and process attachments
         // 4. Discover and register attachments
-        val attachments = extractDetailAttachments(detailRoot)
-        CrawlerTraceLogger.log("DEEP_CRAWLER", "Discovered ${attachments.size} attachments for \"$title\"")
+        val allAttachments = mutableListOf<ExtractedAttachmentDetail>()
+        val initialAtts = extractDetailAttachments(detailRoot)
+        allAttachments.addAll(initialAtts)
 
-        for (att in attachments) {
+        var saveAllBtn = findSaveAllOfflineButton(detailRoot)
+
+        // Detail View Scrolling: If saveAllBtn is null, or if text is long, scroll down within detail view
+        // to discover below-the-fold attachments and "Save all files offline" button
+        if (saveAllBtn == null) {
+            var detailScrolls = 0
+            while (detailScrolls < 3) {
+                var scrollDone = false
+                crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
+                delay(400)
+
+                val scrolledRoot = rootInActiveWindow
+                if (scrolledRoot != null) {
+                    val scrolledSaveAll = findSaveAllOfflineButton(scrolledRoot)
+                    if (scrolledSaveAll != null) {
+                        saveAllBtn = scrolledSaveAll
+                        scrolledRoot.recycle()
+                        break
+                    }
+                    val scrolledAtts = extractDetailAttachments(scrolledRoot)
+                    for (att in scrolledAtts) {
+                        if (allAttachments.none { it.fileName == att.fileName }) {
+                            allAttachments.add(att)
+                        } else {
+                            att.downloadNode?.recycle()
+                            att.clickableChip?.recycle()
+                        }
+                    }
+                    scrolledRoot.recycle()
+                }
+                detailScrolls++
+            }
+        }
+
+        CrawlerTraceLogger.log(
+            "DEEP_CRAWLER",
+            "Discovered ${allAttachments.size} attachments for \"$title\" (SaveAll: ${saveAllBtn != null})"
+        )
+
+        for (att in allAttachments) {
             val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
             val existingAtt = db.attachmentDao().findByFileHash(fileHash)
             if (existingAtt == null) {
@@ -557,53 +663,67 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Autonomous Attachment Download: Systematically tap each attachment chip / download button
-        for ((index, att) in attachments.withIndex()) {
-            val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
-            val existingAtt = db.attachmentDao().findByFileHash(fileHash)
-            if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
-                !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
-                continue // Already physically downloaded and synced
+        // Master "Save all files offline" action prioritized if available
+        if (saveAllBtn != null) {
+            crawlerOverlay?.updateStatus("Saving all offline...", title)
+            CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping 'Save all files offline' master button for \"$title\"")
+            val clicked = saveAllBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val b = Rect()
+                saveAllBtn.getBoundsInScreen(b)
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
             }
-
-            if (att.downloadNode != null && att.downloadNode.isClickable) {
-                crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-                val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val b = Rect()
-                    att.downloadNode.getBoundsInScreen(b)
-                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            saveAllBtn.recycle()
+            delay(1500)
+        } else {
+            // Autonomous Attachment Download: Systematically tap each attachment chip / download button
+            for ((index, att) in allAttachments.withIndex()) {
+                val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
+                val existingAtt = db.attachmentDao().findByFileHash(fileHash)
+                if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
+                    !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
+                    continue // Already physically downloaded and synced
                 }
-                delay(1000) // Calibrated debounce between downloads
-            } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-                crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-                val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val b = Rect()
-                    att.clickableChip.getBoundsInScreen(b)
-                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                }
-                delay(800)
 
-                // Automate Share or Download inside viewer and return to detail view
-                automateViewerShareOrDownload(att.fileName)
+                if (att.downloadNode != null && att.downloadNode.isClickable) {
+                    crawlerOverlay?.updateStatus("Downloading (${index + 1}/${allAttachments.size})...", att.fileName)
+                    CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
+                    val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        att.downloadNode.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    }
+                    delay(1000) // Calibrated debounce between downloads
+                } else if (att.clickableChip != null && att.clickableChip.isClickable) {
+                    crawlerOverlay?.updateStatus("Opening (${index + 1}/${allAttachments.size})...", att.fileName)
+                    CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
+                    val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        att.clickableChip.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    }
+                    delay(800)
 
-                // Check if file was captured by ShareTargetActivity
-                val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
-                if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-                    if (capturedAttachmentNames.add(att.fileName)) {
-                        crawlerOverlay?.incrementAttachmentCount()
+                    // Automate Share or Download inside viewer and return to detail view
+                    automateViewerShareOrDownload(att.fileName)
+
+                    // Check if file was captured by ShareTargetActivity
+                    val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+                    if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+                        if (capturedAttachmentNames.add(att.fileName)) {
+                            crawlerOverlay?.incrementAttachmentCount()
+                        }
                     }
                 }
-            }
 
-            att.downloadNode?.recycle()
-            att.clickableChip?.recycle()
+                att.downloadNode?.recycle()
+                att.clickableChip?.recycle()
+            }
         }
 
-        if (attachments.isNotEmpty()) {
+        if (allAttachments.isNotEmpty() || saveAllBtn != null) {
             delay(1000) // Allow file staging to finalize
             val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
             for (s in 0 until stagedCount) {
@@ -1234,6 +1354,18 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
+        val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
+                combined.contains("tab 1 of 3") ||
+                combined.contains("tab 2 of 3") ||
+                combined.contains("people")
+        val hasBackArrow = hasNavigateUpButton(rootNode)
+
+        // Stream and Classwork views ALWAYS display bottom tabs and NEVER have a Navigate Up back arrow.
+        // Detail View NEVER has bottom tabs and ALWAYS has a Navigate Up back arrow.
+        if (hasBottomTabs || !hasBackArrow) {
+            return false
+        }
+
         val hasDetailIndicators = combined.contains("add class comment") ||
                 combined.contains("class comments") ||
                 combined.contains("your work") ||
@@ -1245,11 +1377,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("save offline") ||
                 combined.contains("for your reference") ||
                 combined.contains("points")
-        val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
-                combined.contains("tab 1 of 3") ||
-                combined.contains("tab 2 of 3")
-        val hasBackArrow = hasNavigateUpButton(rootNode)
-        return hasDetailIndicators && hasBackArrow && !hasBottomTabs
+
+        // Resilient check: In big announcements with long text, comments and attachments are pushed
+        // below the fold. If bottom tabs are absent and back arrow is present, substantive body text (>25 chars)
+        // confirms we are inside the detail view.
+        return hasDetailIndicators || combined.length > 25
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {

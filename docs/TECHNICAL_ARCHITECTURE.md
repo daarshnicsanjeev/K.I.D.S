@@ -518,35 +518,34 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   If `db.noticeDao().findByHash(hash) != null` or `visitedPostFingerprints.contains(fingerprint)`, the card is tagged `StreamItemStatus.ALREADY_SYNCED` directly during survey. If new, it is marked `StreamItemStatus.PENDING`.
 - **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
   `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. Preserving `visitedPostFingerprints` across session toggles guarantees that re-running Auto-Capture will immediately tag previously ingested notices as `ALREADY_SYNCED`, establishing full bounds without re-downloading existing media.
-- **Survey Completion:**
-  When **5 consecutive scrolls yield 0 new items**, Pass 1 concludes. The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately.
+- **Survey Completion & Screen-Freeze Bottom Detection:**
+  Pass 1 dynamically monitors viewport motion. If 2 consecutive scrolls yield identical visible card sets (the list physically stopped moving at the bottom), or if 3 consecutive scrolls yield 0 new items, Pass 1 concludes immediately with zero sluggish dwell delays. The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately.
 
-##### 2. `PASS 1.5: STREAM REWIND` (Bidirectional Kinetic Scroll & Landmark Seeking)
+##### 2. `PASS 1.5: STREAM REWIND` (Calibrated Middle-Height Kinetic Scroll & Landmark Seeking)
 Once Pass 1 catalogs the inventory, the Classroom stream is resting at the historical bottom. Before Pass 2 begins, the crawler executes an autonomous rewind (`rewindStreamToTop`):
 - **Target Landmark:** Targets the initial notice (`manifest.startItemTitle` / `firstItem.fingerprint`).
-- **Calibrated Backward Kinetic Swipes (`performScrollBackward`):** Dispatches downward physical kinetic swipe gestures from $(0.65w, 0.25h)$ to $(0.65w, 0.75h)$ over 400ms.
-- **Landmark Visibility Check (`isItemVisible`):** After each backward swipe (with 700ms stabilization), the crawler inspects the active window for `manifest.firstItem.fingerprint`.
-- **Rewind Limit:** If the landmark is reached or after a safety maximum of 15 scrolls, rewind transitions into Pass 2.
+- **Calibrated Middle-Height Backward Swipes (`performScrollBackward`):** Dispatches downward physical kinetic swipe gestures from $(0.65w, 0.42h)$ to $(0.65w, 0.82h)$ over 350ms. By starting at 42% height, it completely avoids triggering Google Classroom's pull-to-refresh (`SwipeRefreshLayout`) and avoids collisions with top course headers.
+- **Dynamic Scale & Top Boundary Detection:** Scaled dynamically to $\max(40, \text{totalCount} \times 2)$. If the top post becomes visible OR if the screen freezes at the top boundary for 2 consecutive backward scrolls, rewind immediately transitions into Pass 2.
 
 ##### 3. `PASS 2: MANIFEST-DRIVEN INGESTION & AUTO-RECOVERY ENGINE`
 In Pass 2, the crawler processes each item sequentially using `manifest.getNextPendingItem()`:
 - **Card Seeking (`findCardByFingerprint`):** Scans visible post cards on the current screen matching the target item's fingerprint.
-- **Direct Processing:**
+- **Direct Processing & Detail View Scrolling:**
   If the target card is visible in the safe viewport:
   1. Sets status to `StreamItemStatus.IN_PROGRESS`.
   2. Updates overlay status to `"Capturing (X/Total - Y%)..."`.
   3. Dispatches physical tap gesture (`dispatchTap`) at `safeCenterY`.
   4. Enters detail view (or falls back to direct stream ingestion if plain text notice).
-  5. Extracts full text, author, and downloads attachments.
+  5. In detail view, if body text is extensive and attachments or the master "Save all files offline" button are below the fold, executes downward kinetic swipes (`performDetailScrollDown`) up to 3 times to scan and harvest all attachments.
   6. Safely returns to the stream, marks the item `StreamItemStatus.COMPLETED`, and increments notice tallies.
-- **Autonomous Auto-Recovery Engine (Viewport Displacement Seeking):**
+- **Autonomous Auto-Recovery Engine with Movement Progress Awareness:**
   If the target card is NOT currently visible (due to dynamic list scrolling or layout reflow):
   1. `getVisibleCardFingerprints()` catalogs all post cards currently displayed on screen and retrieves their assigned manifest indices.
   2. **Relative Position Arithmetic:**
      - **Over-Scrolled (Target is Above):** If `minVisibleIndex > targetItem.index`, the viewport has scrolled past the target towards older posts. The engine updates the overlay to `"Recovering Position... Scrolling up"` and dispatches `performScrollBackward()`.
      - **Under-Scrolled (Target is Below):** If visible indices are before the target, the engine updates overlay to `"Navigating to Post... Seeking post"` and dispatches `performScroll()`.
-  3. **Safety Timeout Safeguard:**
-     Each recovery attempt increments `manifest.incrementAttempt(targetItem.fingerprint)`. If an item cannot be acquired within **4 recovery attempts**, it is marked `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs or traps the user in an infinite seek loop.
+  3. **Progress Awareness & Stuck-Screen Timeout:**
+     As long as `minVisibleIndex` is moving closer to `targetItem.index` across scrolls, failure attempts are never incremented. Only if the screen is confirmed stuck for 3+ consecutive scrolls without moving does the recovery attempt increment. After 4 stuck attempts, it is tagged `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs or traps the user in an infinite seek loop.
 
 ##### 4. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
 - **Dual Action Click & Physical Touch Tap (`dispatchTap`):** Standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) often fail on custom `RecyclerView` item layouts, compound touch listeners, card wrappers, or OEM skins (Samsung One UI, Xiaomi HyperOS, Oppo ColorOS) that swallow accessibility clicks. To guarantee post opening across all Android devices, the crawler performs a dual-action dispatch:

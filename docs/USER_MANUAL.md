@@ -469,23 +469,27 @@ flowchart TD
 - **Live Survey Progress:** The overlay status pill displays:
   $$\text{Surveying (X found)...}$$
   $$\text{Discovered X notices so far}$$
-- **5-Scroll Termination:** When 5 consecutive scrolls yield zero new post cards (with generous 1,500ms network pagination wait between scrolls), Pass 1 confirms that the complete stream history has been inventoried.
+#### 1. Pass 1: Pre-Flight Stream Survey
+- **Swift Non-Intrusive Scanning:** The assistant glides swiftly down the entire Classroom stream using kinetic physical swipes without opening any post cards.
+- **Inventory Manifest Construction:** Every discovered announcement is fingerprinted and cataloged into an in-memory inventory manifest (`StreamManifest`).
+- **Boundary Recording:** K.I.D.S. records the exact chronological boundaries of the stream: the very first notice (`startItemTitle`), the oldest notice (`endItemTitle`), and the total post count (`totalCount`).
+- **Live Survey Progress:** The overlay status pill displays:
+  $$\text{Surveying (X found)...}$$
+  $$\text{Discovered X notices so far}$$
+- **Instant Screen-Freeze Bottom Detection:** Instead of endlessly swiping against the bottom of the feed, K.I.D.S. compares visible cards across consecutive scrolls. If the screen physically stops moving (2 identical screen views) or 3 scrolls yield 0 new notices, Pass 1 concludes immediately with zero sluggish delays.
 - **Instant Fast-Path Completion:** If all discovered notices already exist in local SQLite Room storage (`pendingCount == 0`), K.I.D.S. instantly displays `✓ Stream Up to Date (All X notices already captured)`, triggers background sync, and safely exits without running Pass 2.
 
 #### 2. Pass 1.5: Stream Rewind
 - **Automated Return to Top:** Once the stream inventory is compiled, the assistant automatically rewinds from the bottom of the feed back to the top post.
-- **Kinetic Rewind Swiping:** The assistant executes downward physical swipes (`performScrollBackward()`) starting at 25% screen height and sweeping down to 75% height over 400ms.
-- **Visual Re-Anchoring:** The status line displays:
-  $$\text{Returning to Start...}$$
-  $$\text{Preparing X notices for capture}$$
-  The crawler verifies whether the first post (`firstFingerprint`) has reappeared on screen (`isItemVisible()`). Once visible (or after reaching the 15-scroll safety ceiling), Pass 1.5 smoothly hands off to Deep Ingestion.
+- **Calibrated Middle-Height Rewind Swiping:** The assistant executes downward physical swipes (`performScrollBackward()`) starting at safe mid-height (42% screen height) and sweeping downward to 82% height over 350ms. By starting firmly in the interactive list body, it completely avoids triggering Google Classroom's pull-to-refresh (`SwipeRefreshLayout`) and avoids collisions with top course headers.
+- **Dynamic Scale & Top Boundary Detection:** Scaled dynamically to `maxOf(40, totalCount * 2)` rewind swipes, smoothly stopping as soon as the top notice reappears or when the top boundary of the stream is reached.
 
 #### 3. Pass 2: Manifest-Driven Deep Ingestion
 - **Sequential Ingestion:** The crawler systematically works down the manifest, retrieving each uncaptured post via `getNextPendingItem()`.
 - **Live Counter & Percentage Metric:** Parents can observe exact progress on the floating status pill:
   $$\text{Capturing (X/Total - Y%)...}$$
   $$\text{[Current Announcement Headline Preview]}$$
-- **Post Ingestion & Return:** Each notice is opened via a safe clamped center tap, attachments are downloaded autonomously, and the assistant executes a guarded return loop back to the stream before marking the item `COMPLETED`.
+- **Autonomous Detail View Downward Scrolling for Big Announcements:** When an announcement contains extensive paragraphs of text, Google Classroom pushes attachments and the "Save all files offline" button below the fold (off-screen). K.I.D.S. resiliently identifies the detail screen and scrolls downward within the detail view (up to 3 gentle sweeps), scanning for and capturing all below-the-fold worksheets and download controls before returning to the stream.
 
 ---
 
@@ -499,12 +503,13 @@ If the target post is not immediately visible on screen after returning from det
 2. **Relative Index Comparison:** It matches the visible fingerprints against their assigned indices in the `StreamManifest`:
    - **Displaced Below Target (`minVisibleIndex > target.index`):** If the visible notices are numbered after the target notice, the crawler scrolled too far down. The overlay displays `Recovering Position...` (`Scrolling up to post #X`) and automatically triggers a kinetic backward swipe (`performScrollBackward()`) to seek upward.
    - **Target is Ahead (`minVisibleIndex <= target.index`):** If the target notice is further down the list, the overlay displays `Navigating to Post...` (`Seeking post #X/Total`) and triggers a forward scroll (`performScroll()`).
-3. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
+3. **Movement Progress Awareness:** When seeking a distant notice across multiple scrolls, K.I.D.S. monitors viewport motion. As long as the list is progressing closer toward the target notice, the engine never falsely penalizes or skips the item.
+4. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
 
-#### 2. Zero Dropped Notices & 4-Attempt Skip Safeguard
+#### 2. Zero Dropped Notices & Stuck-Screen Skip Safeguard
 - In traditional screen crawlers, displaced cards cause notices to be lost or crawler loops to crash. K.I.D.S. guarantees **zero dropped notices** by keeping every notice in the manifest until positively processed.
-- If a specific post card is corrupted, unopenable, or structurally altered by an OEM rendering bug, the recovery engine increments an attempt counter (`attemptCount`).
-- If an item fails to resolve after **4 consecutive recovery attempts**, K.I.D.S. marks the item as `FAILED_SKIPPED` in the manifest, logs a detailed warning in `crawler_trace.log`, and immediately proceeds to the next notice in the manifest. The crawler never hangs or gets trapped in infinite loops.
+- Only if the screen is genuinely stuck in place for 3+ consecutive scrolls without moving closer does the recovery engine increment failure attempts.
+- If an item fails to resolve after **4 confirmed stuck-screen recovery attempts**, K.I.D.S. marks the item as `FAILED_SKIPPED` in the manifest, logs a detailed warning in `crawler_trace.log`, and immediately proceeds to the next notice in the manifest. The crawler never hangs or gets trapped in infinite loops.
 
 #### 3. Instant SQLite Synchronization Skipping (`ALREADY_SYNCED`)
 - When indexing cards in Pass 1, K.I.D.S. cross-references each post's SHA-256 fingerprint with notices already stored in the local SQLite Room database (`visitedPostFingerprints` and `NoticeEntity`).

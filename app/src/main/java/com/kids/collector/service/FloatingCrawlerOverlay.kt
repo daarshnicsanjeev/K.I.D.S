@@ -516,15 +516,64 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun performDetailScrollDown(onComplete: () -> Unit) {
+        handler.post {
+            performDetailScrollDownGesture(onComplete)
+        }
+    }
+
+    private fun performDetailScrollDownGesture(onComplete: () -> Unit) {
+        val displayMetrics = service.resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
+
+        // Detail View swipe up to scroll downward: from 70% height to 30% height
+        val startX = width * 0.50f
+        val startY = height * 0.70f
+        val endY = height * 0.30f
+
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching detail scroll downward: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
+        )
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val stroke = GestureDescription.StrokeDescription(path, 0, 350)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Detail scroll COMPLETED")
+                onComplete()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Detail scroll CANCELLED, executing native fallback")
+                fallbackNativeScroll()
+                onComplete()
+            }
+        }, null)
+
+        if (!dispatched) {
+            fallbackNativeScroll()
+            onComplete()
+        }
+    }
+
     private fun performScrollBackwardGesture(onComplete: () -> Unit) {
         val displayMetrics = service.resources.displayMetrics
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        // Physical touch swipe downward: Start at 25% height and swipe downwards to 75% height
+        // Physical touch swipe downward: Start at safe mid-height (42%) and swipe downwards to 82% height
+        // Avoids top 35% header/banner and SwipeRefreshLayout pull-to-refresh triggers, staying clear of bottom tabs
         val startX = width * 0.65f
-        val startY = height * 0.25f
-        val endY = height * 0.75f
+        val startY = height * 0.42f
+        val endY = height * 0.82f
 
         CrawlerTraceLogger.log(
             "SCROLLER_SWIPE",
@@ -536,7 +585,7 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        val stroke = GestureDescription.StrokeDescription(path, 0, 400)
+        val stroke = GestureDescription.StrokeDescription(path, 0, 350)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
