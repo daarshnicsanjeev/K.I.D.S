@@ -9,10 +9,12 @@ import com.google.api.client.googleapis.extensions.android.gms.auth.UserRecovera
 import com.google.api.client.http.javanet.NetHttpTransport
 import com.google.api.client.json.gson.GsonFactory
 import com.google.api.services.drive.Drive
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,6 +34,7 @@ sealed interface ProvisionStep1Result {
  */
 object DriveVaultManager {
     private const val TAG = "DriveVaultManager"
+    private const val PROVISIONING_AWAIT_TIMEOUT_MS = 6_000L
     const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
     const val GOOGLE_CLIENT_ID = "378609737196-c7bsdma5l20d1vf9r5dm7vahneai10am.apps.googleusercontent.com"
 
@@ -40,6 +43,9 @@ object DriveVaultManager {
 
     @Volatile
     var currentAccountEmail: String? = null
+
+    @Volatile
+    var activeProvisioningDeferred: CompletableDeferred<ChildVaultFolders>? = null
 
     fun saveVaultPrefs(context: Context, accountEmail: String, academicYear: String, childName: String) {
         context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
@@ -86,12 +92,34 @@ object DriveVaultManager {
         ).setApplicationName("K.I.D.S.").build()
     }
 
+    fun saveGlobalFolderIds(context: Context, rootId: String, academicYear: String, yearId: String) {
+        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+            .putString("global_root_kids_folder_id", rootId)
+            .putString("global_year_folder_id_$cleanYear", yearId)
+            .apply()
+    }
+
+    fun getSavedGlobalRootFolderId(context: Context): String? {
+        return context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+            .getString("global_root_kids_folder_id", null)
+    }
+
+    fun getSavedGlobalYearFolderId(context: Context, academicYear: String): String? {
+        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+        return context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+            .getString("global_year_folder_id_$cleanYear", null)
+    }
+
     fun saveVaultFolderPrefs(context: Context, accountEmail: String, academicYear: String, childName: String, folders: ChildVaultFolders) {
-        val prefix = "vault_${accountEmail}_${academicYear}_${childName.trim().lowercase()}_"
+        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+        val prefix = "vault_${accountEmail}_${cleanYear}_${childName.trim().lowercase()}_"
         context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
             .putString("account_email", accountEmail)
-            .putString("academic_year", academicYear)
+            .putString("academic_year", cleanYear)
             .putString("child_name", childName)
+            .putString("global_root_kids_folder_id", folders.rootKidsFolderId)
+            .putString("global_year_folder_id_$cleanYear", folders.yearFolderId)
             .putString("${prefix}rootKidsFolderId", folders.rootKidsFolderId)
             .putString("${prefix}yearFolderId", folders.yearFolderId)
             .putString("${prefix}childFolderId", folders.childFolderId)
@@ -107,10 +135,10 @@ object DriveVaultManager {
         val rootId = prefs.getString("${prefix}rootKidsFolderId", null) ?: return null
         val yearId = prefs.getString("${prefix}yearFolderId", null) ?: return null
         val childId = prefs.getString("${prefix}childFolderId", null) ?: return null
-        val attId = prefs.getString("${prefix}attachmentsFolderId", null) ?: return null
-        val sysId = prefs.getString("${prefix}systemFolderId", null) ?: return null
-        val logsId = prefs.getString("${prefix}logsFolderId", null) ?: return null
-        return ChildVaultFolders(rootId, yearId, childId, attId, sysId, logsId)
+        val attachmentsFolderId = prefs.getString("${prefix}attachmentsFolderId", null) ?: return null
+        val systemFolderId = prefs.getString("${prefix}systemFolderId", null) ?: return null
+        val logsFolderId = prefs.getString("${prefix}logsFolderId", null) ?: return null
+        return ChildVaultFolders(rootId, yearId, childId, attachmentsFolderId, systemFolderId, logsFolderId)
     }
 
     /**
@@ -138,6 +166,9 @@ object DriveVaultManager {
             )
         }
 
+        val deferred = CompletableDeferred<ChildVaultFolders>()
+        activeProvisioningDeferred = deferred
+
         try {
             // Fast-path: If vault folders are already cached, transition immediately without network lag
             val cachedFolders = getSavedVaultFolders(context, accountEmail, academicYear, childName)
@@ -145,6 +176,7 @@ object DriveVaultManager {
                 currentChildVault = cachedFolders
                 currentAccountEmail = accountEmail
                 saveVaultPrefs(context, accountEmail, academicYear, childName)
+                deferred.complete(cachedFolders)
                 Log.i(TAG, "Step 1: Found existing cached vault folders. Transitioning immediately.")
                 return@withContext ProvisionStep1Result.Success(cachedFolders)
             }
@@ -152,11 +184,20 @@ object DriveVaultManager {
             val driveService = getDriveService(context, accountEmail)
             val driveClient = GoogleDriveClient(driveService)
 
+            val cachedRootId = getSavedGlobalRootFolderId(context)
+            val cachedYearId = getSavedGlobalYearFolderId(context, academicYear)
+
             Log.i(TAG, "Step 1: Rapidly provisioning child vault folders on Google Drive for $childName ($academicYear)...")
-            val folders = driveClient.provisionChildVault(academicYear, childName)
+            val folders = driveClient.provisionChildVault(
+                academicYear = academicYear,
+                childName = childName,
+                cachedRootKidsFolderId = cachedRootId,
+                cachedYearFolderId = cachedYearId
+            )
             currentChildVault = folders
             currentAccountEmail = accountEmail
             saveVaultFolderPrefs(context, accountEmail, academicYear, childName, folders)
+            deferred.complete(folders)
 
             // Seed initial placeholder files asynchronously in background without blocking UI
             CoroutineScope(Dispatchers.IO).launch {
@@ -224,13 +265,16 @@ object DriveVaultManager {
             Log.i(TAG, "Step 1: Vault folders verified. Transitioning to Step 2 immediately.")
             ProvisionStep1Result.Success(folders)
         } catch (e: UserRecoverableAuthIOException) {
+            deferred.completeExceptionally(e)
             Log.w(TAG, "User consent required for Google Drive access via UserRecoverableAuthIOException", e)
             ProvisionStep1Result.UserConsentRequired(e.intent)
         } catch (e: UserRecoverableAuthException) {
+            deferred.completeExceptionally(e)
             Log.w(TAG, "User consent required for Google Drive access via UserRecoverableAuthException", e)
             val intent = e.intent ?: Intent()
             ProvisionStep1Result.UserConsentRequired(intent)
         } catch (e: Exception) {
+            deferred.completeExceptionally(e)
             Log.e(TAG, "Step 1: Failed to provision Google Drive vault", e)
             val cause = e.cause
             if (cause is UserRecoverableAuthException) {
@@ -250,6 +294,73 @@ object DriveVaultManager {
     }
 
     /**
+     * Pre-warms the Google Drive OAuth token and resolves the global root and year folder IDs
+     * in the background when the parent selects their Google Account in Step 1.
+     */
+    suspend fun preWarmOAuthAndFolders(context: Context, accountEmail: String, academicYear: String) = withContext(Dispatchers.IO) {
+        if (accountEmail.isBlank()) return@withContext
+        try {
+            val driveService = getDriveService(context, accountEmail)
+            val driveClient = GoogleDriveClient(driveService)
+            val cachedRootId = getSavedGlobalRootFolderId(context)
+            val rootId = if (!cachedRootId.isNullOrBlank()) {
+                cachedRootId
+            } else {
+                driveClient.getOrCreateFolder("K.I.D.S. Data", null)
+            }
+            val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+            val cachedYearId = getSavedGlobalYearFolderId(context, cleanYear)
+            val yearId = if (!cachedYearId.isNullOrBlank()) {
+                cachedYearId
+            } else {
+                driveClient.getOrCreateFolder(cleanYear, rootId)
+            }
+            saveGlobalFolderIds(context, rootId, cleanYear, yearId)
+            Log.i(TAG, "Step 1: Successfully pre-warmed OAuth & cached global root ($rootId) and year ($yearId) folders.")
+        } catch (preWarmError: Throwable) {
+            Log.w(TAG, "Step 1: Background pre-warm note: ${preWarmError.message}")
+        }
+    }
+
+    /**
+     * Resolves child vault folders from in-memory cache, awaiting any in-flight background
+     * provisioning, or falling back to remote resolution if necessary.
+     */
+    private suspend fun resolveOrAwaitChildVault(
+        context: Context,
+        explicitFolders: ChildVaultFolders?,
+        accountEmail: String?
+    ): ChildVaultFolders? {
+        val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
+        var vault = explicitFolders ?: currentChildVault
+        if (vault == null && activeProvisioningDeferred != null) {
+            vault = try {
+                withTimeoutOrNull(PROVISIONING_AWAIT_TIMEOUT_MS) { activeProvisioningDeferred?.await() }
+            } catch (e: Exception) {
+                null
+            }
+            if (vault != null) {
+                currentChildVault = vault
+            }
+        }
+        if (vault == null && !email.isNullOrBlank()) {
+            val (_, academicYear, childName) = getSavedVaultPrefs(context)
+            val driveClient = GoogleDriveClient(getDriveService(context, email))
+            val cachedRootKidsFolderId = getSavedGlobalRootFolderId(context)
+            val cachedYearFolderId = getSavedGlobalYearFolderId(context, academicYear)
+            vault = driveClient.provisionChildVault(
+                academicYear = academicYear,
+                childName = childName,
+                cachedRootKidsFolderId = cachedRootKidsFolderId,
+                cachedYearFolderId = cachedYearFolderId
+            )
+            currentChildVault = vault
+            currentAccountEmail = email
+        }
+        return vault
+    }
+
+    /**
      * Step 2: Updates MASTER_DIGEST.md and knowledge_graph.json with Google Classroom mapping
      */
     suspend fun provisionStep2Classroom(
@@ -263,15 +374,8 @@ object DriveVaultManager {
             // Also update SAF vault if active
             SafVaultManager.provisionStep2ClassroomSaf(context, studentEmail, isSkipped)
 
+            val vault = resolveOrAwaitChildVault(context, folders, accountEmail)
             val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
-            var vault = folders ?: currentChildVault
-            if (vault == null && !email.isNullOrBlank()) {
-                val (_, academicYear, childName) = getSavedVaultPrefs(context)
-                val driveClient = GoogleDriveClient(getDriveService(context, email))
-                vault = driveClient.provisionChildVault(academicYear, childName)
-                currentChildVault = vault
-                currentAccountEmail = email
-            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
@@ -335,15 +439,8 @@ object DriveVaultManager {
             // Also update SAF vault if active
             SafVaultManager.provisionStep3ErpSaf(context, appName, appPkg, tabs, isSkipped)
 
+            val vault = resolveOrAwaitChildVault(context, folders, accountEmail)
             val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
-            var vault = folders ?: currentChildVault
-            if (vault == null && !email.isNullOrBlank()) {
-                val (_, academicYear, childName) = getSavedVaultPrefs(context)
-                val driveClient = GoogleDriveClient(getDriveService(context, email))
-                vault = driveClient.provisionChildVault(academicYear, childName)
-                currentChildVault = vault
-                currentAccountEmail = email
-            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
@@ -377,15 +474,8 @@ object DriveVaultManager {
             // Also update SAF vault if active
             SafVaultManager.provisionStep4WhatsAppSaf(context, childName, academicYear, groupName, isSkipped)
 
+            val vault = resolveOrAwaitChildVault(context, folders, accountEmail)
             val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
-            var vault = folders ?: currentChildVault
-            if (vault == null && !email.isNullOrBlank()) {
-                val (_, year, name) = getSavedVaultPrefs(context)
-                val driveClient = GoogleDriveClient(getDriveService(context, email))
-                vault = driveClient.provisionChildVault(year, name)
-                currentChildVault = vault
-                currentAccountEmail = email
-            }
             if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))

@@ -55,23 +55,42 @@ class GoogleDriveClient(
 
     /**
      * Provisions the complete nested folder structure for a given child.
+     * Supports passing pre-cached root and year folder IDs to bypass remote search queries.
      */
-    suspend fun provisionChildVault(academicYear: String, childName: String): ChildVaultFolders = withContext(Dispatchers.IO) {
+    suspend fun provisionChildVault(
+        academicYear: String,
+        childName: String,
+        cachedRootKidsFolderId: String? = null,
+        cachedYearFolderId: String? = null
+    ): ChildVaultFolders = withContext(Dispatchers.IO) {
         val cleanChildName = childName.trim()
         require(cleanChildName.isNotBlank()) { "Child name cannot be blank when provisioning vault." }
         val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
 
-        val rootKidsFolderId = getOrCreateFolder("K.I.D.S. Data", null)
-        val yearFolderId = getOrCreateFolder(cleanYear, rootKidsFolderId)
+        val rootKidsFolderId = if (!cachedRootKidsFolderId.isNullOrBlank()) {
+            cachedRootKidsFolderId
+        } else {
+            getOrCreateFolder("K.I.D.S. Data", null)
+        }
+
+        val yearFolderId = if (!cachedYearFolderId.isNullOrBlank()) {
+            cachedYearFolderId
+        } else {
+            getOrCreateFolder(cleanYear, rootKidsFolderId)
+        }
+
         val childFolderId = getOrCreateFolder(cleanChildName, yearFolderId)
 
         // Resolve sibling child folders concurrently for maximum speed
         val attachmentsDeferred = async { getOrCreateFolder("attachments", childFolderId) }
-        val systemDeferred = async { getOrCreateFolder("_system", childFolderId) }
+        val systemDeferred = async {
+            val systemFolderId = getOrCreateFolder("_system", childFolderId)
+            val logsFolderId = getOrCreateFolder("logs", systemFolderId)
+            Pair(systemFolderId, logsFolderId)
+        }
 
         val attachmentsFolderId = attachmentsDeferred.await()
-        val systemFolderId = systemDeferred.await()
-        val logsFolderId = getOrCreateFolder("logs", systemFolderId)
+        val (systemFolderId, logsFolderId) = systemDeferred.await()
 
         ChildVaultFolders(
             rootKidsFolderId = rootKidsFolderId,

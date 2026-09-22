@@ -188,6 +188,7 @@ c:\K.I.D.S\
        - Enforces standard Kotlin casing: `PascalCase` for classes/interfaces/enums/objects, `camelCase` for functions/methods/properties/variables, and `SCREAMING_SNAKE_CASE` for constants and enum entries.
        - Enforces affirmative boolean readability (`isNoticeFullyCaptured`, `hasPendingSync`, `shouldIngestNotice`, `canNavigateUp`).
        - Enforces action-oriented verbs for methods and functions (`extractVisibleCardMetadata`, `persistDiagnosticMilestone`, `calculateFingerprintHash`).
+       - Strictly rejects meta/noise words (`fun`, `func`, `function`, `method`, `routine`) inside function names (e.g. `doSyncFun`, `parseNoticeFunction`, `fetchMethod`), preventing keyword stutter with Kotlin's `fun` and focusing names exclusively on domain actions.
     2. **Clean Code & Professional Architecture**:
        - Single Responsibility Principle (SRP): Decomposes monolithic functions (>40-50 lines) into focused, testable units.
        - Eliminates magic numbers and magic strings, extracting them into named constants in companion objects or domain configuration classes.

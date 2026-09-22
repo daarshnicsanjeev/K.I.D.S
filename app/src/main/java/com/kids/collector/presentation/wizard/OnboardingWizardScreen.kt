@@ -50,6 +50,7 @@ import com.kids.collector.domain.model.ChannelType
 import com.kids.collector.domain.model.ChildProfile
 import com.kids.collector.presentation.theme.*
 import com.kids.collector.service.KidsAccessibilityService
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -137,9 +138,10 @@ fun OnboardingWizardScreen(
             preRevocationStep = currentStep
             currentStep = WizardStep.STEP_0_PERMISSIONS
         } else if (hasAccessibility && preRevocationStep != null && currentStep == WizardStep.STEP_0_PERMISSIONS) {
-            val resumeStep = preRevocationStep!!
-            preRevocationStep = null
-            currentStep = resumeStep
+            preRevocationStep?.let { resumeStep ->
+                preRevocationStep = null
+                currentStep = resumeStep
+            }
         }
     }
 
@@ -194,6 +196,11 @@ fun OnboardingWizardScreen(
             DriveVaultManager.currentAccountEmail = selectedEmail
             prefs.edit().putString("account_email", selectedEmail).apply()
             Toast.makeText(context, "Google Account connected: $selectedEmail", Toast.LENGTH_SHORT).show()
+
+            // Pre-warm OAuth token & cache root/year folders in background while parent enters child details
+            scope.launch(Dispatchers.IO) {
+                DriveVaultManager.preWarmOAuthAndFolders(context, selectedEmail, selectedYear)
+            }
         }
     }
 
@@ -206,7 +213,7 @@ fun OnboardingWizardScreen(
             scope.launch {
                 isProvisioning = true
                 provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/${childName.trim()}/ on Google Drive..."
-                when (val provResult = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, childName.trim())) {
+                when (val provisioningResult = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, childName.trim())) {
                     is ProvisionStep1Result.Success -> {
                         isProvisioning = false
                         Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
@@ -218,8 +225,8 @@ fun OnboardingWizardScreen(
                     }
                     is ProvisionStep1Result.Failure -> {
                         isProvisioning = false
-                        driveErrorMessage = provResult.userMessage
-                        Toast.makeText(context, "Drive Error: ${provResult.userMessage}", Toast.LENGTH_LONG).show()
+                        driveErrorMessage = provisioningResult.userMessage
+                        Toast.makeText(context, "Drive Error: ${provisioningResult.userMessage}", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -962,16 +969,26 @@ fun OnboardingWizardScreen(
 
                         Button(
                             onClick = {
+                                val cleanChildName = childName.trim()
+                                if (cleanChildName.isBlank() || driveAccountEmail.isBlank()) return@Button
+
+                                // 1. Save profile & vault preferences locally immediately (< 10ms)
+                                DriveVaultManager.saveVaultPrefs(context, driveAccountEmail, selectedYear, cleanChildName)
+
+                                // 2. Optimistic instant UI transition to Step 2 (0ms lag!)
+                                currentStep = WizardStep.STEP_2_CLASSROOM
+                                Toast.makeText(context, "✓ Child profile saved", Toast.LENGTH_SHORT).show()
+
+                                // 3. Provision Google Drive vault folders asynchronously in background
                                 scope.launch {
                                     isProvisioning = true
-                                    provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/${childName.trim()}/ on Google Drive..."
+                                    provisioningMessage = "Creating K.I.D.S. Data/$selectedYear/$cleanChildName/ on Google Drive..."
                                     driveErrorMessage = null
 
-                                    when (val result = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, childName.trim())) {
+                                    when (val result = DriveVaultManager.provisionStep1(context, driveAccountEmail, selectedYear, cleanChildName)) {
                                         is ProvisionStep1Result.Success -> {
                                             isProvisioning = false
-                                            Toast.makeText(context, "✓ Step 1: Vault created on Google Drive!", Toast.LENGTH_SHORT).show()
-                                            currentStep = WizardStep.STEP_2_CLASSROOM
+                                            provisioningMessage = ""
                                         }
                                         is ProvisionStep1Result.UserConsentRequired -> {
                                             isProvisioning = false
@@ -981,12 +998,12 @@ fun OnboardingWizardScreen(
                                         is ProvisionStep1Result.Failure -> {
                                             isProvisioning = false
                                             driveErrorMessage = result.userMessage
-                                            Toast.makeText(context, "Drive Error: ${result.userMessage}", Toast.LENGTH_LONG).show()
+                                            Toast.makeText(context, "Drive note: ${result.userMessage}", Toast.LENGTH_LONG).show()
                                         }
                                     }
                                 }
                             },
-                            enabled = isStep1Valid && !isProvisioning,
+                            enabled = isStep1Valid,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp),
@@ -1173,7 +1190,6 @@ fun OnboardingWizardScreen(
                                     currentStep = WizardStep.STEP_3_PORTALS
                                 }
                             },
-                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                         ) {
                             Text("Skip Classroom")
@@ -1200,7 +1216,6 @@ fun OnboardingWizardScreen(
                                     }
                                 }
                             },
-                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
