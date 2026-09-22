@@ -232,7 +232,7 @@ erDiagram
 
 #### 1. `ChildProfileEntity` (`child_profiles`)
 - **Primary Key:** `childId: String` (UUID)
-- Stores child metadata, academic year, school identifier, and serialized channel configs (`List<ChannelConfig>`) via `TypeConverters`.
+- Stores child metadata, academic year, school identifier, and serialized channel configs (`List<ChannelConfig>`) via `TypeConverters`. Enforces the non-empty channel configuration invariant via onboarding wizard validation (see [Dynamic Button Validation, Skip Handling, and Mandatory Channel Invariant](#8-dynamic-button-validation-skip-handling-and-mandatory-channel-invariant-steps-2-to-4)).
 
 #### 2. `NoticeEntity` (`notices`)
 - **Primary Key:** `noticeId: String` (UUID)
@@ -2065,6 +2065,167 @@ object PermissionHelper {
    - `openAppDetailsSettings(context)` directs the user to `ACTION_APPLICATION_DETAILS_SETTINGS`.
    - The parent taps the top-right overflow menu (**⋮**) in App Info and selects **"Allow restricted settings"**, authenticating via device lock.
    - This removes the sandbox lock on **both** `KidsAccessibilityService` and `KidsNotificationListenerService`, allowing standard system toggles to succeed.
+
+---
+
+### 8. Dynamic Button Validation, Skip Handling, and Mandatory Channel Invariant (Steps 2 to 4)
+
+To prevent fragmented or non-functional ingestion pipelines, `OnboardingWizardScreen.kt` enforces rigorous dynamic button validation, single-tap skip handling, and a strict **Mandatory Channel Invariant** across Steps 2, 3, and 4.
+
+#### 1. Channel Configuration Invariants
+
+Channel readiness is derived through pure, reactive Boolean state computations:
+
+```kotlin
+// Channel configuration state invariants
+val isClassroomConfigured = enableClassroom && studentEmail.isNotBlank()
+val isErpConfigured = enableErp && selectedAppPackage.isNotBlank()
+val isWhatsAppConfigured = enableWhatsApp && selectedGroup.isNotBlank()
+val hasPriorConfiguredChannel = isClassroomConfigured || isErpConfigured
+```
+
+- **`isClassroomConfigured`**: True strictly when Classroom is toggled on and an authenticated Google account email is mapped.
+- **`isErpConfigured`**: True strictly when ERP tracking is toggled on and an installed portal package name has been selected.
+- **`isWhatsAppConfigured`**: True strictly when WhatsApp capture is toggled on and a school broadcast group has been selected or auto-detected.
+- **`hasPriorConfiguredChannel`**: Boolean disjunction representing whether at least one primary ingestion channel was successfully configured before reaching Step 4.
+
+#### 2. Dynamic Button State Derivations
+
+The progression buttons across Steps 2, 3, and 4 are reactively derived to eliminate invalid transitions while offering zero-friction skips:
+
+```kotlin
+// Dynamic Button State Derivations
+val isStep2NextEnabled = !enableClassroom || studentEmail.isNotBlank()
+val isStep3NextEnabled = !enableErp || selectedAppPackage.isNotBlank()
+val isStep4SkipEnabled = hasPriorConfiguredChannel
+val isStep4CompleteEnabled = if (hasPriorConfiguredChannel) {
+    !enableWhatsApp || selectedGroup.isNotBlank()
+} else {
+    enableWhatsApp && selectedGroup.isNotBlank()
+}
+```
+
+```mermaid
+flowchart TD
+    subgraph Step2["Step 2: Google Classroom"]
+        S2_SKIP["OutlinedButton: 'Skip Classroom'<br/>enabled = !isProvisioning"]
+        S2_NEXT{"Button: 'Save & Next →'<br/>enabled = isStep2NextEnabled && !isProvisioning"}
+        S2_TOGGLE["enableClassroom Switch"]
+    end
+
+    subgraph Step3["Step 3: School App / ERP"]
+        S3_SKIP["OutlinedButton: 'Skip App Setup'<br/>enabled = !isProvisioning"]
+        S3_NEXT{"Button: 'Save & Next →'<br/>enabled = isStep3NextEnabled && !isProvisioning"}
+        S3_TOGGLE["enableErp Switch"]
+    end
+
+    subgraph Step4["Step 4: WhatsApp Group Capture"]
+        S4_PRIOR{"hasPriorConfiguredChannel?"}
+        S4_SKIP_EN["OutlinedButton: 'Skip WhatsApp'<br/>ENABLED (isStep4SkipEnabled = true)"]
+        S4_SKIP_DIS["OutlinedButton: 'Skip WhatsApp'<br/>DISABLED (isStep4SkipEnabled = false)"]
+        S4_WARN["⚠️ Warning Card:<br/>At least 1 channel is mandatory"]
+        S4_COMP{"Button: 'Complete Setup ✓'<br/>enabled = isStep4CompleteEnabled && !isProvisioning"}
+    end
+
+    S2_SKIP -->|isSkipped = true| Step3
+    S2_NEXT -->|isSkipped = !enableClassroom| Step3
+
+    S3_SKIP -->|isSkipped = true| Step4
+    S3_NEXT -->|isSkipped = !enableErp| Step4
+
+    Step4 --> S4_PRIOR
+    S4_PRIOR -->|Yes: Classroom or ERP Configured| S4_SKIP_EN
+    S4_PRIOR -->|No: Both Prior Channels Skipped| S4_SKIP_DIS
+    S4_PRIOR -->|No: Both Prior Channels Skipped| S4_WARN
+    S4_SKIP_EN --> S4_COMP
+    S4_SKIP_DIS --> S4_COMP
+```
+
+#### Step-by-Step Validation & Skip Behavior:
+
+| Wizard Step | Action Control | Enablement Guard | Action on Click / State Transition |
+| :--- | :--- | :--- | :--- |
+| **Step 2 (Classroom)** | `OutlinedButton` ("Skip Classroom") | `!isProvisioning` | Zero validation required. Sets `enableClassroom = false`, `studentEmail = ""`, registers skipped state on Google Drive via `provisionStep2Classroom(..., isSkipped = true)`, and navigates to Step 3. |
+| **Step 2 (Classroom)** | `Button` ("Save & Next →") | `isStep2NextEnabled && !isProvisioning` | Validated: if `enableClassroom == true`, requires `studentEmail.isNotBlank()`. If account is missing, button remains disabled and an inline hint instructs the user to select an account or tap skip. |
+| **Step 3 (ERP / Portal)** | `OutlinedButton` ("Skip App Setup") | `!isProvisioning` | Zero validation required. Sets `enableErp = false`, `selectedAppPackage = ""`, `selectedAppName = ""`, registers skipped state on Drive via `provisionStep3Erp(..., isSkipped = true)`, and advances to Step 4. |
+| **Step 3 (ERP / Portal)** | `Button` ("Save & Next →") | `isStep3NextEnabled && !isProvisioning` | Validated: if `enableErp == true`, requires `selectedAppPackage.isNotBlank()`. If package is missing, button remains disabled with inline prompt guiding app selection or skipping. |
+| **Step 4 (WhatsApp)** | `OutlinedButton` ("Skip WhatsApp") | `isStep4SkipEnabled && !isProvisioning` | **Mandatory Channel Guard:** Enabled strictly when `hasPriorConfiguredChannel == true`. If both Classroom and ERP were skipped, this button is **disabled**. |
+| **Step 4 (WhatsApp)** | `Button` ("Complete Setup ✓") | `isStep4CompleteEnabled && !isProvisioning` | **Mandatory Channel Guard:** If `hasPriorConfiguredChannel == true`, enabled if `!enableWhatsApp || selectedGroup.isNotBlank()`. If `hasPriorConfiguredChannel == false`, strictly requires `enableWhatsApp && selectedGroup.isNotBlank()`. |
+
+#### 3. Mandatory Channel Guard Preventing Empty Ingestion Configurations
+
+A foundational invariant of K.I.D.S. is that an ingested child profile must possess at least one operational notice ingestion channel. A child record with zero configured channels would produce an orphaned `ChildProfileEntity` where:
+- `KidsNotificationListenerService` cannot filter push notifications (empty package whitelist and empty group whitelist).
+- `KidsAccessibilityService` has no target application package to auto-crawl.
+- `DriveSyncWorker` generates empty digests and vacant knowledge graphs.
+
+To prevent this invalid state at the architectural level:
+
+1. **Step 4 Warning Banner:**
+   When `!hasPriorConfiguredChannel`, an informative `AmberOrange` warning card is displayed:
+   `"⚠️ At least 1 channel is mandatory: Classroom and School App were skipped. Please configure WhatsApp below, or tap Back to configure an earlier channel."`
+
+2. **Toggle Lockout Safeguard:**
+   ```kotlin
+   Switch(
+       checked = enableWhatsApp,
+       onCheckedChange = {
+           if (hasPriorConfiguredChannel || it) {
+               enableWhatsApp = it
+           } else {
+               Toast.makeText(context, "At least 1 channel is mandatory", Toast.LENGTH_SHORT).show()
+           }
+       }
+   )
+   ```
+   When `hasPriorConfiguredChannel == false`, the parent is blocked from toggling off `enableWhatsApp`.
+
+3. **Guaranteed Non-Empty Ingestion Configuration in `ChildProfileEntity`:**
+   During finalization in Step 4, `channelsList` is populated strictly from configured channels:
+   ```kotlin
+   val channelsList = mutableListOf<ChannelConfig>()
+   if (enableClassroom && studentEmail.isNotBlank()) {
+       channelsList.add(
+           ChannelConfig(
+               channelType = ChannelType.GOOGLE_CLASSROOM,
+               isEnabled = true,
+               studentAccountEmail = studentEmail
+           )
+       )
+   }
+   if (enableErp && selectedAppPackage.isNotBlank()) {
+       channelsList.add(
+           ChannelConfig(
+               channelType = ChannelType.SCHOOL_ERP,
+               isEnabled = true,
+               erpPackageName = selectedAppPackage,
+               trackedTabs = selectedTabs.toList()
+           )
+       )
+   }
+   if (enableWhatsApp && selectedGroup.isNotBlank()) {
+       channelsList.add(
+           ChannelConfig(
+               channelType = ChannelType.WHATSAPP,
+               isEnabled = true,
+               whitelistedGroupName = selectedGroup
+           )
+       )
+   }
+   ```
+   Because the state machine guarantees $( \text{hasPriorConfiguredChannel} \lor \text{isWhatsAppConfigured} ) \equiv \text{true}$, `channelsList.isNotEmpty()` is guaranteed before `ChildProfile` creation:
+   ```kotlin
+   val childProfile = ChildProfile(
+       childId = UUID.randomUUID().toString(),
+       firstName = childName.trim(),
+       academicYear = selectedYear,
+       accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
+       photoUri = photoUri?.toString(),
+       channels = channelsList
+   )
+   onFinishChildSetup(childProfile)
+   ```
+   This guarantees that every child profile persisted in SQLite Room possesses at least one valid, active channel configuration.
 
 ---
 

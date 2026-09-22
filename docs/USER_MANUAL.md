@@ -194,7 +194,9 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
 3. **Historical Backfill Assistant & Storage Status**:
    - Because you already enabled the **Accessibility Service** and **Storage Access** in Step 0, green checkmark badges confirm their active status.
    - If either service was inadvertently switched off, quick-reconnect buttons allow instant re-enablement right within Step 2.
-4. Tap **Save & Next →**.
+4. **Dynamic Button Validation & Skip Handling**:
+   - **Skip without Validation (`Skip Classroom`)**: If your child's school does not use Google Classroom, tap **Skip Classroom**. This bypasses Step 2 with zero friction, marks Classroom as skipped in your Google Drive vault, and moves directly to Step 3.
+   - **Save & Next with Validation (`Save & Next →`)**: When the Google Classroom toggle is **On**, selecting a student account is strictly validated. The **Save & Next →** button remains disabled until an account is picked, accompanied by a helpful inline prompt: *"Select a student account above, or tap 'Skip Classroom' to proceed."* If you switch the toggle to **Off**, the button immediately enables so you can proceed without Classroom mapping.
 
 ### Step 3: School App & ERP Picker
 *Capture notices from school management portals (CampusCare, Toddle, Edunext, Teams).*
@@ -205,17 +207,33 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
    - Simply tap the app your school uses.
 3. **Select Tracked Categories**:
    - Check the categories you wish to track: `Homework`, `Circulars`, `Attendance`, `Fee Receipts`.
-4. Tap **Save & Next →** (or tap **Skip App Setup** if your school only uses Classroom and WhatsApp).
+4. **Dynamic Button Validation & Skip Handling**:
+   - **Skip without Validation (`Skip App Setup`)**: If your school does not use a standalone portal application, tap **Skip App Setup**. This bypasses Step 3 with zero friction, updates Google Drive vault settings, and advances immediately to Step 4.
+   - **Save & Next with Validation (`Save & Next →`)**: When the School ERP toggle is **On**, choosing an installed school app is strictly validated. The **Save & Next →** button remains disabled until you tap an app chip, accompanied by an inline prompt: *"Select an installed school app above, or tap 'Skip App Setup' to proceed."* If you switch the toggle to **Off**, the button activates immediately.
 
 ### Step 4: WhatsApp Group Capture
 *Filter the noise and capture only official school circulars from parent WhatsApp groups.*
 
-1. **Enable WhatsApp Group Capture**: Toggle the switch to **On**.
-2. **Zero-Typing Group Selection**:
-   - Select the detected school group chip from the list (e.g., `School Parents Official Group 2026-27`), or tap **Listen for Message** to auto-detect the group when the next school notification arrives.
-3. Tap **Complete Setup for [Child Name] ✓**.
-   - Your child's profile is initialized in the local encrypted database.
-   - The initial knowledge graph (`graph.html`) and markdown digests (`MASTER_DIGEST.md` and `FAMILY_DIGEST.md`) are generated and uploaded to Google Drive.
+1. **Zero-Typing Group Selection**:
+   - When WhatsApp capture is enabled, select a detected school group chip from the list (e.g., `School Parents Official Group 2026-27`), or tap **Listen for Message** to auto-detect the group the moment the next school message arrives.
+2. **The Mandatory Channel Rule (At Least 1 Channel Required)**:
+   - To ensure K.I.D.S. can monitor and summarize school circulars, **at least 1 of the 3 channels (Classroom, School App, or WhatsApp) is mandatory**. An empty profile with zero configured channels is not permitted.
+   - **Scenario A — Prior Channel Configured (Classroom or School App Active):**
+     - WhatsApp is completely optional!
+     - **Skip without Validation (`Skip WhatsApp`)**: The **Skip WhatsApp** button is fully enabled. Tap it to complete child setup immediately without configuring WhatsApp.
+     - **Complete Setup with Validation (`Complete Setup ✓`)**: If WhatsApp is toggled **On**, you must select a group chip before the button enables; otherwise, it remains disabled.
+   - **Scenario B — Both Classroom and School App Were Skipped:**
+     - WhatsApp becomes **strictly mandatory**.
+     - An alert card clearly explains:
+       > ⚠️ **At least 1 channel is mandatory**  
+       > Classroom and School App were skipped. Please configure WhatsApp below, or tap Back to configure an earlier channel.
+     - The **Skip WhatsApp** button is **disabled**.
+     - The WhatsApp toggle switch is locked **On** (attempting to turn it off triggers a prompt reminding you that at least 1 channel is mandatory).
+     - The **Complete Setup ✓** button remains disabled until a school group is selected or auto-detected, with a guiding prompt: *"At least 1 channel is mandatory. Please select a group above to complete setup."*
+     - If your school does not use WhatsApp, simply tap the TopBar Back arrow (`←`) to return to Step 2 or Step 3 and configure Google Classroom or your school ERP portal instead.
+3. Tap **Complete Setup for [Child Name] ✓**:
+   - Your child's profile is initialized in the local encrypted Room database with validated channel configurations.
+   - The initial knowledge graph (`graph.html`) and markdown digests (`MASTER_DIGEST.md` and `FAMILY_DIGEST.md`) are generated and synced to Google Drive.
    - You are redirected to the **Children Grid Dashboard**.
 
 ---

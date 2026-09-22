@@ -269,10 +269,10 @@ fun OnboardingWizardScreen(
         queryInstalledLauncherApps(context)
     }
     var selectedAppPackage by remember {
-        mutableStateOf(installedApps.firstOrNull()?.second ?: "com.campuscare.parent")
+        mutableStateOf("")
     }
     var selectedAppName by remember {
-        mutableStateOf(installedApps.firstOrNull()?.first ?: "CampusCare / School ERP")
+        mutableStateOf("")
     }
     val availableTabs = remember { listOf("Homework", "Circulars", "Attendance", "Fee Receipts") }
     val selectedTabs = remember { mutableStateListOf("Homework", "Circulars") }
@@ -286,10 +286,23 @@ fun OnboardingWizardScreen(
             "Class Circulars & Announcements"
         )
     }
-    var selectedGroup by remember { mutableStateOf(detectedGroups.first()) }
+    var selectedGroup by remember { mutableStateOf("") }
     var isListeningForNotification by remember { mutableStateOf(false) }
 
     val isStep1Valid = isDriveConnected && childName.isNotBlank()
+    val isClassroomConfigured = enableClassroom && studentEmail.isNotBlank()
+    val isErpConfigured = enableErp && selectedAppPackage.isNotBlank()
+    val isWhatsAppConfigured = enableWhatsApp && selectedGroup.isNotBlank()
+    val hasPriorConfiguredChannel = isClassroomConfigured || isErpConfigured
+
+    val isStep2NextEnabled = !enableClassroom || studentEmail.isNotBlank()
+    val isStep3NextEnabled = !enableErp || selectedAppPackage.isNotBlank()
+    val isStep4SkipEnabled = hasPriorConfiguredChannel
+    val isStep4CompleteEnabled = if (hasPriorConfiguredChannel) {
+        !enableWhatsApp || selectedGroup.isNotBlank()
+    } else {
+        enableWhatsApp && selectedGroup.isNotBlank()
+    }
 
     Scaffold(
         topBar = {
@@ -1184,29 +1197,35 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating vault on Google Drive..."
+                                    enableClassroom = false
+                                    studentEmail = ""
                                     DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, "", isSkipped = true)
                                     isProvisioning = false
-                                    enableClassroom = false
                                     currentStep = WizardStep.STEP_3_PORTALS
                                 }
                             },
+                            enabled = !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
                         ) {
                             Text("Skip Classroom")
                         }
                         Button(
                             onClick = {
+                                if (enableClassroom && studentEmail.isBlank()) {
+                                    Toast.makeText(context, "Please select a student account or tap 'Skip Classroom'", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
                                 scope.launch {
                                     try {
                                         isProvisioning = true
                                         provisioningMessage = "Updating Google Drive with Classroom mapping..."
-                                        val res = DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
+                                        val provisionResult = DriveVaultManager.provisionStep2Classroom(context, driveAccountEmail, DriveVaultManager.currentChildVault, studentEmail, isSkipped = !enableClassroom)
                                         isProvisioning = false
-                                        if (res.isSuccess) {
+                                        if (provisionResult.isSuccess) {
                                             Toast.makeText(context, "✓ Step 2: Classroom mapped on Google Drive", Toast.LENGTH_SHORT).show()
                                         } else {
-                                            val err = res.exceptionOrNull()?.localizedMessage ?: "Drive update warning"
-                                            Toast.makeText(context, "Drive note: $err", Toast.LENGTH_SHORT).show()
+                                            val errorDescription = provisionResult.exceptionOrNull()?.localizedMessage ?: "Drive update warning"
+                                            Toast.makeText(context, "Drive note: $errorDescription", Toast.LENGTH_SHORT).show()
                                         }
                                         currentStep = WizardStep.STEP_3_PORTALS
                                     } catch (t: Throwable) {
@@ -1216,11 +1235,20 @@ fun OnboardingWizardScreen(
                                     }
                                 }
                             },
+                            enabled = isStep2NextEnabled && !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
                             Text("Save & Next \u2192")
                         }
+                    }
+                    if (enableClassroom && studentEmail.isBlank()) {
+                        Text(
+                            text = "Select a student account above, or tap 'Skip Classroom' to proceed.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
                     }
                 }
 
@@ -1247,13 +1275,18 @@ fun OnboardingWizardScreen(
                                 )
 
                                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    installedApps.take(6).forEach { (appName, appPkg) ->
-                                        val isSelected = selectedAppPackage == appPkg
+                                    installedApps.take(6).forEach { (appName, applicationPackageName) ->
+                                        val isSelected = selectedAppPackage == applicationPackageName
                                         FilterChip(
                                             selected = isSelected,
                                             onClick = {
-                                                selectedAppPackage = appPkg
-                                                selectedAppName = appName
+                                                if (isSelected) {
+                                                    selectedAppPackage = ""
+                                                    selectedAppName = ""
+                                                } else {
+                                                    selectedAppPackage = applicationPackageName
+                                                    selectedAppName = appName
+                                                }
                                             },
                                             label = { Text(appName) },
                                             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
@@ -1261,7 +1294,11 @@ fun OnboardingWizardScreen(
                                     }
                                 }
 
-                                Text("Selected Features for $selectedAppName:", style = MaterialTheme.typography.labelLarge)
+                                if (selectedAppName.isNotBlank()) {
+                                    Text("Selected Features for $selectedAppName:", style = MaterialTheme.typography.labelLarge)
+                                } else {
+                                    Text("Select an app above to configure features:", style = MaterialTheme.typography.labelLarge, color = TextSecondary)
+                                }
                                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     availableTabs.forEach { tab ->
                                         val isChecked = selectedTabs.contains(tab)
@@ -1285,9 +1322,11 @@ fun OnboardingWizardScreen(
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating vault on Google Drive..."
+                                    enableErp = false
+                                    selectedAppPackage = ""
+                                    selectedAppName = ""
                                     DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, "", "", emptyList(), isSkipped = true)
                                     isProvisioning = false
-                                    enableErp = false
                                     currentStep = WizardStep.STEP_4_WHATSAPP
                                 }
                             },
@@ -1298,30 +1337,71 @@ fun OnboardingWizardScreen(
                         }
                         Button(
                             onClick = {
+                                if (enableErp && selectedAppPackage.isBlank()) {
+                                    Toast.makeText(context, "Please select your school app or tap 'Skip App Setup'", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
                                 scope.launch {
                                     isProvisioning = true
                                     provisioningMessage = "Updating Google Drive with School ERP setup..."
-                                    val res = DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
+                                    val provisionResult = DriveVaultManager.provisionStep3Erp(context, driveAccountEmail, DriveVaultManager.currentChildVault, selectedAppName, selectedAppPackage, selectedTabs.toList(), isSkipped = !enableErp)
                                     isProvisioning = false
-                                    if (res.isSuccess) {
+                                    if (provisionResult.isSuccess) {
                                         Toast.makeText(context, "✓ Step 3: School app updated on Google Drive", Toast.LENGTH_SHORT).show()
                                     } else {
-                                        val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to update Google Drive"
-                                        Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
+                                        val errorDescription = provisionResult.exceptionOrNull()?.localizedMessage ?: "Failed to update Google Drive"
+                                        Toast.makeText(context, "Drive update warning: $errorDescription", Toast.LENGTH_LONG).show()
                                     }
                                     currentStep = WizardStep.STEP_4_WHATSAPP
                                 }
                             },
-                            enabled = !isProvisioning,
+                            enabled = isStep3NextEnabled && !isProvisioning,
                             modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
                         ) {
                             Text("Save & Next \u2192")
                         }
                     }
+                    if (enableErp && selectedAppPackage.isBlank()) {
+                        Text(
+                            text = "Select an installed school app above, or tap 'Skip App Setup' to proceed.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
+                    }
                 }
 
                 WizardStep.STEP_4_WHATSAPP -> {
+                    if (!hasPriorConfiguredChannel) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = AmberOrange.copy(alpha = 0.12f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(14.dp),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("⚠️", style = MaterialTheme.typography.titleMedium)
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        text = "At least 1 channel is mandatory",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = DeepNavy,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "Classroom and School App were skipped. Please configure WhatsApp below, or tap Back to configure an earlier channel.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = TextPrimary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
@@ -1334,7 +1414,16 @@ fun OnboardingWizardScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Text("WhatsApp Group Capture", style = MaterialTheme.typography.titleMedium, color = DeepNavy)
-                                Switch(checked = enableWhatsApp, onCheckedChange = { enableWhatsApp = it })
+                                Switch(
+                                    checked = enableWhatsApp,
+                                    onCheckedChange = {
+                                        if (hasPriorConfiguredChannel || it) {
+                                            enableWhatsApp = it
+                                        } else {
+                                            Toast.makeText(context, "At least 1 channel is mandatory", Toast.LENGTH_SHORT).show()
+                                        }
+                                    }
+                                )
                             }
 
                             if (enableWhatsApp) {
@@ -1349,7 +1438,9 @@ fun OnboardingWizardScreen(
                                         val isSelected = selectedGroup == group
                                         FilterChip(
                                             selected = isSelected,
-                                            onClick = { selectedGroup = group },
+                                            onClick = {
+                                                selectedGroup = if (isSelected) "" else group
+                                            },
                                             label = { Text(group) },
                                             modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
                                         )
@@ -1368,75 +1459,119 @@ fun OnboardingWizardScreen(
                         }
                     }
 
-                    Button(
-                        onClick = {
-                            scope.launch {
-                                isProvisioning = true
-                                provisioningMessage = "Finalizing vault and graph.html on Google Drive..."
-                                val res = DriveVaultManager.provisionStep4WhatsApp(
-                                    context,
-                                    driveAccountEmail,
-                                    DriveVaultManager.currentChildVault,
-                                    childName.trim(),
-                                    selectedYear,
-                                    selectedGroup,
-                                    isSkipped = !enableWhatsApp
+                    val finalizeProfileAndExit: (includeWhatsApp: Boolean) -> Unit = { includeWhatsApp ->
+                        val channelsList = mutableListOf<ChannelConfig>()
+                        if (enableClassroom && studentEmail.isNotBlank()) {
+                            channelsList.add(
+                                ChannelConfig(
+                                    channelType = ChannelType.GOOGLE_CLASSROOM,
+                                    isEnabled = true,
+                                    studentAccountEmail = studentEmail
                                 )
-                                isProvisioning = false
-                                if (res.isFailure) {
-                                    val err = res.exceptionOrNull()?.localizedMessage ?: "Failed to finalize Google Drive"
-                                    Toast.makeText(context, "Drive update warning: $err", Toast.LENGTH_LONG).show()
-                                }
-
-                                val channelsList = mutableListOf<ChannelConfig>()
-                                if (enableClassroom && studentEmail.isNotBlank()) {
-                                    channelsList.add(
-                                        ChannelConfig(
-                                            channelType = ChannelType.GOOGLE_CLASSROOM,
-                                            isEnabled = true,
-                                            studentAccountEmail = studentEmail
-                                        )
-                                    )
-                                }
-                                if (enableErp) {
-                                    channelsList.add(
-                                        ChannelConfig(
-                                            channelType = ChannelType.SCHOOL_ERP,
-                                            isEnabled = true,
-                                            erpPackageName = selectedAppPackage,
-                                            trackedTabs = selectedTabs.toList()
-                                        )
-                                    )
-                                }
-                                if (enableWhatsApp) {
-                                    channelsList.add(
-                                        ChannelConfig(
-                                            channelType = ChannelType.WHATSAPP,
-                                            isEnabled = true,
-                                            whitelistedGroupName = selectedGroup
-                                        )
-                                    )
-                                }
-
-                                val childProfile = ChildProfile(
-                                    childId = UUID.randomUUID().toString(),
-                                    firstName = childName.trim(),
-                                    academicYear = selectedYear,
-                                    accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
-                                    photoUri = photoUri?.toString(),
-                                    channels = channelsList
+                            )
+                        }
+                        if (enableErp && selectedAppPackage.isNotBlank()) {
+                            channelsList.add(
+                                ChannelConfig(
+                                    channelType = ChannelType.SCHOOL_ERP,
+                                    isEnabled = true,
+                                    erpPackageName = selectedAppPackage,
+                                    trackedTabs = selectedTabs.toList()
                                 )
-                                prefs.edit().remove("wizard_current_step").remove("wizard_student_email").apply()
-                                onFinishChildSetup(childProfile)
-                            }
-                        },
-                        enabled = !isProvisioning,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .defaultMinSize(minHeight = 48.dp),
-                        colors = ButtonDefaults.buttonColors(containerColor = AmberOrange)
-                    ) {
-                        Text("Complete Setup for $childName \u2713", color = TextPrimary, style = MaterialTheme.typography.titleMedium)
+                            )
+                        }
+                        if (includeWhatsApp && enableWhatsApp && selectedGroup.isNotBlank()) {
+                            channelsList.add(
+                                ChannelConfig(
+                                    channelType = ChannelType.WHATSAPP,
+                                    isEnabled = true,
+                                    whitelistedGroupName = selectedGroup
+                                )
+                            )
+                        }
+
+                        val childProfile = ChildProfile(
+                            childId = UUID.randomUUID().toString(),
+                            firstName = childName.trim(),
+                            academicYear = selectedYear,
+                            accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
+                            photoUri = photoUri?.toString(),
+                            channels = channelsList
+                        )
+                        prefs.edit().remove("wizard_current_step").remove("wizard_student_email").apply()
+                        onFinishChildSetup(childProfile)
+                    }
+
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        OutlinedButton(
+                            onClick = {
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Finalizing vault on Google Drive..."
+                                    enableWhatsApp = false
+                                    selectedGroup = ""
+                                    val provisionResult = DriveVaultManager.provisionStep4WhatsApp(
+                                        context,
+                                        driveAccountEmail,
+                                        DriveVaultManager.currentChildVault,
+                                        childName.trim(),
+                                        selectedYear,
+                                        "",
+                                        isSkipped = true
+                                    )
+                                    isProvisioning = false
+                                    if (provisionResult.isFailure) {
+                                        val errorDescription = provisionResult.exceptionOrNull()?.localizedMessage ?: "Failed to finalize Google Drive"
+                                        Toast.makeText(context, "Drive update warning: $errorDescription", Toast.LENGTH_LONG).show()
+                                    }
+                                    finalizeProfileAndExit(false)
+                                }
+                            },
+                            enabled = isStep4SkipEnabled && !isProvisioning,
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp)
+                        ) {
+                            Text("Skip WhatsApp")
+                        }
+                        Button(
+                            onClick = {
+                                if (enableWhatsApp && selectedGroup.isBlank()) {
+                                    Toast.makeText(context, "Please select or listen for a WhatsApp group", Toast.LENGTH_LONG).show()
+                                    return@Button
+                                }
+                                scope.launch {
+                                    isProvisioning = true
+                                    provisioningMessage = "Finalizing vault and graph.html on Google Drive..."
+                                    val provisionResult = DriveVaultManager.provisionStep4WhatsApp(
+                                        context,
+                                        driveAccountEmail,
+                                        DriveVaultManager.currentChildVault,
+                                        childName.trim(),
+                                        selectedYear,
+                                        selectedGroup,
+                                        isSkipped = !enableWhatsApp
+                                    )
+                                    isProvisioning = false
+                                    if (provisionResult.isFailure) {
+                                        val errorDescription = provisionResult.exceptionOrNull()?.localizedMessage ?: "Failed to finalize Google Drive"
+                                        Toast.makeText(context, "Drive update warning: $errorDescription", Toast.LENGTH_LONG).show()
+                                    }
+                                    finalizeProfileAndExit(true)
+                                }
+                            },
+                            enabled = isStep4CompleteEnabled && !isProvisioning,
+                            modifier = Modifier.weight(1f).defaultMinSize(minHeight = 48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = AmberOrange)
+                        ) {
+                            Text("Complete Setup \u2713", color = TextPrimary, style = MaterialTheme.typography.titleSmall)
+                        }
+                    }
+                    if (!hasPriorConfiguredChannel && selectedGroup.isBlank()) {
+                        Text(
+                            text = "At least 1 channel is mandatory. Please select a group above to complete setup.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary,
+                            modifier = Modifier.padding(top = 6.dp)
+                        )
                     }
                 }
             }
