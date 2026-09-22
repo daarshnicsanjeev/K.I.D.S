@@ -272,41 +272,46 @@ flowchart TD
   - **Zero Keystroke Logging:** It only inspects public text views and attachment chips in educational lists. It never inspects passwords, text fields, or personal keyboards.
   - **100% On-Device Processing:** Node-tree inspection, chip detection, and click dispatch execute entirely in local memory with zero external transmission.
 
-### Storage Access & The Anti-Clutter Staging Lifecycle
+### Storage Access & The Autonomous Zero-Permanent-Storage Pipeline
 - **Android Permission:** `MANAGE_EXTERNAL_STORAGE` (All Files Access) / `READ_EXTERNAL_STORAGE`
-- **Why it is needed:** When you or the assistant download a circular PDF or worksheet from Google Classroom, Android places the file in your device's public `Download/` or `Download/Classroom/` folder.
+- **Why it is needed:** When you or the assistant download educational attachments (worksheets, circular PDFs, syllabus guides) from Google Classroom, Android places the files in your device's public `Download/`, `Download/Classroom/`, `Documents/`, or `Documents/Classroom/` folders.
+- **Zero-Permanent-Storage Guarantee:** K.I.D.S. guarantees that educational attachments (.pdf, .jpg, .docx) are uploaded directly to your personal Google Drive Vault **without eating any permanent phone storage**. Files are transited temporarily through a private staging sandbox and immediately deleted the millisecond upload is confirmed.
+- **Zero Manual Management:** Parents never need to manually share files via external share-sheets, use USB cables, or hunt down hidden in-app caches.
 
 #### The Autonomous Anti-Clutter Staging Lifecycle
-Without K.I.D.S., your phone's personal `Downloads` folder would quickly fill up with hundreds of school PDFs, making it impossible to find your own personal files. K.I.D.S. implements an autonomous **5-step anti-clutter lifecycle**:
+Without K.I.D.S., your phone's personal `Downloads` and `Documents` folders would quickly fill up with hundreds of school PDFs, making it impossible to find your own personal files and consuming valuable device storage. K.I.D.S. implements an autonomous **5-step anti-clutter lifecycle**:
 
 ```mermaid
 sequenceDiagram
     participant GC as Google Classroom
-    participant PUB as Public Downloads Folder
+    participant PUB as Public Downloads / Documents Folder
     participant OBS as DownloadFolderObserver
     participant STAGE as Private Vault Staging (vault_attachments/)
     participant DRIVE as Parent Google Drive Vault
 
-    GC->>PUB: Downloads circular PDF / worksheet
-    OBS->>PUB: Scans & detects school file (cleans ellipsis & matches name)
-    OBS->>STAGE: Moves file out of public Downloads (Anti-Clutter Staging)
-    Note over PUB: Public Downloads is kept 100% clean!
-    OBS->>DRIVE: DriveSyncWorker uploads attachment to Google Classroom/attachments/
+    GC->>PUB: Downloads educational attachment (.pdf, .docx, .jpg)
+    OBS->>PUB: Scans candidate dirs (Downloads/, Documents/, Classroom/)
+    OBS->>STAGE: Moves file out of public storage (Anti-Clutter Staging)
+    Note over PUB: Public Downloads & Documents kept 100% spotless!
+    OBS->>DRIVE: DriveSyncWorker uploads attachment to Google Drive Vault
     DRIVE-->>STAGE: Upload confirmed (HTTP 200)
-    STAGE->>STAGE: Staged file permanently deleted from phone
-    Note over STAGE: Zero local storage waste!
+    STAGE->>STAGE: Staged file permanently deleted from phone storage
+    Note over STAGE: Zero local storage waste (0 bytes net change)!
 ```
 
-1. **Autonomous Detection:** When a school attachment downloads, the `DownloadFolderObserver` scans public storage (`Downloads/` and `Downloads/Classroom/`).
-2. **Immediate Move to Staging:** The detected file is **immediately moved out of public Downloads** into private app storage sandbox:
+1. **Autonomous Detection:** When a school attachment downloads, `DownloadFolderObserver` scans public storage candidate folders:
+   - `Downloads/` and `Downloads/Classroom/`
+   - `Documents/` and `Documents/Classroom/`
+   - WhatsApp Documents & Images (if accessible)
+2. **Immediate Move to Private Staging:** The detected file is **immediately moved out of public storage** into a private app sandbox staging directory:
    `Android/data/com.kids.collector/files/vault_attachments/`.
-3. **Zero Clutter:** Your personal Downloads folder stays spotless. No school circulars or worksheets linger to clutter your personal files.
+3. **Zero Clutter:** Your personal `Downloads` and `Documents` folders stay spotless. No school circulars or worksheets linger to clutter your personal files.
 4. **Drive Upload & ML Kit OCR:** `DriveSyncWorker` performs offline OCR on the file and uploads it securely to your Google Drive Vault under `Google Classroom/attachments/` (and child `attachments/`).
 5. **Automatic Cleanup & Storage Clearance:** As soon as Google Drive confirms a successful upload, the file is **cleared from phone storage** (permanently deleted from private staging). Local storage consumption drops back to near zero.
-6. **Residual Deletion:** If an already-synced file ever lingers in public Downloads, K.I.D.S. automatically detects and removes it from phone storage.
+6. **Residual Deletion:** If an already-synced file ever lingers or is redownloaded in public Downloads or Documents, K.I.D.S. automatically detects and cleans it from phone storage.
 
 > [!NOTE]
-> WhatsApp documents and images are indexed in place and are **never moved or deleted**, ensuring your WhatsApp chat media remains fully functional.
+> WhatsApp documents and images are indexed in place and are **never moved or deleted**, ensuring your WhatsApp chat media remains fully functional in your chat threads.
 
 ---
 
@@ -387,18 +392,16 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
 ```mermaid
 flowchart TD
     A["Scan Stream Viewport<br/>(Exclude TopBar & Tabs)"] --> B{"Unvisited Post Found?"}
-    B -->|Yes| C["Open Post Card<br/>(Physical Tap + Accessibility Click)"]
+    B -->|Yes| C["Preserve Stream Title (fallbackTitle)<br/>& Open Post Card via Physical Tap"]
     C --> D["Verify Detail Screen<br/>(2.5s Safety Timeout)"]
-    D --> E["Dismiss Soft Keyboard<br/>& Extract Full Text"]
-    E --> F{"'Save all files offline'<br/>Button Present?"}
-    F -->|Yes (Prioritized Master Tap)| G1["Tap 'Save all files offline'<br/>(Single Batch Download • 1200ms)"]
-    F -->|No (Individual Iteration)| G2{"Attachments Found?"}
-    G2 -->|Yes| H["Loop: Tap Download / Chip<br/>(800ms Calibrated Debounce)"]
-    G2 -->|No| I["Guarded Return to Stream<br/>(Navigate Up Tap / Back)"]
-    G1 --> I
-    H --> I
-    I --> J["Verify Stream Restored<br/>(Stabilize 600ms)"]
-    J --> A
+    D --> E["Dismiss Soft Keyboard<br/>& Title Sanitization Priority"]
+    E --> F{"Attachments Discovered?"}
+    F -->|Yes| G["Loop: Tap Download / Chip Node<br/>(Physical Tap Fallback • 1,000ms Debounce)"]
+    F -->|No| H["Guarded Return Loop (Up to 3 Attempts)<br/>Close Previews & Navigate Up / Back"]
+    G --> H
+    H --> I{"Stream / Classwork Restored?<br/>(isStreamOrClassworkView <=2s)"}
+    I -->|Yes (Stabilize 600ms)| A
+    I -->|No (Retry Return)| H
     B -->|No| K["Native Scroll Forward<br/>(Status: Scrolling Stream...)"]
     K --> L{"New Posts Found After Scroll?<br/>(850ms Viewport Settling)"}
     L -->|Yes (Reset Counter)| A
@@ -407,20 +410,26 @@ flowchart TD
     M -->|Yes| N["Status: Capture Complete!<br/>Trigger Immediate Drive Sync"]
 ```
 
-1. **Deterministic Post Discovery:** The crawler scans the stream viewport, ignoring app bar chrome and bottom navigation tabs. It computes a SHA-256 fingerprint of each card's content so no post is ever processed twice or missed across scrolls.
+1. **Deterministic Post Discovery & Stream Title Preservation:** 
+   - The crawler scans the stream viewport, ignoring app bar chrome and bottom navigation tabs. It computes a SHA-256 fingerprint of each card's content so no post is ever processed twice or missed across scrolls.
+   - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
 2. **Deep Post Entry via Physical Touch Tap Gestures:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the post card's screen bounds (guaranteeing entry across all Android devices and custom RecyclerView layouts). While standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) work on simple views, modern Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item views often use nested view wrappers, compound touch delegates, or unclickable parent containers that swallow accessibility events. K.I.D.S. eliminates this barrier universally: it computes the exact center screen coordinates of the target post card (`cardBounds.centerX(), cardBounds.centerY()`) and dispatches a 50ms physical touch stroke gesture directly to the Android window manager. This dual-dispatch approach guarantees 100% reliable entry into the post detail view across all phone models.
 3. **Keyboard Dismissal & Full Text Harvesting:** If the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
-4. **Autonomous File Downloading & "Save all files offline" Priority:**
-   - **"Save all files offline" Button Priority:** Whenever Google Classroom attaches multiple files to an announcement or assignment, it frequently presents a prominent master button labeled **"Save all files offline"**. Auto-Capture automatically scans for, detects, and prioritizes this button before interacting with individual attachment chips. Tapping this master button initiates the download of all attachments for that notice in a single, high-efficiency tap with a calibrated 1,200ms debounce for Android's system `DownloadManager`. This eliminates repetitive individual clicks, bypasses intrusive document preview screens, and drastically accelerates crawling speed.
-   - **Individual Download & Chip Fallback:** If the master offline button is absent (e.g., single-attachment posts or older Classroom UI layouts), the assistant falls back to iterating over each attachment sequentially. It locates individual download buttons or clickable attachment chips, updates the live status pill (`Status: Downloading (X/Y)...` or `Status: Opening (X/Y)...`), dispatches taps (with physical tap fallback if needed), and enforces a calibrated 800ms debounce between files.
-5. **Guarded Return to Stream (Physical Tap Fallback & GLOBAL_ACTION_BACK):** To return safely to the stream or classwork feed, the assistant first locates Classroom's toolbar **Navigate Up (`←`)** button and triggers `ACTION_CLICK`. If the accessibility click fails or is ignored by custom UI wrappers, it dispatches a physical touch tap gesture directly at the center of the Navigate Up button's screen bounds. If no Navigate Up button is present in the hierarchy, it executes Android's system-level `GLOBAL_ACTION_BACK`. It then waits up to 2,000ms for the stream view to re-anchor and pauses for 600ms to allow view layouts to stabilize before discovering the next card.
-6. **Anti-Clutter File Download Lifecycle:**
-   The complete attachment download and storage lifecycle runs automatically in the background:
-   - **Download to Local Downloads:** Google Classroom's `DownloadManager` saves files into your phone's public `Download/` or `Download/Classroom/` folder.
-   - **Detection by `DownloadFolderObserver`:** `DownloadFolderObserver` scans public storage and resolves truncated attachment chips (e.g., matching `'Formatting Te...'` to `'Formatting Text in Word 2016 WS with Answerkey.pdf'`).
-   - **Private App Staging:** Detected files are immediately moved out of public Downloads into private app storage (`Android/data/com.kids.collector/files/vault_attachments/`), keeping your personal Downloads directory completely free of school clutter.
-   - **Drive Vault Upload & OCR:** During the sync cycle, `DriveSyncWorker` performs offline ML Kit OCR on the staged documents and uploads them directly into your Google Drive Vault under `Google Classroom/attachments/` (and root `attachments/`).
-   - **Phone Storage Clearance:** Once Google Drive confirms a successful upload, the file is automatically cleared from phone storage (permanently deleted from private staging, with any lingering duplicates purged from public Downloads), preventing phone storage waste.
+4. **Autonomous Attachment Capture & Intentional Bypass of 'Save all files offline':**
+   - **Why 'Save all files offline' is Intentionally Bypassed:** Many announcements feature a Google Classroom button labeled *"Save all files offline"*. K.I.D.S. **deliberately blacklists and ignores this button**. When Google Classroom saves files "offline", it caches them in an encrypted, inaccessible private application sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`). Parents cannot view, open, or export these files from other apps or files managers, and they permanently bloat device flash memory.
+   - **Systematic Coordinate Tapping with 1,000ms Debouncing:** Instead of generating inaccessible app cache bloat, K.I.D.S. systematically iterates through each educational attachment (.pdf, .jpg, .docx) individually. It locates the discrete download button or clickable attachment chip, updates the status pill (`Status: Downloading (X/Y)...` or `Status: Opening (X/Y)...`), and dispatches accessibility clicks with physical coordinate touch taps (`dispatchTap`) as fallback. 
+   - **Calibrated 1,000ms Debounce:** A 1,000ms debounce between files gives Android's system `DownloadManager` ample time to register the download request without dropping queue items or overloading network sockets.
+5. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
+   - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
+   - K.I.D.S. implements a resilient **Multi-Attempt Guarded Return Loop** executing **up to 3 sequential attempts**:
+     - On each attempt, it inspects the active window. If `isStreamOrClassworkView(active)` confirms the phone has returned to the main feed, it immediately exits the loop.
+     - If still inside a document viewer or post detail view, it triggers `performReturnToStream`: first attempting `ACTION_CLICK` on the Navigate Up (`←`) toolbar icon, falling back to physical tap on the icon bounds, and finally dispatching Android's system-level `GLOBAL_ACTION_BACK`.
+     - It allows a 600ms delay between attempts, effortlessly dismissing any document previewers before returning to the stream.
+   - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
+6. **Zero-Permanent-Storage Staging & Cloud Sync:**
+   - As files land in `Downloads/`, `Downloads/Classroom/`, `Documents/`, or `Documents/Classroom/`, `DownloadFolderObserver` immediately moves them into private app sandbox staging (`Android/data/com.kids.collector/files/vault_attachments/`).
+   - `DriveSyncWorker` performs offline ML Kit OCR and uploads the attachments directly to Google Drive under `attachments/`.
+   - **Immediate Local Purge:** As soon as upload succeeds, the staged files are **permanently deleted from phone storage**. Net storage impact is **zero bytes**, leaving your personal download folders and phone memory pristine! Parents never have to manually share files or manage hidden app caches.
 
 ### Zero-Click Hands-Free Exit & Auto-Completion
 

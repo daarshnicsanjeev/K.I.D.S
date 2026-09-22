@@ -44,6 +44,9 @@ interface NoticeDao {
     @Query("SELECT * FROM notices WHERE hashSha256 = :hash LIMIT 1")
     suspend fun findByHash(hash: String): NoticeEntity?
 
+    @Query("SELECT * FROM notices WHERE noticeId = :noticeId LIMIT 1")
+    suspend fun findById(noticeId: String): NoticeEntity?
+
     @Query("SELECT * FROM notices WHERE syncStatus = 'PENDING'")
     suspend fun getPendingNotices(): List<NoticeEntity>
 

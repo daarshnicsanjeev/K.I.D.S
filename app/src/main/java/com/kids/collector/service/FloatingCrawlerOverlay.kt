@@ -161,7 +161,9 @@ class FloatingCrawlerOverlay(
                     text = " — "
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
-                    setPadding(dpToPx(8), 0, 0, 0)
+                    gravity = Gravity.CENTER
+                    minWidth = dpToPx(48)
+                    minHeight = dpToPx(48)
                     setOnClickListener {
                         minimize()
                     }
@@ -171,7 +173,9 @@ class FloatingCrawlerOverlay(
                     text = " ✕ "
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
-                    setPadding(dpToPx(6), 0, 0, 0)
+                    gravity = Gravity.CENTER
+                    minWidth = dpToPx(48)
+                    minHeight = dpToPx(48)
                     setOnClickListener {
                         dismissAndRemove()
                     }
@@ -238,7 +242,7 @@ class FloatingCrawlerOverlay(
                         cornerRadius = dpToPx(8).toFloat()
                         setColor(Color.parseColor("#ED8936")) // Amber Orange
                     }
-                    minHeight = dpToPx(44)
+                    minHeight = dpToPx(48)
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT

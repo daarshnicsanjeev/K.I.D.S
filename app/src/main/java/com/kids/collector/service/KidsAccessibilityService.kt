@@ -63,7 +63,11 @@ class KidsAccessibilityService : AccessibilityService() {
     private val excludedChrome = setOf(
         "open navigation menu", "show menu", "more options", "navigate up", "back",
         "stream", "classwork", "people", "about", "join course", "view to-do list",
-        "classroom", "google classroom", "class options", "close", "comments"
+        "classroom", "google classroom", "class options", "close", "comments",
+        "back to classwork page", "back to classwork", "back to stream", "back to people",
+        "attachments", "class comments", "no comments", "add class comment",
+        "save all files offline", "save all offline", "save offline", "more options for attachment",
+        "for your reference", "for reference"
     )
 
     private val attachmentExts = listOf(
@@ -243,12 +247,19 @@ class KidsAccessibilityService : AccessibilityService() {
                         }
                     }
 
-                    // 3. Guarded Return to Stream
+                    // 3. Guarded Return to Stream (up to 3 attempts to close any preview and return to Stream)
                     crawlerOverlay?.updateStatus("Status: Returning to Stream...")
-                    val returnRoot = rootInActiveWindow
-                    if (returnRoot != null) {
-                        performReturnToStream(returnRoot)
-                        returnRoot.recycle()
+                    var returnAttempts = 0
+                    while (returnAttempts < 3) {
+                        val active = rootInActiveWindow ?: break
+                        if (isStreamOrClassworkView(active)) {
+                            active.recycle()
+                            break
+                        }
+                        performReturnToStream(active)
+                        active.recycle()
+                        delay(600)
+                        returnAttempts++
                     }
 
                     // Wait up to 2000ms for Stream to re-settle
@@ -319,11 +330,19 @@ class KidsAccessibilityService : AccessibilityService() {
         val titleCandidate = textList.firstOrNull { item ->
             val lower = item.trim().lowercase()
             !excludedChrome.contains(lower) &&
+                    !excludedChrome.any { lower.startsWith(it) } &&
                     !lower.startsWith("tab ") &&
                     !lower.startsWith("add class comment") &&
+                    !lower.startsWith("0 class comments") &&
+                    !lower.contains("class comments") &&
+                    !lower.startsWith("back to ") &&
+                    !lower.startsWith("more options") &&
+                    !lower.startsWith("for your reference") &&
+                    !lower.startsWith("for reference") &&
                     item.trim().length > 3
         }
-        val title = titleCandidate?.take(80) ?: fallbackTitle
+        val cleanFallback = if (fallbackTitle.isNotBlank() && fallbackTitle != "Classroom Notice") fallbackTitle else null
+        val title = cleanFallback ?: titleCandidate?.take(80) ?: "Classroom Notice"
         val category = classifier.classify(title, combinedText)
 
         // Route to child
@@ -404,56 +423,55 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Check for the prominent "Save all files offline" button first
-        val saveAllBtn = findSaveAllOfflineButton(detailRoot)
-        if (saveAllBtn != null) {
-            crawlerOverlay?.updateStatus("Saving all attachments offline...")
-            CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping \"Save all files offline\" for \"$title\" (${attachments.size} files)")
-            val clicked = saveAllBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val b = Rect()
-                saveAllBtn.getBoundsInScreen(b)
-                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+        // Autonomous Attachment Download: Systematically tap each attachment chip / download button
+        for ((index, att) in attachments.withIndex()) {
+            val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
+            val existingAtt = db.attachmentDao().findByFileHash(fileHash)
+            if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
+                !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
+                continue // Already physically downloaded and synced
             }
-            saveAllBtn.recycle()
-            val countToAdd = if (attachments.isNotEmpty()) attachments.size else 1
-            for (i in 0 until countToAdd) {
-                crawlerOverlay?.incrementAttachmentCount()
-            }
-            delay(1200) // Calibrated debounce for DownloadManager to start download
-        } else {
-            // Fallback: Click individual download buttons or chips
-            for ((index, att) in attachments.withIndex()) {
-                if (att.downloadNode != null && att.downloadNode.isClickable) {
-                    crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
-                    CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-                    val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val b = Rect()
-                        att.downloadNode.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                    }
-                    crawlerOverlay?.incrementAttachmentCount()
-                    delay(800) // Calibrated debounce between downloads
-                } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-                    crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
-                    CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-                    val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val b = Rect()
-                        att.clickableChip.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                    }
-                    crawlerOverlay?.incrementAttachmentCount()
-                    delay(800)
-                }
 
-                att.downloadNode?.recycle()
-                att.clickableChip?.recycle()
+            if (att.downloadNode != null && att.downloadNode.isClickable) {
+                crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
+                CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
+                val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val b = Rect()
+                    att.downloadNode.getBoundsInScreen(b)
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                }
+                crawlerOverlay?.incrementAttachmentCount()
+                delay(1000) // Calibrated debounce between downloads
+            } else if (att.clickableChip != null && att.clickableChip.isClickable) {
+                crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
+                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
+                val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val b = Rect()
+                    att.clickableChip.getBoundsInScreen(b)
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                }
+                crawlerOverlay?.incrementAttachmentCount()
+                delay(1000)
+
+                // If tapping the chip opened an in-app viewer/preview, close it to restore detail view for next attachments
+                val active = rootInActiveWindow
+                if (active != null) {
+                    if (!isPostDetailView(active) && !isStreamOrClassworkView(active)) {
+                        CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Closing opened viewer to restore detail view")
+                        performReturnToStream(active)
+                        delay(600)
+                    }
+                    active.recycle()
+                }
             }
+
+            att.downloadNode?.recycle()
+            att.clickableChip?.recycle()
         }
 
-        if (attachments.isNotEmpty() || saveAllBtn != null) {
+        if (attachments.isNotEmpty()) {
             delay(1200) // Allow system DownloadManager to register downloads
             com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
         }
@@ -879,7 +897,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("chooser") ||
                 lower.contains("documentsui") ||
                 lower.contains("miui.securitycenter") ||
-                lower.contains("google.android.apps.docs")
+                lower.contains("google.android.apps.docs") ||
+                lower.contains("adobe.reader") ||
+                lower.contains("cn.wps") ||
+                lower.contains("viewer") ||
+                lower.contains("microsoft.office")
     }
 
     private fun isHomeScreenOrLauncher(pkg: String): Boolean {

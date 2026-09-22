@@ -221,12 +221,17 @@ class DriveSyncWorker(
                                 }
                             }
                         } else {
-                            db.attachmentDao().updateSyncStatus(
-                                attachmentId = att.attachmentId,
-                                newStatus = SyncStatus.SYNCED.name,
-                                driveFileId = "virtual_${att.attachmentId.take(8)}"
-                            )
-                            virtualCount++
+                            // If local file is not on disk yet, check if notice was captured recently (< 3 min)
+                            val parentNotice = db.noticeDao().findById(att.noticeId)
+                            val isRecent = parentNotice != null && (System.currentTimeMillis() - parentNotice.timestampMs < 180_000L)
+                            if (!isRecent) {
+                                db.attachmentDao().updateSyncStatus(
+                                    attachmentId = att.attachmentId,
+                                    newStatus = SyncStatus.SYNCED.name,
+                                    driveFileId = "virtual_${att.attachmentId.take(8)}"
+                                )
+                                virtualCount++
+                            }
                         }
                     }
 

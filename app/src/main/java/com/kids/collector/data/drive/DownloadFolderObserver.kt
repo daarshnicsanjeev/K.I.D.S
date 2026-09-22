@@ -54,7 +54,15 @@ object DownloadFolderObserver {
                 if (classroomSubdir.exists()) candidateDirs.add(classroomSubdir)
             }
 
-            // 2. WhatsApp Documents & Images (if accessible)
+            // 2. Documents directory
+            val documentsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+            if (documentsDir != null && documentsDir.exists()) {
+                candidateDirs.add(documentsDir)
+                val classroomDocs = File(documentsDir, "Classroom")
+                if (classroomDocs.exists()) candidateDirs.add(classroomDocs)
+            }
+
+            // 3. WhatsApp Documents & Images (if accessible)
             val externalStorage = Environment.getExternalStorageDirectory()
             if (externalStorage != null && externalStorage.exists()) {
                 val waDocs = File(externalStorage, "Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents")
@@ -70,11 +78,14 @@ object DownloadFolderObserver {
 
             for (dir in candidateDirs) {
                 val files = dir.listFiles() ?: continue
-                val isPublicDownloadDir = dir.absolutePath.contains("Download", ignoreCase = true)
+                val isPublicDownloadDir = dir.absolutePath.contains("Download", ignoreCase = true) ||
+                        dir.absolutePath.contains("Documents", ignoreCase = true)
 
                 for (file in files) {
                     if (file.isDirectory || file.length() == 0L) continue
                     val fileName = file.name.lowercase()
+                    val fileExt = file.extension.lowercase()
+                    val fileBaseName = file.nameWithoutExtension.lowercase()
 
                     // A. Check against pending attachments needing a local file
                     var matchedPending = false
@@ -83,19 +94,31 @@ object DownloadFolderObserver {
                         val cleanExpected = rawExpected.replace("...", "").trim()
                         if (cleanExpected.isBlank()) continue
 
-                        // Match full filename, clean prefix without ellipsis, or substring
-                        val isMatch = fileName == rawExpected ||
-                                fileName.contains(rawExpected) ||
-                                rawExpected.contains(fileName) ||
-                                fileName == cleanExpected ||
-                                fileName.contains(cleanExpected) ||
-                                cleanExpected.contains(fileName) ||
-                                (cleanExpected.length > 5 && fileName.contains(cleanExpected.take(12)))
+                        val expectedExt = cleanExpected.substringAfterLast('.', "")
+                        val isExtensionCompatible = fileExt.isNotBlank() && (expectedExt.isBlank() || fileExt == expectedExt)
+                        val expectedBaseName = cleanExpected.substringBeforeLast('.').lowercase()
+
+                        // Strict, safe matching: requires matching extension and either exact name or substantial prefix (>= 8 chars)
+                        val isMatch = isExtensionCompatible && (
+                            fileBaseName == expectedBaseName ||
+                            fileName == cleanExpected ||
+                            (fileBaseName.length >= 8 && fileBaseName.startsWith(expectedBaseName.take(15))) ||
+                            (expectedBaseName.length >= 8 && expectedBaseName.startsWith(fileBaseName.take(15)))
+                        )
 
                         if (isMatch) {
                             val targetFile = if (isPublicDownloadDir) {
-                                // Move out of public Downloads into private app staging to prevent clutter
-                                val destFile = File(stagingDir, file.name)
+                                // Sanitize leaf filename and avoid directory traversal
+                                val safeName = file.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                                val stagedName = "${att.attachmentId.take(8)}_$safeName"
+                                val destFile = File(stagingDir, stagedName)
+
+                                // Assert canonical path boundary
+                                if (!destFile.canonicalPath.startsWith(stagingDir.canonicalPath + File.separator)) {
+                                    Log.e(TAG, "Path traversal attempt blocked for: ${file.name}")
+                                    continue
+                                }
+
                                 val moved = try {
                                     if (file.renameTo(destFile)) {
                                         true
@@ -125,29 +148,34 @@ object DownloadFolderObserver {
                             matchedPending = true
                             CrawlerTraceLogger.log(
                                 "DOWNLOAD_MOVE",
-                                "Moved \"${file.name}\" out of public Downloads into private vault staging (${targetFile.length()} bytes) -> linked to attachment ${att.attachmentId.take(8)}"
+                                "Moved \"${file.name}\" out of public storage into private vault staging (${targetFile.length()} bytes) -> linked to attachment ${att.attachmentId.take(8)}"
                             )
                             break
                         }
                     }
 
-                    // B. If not pending, check if it is an already-synced file lingering in public Downloads
+                    // B. If not pending, check if it is an already-synced file lingering in public storage
                     if (!matchedPending && isPublicDownloadDir) {
                         for (syncedAtt in alreadySyncedAttachments) {
                             val expected = syncedAtt.fileName.trim().lowercase()
                             if (expected.isBlank()) continue
 
-                            val isMatch = fileName == expected ||
-                                    fileName.contains(expected) ||
-                                    expected.contains(fileName) ||
-                                    (expected.length > 8 && fileName.contains(expected.take(15)))
+                            val expectedExt = expected.substringAfterLast('.', "")
+                            val isExtensionCompatible = fileExt.isNotBlank() && (expectedExt.isBlank() || fileExt == expectedExt)
+                            val expectedBaseName = expected.substringBeforeLast('.').lowercase()
 
-                            if (isMatch) {
+                            // Strict match for cleanup: only delete if exact name or full prefix matches
+                            val isCleanMatch = isExtensionCompatible && (
+                                fileBaseName == expectedBaseName ||
+                                fileName == expected
+                            )
+
+                            if (isCleanMatch) {
                                 try {
                                     if (file.delete()) {
                                         CrawlerTraceLogger.log(
                                             "DOWNLOAD_CLEANUP",
-                                            "Cleaned up already-synced file \"${file.name}\" from public Downloads folder"
+                                            "Cleaned up already-synced file \"${file.name}\" from public storage folder"
                                         )
                                     }
                                 } catch (e: Exception) {
