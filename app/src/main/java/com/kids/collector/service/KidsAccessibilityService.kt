@@ -178,6 +178,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private suspend fun runDeepCrawlLoop() {
         val manifest = StreamManifest()
+        val surveyStartTime = System.currentTimeMillis()
 
         // =========================================================================
         // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
@@ -188,6 +189,7 @@ class KidsAccessibilityService : AccessibilityService() {
         var surveyZeroCount = 0
         var lastVisibleFingerprints = listOf<String>()
         var identicalScreenCount = 0
+        var isFirstCardLogged = false
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val root = rootInActiveWindow
@@ -209,12 +211,17 @@ class KidsAccessibilityService : AccessibilityService() {
             val newItemsCount = surveyVisibleCards(root, manifest)
             root.recycle()
 
+            if (!isFirstCardLogged && manifest.startItemTitle != null) {
+                CrawlerTraceLogger.logSurveyStart(manifest.startItemTitle ?: "Top Card")
+                isFirstCardLogged = true
+            }
+
             if (newItemsCount > 0) {
                 surveyZeroCount = 0
                 identicalScreenCount = 0
                 crawlerOverlay?.updateStatus(
                     "Surveying (${manifest.totalCount} found)...",
-                    "Discovered ${manifest.totalCount} notices so far"
+                    "Discovered ${manifest.totalCount} notices (${manifest.completedCount} already synced)"
                 )
             } else {
                 surveyZeroCount++
@@ -229,9 +236,11 @@ class KidsAccessibilityService : AccessibilityService() {
             // Smart bottom detection: If the screen physically didn't move for 2 scrolls,
             // or if 3 scrolls yield 0 new items, conclude Pass 1 immediately without waiting.
             if (identicalScreenCount >= 2 || surveyZeroCount >= 3) {
-                CrawlerTraceLogger.log(
-                    "STREAM_SURVEY",
-                    "Survey reached end of stream (screen static=$identicalScreenCount, zeroCount=$surveyZeroCount)."
+                val surveyDuration = System.currentTimeMillis() - surveyStartTime
+                CrawlerTraceLogger.logSurveyEnd(
+                    manifest.totalCount,
+                    manifest.endItemTitle ?: "Bottom Post",
+                    surveyDuration
                 )
                 break
             }
@@ -251,10 +260,6 @@ class KidsAccessibilityService : AccessibilityService() {
         val total = manifest.totalCount
         val startTitle = manifest.startItemTitle ?: "First Post"
         val endTitle = manifest.endItemTitle ?: "Last Post"
-        CrawlerTraceLogger.log(
-            "STREAM_SURVEY",
-            "Stream survey complete! Total: $total items. Start: \"$startTitle\" | End: \"$endTitle\" | Pending: ${manifest.pendingCount}"
-        )
 
         if (total == 0 || manifest.pendingCount == 0) {
             crawlerOverlay?.updateStatus("✓ Stream Up to Date", "All $total notices already captured")
@@ -268,7 +273,8 @@ class KidsAccessibilityService : AccessibilityService() {
         // PASS 1.5: REWIND TO START
         // =========================================================================
         crawlerOverlay?.updateStatus("Returning to Start...", "Preparing $total notices for capture")
-        CrawlerTraceLogger.log("STREAM_SURVEY", "Rewinding stream back to top...")
+        val rewindStartTime = System.currentTimeMillis()
+        CrawlerTraceLogger.logRewindStart(total)
 
         var rewindAttempts = 0
         val firstFingerprint = manifest.items.first().fingerprint
@@ -286,14 +292,16 @@ class KidsAccessibilityService : AccessibilityService() {
             } else Pair(false, emptyList())
 
             if (startVisible) {
-                CrawlerTraceLogger.log("STREAM_SURVEY", "Start item visible on screen. Rewind complete.")
+                val rewindDuration = System.currentTimeMillis() - rewindStartTime
+                CrawlerTraceLogger.logRewindComplete(rewindAttempts, rewindDuration)
                 break
             }
 
             if (currentVisible.isNotEmpty() && currentVisible == lastRewindVisible) {
                 topBoundaryStaticCount++
                 if (topBoundaryStaticCount >= 2 && rewindAttempts >= 3) {
-                    CrawlerTraceLogger.log("STREAM_SURVEY", "Rewind reached top boundary of stream (screen static). Rewind complete.")
+                    val rewindDuration = System.currentTimeMillis() - rewindStartTime
+                    CrawlerTraceLogger.logRewindComplete(rewindAttempts, rewindDuration)
                     break
                 }
             } else {
@@ -309,13 +317,14 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         // =========================================================================
-        // PASS 2: MANIFEST-DRIVEN DEEP INGESTION WITH AUTO-RECOVERY
+        // PASS 2: MANIFEST-DRIVEN DEEP INGESTION WITH ADAPTIVE AUTO-RECOVERY
         // =========================================================================
         CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven deep ingestion...")
 
         val db = KidsDatabase.getInstance(applicationContext)
         var lastRecoveryMinIndex: Int? = null
         var consecutiveStaticRecoveryCount = 0
+        val recentScrollDirections = ArrayDeque<Boolean>(6) // true = forward, false = backward
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val nextItem = manifest.getNextPendingItem()
@@ -346,14 +355,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            // Look for target card on screen
-            val unvisitedCard = findCardByFingerprint(root, nextItem.fingerprint)
+            // Look for target card on screen using Resilient Multi-Factor Matching
+            val unvisitedCard = findCardForTarget(root, nextItem)
             root.recycle()
 
             if (unvisitedCard != null) {
                 // Target card found! Reset recovery tracking
                 lastRecoveryMinIndex = null
                 consecutiveStaticRecoveryCount = 0
+                recentScrollDirections.clear()
 
                 val title = unvisitedCard.title
                 val fingerprint = unvisitedCard.fingerprint
@@ -365,20 +375,17 @@ class KidsAccessibilityService : AccessibilityService() {
                     "Capturing (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
                     title
                 )
-                CrawlerTraceLogger.log(
-                    "DEEP_CRAWLER",
-                    "Opening post #${nextItem.index}/$total at (${bounds.centerX()}, ${bounds.centerY()}): \"$title\""
-                )
 
                 // Dispatch physical tap
+                val openStart = System.currentTimeMillis()
                 val clicked = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 if (!clicked) {
                     dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
                 }
                 clickableNode.recycle()
 
-                // Check if detail view opened within 800ms
-                val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
+                // Check if detail view opened with 2500ms timeout & retry
+                var enteredDetail = waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) {
                     val active = rootInActiveWindow ?: return@waitForCondition false
                     val isDetail = isPostDetailView(active)
                     active.recycle()
@@ -388,12 +395,43 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!enteredDetail) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Card did not open detail. Ingesting directly from stream: \"$title\""
+                        "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical center-tap at (${bounds.centerX()}, ${bounds.centerY()})"
                     )
-                    ingestNoticeDirect(title, fullText, fingerprint)
-                    manifest.markCompleted(fingerprint)
-                    visitedPostFingerprints.add(fingerprint)
-                    crawlerOverlay?.incrementNoticeCount()
+                    dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
+                        val active = rootInActiveWindow ?: return@waitForCondition false
+                        val isDetail = isPostDetailView(active)
+                        active.recycle()
+                        isDetail
+                    }
+                }
+                val openLatency = System.currentTimeMillis() - openStart
+                CrawlerTraceLogger.logPostOpen(nextItem.index, total, title, openLatency, enteredDetail)
+
+                if (!enteredDetail) {
+                    val isLikelyMaterial = title.contains("material", ignoreCase = true) ||
+                            title.contains("worksheet", ignoreCase = true) ||
+                            title.contains("notes", ignoreCase = true) ||
+                            title.contains("answer key", ignoreCase = true) ||
+                            title.contains("answerkey", ignoreCase = true)
+
+                    if (isLikelyMaterial) {
+                        CrawlerTraceLogger.log(
+                            "DEEP_CRAWLER",
+                            "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retaining PENDING status."
+                        )
+                        ingestNoticeDirect(title, fullText, fingerprint)
+                        manifest.incrementAttempt(fingerprint)
+                    } else {
+                        CrawlerTraceLogger.log(
+                            "DEEP_CRAWLER",
+                            "Card did not open detail. Ingesting directly from stream: \"$title\""
+                        )
+                        ingestNoticeDirect(title, fullText, fingerprint)
+                        manifest.markCompleted(fingerprint)
+                        visitedPostFingerprints.add(fingerprint)
+                        crawlerOverlay?.incrementNoticeCount()
+                    }
                     delay(300)
                     continue
                 }
@@ -401,9 +439,10 @@ class KidsAccessibilityService : AccessibilityService() {
                 // In detail view: Extract details and download attachments
                 crawlerOverlay?.updateStatus("Reading Detail (${nextItem.index}/$total)...", title)
                 val detailRoot = rootInActiveWindow
+                var savedAttCount = 0
                 if (detailRoot != null) {
                     try {
-                        processPostDetailAndDownload(detailRoot, title)
+                        savedAttCount = processPostDetailAndDownload(detailRoot, title)
                     } catch (e: Exception) {
                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
                     } finally {
@@ -433,9 +472,10 @@ class KidsAccessibilityService : AccessibilityService() {
                     isStream
                 }
 
-                manifest.markCompleted(fingerprint)
+                manifest.markCompleted(fingerprint, savedAttCount)
                 visitedPostFingerprints.add(fingerprint)
                 crawlerOverlay?.incrementNoticeCount()
+                CrawlerTraceLogger.logPostCompleted(nextItem.index, total, title, savedAttCount)
                 delay(500)
             } else {
                 // =====================================================================
@@ -443,14 +483,50 @@ class KidsAccessibilityService : AccessibilityService() {
                 // =====================================================================
                 val checkRoot = rootInActiveWindow
                 if (checkRoot != null) {
-                    val visibleFingerprints = getVisibleCardFingerprints(checkRoot)
+                    val visibleItems = getVisibleManifestItems(checkRoot, manifest)
                     checkRoot.recycle()
 
-                    val visibleIndices = visibleFingerprints.mapNotNull { fp -> manifest.findByFingerprint(fp)?.index }
+                    val visibleIndices = visibleItems.map { it.index }
                     val minVisibleIndex = visibleIndices.minOrNull()
                     val maxVisibleIndex = visibleIndices.maxOrNull()
 
-                    // Check if viewport moved since last recovery step
+                    // Bounded target check: If target is bounded by visible cards, it IS on screen!
+                    if (minVisibleIndex != null && maxVisibleIndex != null && manifest.isTargetBounded(nextItem.index, visibleIndices)) {
+                        CrawlerTraceLogger.log(
+                            "AUTO_RECOVERY",
+                            "Target #${nextItem.index} is bounded within visible screen range [${minVisibleIndex}..${maxVisibleIndex}]! Inspecting visible cards directly."
+                        )
+                        val candidateCard = findBestCandidateCardOnScreen(rootInActiveWindow, nextItem)
+                        if (candidateCard != null) {
+                            val clicked = candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            if (!clicked) {
+                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candidateCard.bounds.centerY().toFloat())
+                            }
+                            candidateCard.clickableNode.recycle()
+                            delay(800)
+                            continue
+                        }
+                    }
+
+                    // Adaptive swiping & oscillation detection
+                    val targetAhead = (minVisibleIndex == null || minVisibleIndex < nextItem.index)
+                    val distance = if (minVisibleIndex != null) Math.abs(nextItem.index - minVisibleIndex) else 5
+
+                    recentScrollDirections.addLast(targetAhead)
+                    if (recentScrollDirections.size > 6) recentScrollDirections.removeFirst()
+
+                    val isOscillating = recentScrollDirections.size >= 4 &&
+                            recentScrollDirections.zipWithNext().all { (a, b) -> a != b }
+
+                    if (isOscillating) {
+                        CrawlerTraceLogger.log(
+                            "AUTO_RECOVERY",
+                            "Oscillation detected around target #${nextItem.index}! Engaging micro-nudge."
+                        )
+                        manifest.incrementAttempt(nextItem.fingerprint)
+                    }
+
+                    // Viewport static tracking
                     val isStatic = (minVisibleIndex != null && minVisibleIndex == lastRecoveryMinIndex)
                     lastRecoveryMinIndex = minVisibleIndex
 
@@ -460,7 +536,6 @@ class KidsAccessibilityService : AccessibilityService() {
                         consecutiveStaticRecoveryCount = 0
                     }
 
-                    // Only increment item failure count if the screen is stuck and not progressing towards target
                     val attempts = if (isStatic && consecutiveStaticRecoveryCount >= 3) {
                         manifest.incrementAttempt(nextItem.fingerprint)
                     } else {
@@ -470,36 +545,52 @@ class KidsAccessibilityService : AccessibilityService() {
                     if (attempts >= 4) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after screen stuck ($consecutiveStaticRecoveryCount static scrolls, $attempts attempts)."
+                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($attempts attempts)."
                         )
                         manifest.markSkipped(nextItem.fingerprint)
                         lastRecoveryMinIndex = null
                         consecutiveStaticRecoveryCount = 0
+                        recentScrollDirections.clear()
                         continue
                     }
 
-                    if (minVisibleIndex != null && minVisibleIndex > nextItem.index) {
-                        // We are too far down -> scroll backward (rewind)
+                    val useMicroScroll = isOscillating || distance <= 2
+
+                    if (!targetAhead) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Scrolling backward..."
+                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Scrolling backward (micro=$useMicroScroll)..."
                         )
-                        crawlerOverlay?.updateStatus("Recovering Position...", "Scrolling up to post #${nextItem.index}")
+                        crawlerOverlay?.updateStatus(
+                            "Recovering Position...",
+                            "Seeking post #${nextItem.index}/$total"
+                        )
                         var scrollDone = false
-                        crawlerOverlay?.performScrollBackward { scrollDone = true }
+                        if (useMicroScroll) {
+                            crawlerOverlay?.performMicroScroll(forward = false) { scrollDone = true }
+                        } else {
+                            crawlerOverlay?.performScrollBackward { scrollDone = true }
+                        }
                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(500)
+                        delay(450)
                     } else {
-                        // We are above the target or item is ahead -> scroll forward
+                        val fastForwarding = nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))
+                        val statusTitle = if (fastForwarding) "Fast-Forwarding Synced Notices..." else "Navigating to Post..."
+                        val statusDetail = if (fastForwarding) "Seeking #${nextItem.index}/$total (${manifest.completedCount} already synced)" else "Seeking post #${nextItem.index}/$total"
+
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Target #${nextItem.index} is ahead. Scrolling forward..."
+                            "Target #${nextItem.index} is ahead. Scrolling forward (micro=$useMicroScroll, fastForwarding=$fastForwarding)..."
                         )
-                        crawlerOverlay?.updateStatus("Navigating to Post...", "Seeking post #${nextItem.index}/$total")
+                        crawlerOverlay?.updateStatus(statusTitle, statusDetail)
                         var scrollDone = false
-                        crawlerOverlay?.performScroll { scrollDone = true }
+                        if (useMicroScroll) {
+                            crawlerOverlay?.performMicroScroll(forward = true) { scrollDone = true }
+                        } else {
+                            crawlerOverlay?.performScroll { scrollDone = true }
+                        }
                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(500)
+                        delay(450)
                     }
                 } else {
                     delay(500)
@@ -517,7 +608,7 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun processPostDetailAndDownload(detailRoot: AccessibilityNodeInfo, fallbackTitle: String) {
+    private suspend fun processPostDetailAndDownload(detailRoot: AccessibilityNodeInfo, fallbackTitle: String): Int {
         val db = KidsDatabase.getInstance(applicationContext)
 
         // Dismiss soft keyboard if focused in comment box
@@ -730,6 +821,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 crawlerOverlay?.incrementAttachmentCount()
             }
         }
+        return allAttachments.size
     }
 
     /**
@@ -1066,7 +1158,7 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findCardByFingerprint(rootNode: AccessibilityNodeInfo, targetFingerprint: String): UnvisitedCard? {
+    private fun findCardForTarget(rootNode: AccessibilityNodeInfo, targetItem: StreamManifestItem): UnvisitedCard? {
         val postCards = findPostCards(rootNode)
         val displayMetrics = resources.displayMetrics
         val minTop = 140
@@ -1097,6 +1189,7 @@ class KidsAccessibilityService : AccessibilityService() {
             val titleCandidate = cardItems.firstOrNull { item ->
                 val lower = item.trim().lowercase()
                 !excludedChrome.contains(lower) &&
+                        !excludedChrome.any { lower.startsWith(it) } &&
                         !lower.startsWith("tab ") &&
                         !lower.startsWith("signed in as") &&
                         !lower.startsWith("tasks due") &&
@@ -1107,7 +1200,27 @@ class KidsAccessibilityService : AccessibilityService() {
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
             val fingerprint = computeCardFingerprint(cardItems)
 
-            if (fingerprint == targetFingerprint) {
+            // Resilient Multi-Factor Matching: Fingerprint -> Title -> Content Overlap
+            val isFingerprintMatch = (fingerprint == targetItem.fingerprint)
+            val cleanCardTitle = title.trim().lowercase()
+            val cleanTargetTitle = targetItem.title.trim().lowercase()
+            val isTitleMatch = cleanTargetTitle.isNotBlank() && (
+                    cleanCardTitle == cleanTargetTitle ||
+                    (cleanCardTitle.length >= 15 && cleanTargetTitle.startsWith(cleanCardTitle.take(25))) ||
+                    (cleanTargetTitle.length >= 15 && cleanCardTitle.startsWith(cleanTargetTitle.take(25)))
+            )
+            val isContentMatch = cleanTargetTitle.length >= 20 && combinedText.contains(cleanTargetTitle.take(25), ignoreCase = true)
+
+            if (isFingerprintMatch || isTitleMatch || isContentMatch) {
+                val matchReason = if (isFingerprintMatch) "Fingerprint ($fingerprint)"
+                else if (isTitleMatch) "Title (\"${title.take(35)}\")"
+                else "Content Overlap"
+
+                CrawlerTraceLogger.log(
+                    "CARD_MATCH",
+                    "Matched target #${targetItem.index} via $matchReason"
+                )
+
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
                 val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
                 val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
@@ -1119,7 +1232,83 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
+    private fun findBestCandidateCardOnScreen(rootNode: AccessibilityNodeInfo?, targetItem: StreamManifestItem): UnvisitedCard? {
+        if (rootNode == null) return null
+        val postCards = findPostCards(rootNode)
+        val displayMetrics = resources.displayMetrics
+        val minTop = 140
+        val maxBottom = displayMetrics.heightPixels - 170
+
+        val rect = Rect()
+        for (card in postCards) {
+            card.getBoundsInScreen(rect)
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            val combined = cardItems.joinToString(" ")
+            if (combined.length <= 20) {
+                card.recycle()
+                continue
+            }
+            val titleCandidate = cardItems.firstOrNull { item ->
+                val lower = item.trim().lowercase()
+                !excludedChrome.contains(lower) && !excludedChrome.any { lower.startsWith(it) } && item.trim().length > 3
+            }
+            val title = titleCandidate?.take(80) ?: "Classroom Notice"
+            val fp = computeCardFingerprint(cardItems)
+            val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
+            val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+            val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+            card.recycle()
+            rootNode.recycle()
+            return UnvisitedCard(title, combined, fp, clickable, cardBounds)
+        }
+        rootNode.recycle()
+        return null
+    }
+
+    private fun getVisibleManifestItems(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): List<StreamManifestItem> {
+        val postCards = findPostCards(rootNode)
+        val matchedItems = mutableListOf<StreamManifestItem>()
+        for (card in postCards) {
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            val combined = cardItems.joinToString(" ")
+            if (combined.length > 20) {
+                val fp = computeCardFingerprint(cardItems)
+                val titleCandidate = cardItems.firstOrNull { item ->
+                    val lower = item.trim().lowercase()
+                    !excludedChrome.contains(lower) &&
+                            !excludedChrome.any { lower.startsWith(it) } &&
+                            item.trim().length > 3
+                }
+                val title = titleCandidate?.take(80) ?: ""
+                val matched = manifest.findMatchingItem(fp, title, combined)
+                if (matched != null && !matchedItems.contains(matched)) {
+                    matchedItems.add(matched)
+                }
+            }
+            card.recycle()
+        }
+        return matchedItems
+    }
+
+    private suspend fun isNoticeFullyCapturedInDb(title: String): Boolean {
+        val db = KidsDatabase.getInstance(applicationContext)
+        val notice = db.noticeDao().getAllNoticesDirect().firstOrNull {
+            it.title.equals(title, ignoreCase = true) || (title.length >= 20 && it.title.startsWith(title.take(25), ignoreCase = true))
+        } ?: return false
+
+        val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
+        if (atts.isNotEmpty()) return true
+
+        val isLikelyMaterial = title.contains("material", true) ||
+                title.contains("worksheet", true) ||
+                title.contains("notes", true) ||
+                title.contains("answer key", true)
+        return !isLikelyMaterial && notice.body.length > 120
+    }
+
+    private suspend fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
         val postCards = findPostCards(rootNode)
         var addedCount = 0
 
@@ -1145,6 +1334,7 @@ class KidsAccessibilityService : AccessibilityService() {
             val titleCandidate = cardItems.firstOrNull { item ->
                 val lower = item.trim().lowercase()
                 !excludedChrome.contains(lower) &&
+                        !excludedChrome.any { lower.startsWith(it) } &&
                         !lower.startsWith("tab ") &&
                         !lower.startsWith("signed in as") &&
                         !lower.startsWith("tasks due") &&
@@ -1155,13 +1345,16 @@ class KidsAccessibilityService : AccessibilityService() {
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
             val fingerprint = computeCardFingerprint(cardItems)
 
-            val isAlreadyCaptured = visitedPostFingerprints.contains(fingerprint)
+            val isAlreadyCaptured = visitedPostFingerprints.contains(fingerprint) && isNoticeFullyCapturedInDb(title)
             val added = manifest.addItem(fingerprint, title, combinedText, isAlreadyCaptured)
             if (added) {
                 addedCount++
-                CrawlerTraceLogger.log(
-                    "STREAM_SURVEY",
-                    "Discovered #${manifest.totalCount}: \"$title\" [Fingerprint: $fingerprint, Status: ${if (isAlreadyCaptured) "ALREADY_SYNCED" else "PENDING"}]"
+                CrawlerTraceLogger.logSurveyCard(
+                    manifest.totalCount,
+                    manifest.totalCount,
+                    title,
+                    fingerprint,
+                    isAlreadyCaptured
                 )
             }
             card.recycle()

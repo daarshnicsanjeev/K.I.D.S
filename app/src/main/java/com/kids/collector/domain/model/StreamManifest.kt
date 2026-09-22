@@ -20,7 +20,8 @@ data class StreamManifestItem(
     val title: String,
     val previewText: String,
     var status: StreamItemStatus = StreamItemStatus.PENDING,
-    var attemptCount: Int = 0
+    var attemptCount: Int = 0,
+    var attachmentCount: Int = 0
 )
 
 /**
@@ -76,9 +77,52 @@ class StreamManifest {
         return _items.firstOrNull { it.fingerprint == fingerprint }
     }
 
-    fun markCompleted(fingerprint: String) {
+    /**
+     * Resilient Multi-Factor Matching:
+     * 1. Exact Fingerprint SHA-256 match
+     * 2. Exact Title match (case-insensitive)
+     * 3. Normalized Title prefix match (>= 20 chars)
+     * 4. Content overlap (card text contains manifest title, or manifest preview contains card title)
+     */
+    fun findMatchingItem(fingerprint: String, title: String, cardText: String): StreamManifestItem? {
+        // Tier 1: Exact fingerprint
+        findByFingerprint(fingerprint)?.let { return it }
+
+        val cleanTitle = title.trim().lowercase()
+        if (cleanTitle.length >= 8) {
+            // Tier 2: Exact title match
+            _items.firstOrNull { it.title.trim().equals(cleanTitle, ignoreCase = true) }?.let { return it }
+
+            // Tier 3: Substantial prefix match (first 25 characters)
+            val prefix = cleanTitle.take(25)
+            _items.firstOrNull {
+                val itemTitle = it.title.trim().lowercase()
+                itemTitle.startsWith(prefix) || cleanTitle.startsWith(itemTitle.take(25))
+            }?.let { return it }
+        }
+
+        // Tier 4: Body content overlap
+        if (cardText.length > 30) {
+            _items.firstOrNull { item ->
+                val itemTitle = item.title.trim()
+                itemTitle.length >= 15 && cardText.contains(itemTitle, ignoreCase = true)
+            }?.let { return it }
+        }
+
+        return null
+    }
+
+    fun isTargetBounded(targetIndex: Int, visibleIndices: List<Int>): Boolean {
+        if (visibleIndices.isEmpty()) return false
+        val min = visibleIndices.minOrNull() ?: return false
+        val max = visibleIndices.maxOrNull() ?: return false
+        return targetIndex in min..max
+    }
+
+    fun markCompleted(fingerprint: String, attachmentCount: Int = 0) {
         findByFingerprint(fingerprint)?.let {
             it.status = StreamItemStatus.COMPLETED
+            it.attachmentCount = attachmentCount
         }
     }
 

@@ -500,11 +500,12 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   ```kotlin
   data class StreamManifestItem(
       val index: Int,
-      val title: String,
-      val text: String,
       val fingerprint: String,
+      val title: String,
+      val previewText: String,
       var status: StreamItemStatus = StreamItemStatus.PENDING,
-      var attemptCount: Int = 0
+      var attemptCount: Int = 0,
+      var attachmentCount: Int = 0
   )
 
   enum class StreamItemStatus {
@@ -516,8 +517,29 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   }
   ```
   If `db.noticeDao().findByHash(hash) != null` or `visitedPostFingerprints.contains(fingerprint)`, the card is tagged `StreamItemStatus.ALREADY_SYNCED` directly during survey. If new, it is marked `StreamItemStatus.PENDING`.
+
+- **Multi-Factor Card Matching Architecture (`findMatchingItem`):**
+  Stream cards frequently suffer minor text mutations across scrolls due to dynamic comment counts or slight Android text-view recycling variations. `StreamManifest` deploys a 4-tier resilient matching strategy:
+  1. **Tier 1 (Exact SHA-256 Fingerprint):** Calls `findByFingerprint(fingerprint)`. Instant $O(1)$ lookup for unmutated cards.
+  2. **Tier 2 (Exact Normalized Title):** For titles with $\ge 8$ characters, performs a case-insensitive match: `it.title.trim().equals(cleanTitle, ignoreCase = true)`.
+  3. **Tier 3 (25-Character Prefix & Bidirectional Overlap):** Extracts the first 25 characters of the normalized title (`cleanTitle.take(25)`). Evaluates if the manifest item starts with the prefix or vice-versa, cleanly resolving ellipsis-truncated titles on compact screens.
+  4. **Tier 4 (Body Content Substring Overlap):** If `cardText.length > 30`, checks if the card body text contains any known manifest item title where `itemTitle.length >= 15`.
+
+- **Target Boundedness Check (`isTargetBounded`):**
+  A recurring failure mode in list automation is swiping past a target card that is already rendered on screen. `StreamManifest.isTargetBounded()` eliminates this:
+  ```kotlin
+  fun isTargetBounded(targetIndex: Int, visibleIndices: List<Int>): Boolean {
+      if (visibleIndices.isEmpty()) return false
+      val min = visibleIndices.minOrNull() ?: return false
+      val max = visibleIndices.maxOrNull() ?: return false
+      return targetIndex in min..max
+  }
+  ```
+  If the target notice's index is bounded within the visible range `[minVisibleIndex..maxVisibleIndex]`, scrolling is completely inhibited. The crawler immediately executes `findBestCandidateCardOnScreen()` and dispatches a direct tap, preventing overshoot.
+
 - **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
   `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. Preserving `visitedPostFingerprints` across session toggles guarantees that re-running Auto-Capture will immediately tag previously ingested notices as `ALREADY_SYNCED`, establishing full bounds without re-downloading existing media.
+
 - **Survey Completion & Screen-Freeze Bottom Detection:**
   Pass 1 dynamically monitors viewport motion. If 2 consecutive scrolls yield identical visible card sets (the list physically stopped moving at the bottom), or if 3 consecutive scrolls yield 0 new items, Pass 1 concludes immediately with zero sluggish dwell delays. The service records the definitive stream boundaries (`startItemTitle`, `endItemTitle`, and `totalCount`). If `pendingCount == 0`, the stream is already up-to-date and finishes immediately.
 
@@ -538,101 +560,92 @@ In Pass 2, the crawler processes each item sequentially using `manifest.getNextP
   4. Enters detail view (or falls back to direct stream ingestion if plain text notice).
   5. In detail view, if body text is extensive and attachments or the master "Save all files offline" button are below the fold, executes downward kinetic swipes (`performDetailScrollDown`) up to 3 times to scan and harvest all attachments.
   6. Safely returns to the stream, marks the item `StreamItemStatus.COMPLETED`, and increments notice tallies.
-- **Autonomous Auto-Recovery Engine with Movement Progress Awareness:**
-  If the target card is NOT currently visible (due to dynamic list scrolling or layout reflow):
-  1. `getVisibleCardFingerprints()` catalogs all post cards currently displayed on screen and retrieves their assigned manifest indices.
-  2. **Relative Position Arithmetic:**
-     - **Over-Scrolled (Target is Above):** If `minVisibleIndex > targetItem.index`, the viewport has scrolled past the target towards older posts. The engine updates the overlay to `"Recovering Position... Scrolling up"` and dispatches `performScrollBackward()`.
-     - **Under-Scrolled (Target is Below):** If visible indices are before the target, the engine updates overlay to `"Navigating to Post... Seeking post"` and dispatches `performScroll()`.
-  3. **Progress Awareness & Stuck-Screen Timeout:**
-     As long as `minVisibleIndex` is moving closer to `targetItem.index` across scrolls, failure attempts are never incremented. Only if the screen is confirmed stuck for 3+ consecutive scrolls without moving does the recovery attempt increment. After 4 stuck attempts, it is tagged `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs or traps the user in an infinite seek loop.
 
-##### 4. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
-- **Dual Action Click & Physical Touch Tap (`dispatchTap`):** Standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) often fail on custom `RecyclerView` item layouts, compound touch listeners, card wrappers, or OEM skins (Samsung One UI, Xiaomi HyperOS, Oppo ColorOS) that swallow accessibility clicks. To guarantee post opening across all Android devices, the crawler performs a dual-action dispatch:
+- **Fast-Forward Seeking Mode (Zero Redundant Work):**
+  When starting capture on a stream where prior notices were already captured, `nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))` triggers Fast-Forward Seeking:
+  - Updates overlay to:
+    $$\text{Status: "Fast-Forwarding Synced Notices..."}$$
+    $$\text{Detail: "Seeking \#X/Total (Y already synced)"}$$
+  - Rapidly advances down the stream directly to the first pending notice without re-opening already synced cards.
+
+- **Autonomous Auto-Recovery Engine, Micro-Scrolling & Oscillation Breaker:**
+  If the target card is NOT currently visible on screen:
+  1. **Bounded Target Check:** Evaluates `manifest.isTargetBounded(nextItem.index, visibleIndices)`. If the target is within `[minVisibleIndex..maxVisibleIndex]`, swipes are inhibited and the candidate card on screen is inspected directly.
+  2. **Oscillation Breaker:** Maintains a 6-step direction history window (`recentScrollDirections`). If alternating directions $\ge 4$ times (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), oscillation around the target is confirmed. The engine logs an oscillation event, triggers a micro-nudge, and increments the item's attempt counter to prevent infinite ping-pong seek loops.
+  3. **Micro-Scrolling (16% Gentle Nudge):** When target distance $\le 2$ or oscillation is detected (`val useMicroScroll = isOscillating || distance <= 2`), the crawler dispatches `performMicroScroll()` instead of full kinetic swipes:
+     - **Forward Micro-Nudge:** Sweeps from $0.58h$ to $0.42h$ (16% screen height).
+     - **Backward Micro-Nudge:** Sweeps from $0.46h$ to $0.62h$ (16% screen height).
+     - **220ms Duration & Zero Momentum:** Stroke duration of 220ms with zero fling momentum achieves millimeter-level card re-centering without overshooting.
+  4. **Relative Position Arithmetic & Progress Awareness:**
+     - Over-scrolled (`minVisibleIndex > targetItem.index`): Displays `"Recovering Position..."` and executes backward swipe/micro-scroll.
+     - Under-scrolled (`minVisibleIndex <= targetItem.index`): Displays `"Navigating to Post..."` (or `"Fast-Forwarding Synced Notices..."`) and executes forward swipe/micro-scroll.
+     - As long as `minVisibleIndex` moves closer to `targetItem.index`, failure attempts are never incremented. After 4 confirmed stuck attempts (`attempts >= 4`), the item is marked `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs.
+
+##### 4. `NAVIGATING_TO_DETAIL` (Physical Tap, 2,500ms Extended Timeout & Attachment Invariant)
+- **Dual Action Click & Physical Touch Tap (`dispatchTap`):**
   1. Executes `clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)`.
-  2. Dispatches a physical touch tap gesture directly at the safe clamped center of the post card's screen bounds:
+  2. If `!clicked`, dispatches a physical touch tap gesture directly at the safe clamped center of the post card:
      ```kotlin
-     dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
+     dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
      ```
-- **Physical Tap Implementation (`dispatchTap`):** Built on Android's native gesture description framework:
+  - Contact duration: 50ms (`GestureDescription.StrokeDescription(path, 0, 50)`).
+  - Stabilization delay: 120ms.
+
+- **Extended 2,500ms Detail View Window with Center-Tap Retry:**
+  Rather than freezing or failing on slow OEM window animations, `KidsAccessibilityService` uses a multi-stage 2,500ms window:
   ```kotlin
-  private suspend fun dispatchTap(x: Float, y: Float): Boolean {
-      val path = Path().apply {
-          moveTo(x, y)
-      }
-      val stroke = GestureDescription.StrokeDescription(path, 0, 50)
-      val gesture = GestureDescription.Builder().addStroke(stroke).build()
-      var completed = false
-      val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-          override fun onCompleted(gestureDescription: GestureDescription?) {
-              completed = true
-          }
-          override fun onCancelled(gestureDescription: GestureDescription?) {
-              completed = false
-          }
-      }, null)
-      delay(120) // Stabilization delay after touch injection
-      return dispatched && completed
-  }
-  ```
-  - `GestureDescription.StrokeDescription(path, 0, 50)` specifies a precise **50ms contact duration**, simulating a genuine, high-responsiveness finger tap.
-  - A post-tap stabilization delay of **120ms** allows the Android window manager and view hierarchy to dispatch the touch event before subsequent coroutine polling begins.
-- **Fast 800ms Detail View Check & Automatic Stream Card Ingestion Fallback:**
-  Rather than waiting for lengthy 2,500ms timeouts and freezing the crawler when plain text announcements do not navigate to a separate detail screen, `KidsAccessibilityService` performs a rapid **800ms check**:
-  ```kotlin
-  // Wait up to 800ms for Detail View to load
-  val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
+  // Stage 1: Initial 1200ms wait
+  var enteredDetail = waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) {
       val active = rootInActiveWindow ?: return@waitForCondition false
       val isDetail = isPostDetailView(active)
       active.recycle()
       isDetail
   }
 
+  // Stage 2: Physical center-tap retry and 1300ms secondary wait
   if (!enteredDetail) {
-      CrawlerTraceLogger.log("DEEP_CRAWLER", "Stream card did not open detail view (plain text notice). Ingesting directly from stream.")
-      val db = KidsDatabase.getInstance(applicationContext)
-      val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
-      val children = childEntities.map { e ->
-          ChildProfile(e.childId, e.firstName, e.grade, e.academicYear, e.schoolName, e.accountEmail, e.disambiguationTag, e.photoUri, e.channels, e.createdAtMs)
-      }
-      val (_, _, savedChildName) = DriveVaultManager.getSavedVaultPrefs(applicationContext)
-      val router = MultiChildRouter(children)
-      val targetChild = router.route("com.google.android.apps.classroom", title, fullText)
-      val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
-
-      val hash = deduplicationEngine.computeNoticeHash(
-          childId = targetChildId,
-          sourceApp = "com.google.android.apps.classroom",
-          title = title,
-          body = fullText
+      CrawlerTraceLogger.log(
+          "DEEP_CRAWLER",
+          "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical center-tap at (${bounds.centerX()}, ${bounds.centerY()})"
       )
-
-      val existing = db.noticeDao().findByHash(hash)
-      if (existing == null) {
-          val noticeEntity = NoticeEntity(
-              noticeId = UUID.randomUUID().toString(),
-              childId = targetChildId,
-              sourceApp = "com.google.android.apps.classroom",
-              category = classifier.classify(title, fullText).name,
-              title = title,
-              body = fullText,
-              sender = "Google Classroom",
-              timestampMs = System.currentTimeMillis(),
-              hashSha256 = hash,
-              syncStatus = SyncStatus.PENDING.name,
-              driveFileId = null,
-              attachmentCount = 0
-          )
-          db.noticeDao().insert(noticeEntity)
-          crawlerOverlay?.incrementNoticeCount()
-          CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled from stream: \"$title\"")
+      dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+      enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
+          val active = rootInActiveWindow ?: return@waitForCondition false
+          val isDetail = isPostDetailView(active)
+          active.recycle()
+          isDetail
       }
-      visitedPostFingerprints.add(fingerprint)
-      delay(200)
-      continue
   }
   ```
-  - **Zero Frozen Pauses:** When stream announcements lack attachments (e.g. emergency holiday alerts, festive circulars), Google Classroom does not navigate to a separate detail screen. With the 800ms fast verification check, K.I.D.S. ingests the announcement directly into `NoticeEntity`, computes the SHA-256 deduplication hash, routes the notice to the appropriate child profile, updates the overlay notice tally, and immediately proceeds to the next card with zero idle timeouts.
+
+- **The Attachment Invariant (Zero Premature Completion on Study Materials):**
+  If `!enteredDetail` after the full 2,500ms retry window, `KidsAccessibilityService` enforces the strict **Attachment Invariant**:
+  ```kotlin
+  val isLikelyMaterial = title.contains("material", ignoreCase = true) ||
+          title.contains("worksheet", ignoreCase = true) ||
+          title.contains("notes", ignoreCase = true) ||
+          title.contains("answer key", ignoreCase = true) ||
+          title.contains("answerkey", ignoreCase = true)
+
+  if (isLikelyMaterial) {
+      CrawlerTraceLogger.log(
+          "DEEP_CRAWLER",
+          "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retaining PENDING status."
+      )
+      ingestNoticeDirect(title, fullText, fingerprint)
+      manifest.incrementAttempt(fingerprint)
+  } else {
+      CrawlerTraceLogger.log(
+          "DEEP_CRAWLER",
+          "Card did not open detail. Ingesting directly from stream: \"$title\""
+      )
+      ingestNoticeDirect(title, fullText, fingerprint)
+      manifest.markCompleted(fingerprint)
+      visitedPostFingerprints.add(fingerprint)
+      crawlerOverlay?.incrementNoticeCount()
+  }
+  ```
+  **Guarantee:** Notices matching educational materials, worksheets, and answer keys are **never marked `COMPLETED` from stream preview without verifying attachments**. The notice text is saved to avoid data loss, but the item remains `PENDING` in `StreamManifest` and its attempt count is incremented for subsequent re-inspection. Only plain text announcements without materials are marked completed from the stream.
 
 ##### 3. `IN_DETAIL_VIEW` (Title Sanitization, Full Text Harvesting & Autonomous Attachment Capture)
 - **Soft Keyboard Dismissal:** Classroom frequently focuses the `"Add class comment"` input field upon entering detail view, popping up the software keyboard and occluding attachment buttons. `clearFocusIfInputFocused(detailRoot)` scans for `EditText` views and dispatches `ACTION_CLEAR_FOCUS`.
@@ -1065,10 +1078,44 @@ class FloatingCrawlerOverlay(...) {
 
       dispatchKineticSwipe(startX, startY, startX, endY, isForward = false, onComplete)
   }
+
+  fun performMicroScroll(forward: Boolean, onComplete: () -> Unit) {
+      handler.post {
+          performMicroScrollGesture(forward, onComplete)
+      }
+  }
+
+  private fun performMicroScrollGesture(forward: Boolean, onComplete: () -> Unit) {
+      val displayMetrics = service.resources.displayMetrics
+      val width = displayMetrics.widthPixels
+      val height = displayMetrics.heightPixels
+
+      val startX = width * 0.65f
+      val (startY, endY) = if (forward) {
+          Pair(height * 0.58f, height * 0.42f)
+      } else {
+          Pair(height * 0.46f, height * 0.62f)
+      }
+
+      val path = Path().apply {
+          moveTo(startX, startY)
+          lineTo(startX, endY)
+      }
+
+      val stroke = GestureDescription.StrokeDescription(path, 0, 220)
+      val gesture = GestureDescription.Builder().addStroke(stroke).build()
+      service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+          override fun onCompleted(gestureDescription: GestureDescription?) { onComplete() }
+          override fun onCancelled(gestureDescription: GestureDescription?) { onComplete() }
+      }, null)
+  }
   ```
   - **Kinetic Fling Mechanics (Forward & Backward):**
     - *Forward Scroll (Pass 1 Survey & Pass 2 Advance):* Moves from $(0.65w, 0.75h)$ to $(0.65w, 0.20h)$ in 400ms, triggering pagination for older announcements.
     - *Backward Scroll (Pass 1.5 Rewind & Displacement Recovery):* Moves from $(0.65w, 0.25h)$ to $(0.65w, 0.75h)$ in 400ms, smoothly scrolling back toward earlier notices.
+  - **Micro-Scroll Mechanics (16% Screen Height Gentle Nudge):**
+    - Dispatches a 16% screen height swipe ($0.58h \rightarrow 0.42h$ forward or $0.46h \rightarrow 0.62h$ backward) over 220ms.
+    - Imparts zero kinetic momentum, preventing fling overshoot when fine-tuning card alignment or breaking direction oscillation.
   - **Placement Invariant (65% Screen Width):** Swiping along $x = 0.65w$ avoids Android 10+ edge back gestures (active on the outer 10-15% display bounds) and keeps the gesture clear of the left-anchored floating assistant overlay.
   - **Graceful Native Fallback:** If gesture dispatch is cancelled or fails, `fallbackNativeScroll(isForward)` executes `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scrollable node, ensuring scrolling never halts.
 
@@ -1523,6 +1570,53 @@ During execution, `DriveSyncWorker` uses cached folder identifiers (`rootKidsFol
 - **Immediately calls `bitmap.recycle()`** and closes the page before advancing to the next page.
 - Aggregates text with page delimitation headers (`[--- Page X of Y ---]`) for LLM context grounding.
 
+#### Embedded Attachment Arrays & Direct Google Drive Web Links in `notices.jsonl`
+To support AI agents (Gemini, MCP servers) and automated parent tools, `DriveSyncWorker` embeds the complete relational `attachments` array directly into each notice record in `notices.jsonl`.
+
+##### Upload Sequencing & Relational Linking:
+1. **Step 2 (Attachments First):** `DriveSyncWorker` triggers `DownloadFolderObserver.scanLocalAttachments()` and iterates all pending attachments *before* processing notices.
+2. **Drive REST Upload & ID Assignment:** Each physical attachment file is uploaded to the appropriate Drive vault directory (`Google Classroom/attachments/` or root `attachments/`), returning a permanent Google Drive file ID (`driveFileId`).
+3. **Step 3 (Notice NDJSON Generation):** When serializing notices to line-delimited JSON (`notices.jsonl`), `DriveSyncWorker` groups attachments by notice (`allAttachmentsByNotice = db.attachmentDao().getAllAttachmentsDirect().groupBy { it.noticeId }`) and constructs a rich nested JSON object:
+
+```kotlin
+val batchJsonl = notices.joinToString("\n") { notice ->
+    val noticeAtts = allAttachmentsByNotice[notice.noticeId] ?: emptyList()
+    buildJsonObject {
+        put("noticeId", notice.noticeId)
+        put("childId", notice.childId)
+        put("timestampMs", notice.timestampMs)
+        put("sourceApp", notice.sourceApp)
+        put("category", notice.category)
+        put("title", notice.title)
+        put("body", notice.body)
+        put("sender", notice.sender)
+        put("hashSha256", notice.hashSha256)
+        put("attachmentCount", noticeAtts.size)
+        put("attachments", buildJsonArray {
+            for (att in noticeAtts) {
+                add(buildJsonObject {
+                    put("attachmentId", att.attachmentId)
+                    put("fileName", att.fileName)
+                    put("mimeType", att.mimeType)
+                    put("sizeBytes", att.sizeBytes)
+                    put("driveFileId", att.driveFileId ?: "")
+                    if (!att.driveFileId.isNullOrBlank() && !att.driveFileId.startsWith("virtual_")) {
+                        put("driveUrl", "https://drive.google.com/file/d/${att.driveFileId}/view")
+                    }
+                    if (!att.ocrText.isNullOrBlank()) {
+                        put("ocrSummary", att.ocrText.take(120))
+                    }
+                })
+            }
+        })
+    }.toString()
+}
+```
+
+##### Architectural Benefits:
+- **Instant Cloud Document Access:** External AI tools reading `notices.jsonl` receive the authentic Google Drive web URL (`https://drive.google.com/file/d/{driveFileId}/view`) for each worksheet and PDF circular without executing secondary Drive API queries.
+- **Embedded OCR Excerpts:** The first 120 characters of offline OCR text (`ocrSummary`) are embedded inline, enabling fast semantic matching and prompt grounding without downloading full files.
+
 #### Self-Healing Drive Vault Synthesis
 On every synchronization run, `DriveSyncWorker`:
 1. Gathers all notices and attachments from Room.
@@ -1554,6 +1648,49 @@ On every synchronization run, `DriveSyncWorker`:
 2. **`MASTER_DIGEST.md`:** Markdown document grouped into Homework, Circulars, Fees, and searchable OCR text excerpts.
 3. **`FAMILY_DIGEST.md`:** High-level summary across all enrolled children in the academic year.
 4. **`graph.html`:** Standalone HTML file embedding the graph JSON and loading D3.js v7 to render an interactive force-directed graph with drag, zoom, and node inspection.
+
+---
+
+### 7. `CrawlerTraceLogger`: Continuous Diagnostic Telemetry & Milestone Streaming
+
+`CrawlerTraceLogger` (`com.kids.collector.service.CrawlerTraceLogger`) is a high-fidelity, un-truncated diagnostic observability engine specifically built for the accessibility crawler and synchronization pipelines.
+
+```mermaid
+flowchart LR
+    EVENT["Crawler Milestone / Scroller Event"] --> CTL["CrawlerTraceLogger.log(category, message)"]
+    CTL --> LOGCAT["Android Logcat (TAG: CrawlerTraceLogger)"]
+    CTL --> MEM["High-Capacity Memory Buffer<br/>(ConcurrentLinkedQueue, up to 5,000 lines)"]
+    CTL --> DISK["Synchronous File Streaming<br/>(context.filesDir/logs/crawler_trace.log)"]
+    MEM --> DSW["DriveSyncWorker.doWork() -> drainPendingLogs()"]
+    DSW --> DRIVE["Google Drive Vault<br/>_system/logs/crawler_trace.log"]
+```
+
+#### Architecture Upgrade (5,000-Line Buffer + Synchronous Disk Streaming)
+Previous implementations relied on a small 200-line memory-capped queue that frequently truncated earlier survey passes during long crawls. `CrawlerTraceLogger` introduces a robust dual-tier architecture:
+1. **High-Capacity In-Memory Buffer (5,000 Lines):** Uses a `ConcurrentLinkedQueue<String>` capped at 5,000 lines (`while (memoryQueue.size > 5000) memoryQueue.poll()`). This guarantees that extensive multi-month classroom surveys retain all boundary landmarks and post fingerprints in memory until uploaded.
+2. **Immediate Synchronous Disk Streaming:** Every logged event is immediately written to persistent local storage on device flash memory (`context.filesDir/logs/crawler_trace.log`) within a thread-safe `synchronized(fileLock)` block using `PrintWriter(FileWriter(traceFile, true))`.
+3. **Crash & Restart Resilience:** Even if the Android OS terminates the accessibility service or the phone runs out of battery mid-crawl, the complete event history up to the exact millisecond of interruption is preserved on disk and accessible via `getFullLocalLog(context)`.
+
+#### Structured Milestone Event Methods
+To ensure uniform, structured telemetry that can be parsed by automated diagnostic agents, `CrawlerTraceLogger` provides explicit typed milestone logging methods:
+
+| Method Signature | Category | Log Payload & Semantic Purpose |
+| :--- | :--- | :--- |
+| `logSurveyStart(topNoticeTitle)` | `SURVEY_START` | Records Pass 1 survey initiation with the uppermost notice title landmark. |
+| `logSurveyCard(index, total, title, fingerprint, isAlreadyCaptured)` | `SURVEY_CARD` | Discovered card cataloging with index, title, SHA-256 fingerprint, and initial status (`ALREADY_SYNCED` vs `PENDING`). |
+| `logSurveyEnd(totalDiscovered, bottomTitle, durationMs)` | `SURVEY_END` | Pass 1 survey completion with total count, oldest bottom title, and total survey duration in milliseconds. |
+| `logRewindStart(totalCount)` | `REWIND_START` | Records Pass 1.5 rewind initiation from the bottom of the feed with pending distance count. |
+| `logRewindComplete(swipesCount, durationMs)` | `REWIND_COMPLETE` | Pass 1.5 rewind completion with the exact number of downward swipes and total rewind duration. |
+| `logPostOpen(index, total, title, latencyMs, enteredDetail)` | `POST_OPEN` | Records post card tap dispatch, transition latency (ms), and whether post detail screen opened. |
+| `logAttachmentDetected(noticeTitle, fileName, hasSaveAllOffline)` | `ATTACHMENT_DETECTED` | Logs detected attachment filename and availability of master offline download button. |
+| `logAttachmentDownloaded(fileName, bytesOnDisk)` | `ATTACHMENT_DOWNLOADED` | Logs verified physical attachment file on disk with exact byte length. |
+| `logPostCompleted(index, total, title, attachmentsSaved)` | `POST_COMPLETED` | Marks notice completion in manifest with the count of physically staged and verified attachments. |
+
+#### Cloud Synchronization & Drain Lifecycle
+During each `DriveSyncWorker` cycle:
+1. `CrawlerTraceLogger.drainPendingLogs()` atomically drains and clears pending lines from the in-memory buffer.
+2. The lines are formatted and appended directly to `_system/logs/crawler_trace.log` in the child's Google Drive Vault using `driveClient.appendCrawlerTraceLog()`.
+3. Telemetry flows seamlessly from memory to local disk to cloud without data loss or duplicate line bloat.
 
 ---
 

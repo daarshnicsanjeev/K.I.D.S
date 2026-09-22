@@ -10,6 +10,8 @@ import com.kids.collector.domain.model.SyncStatus
 import com.kids.collector.telemetry.DriveDeepLogger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.File
@@ -80,173 +82,212 @@ class DriveSyncWorker(
             } catch (_: Exception) {
             }
 
-            // 1. Flush crawler deep trace logs to _system/logs/crawler_trace.log
-            if (pendingLogs.isNotEmpty()) {
-                driveClient.appendCrawlerTraceLog(vault.logsFolderId, pendingLogs)
-                CrawlerTraceLogger.appendToLocalFile(applicationContext, pendingLogs)
+            // 1. Provision Classroom channel vault if needed
+            var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
+            val hasClassroomNotices = pendingNotices.any { it.sourceApp.contains("classroom", ignoreCase = true) }
+            if (hasClassroomNotices) {
+                classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
             }
 
-                // 2. Batch upload pending notices to Google Drive
-                var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
+            // 2. Scan local storage and upload pending attachments FIRST so driveFileIds exist
+            try {
+                com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+            } catch (e: Exception) {
+                Log.w(TAG, "Error scanning local downloads: ${e.message}")
+            }
 
-                if (pendingNotices.isNotEmpty()) {
-                    val classroomNotices = pendingNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
-                    val otherNotices = pendingNotices.filter { !it.sourceApp.contains("classroom", ignoreCase = true) }
+            val refreshedPendingAttachments = db.attachmentDao().getPendingAttachments()
+            if (refreshedPendingAttachments.isNotEmpty()) {
+                var physicalUploadCount = 0
+                var virtualCount = 0
+                val ocrParser = com.kids.collector.data.ocr.MLKitOcrParser(applicationContext)
 
-                    if (classroomNotices.isNotEmpty()) {
-                        classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
-                        val batchClassroomJsonl = classroomNotices.joinToString("\n") { notice ->
-                            buildJsonObject {
-                                put("noticeId", notice.noticeId)
-                                put("childId", notice.childId)
-                                put("timestampMs", notice.timestampMs)
-                                put("sourceApp", notice.sourceApp)
-                                put("category", notice.category)
-                                put("title", notice.title)
-                                put("body", notice.body)
-                                put("sender", notice.sender)
-                                put("hashSha256", notice.hashSha256)
-                            }.toString()
-                        }
+                for (att in refreshedPendingAttachments) {
+                    val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
+                    val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
 
-                        val uploadedFileId = driveClient.appendNoticeToChannelJsonl(classroomVault.channelFolderId, batchClassroomJsonl)
-                        driveClient.appendNoticeToJsonl(vault.childFolderId, batchClassroomJsonl)
+                    if (localFile != null && localFile.exists()) {
+                        if (att.ocrText.isNullOrBlank()) {
+                            try {
+                                val ocrResult = if (att.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
+                                    ocrParser.extractTextFromPdfFile(localFile)
+                                } else if (att.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
+                                    ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
+                                } else null
 
-                        driveClient.appendTimelineLog(
-                            vault.logsFolderId,
-                            "[CLASSROOM BATCH SYNC] Synced ${classroomNotices.size} notices into Google Classroom/ folder"
-                        )
-
-                        for (notice in classroomNotices) {
-                            db.noticeDao().updateSyncStatus(
-                                noticeId = notice.noticeId,
-                                newStatus = SyncStatus.SYNCED.name,
-                                driveFileId = uploadedFileId
-                            )
-                        }
-                    }
-
-                    if (otherNotices.isNotEmpty()) {
-                        val batchOtherJsonl = otherNotices.joinToString("\n") { notice ->
-                            buildJsonObject {
-                                put("noticeId", notice.noticeId)
-                                put("childId", notice.childId)
-                                put("timestampMs", notice.timestampMs)
-                                put("sourceApp", notice.sourceApp)
-                                put("category", notice.category)
-                                put("title", notice.title)
-                                put("body", notice.body)
-                                put("sender", notice.sender)
-                                put("hashSha256", notice.hashSha256)
-                            }.toString()
-                        }
-
-                        val uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, batchOtherJsonl)
-                        driveClient.appendTimelineLog(
-                            vault.logsFolderId,
-                            "[NOTICE BATCH SYNC] Synced ${otherNotices.size} notices"
-                        )
-
-                        for (notice in otherNotices) {
-                            db.noticeDao().updateSyncStatus(
-                                noticeId = notice.noticeId,
-                                newStatus = SyncStatus.SYNCED.name,
-                                driveFileId = uploadedFileId
-                            )
-                        }
-                    }
-                }
-
-                // 3. Scan local download directories and upload pending attachments
-                try {
-                    com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Error scanning local downloads: ${e.message}")
-                }
-
-                val refreshedPendingAttachments = db.attachmentDao().getPendingAttachments()
-                if (refreshedPendingAttachments.isNotEmpty()) {
-                    var physicalUploadCount = 0
-                    var virtualCount = 0
-                    val ocrParser = com.kids.collector.data.ocr.MLKitOcrParser(applicationContext)
-
-                    for (att in refreshedPendingAttachments) {
-                        val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
-                        val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
-
-                        if (localFile != null && localFile.exists()) {
-                            // Run on-device ML Kit OCR for AI knowledge graph if missing
-                            if (att.ocrText.isNullOrBlank()) {
-                                try {
-                                    val ocrResult = if (att.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
-                                        ocrParser.extractTextFromPdfFile(localFile)
-                                    } else if (att.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
-                                        ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
-                                    } else null
-
-                                    if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
-                                        db.attachmentDao().updateOcrText(
-                                            attachmentId = att.attachmentId,
-                                            ocrText = ocrResult.fullText,
-                                            pageCount = ocrResult.pageCount
-                                        )
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "OCR extraction skipped for ${localFile.name}: ${e.message}")
+                                if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
+                                    db.attachmentDao().updateOcrText(
+                                        attachmentId = att.attachmentId,
+                                        ocrText = ocrResult.fullText,
+                                        pageCount = ocrResult.pageCount
+                                    )
                                 }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "OCR extraction skipped for ${localFile.name}: ${e.message}")
                             }
+                        }
 
-                            val uploadedAttId = driveClient.uploadAttachment(
-                                parentFolderId = targetFolderId,
-                                file = localFile,
-                                mimeType = att.mimeType
-                            )
+                        val uploadedAttId = driveClient.uploadAttachment(
+                            parentFolderId = targetFolderId,
+                            file = localFile,
+                            mimeType = att.mimeType
+                        )
 
+                        db.attachmentDao().updateSyncStatus(
+                            attachmentId = att.attachmentId,
+                            newStatus = SyncStatus.SYNCED.name,
+                            driveFileId = uploadedAttId
+                        )
+                        physicalUploadCount++
+
+                        val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
+                        if (localFile.parentFile == stagingDir) {
+                            try {
+                                if (localFile.delete()) {
+                                    CrawlerTraceLogger.log("STAGING_CLEANUP", "Uploaded \"${localFile.name}\" to Drive and cleared staging copy.")
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Could not clean staging file: ${e.message}")
+                            }
+                        }
+                    } else {
+                        val parentNotice = db.noticeDao().findById(att.noticeId)
+                        val isRecent = parentNotice != null && (System.currentTimeMillis() - parentNotice.timestampMs < 180_000L)
+                        if (!isRecent) {
                             db.attachmentDao().updateSyncStatus(
                                 attachmentId = att.attachmentId,
                                 newStatus = SyncStatus.SYNCED.name,
-                                driveFileId = uploadedAttId
+                                driveFileId = "virtual_${att.attachmentId.take(8)}"
                             )
-                            physicalUploadCount++
-
-                            // Clear private staging file now that it is safely uploaded to Google Drive
-                            val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
-                            if (localFile.parentFile == stagingDir) {
-                                try {
-                                    if (localFile.delete()) {
-                                        CrawlerTraceLogger.log("STAGING_CLEANUP", "Uploaded \"${localFile.name}\" to Drive and cleared staging copy.")
-                                    }
-                                } catch (e: Exception) {
-                                    Log.w(TAG, "Could not clean staging file: ${e.message}")
-                                }
-                            }
-                        } else {
-                            // If local file is not on disk yet, check if notice was captured recently (< 3 min)
-                            val parentNotice = db.noticeDao().findById(att.noticeId)
-                            val isRecent = parentNotice != null && (System.currentTimeMillis() - parentNotice.timestampMs < 180_000L)
-                            if (!isRecent) {
-                                db.attachmentDao().updateSyncStatus(
-                                    attachmentId = att.attachmentId,
-                                    newStatus = SyncStatus.SYNCED.name,
-                                    driveFileId = "virtual_${att.attachmentId.take(8)}"
-                                )
-                                virtualCount++
-                            }
+                            virtualCount++
                         }
                     }
+                }
 
-                    val targetPrefix = if (classroomVault != null) "Google Classroom/attachments/" else "attachments/"
-                    val logMessage = if (physicalUploadCount > 0) {
-                        "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix (plus $virtualCount indexed references)"
-                    } else {
-                        "[ATTACHMENT BATCH SYNC] Indexed $virtualCount attachment references in digest (0 physical files on disk yet)"
+                val targetPrefix = if (classroomVault != null) "Google Classroom/attachments/" else "attachments/"
+                val logMessage = if (physicalUploadCount > 0) {
+                    "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix (plus $virtualCount indexed references)"
+                } else {
+                    "[ATTACHMENT BATCH SYNC] Indexed $virtualCount attachment references in digest (0 physical files on disk yet)"
+                }
+
+                driveClient.appendTimelineLog(vault.logsFolderId, logMessage)
+            }
+
+            // 3. Batch upload pending notices to Google Drive with EMBEDDED ATTACHMENTS
+            if (pendingNotices.isNotEmpty()) {
+                val allAttachmentsByNotice = db.attachmentDao().getAllAttachmentsDirect().groupBy { it.noticeId }
+                val classroomNotices = pendingNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
+                val otherNotices = pendingNotices.filter { !it.sourceApp.contains("classroom", ignoreCase = true) }
+
+                if (classroomNotices.isNotEmpty()) {
+                    val actualClassroomVault = classroomVault ?: driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                    val batchClassroomJsonl = classroomNotices.joinToString("\n") { notice ->
+                        val noticeAtts = allAttachmentsByNotice[notice.noticeId] ?: emptyList()
+                        buildJsonObject {
+                            put("noticeId", notice.noticeId)
+                            put("childId", notice.childId)
+                            put("timestampMs", notice.timestampMs)
+                            put("sourceApp", notice.sourceApp)
+                            put("category", notice.category)
+                            put("title", notice.title)
+                            put("body", notice.body)
+                            put("sender", notice.sender)
+                            put("hashSha256", notice.hashSha256)
+                            put("attachmentCount", noticeAtts.size)
+                            put("attachments", buildJsonArray {
+                                for (att in noticeAtts) {
+                                    add(buildJsonObject {
+                                        put("attachmentId", att.attachmentId)
+                                        put("fileName", att.fileName)
+                                        put("mimeType", att.mimeType)
+                                        put("sizeBytes", att.sizeBytes)
+                                        put("driveFileId", att.driveFileId ?: "")
+                                        if (!att.driveFileId.isNullOrBlank() && !att.driveFileId.startsWith("virtual_")) {
+                                            put("driveUrl", "https://drive.google.com/file/d/${att.driveFileId}/view")
+                                        }
+                                        if (!att.ocrText.isNullOrBlank()) {
+                                            put("ocrSummary", att.ocrText.take(120))
+                                        }
+                                    })
+                                }
+                            })
+                        }.toString()
                     }
+
+                    val uploadedFileId = driveClient.appendNoticeToChannelJsonl(actualClassroomVault.channelFolderId, batchClassroomJsonl)
+                    driveClient.appendNoticeToJsonl(vault.childFolderId, batchClassroomJsonl)
 
                     driveClient.appendTimelineLog(
                         vault.logsFolderId,
-                        logMessage
+                        "[CLASSROOM BATCH SYNC] Synced ${classroomNotices.size} notices into Google Classroom/ folder"
                     )
+
+                    for (notice in classroomNotices) {
+                        db.noticeDao().updateSyncStatus(
+                            noticeId = notice.noticeId,
+                            newStatus = SyncStatus.SYNCED.name,
+                            driveFileId = uploadedFileId
+                        )
+                    }
                 }
+
+                if (otherNotices.isNotEmpty()) {
+                    val batchOtherJsonl = otherNotices.joinToString("\n") { notice ->
+                        val noticeAtts = allAttachmentsByNotice[notice.noticeId] ?: emptyList()
+                        buildJsonObject {
+                            put("noticeId", notice.noticeId)
+                            put("childId", notice.childId)
+                            put("timestampMs", notice.timestampMs)
+                            put("sourceApp", notice.sourceApp)
+                            put("category", notice.category)
+                            put("title", notice.title)
+                            put("body", notice.body)
+                            put("sender", notice.sender)
+                            put("hashSha256", notice.hashSha256)
+                            put("attachmentCount", noticeAtts.size)
+                            put("attachments", buildJsonArray {
+                                for (att in noticeAtts) {
+                                    add(buildJsonObject {
+                                        put("attachmentId", att.attachmentId)
+                                        put("fileName", att.fileName)
+                                        put("mimeType", att.mimeType)
+                                        put("sizeBytes", att.sizeBytes)
+                                        put("driveFileId", att.driveFileId ?: "")
+                                        if (!att.driveFileId.isNullOrBlank() && !att.driveFileId.startsWith("virtual_")) {
+                                            put("driveUrl", "https://drive.google.com/file/d/${att.driveFileId}/view")
+                                        }
+                                    })
+                                }
+                            })
+                        }.toString()
+                    }
+
+                    val uploadedFileId = driveClient.appendNoticeToJsonl(vault.childFolderId, batchOtherJsonl)
+                    driveClient.appendTimelineLog(
+                        vault.logsFolderId,
+                        "[NOTICE BATCH SYNC] Synced ${otherNotices.size} notices"
+                    )
+
+                    for (notice in otherNotices) {
+                        db.noticeDao().updateSyncStatus(
+                            noticeId = notice.noticeId,
+                            newStatus = SyncStatus.SYNCED.name,
+                            driveFileId = uploadedFileId
+                        )
+                    }
+                }
+            }
+
+            // 4. Flush deep crawler trace logs (memory + persistent disk) to Google Drive
+            val logsToUpload = if (pendingLogs.isNotEmpty()) {
+                pendingLogs
+            } else {
+                CrawlerTraceLogger.getFullLocalLog(applicationContext)
+            }
+            if (logsToUpload.isNotEmpty()) {
+                driveClient.appendCrawlerTraceLog(vault.logsFolderId, logsToUpload)
+            }
 
                 // 4. Synthesize and update Knowledge Graph, Master Digest, Family Digest, and graph.html
                 try {

@@ -608,6 +608,54 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun performMicroScroll(forward: Boolean, onComplete: () -> Unit) {
+        handler.post {
+            performMicroScrollGesture(forward, onComplete)
+        }
+    }
+
+    private fun performMicroScrollGesture(forward: Boolean, onComplete: () -> Unit) {
+        val displayMetrics = service.resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
+
+        val startX = width * 0.65f
+        val (startY, endY) = if (forward) {
+            Pair(height * 0.58f, height * 0.42f)
+        } else {
+            Pair(height * 0.46f, height * 0.62f)
+        }
+
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching micro-nudge (${if (forward) "FORWARD" else "BACKWARD"}): ($startX, $startY) -> ($startX, $endY)"
+        )
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val stroke = GestureDescription.StrokeDescription(path, 0, 220)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Micro-nudge COMPLETED")
+                onComplete()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Micro-nudge CANCELLED")
+                onComplete()
+            }
+        }, null)
+
+        if (!dispatched) {
+            onComplete()
+        }
+    }
+
     private fun fallbackNativeScrollBackward() {
         try {
             val rootNode = service.rootInActiveWindow ?: return

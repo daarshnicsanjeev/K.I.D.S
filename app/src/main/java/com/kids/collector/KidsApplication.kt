@@ -10,6 +10,7 @@ class KidsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         Log.i(TAG, "Initializing K.I.D.S. (Zero-Backend Privacy Engine)")
+        com.kids.collector.service.CrawlerTraceLogger.init(this)
 
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->

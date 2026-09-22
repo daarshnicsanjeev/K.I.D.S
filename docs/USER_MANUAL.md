@@ -60,7 +60,7 @@ As parents, keeping up with school communications is exhausting. Homework assign
    - [Exploring the Interactive Knowledge Graph (`graph.html`)](#exploring-the-interactive-knowledge-graph-graphhtml)
    - [Connecting AI Agents (Google Gemini & MCP Servers)](#connecting-ai-agents-google-gemini--mcp-servers)
 7. [Troubleshooting & Diagnostic Logs](#7-troubleshooting--diagnostic-logs)
-   - [Reading Diagnostic Logs on Google Drive](#reading-diagnostic-logs-on-google-drive)
+   - [Reading Diagnostic Logs & Telemetry Transparency](#reading-diagnostic-logs--telemetry-transparency)
    - [Xiaomi / MIUI / HyperOS Specific Setup](#xiaomi--miui--hyperos-specific-setup)
    - [Google Drive Authorization & SHA-1 Registration](#google-drive-authorization--sha-1-registration)
    - [Frequently Asked Questions (FAQ)](#frequently-asked-questions-faq)
@@ -382,6 +382,7 @@ The floating assistant features an informative **live 2-line status pill**:
   - `Surveying (X found)...` — **Pass 1 (Pre-Flight Survey):** Swiping swiftly down the stream, compiling the inventory manifest without opening cards.
   - `Returning to Start...` — **Pass 1.5 (Rewind):** Automatically rewinding the stream back to the top notice.
   - `Capturing (X/Total - Y%)...` — **Pass 2 (Deep Ingestion):** Methodically processing notice $X$ of Total with live percentage completion.
+  - `Fast-Forwarding Synced Notices...` — **Fast-Forward Seeking:** When the parent starts auto-capture on a stream that already has previously-synced notices, displays `"Seeking #X/total (Y already synced)"`, swiftly and safely navigating down to where new notices begin without duplicating work.
   - `Recovering Position...` — **Auto-Recovery:** Scrolling upward after detecting that the viewport was displaced below the target post.
   - `Navigating to Post...` — **Auto-Recovery:** Scrolling downward seeking an upcoming target post in the manifest.
   - `Reading Detail (X/Total)...` — Extracting announcement body, author, timestamp, and attachment metadata.
@@ -519,6 +520,14 @@ If the target post is not immediately visible on screen after returning from det
   $$\text{progressPercent} = \frac{\text{completedCount} + \text{alreadySyncedCount}}{\text{totalCount}} \times 100$$
   giving parents a truthful, accurate view of total vault synchronization.
 
+#### 4. Fast-Forward Seeking Mode (Zero Redundant Work)
+When you start Auto-Capture on a classroom stream where recent notices were already synchronized during prior sessions or captured via background notification listening, K.I.D.S. avoids repetitive processing:
+- **Intelligent Skip Detection:** The crawler recognizes that early notices are already safely stored in your vault (`manifest.completedCount >= (nextItem.index - 1)`).
+- **Live Status Feedback:** Rather than showing standard step-by-step processing or redundantly re-opening cards, the floating assistant dynamically switches into **Fast-Forward Seeking Mode**, displaying:
+  $$\text{Fast-Forwarding Synced Notices...}$$
+  $$\text{Seeking \#X/total (Y already synced)}$$
+- **Swift & Safe Traversal:** The assistant swiftly and safely navigates down through the already-synced notices until it reaches the exact point where new, un-synced notices begin, ensuring zero duplicate work, zero wasted battery, and zero redundant file downloads!
+
 ---
 
 ### Deep Post Traversal & Autonomous File Downloads
@@ -534,9 +543,17 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      - **Viewport Traversal Filter:** `findNextUnvisitedPost()` checks candidate card nodes and immediately ignores any comment header chips, comment count rows, and comment input fields matching `^\d+\s+class\s+comments?.*`. Comment widgets are never mistaken for announcements and never stall scrolling.
      - **Dynamic Counter Stripping in Fingerprinting:** Before calculating the SHA-256 card fingerprint in `computeCardFingerprint()`, K.I.D.S. strips all regex comment matches (`\b\d+\s+class\s+comments?.*`) and filters out lines containing `"class comments for"`. This ensures that when other parents or students post new comments to an announcement later, the underlying announcement fingerprint remains strictly identical, preventing duplicate notices from ever being generated.
    - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
-2. **Deep Post Entry & Stream Announcement Handling (Fast 800ms Check & Fallback):**
+2. **Deep Post Entry & The Attachment Guarantee:**
    - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the clamped post card screen coordinates (`cardBounds.centerX(), safeCenterY`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
-   - **Stream Announcement Handling (Zero-Delay Direct Ingestion):** Many school announcements in the Stream tab—such as holiday notices, weather advisories, festival celebrations, and administrative alerts—are plain-text circulars without attachments. For these notices, Google Classroom already displays the complete message on the stream feed, and tapping the card does not open a separate detail page. Rather than freezing or stalling across lengthy timeouts, K.I.D.S. performs a rapid **800ms detail view check**. If a separate detail screen does not open within 800ms, the crawler immediately falls back to **direct stream card ingestion**: the full notice body, title, sender, and timestamp are captured directly into the local database (`NoticeEntity`), the notice counter increments, and the assistant proceeds immediately to the next card with zero frozen delays or timeouts!
+   - **Extended 2,500ms Detail View Window with Physical Center-Tap Retry:** When opening a post card, K.I.D.S. observes screen transitions with an extended 2,500ms multi-stage window:
+     1. Waits up to 1,200ms for the detail screen to initialize.
+     2. If sluggish view loading or an OEM touch debounce delays opening, K.I.D.S. immediately dispatches an automated center-tap retry directly on the card coordinates.
+     3. A secondary 1,300ms verification window confirms entry into the post detail.
+   - **The Attachment Guarantee (Zero Premature Skips on Educational Materials):**
+     Notice cards containing educational materials, study guides, worksheets, and answer keys (detected by keywords: `material`, `worksheet`, `notes`, `answer key`, `answerkey`) are **never prematurely skipped or marked complete from shallow previews**.
+     Even if an initial tap fails to transition immediately, K.I.D.S. strictly refuses to mark such notices as `COMPLETED` from the stream view. Instead, it preserves their `PENDING` status in the manifest, increments the attempt count, re-anchors the card, opens the notice detail view, verifies all attachments, and downloads every single file before marking the notice complete.
+   - **Stream Announcement Handling (Fast Fallback for Plain-Text Alerts):**
+     Many school announcements in the Stream tab—such as urgent holiday alerts, weather advisories, festival greetings, and administrative notices—are purely text-based without any attachments. For these notices, tapping does not open a separate screen. Only after the detail timeout confirms the card has no detail view and is not a study material post, K.I.D.S. safely falls back to **direct stream card ingestion**: capturing the full message body, title, author, and timestamp into local storage (`NoticeEntity`), updating the counter, and proceeding smoothly to the next notice.
 3. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 4. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
    - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous.
@@ -699,15 +716,33 @@ Because K.I.D.S. stores your data in AI-native formats (`notices.jsonl` and `MAS
 
 ## 7. Troubleshooting & Diagnostic Logs
 
-### Reading Diagnostic Logs on Google Drive
-If you ever wonder why a notice was or wasn't captured, check the `_system/logs/` folder in your child's Google Drive vault:
-1. **`crawler_trace.log`:** A granular, millisecond-by-millisecond execution trace of the crawler assistant. Look for lines like:
-   - `[SCROLLER_CARDS] Identified 5 discrete post cards on active screen`
-   - `[ATTACHMENT_AUTO_TAP] Autonomously tapping attachment chip: "Math_Unit_3.pdf"`
-   - `[DOWNLOAD_MOVE] Moved "Math_Unit_3.pdf" out of public Downloads into private vault staging`
-2. **`sync_timeline.log`:** A chronological record of every Google Drive upload cycle:
-   - `[NOTICE BATCH SYNC] Synced 4 notices`
-   - `[ATTACHMENT BATCH SYNC] Uploaded 2 physical files to attachments/`
+### Reading Diagnostic Logs & Telemetry Transparency
+K.I.D.S. is engineered with **total diagnostic observability**. The app maintains a continuous, un-truncated diagnostic log stream written synchronously to local persistent storage on device flash memory (`context.filesDir/logs/crawler_trace.log`) and synchronized directly into your Google Drive vault under `_system/logs/crawler_trace.log`.
+
+Unlike standard mobile apps that truncate logs to a few lines or lose history across process restarts, K.I.D.S. preserves full lifecycle traces so parents and contributors can verify every step of the crawling and synchronization pipeline:
+
+1. **`crawler_trace.log` (`_system/logs/crawler_trace.log`):**
+   A granular, millisecond-by-millisecond execution trace of the crawler assistant. Every milestone event is recorded with structured tags:
+   - **Stream Survey Bounds (`SURVEY_START`, `SURVEY_CARD`, `SURVEY_END`):** Records the top landmark notice, each discovered card's SHA-256 fingerprint and status (`ALREADY_SYNCED` vs `PENDING`), bottom stream post, and total discovery duration:
+     `[SURVEY_START] === PASS 1: STREAM SURVEY STARTED === Top Landmark: "English Homework"`
+     `[SURVEY_CARD] Discovered #3: "Maths Worksheet" [Fingerprint: a1b2c3d4, Status: PENDING]`
+     `[SURVEY_END] === PASS 1 COMPLETE === Discovered 18 total items in 4200ms. Bottom Post: "Welcome Circular"`
+   - **Rewind Milestones (`REWIND_START`, `REWIND_COMPLETE`):** Documents the exact swipe count and duration taken to rewind to the top of the feed:
+     `[REWIND_START] === PASS 1.5: REWIND TO TOP STARTED === Returning from bottom (18 items ahead)`
+     `[REWIND_COMPLETE] === PASS 1.5 COMPLETE === Rewound to top in 7 swipes (2450ms)`
+   - **Swipe Trajectories & Auto-Recovery:** Logs exact swipe trajectories, screen coordinate vectors, micro-nudges, oscillation detection around cards, and position corrections:
+     `[SCROLLER_SWIPE] Dispatching micro-nudge (FORWARD): (702.0, 1392.0) -> (702.0, 1008.0)`
+     `[AUTO_RECOVERY] Target #5 is bounded within visible screen range [4..6]! Inspecting visible cards directly.`
+   - **Post Detail Transitions (`POST_OPEN`):** Records transition latency and whether detail view loaded:
+     `[POST_OPEN] Post #4/18: "Science Project" | Transition Latency: 420ms | Entered Detail: true`
+   - **Attachment Discovery & Physical Disk Verification (`ATTACHMENT_DETECTED`, `ATTACHMENT_DOWNLOADED`, `POST_COMPLETED`):**
+     `[ATTACHMENT_DETECTED] Attachment for "Science Project": "solar_system_guide.pdf"`
+     `[ATTACHMENT_DOWNLOADED] Attachment verified on disk: "solar_system_guide.pdf" (1048576 bytes)`
+     `[POST_COMPLETED] Notice #4/18 completed: "Science Project" (1 attachments physically saved & verified)`
+2. **`sync_timeline.log` (`_system/logs/sync_timeline.log`):**
+   A chronological audit record of every background Google Drive sync cycle:
+   - `[CLASSROOM BATCH SYNC] Synced 5 notices into Google Classroom/ folder`
+   - `[ATTACHMENT BATCH SYNC] Uploaded 3 physical files to attachments/ (plus 0 indexed references)`
 
 ### Xiaomi / MIUI / HyperOS Specific Setup
 Devices running Xiaomi MIUI or HyperOS enforce aggressive background restrictions. To ensure seamless operation:
