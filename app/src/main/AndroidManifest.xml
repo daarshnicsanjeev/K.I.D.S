@@ -57,6 +57,25 @@
             </intent-filter>
         </activity>
 
+        <!-- Native Zero-UI Share Target Activity for Automated Attachment Ingestion -->
+        <activity
+            android:name=".presentation.share.ShareTargetActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:launchMode="singleInstance"
+            android:label="K.I.D.S. Vault">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+        </activity>
+
         <!-- Real-Time Push Notification Listener Service -->
         <service
             android:name=".service.KidsNotificationListenerService"

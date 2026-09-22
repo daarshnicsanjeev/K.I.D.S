@@ -31,6 +31,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -67,7 +68,8 @@ class KidsAccessibilityService : AccessibilityService() {
         "back to classwork page", "back to classwork", "back to stream", "back to people",
         "attachments", "class comments", "no comments", "add class comment",
         "save all files offline", "save all offline", "save offline", "more options for attachment",
-        "for your reference", "for reference"
+        "for your reference", "for reference", "0 class comments", "class comments for",
+        "class comment", "post by"
     )
 
     private val attachmentExts = listOf(
@@ -488,17 +490,17 @@ class KidsAccessibilityService : AccessibilityService() {
                     att.clickableChip.getBoundsInScreen(b)
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
-                delay(1000)
+                delay(800)
 
-                // If tapping the chip opened an in-app viewer/preview, close it to restore detail view for next attachments
-                val active = rootInActiveWindow
-                if (active != null) {
-                    if (!isPostDetailView(active) && !isStreamOrClassworkView(active)) {
-                        CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Closing opened viewer to restore detail view")
-                        performReturnToStream(active)
-                        delay(600)
+                // Automate Share or Download inside viewer and return to detail view
+                automateViewerShareOrDownload(att.fileName)
+
+                // Check if file was captured by ShareTargetActivity
+                val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+                if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+                    if (capturedAttachmentNames.add(att.fileName)) {
+                        crawlerOverlay?.incrementAttachmentCount()
                     }
-                    active.recycle()
                 }
             }
 
@@ -507,12 +509,236 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         if (attachments.isNotEmpty()) {
-            delay(1200) // Allow system DownloadManager to register downloads
+            delay(1000) // Allow file staging to finalize
             val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
             for (s in 0 until stagedCount) {
                 crawlerOverlay?.incrementAttachmentCount()
             }
         }
+    }
+
+    /**
+     * Autonomously triggers Share or Download from document viewer/preview screen,
+     * selects "K.I.D.S. Vault" from the system share sheet if opened,
+     * and returns back to Classroom detail view.
+     */
+    private suspend fun automateViewerShareOrDownload(fileName: String) {
+        // Wait up to 1500ms for viewer or preview to open
+        val openedViewer = waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+            val root = rootInActiveWindow ?: return@waitForCondition false
+            val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
+            root.recycle()
+            isNotDetail
+        }
+
+        if (!openedViewer) {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No external/internal viewer opened for \"$fileName\"")
+            return
+        }
+
+        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Viewer detected for \"$fileName\". Scanning for Share/Download actions...")
+
+        // Step A: Check if a direct Share or Download button exists in the viewer
+        var active = rootInActiveWindow
+        var sharedOrDownloaded = false
+
+        if (active != null) {
+            // 1. Look for direct Share / Send button
+            val shareBtn = findShareButton(active)
+            if (shareBtn != null) {
+                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found direct Share button. Clicking it.")
+                crawlerOverlay?.updateStatus("Sharing...", fileName)
+                val clicked = shareBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val b = Rect()
+                    shareBtn.getBoundsInScreen(b)
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                }
+                shareBtn.recycle()
+                sharedOrDownloaded = true
+            } else {
+                // 2. Look for direct Download / Save offline button in viewer
+                val downloadBtn = findDownloadButtonNode(active)
+                if (downloadBtn != null) {
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found direct Download button in viewer. Clicking it.")
+                    crawlerOverlay?.updateStatus("Downloading...", fileName)
+                    val clicked = downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        downloadBtn.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    }
+                    downloadBtn.recycle()
+                    sharedOrDownloaded = true
+                } else {
+                    // 3. Look for overflow "More options" button
+                    val overflow = findOverflowMenuButton(active)
+                    if (overflow != null) {
+                        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Clicking overflow menu in viewer...")
+                        val clicked = overflow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (!clicked) {
+                            val b = Rect()
+                            overflow.getBoundsInScreen(b)
+                            dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                        }
+                        overflow.recycle()
+                        delay(400) // Wait for popup menu to appear
+
+                        val popupRoot = rootInActiveWindow
+                        if (popupRoot != null) {
+                            val popupShare = findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
+                            if (popupShare != null) {
+                                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found Share/Download in overflow menu. Clicking it.")
+                                val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                if (!clickOk) {
+                                    val b = Rect()
+                                    popupShare.getBoundsInScreen(b)
+                                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                                }
+                                popupShare.recycle()
+                                sharedOrDownloaded = true
+                            }
+                            popupRoot.recycle()
+                        }
+                    }
+                }
+            }
+            active.recycle()
+        }
+
+        // Step B: If Share action was triggered, select "K.I.D.S. Vault" in system chooser
+        if (sharedOrDownloaded) {
+            delay(500)
+            selectKidsInSystemChooser()
+        }
+
+        // Step C: Guarded return to detail view (up to 3 attempts)
+        delay(400)
+        var returnAttempts = 0
+        while (returnAttempts < 3) {
+            val cur = rootInActiveWindow ?: break
+            if (isPostDetailView(cur) || isStreamOrClassworkView(cur)) {
+                cur.recycle()
+                break
+            }
+            performReturnToStream(cur)
+            cur.recycle()
+            delay(500)
+            returnAttempts++
+        }
+    }
+
+    private fun findShareButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file")) ||
+                (text == "share" || text.contains("send a copy") || text.contains("send file")) ||
+                viewId.contains("share")
+
+        if (isShare) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findShareButton(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private fun findOverflowMenuButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        val isOverflow = desc == "more options" || desc.contains("more options") ||
+                desc == "overflow" || desc.contains("overflow") ||
+                text == "more options" ||
+                viewId.contains("overflow") || viewId.contains("more_options")
+
+        if (isOverflow) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findOverflowMenuButton(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private suspend fun selectKidsInSystemChooser() {
+        // Wait up to 1500ms for system chooser to appear
+        waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+            val root = rootInActiveWindow ?: return@waitForCondition false
+            val pkg = root.packageName?.toString()?.lowercase() ?: ""
+            val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
+                    pkg.contains("android") || pkg.contains("systemui")
+            val hasKidsTarget = findKidsShareTarget(root) != null
+            root.recycle()
+            isChooser && hasKidsTarget
+        }
+
+        val chooserRoot = rootInActiveWindow ?: return
+        val target = findKidsShareTarget(chooserRoot)
+        if (target != null) {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"K.I.D.S. Vault\" target in share sheet. Selecting it.")
+            val clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val b = Rect()
+                target.getBoundsInScreen(b)
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            }
+            target.recycle()
+            delay(500) // Allow ShareTargetActivity to process intent
+        } else {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in immediate chooser view")
+        }
+        chooserRoot.recycle()
+    }
+
+    private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+
+        val isTarget = text.contains("k.i.d.s") || desc.contains("k.i.d.s") ||
+                text.contains("kids vault") || desc.contains("kids vault")
+
+        if (isTarget) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findKidsShareTarget(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
     }
 
     private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
@@ -583,6 +809,16 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
+            val lowerCombined = combinedText.lowercase().trim()
+            if (lowerCombined.contains("class comments for") ||
+                lowerCombined.startsWith("0 class comments") ||
+                lowerCombined.startsWith("add class comment") ||
+                lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
+            ) {
+                card.recycle()
+                continue
+            }
+
             val titleCandidate = cardItems.firstOrNull { item ->
                 val lower = item.trim().lowercase()
                 !excludedChrome.contains(lower) &&
@@ -590,6 +826,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         !lower.startsWith("signed in as") &&
                         !lower.startsWith("tasks due") &&
                         !lower.startsWith("class options for") &&
+                        !lower.contains("class comments") &&
                         item.trim().length > 3
             }
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
@@ -607,8 +844,16 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun computeCardFingerprint(cardItems: List<String>): String {
+        val commentPattern = Regex("""\b\d+\s+class\s+comments?.*""", RegexOption.IGNORE_CASE)
         val content = cardItems
-            .filter { !excludedChrome.contains(it.lowercase().trim()) }
+            .map { it.replace(commentPattern, "").trim() }
+            .filter { item ->
+                val lower = item.lowercase().trim()
+                !excludedChrome.contains(lower) &&
+                        !excludedChrome.any { lower.startsWith(it) } &&
+                        !lower.contains("class comments for") &&
+                        item.isNotBlank()
+            }
             .joinToString("|")
         return try {
             val md = MessageDigest.getInstance("SHA-256")

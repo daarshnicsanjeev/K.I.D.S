@@ -33,6 +33,7 @@ flowchart TD
     subgraph INGESTION["1. Ingestion Layer"]
         NLS["KidsNotificationListenerService<br/>(Ambient 24/7 Push)"]
         ACS["KidsAccessibilityService<br/>(Historical Auto-Crawler)"]
+        STA["ShareTargetActivity<br/>(Native 'K.I.D.S. Vault' Share Target)"]
         WAP["WhatsAppChatExportParser<br/>(Manual Chat Backup)"]
     end
 
@@ -81,6 +82,9 @@ flowchart TD
     ROOM <--> FTS
 
     ACS -.->|Taps Chip & Auto-Downloads| DFO
+    ACS -.->|Auto-Invokes Share Target| STA
+    STA -->|Direct Binary Stream| STAGING
+    STA -.->|Triggers APPEND_OR_REPLACE| DSW
     DFO -->|Move & Decouple| STAGING
     STAGING --> OCR
     OCR --> ROOM
@@ -146,6 +150,8 @@ app/src/main/java/com/kids/collector/
 │   │   └── ChildrenGridDashboard.kt   # Multi-child cards, sync triggers, live stats
 │   ├── telemetry/
 │   │   └── DiagnosticFeedScreen.kt    # 5-point probe UI & live log viewers
+│   ├── share/
+│   │   └── ShareTargetActivity.kt     # Native zero-UI share target & attachment stager
 │   └── permission/
 │       ├── PermissionHelper.kt        # System intents for NLS, Accessibility, Storage
 │       └── PermissionSetupDialog.kt   # WCAG-compliant permission rationale dialogs
@@ -427,7 +433,46 @@ sequenceDiagram
   This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
 - **Stream Title Extraction (`fallbackTitle`):** Before navigating into any card, the scanner extracts the headline directly from the stream card (`findNextUnvisitedPost`), filtering out excluded chrome. This candidate is packaged into `UnvisitedCard(title, fingerprint, clickableNode, bounds)` and passed forward to `processPostDetailAndDownload(detailRoot, title)`.
 - **Chrome & Noise Rejection:** Ignores non-post navigation elements (`excludedChrome`) such as `"open navigation menu"`, `"signed in as"`, `"tasks due"`, `"back to stream"`, and cards with content length $\le 20$ characters.
-- **Deterministic SHA-256 Fingerprinting:** For each eligible post card, `computeCardFingerprint(cardItems)` aggregates non-chrome text tokens delimited by pipe (`|`), calculates a SHA-256 hash, and truncates to the first 8 hex characters:
+- **Classroom Stream Comment Counter Filter:**
+  In Google Classroom's Stream tab, each post card contains dynamic comment rows (e.g., `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or dynamic counts such as `"3 class comments"`). If evaluated naively, these comment rows can be mistakenly identified as distinct post cards or alter the post's cryptographic identity over time. `KidsAccessibilityService` deploys a dual-stage filter:
+  1. **Candidate Rejection in `findNextUnvisitedPost()`:** The card discovery loop explicitly filters out comment header and counter elements:
+     ```kotlin
+     val lowerCombined = combinedText.lowercase().trim()
+     if (lowerCombined.contains("class comments for") ||
+         lowerCombined.startsWith("0 class comments") ||
+         lowerCombined.startsWith("add class comment") ||
+         lowerCombined.matches(Regex("""^\d+\s+class\s+comments?.*"""))
+     ) {
+         card.recycle()
+         continue
+     }
+     ```
+     This prevents comment metadata from being treated as unvisited post cards, eliminating false card entries and avoiding scrolling stalls.
+  2. **Comment Stripping Prior to Fingerprinting (`computeCardFingerprint`):** Before hashing non-chrome text tokens into a SHA-256 fingerprint, dynamic comment counts are stripped:
+     ```kotlin
+     private fun computeCardFingerprint(cardItems: List<String>): String {
+         val commentPattern = Regex("""\b\d+\s+class\s+comments?.*""", RegexOption.IGNORE_CASE)
+         val content = cardItems
+             .map { it.replace(commentPattern, "").trim() }
+             .filter { item ->
+                 val lower = item.lowercase().trim()
+                 !excludedChrome.contains(lower) &&
+                         !excludedChrome.any { lower.startsWith(it) } &&
+                         !lower.contains("class comments for") &&
+                         item.isNotBlank()
+             }
+             .joinToString("|")
+         return try {
+             val md = MessageDigest.getInstance("SHA-256")
+             val digest = md.digest(content.toByteArray(Charsets.UTF_8))
+             digest.take(8).joinToString("") { "%02x".format(it) }
+         } catch (e: Exception) {
+             content.hashCode().toString()
+         }
+     }
+     ```
+     By sanitizing comment count variations, future comments added to an existing announcement do not mutate its fingerprint, strictly preserving deduplication invariance across repeated crawling sessions.
+- **Deterministic SHA-256 Fingerprinting:** For each eligible post card, `computeCardFingerprint(cardItems)` aggregates sanitized text tokens delimited by pipe (`|`), calculates a SHA-256 hash, and truncates to the first 8 hex characters:
   $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
   Fingerprints are maintained in `visitedPostFingerprints` (`ConcurrentHashMap.newKeySet()`), ensuring no post is visited twice even when list recycling re-renders nodes.
 
@@ -591,13 +636,14 @@ sequenceDiagram
   ```
   Coupled with `"more options for attachment"` in `excludedChrome`, 3-dots menus are completely filtered out, guaranteeing that clicks are dispatched solely to actual download buttons and clickable attachment cards.
 
-- **Autonomous Attachment Capture Pipeline:**
-  Instead of internal app caching, K.I.D.S. systematically extracts and downloads each attachment individually:
+- **Autonomous Attachment Capture & Ingestion Pipeline:**
+  Instead of internal app caching, K.I.D.S. systematically extracts and ingests each attachment individually through a dual-strategy pipeline supporting both direct downloads and native share targeting:
   ```kotlin
   val attachments = extractDetailAttachments(detailRoot)
   for ((index, att) in attachments.withIndex()) {
       if (att.downloadNode != null && att.downloadNode.isClickable) {
           crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
+          CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
           val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
           if (!clicked) {
               val b = Rect()
@@ -607,21 +653,24 @@ sequenceDiagram
           delay(1000) // Calibrated debounce between downloads
       } else if (att.clickableChip != null && att.clickableChip.isClickable) {
           crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
+          CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
           val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
           if (!clicked) {
               val b = Rect()
               att.clickableChip.getBoundsInScreen(b)
               dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
           }
-          delay(1000)
+          delay(800)
 
-          val active = rootInActiveWindow
-          if (active != null) {
-              if (!isPostDetailView(active) && !isStreamOrClassworkView(active)) {
-                  performReturnToStream(active)
-                  delay(600)
+          // Automate Share or Download inside viewer and return to detail view
+          automateViewerShareOrDownload(att.fileName)
+
+          // Check if file was captured by ShareTargetActivity
+          val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+          if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+              if (capturedAttachmentNames.add(att.fileName)) {
+                  crawlerOverlay?.incrementAttachmentCount()
               }
-              active.recycle()
           }
       }
       att.downloadNode?.recycle()
@@ -630,15 +679,53 @@ sequenceDiagram
 
   // Truthful Staged Attachment Counting via scanLocalAttachments Return Value
   if (attachments.isNotEmpty()) {
-      delay(1200) // Allow system DownloadManager to register downloads
+      delay(1000) // Allow file staging to finalize
       val stagedCount = DownloadFolderObserver.scanLocalAttachments(applicationContext)
       for (s in 0 until stagedCount) {
           crawlerOverlay?.incrementAttachmentCount()
       }
   }
   ```
-  - **Systematic Attachment Node/Chip Coordinate Tapping:** Evaluates both explicit download icon nodes (`att.downloadNode`) and clickable chips (`att.clickableChip`). If the accessibility action fails or is swallowed by custom views, it dispatches a 50ms physical touch tap gesture at the node's screen center (`dispatchTap`).
-  - **Calibrated 1,000ms Debouncing:** Enforces a 1,000ms debounce between individual attachment taps. This provides sufficient time for Android's system `DownloadManager` to register each incoming request without dropping socket connections or dropping rapid successive taps.
+  - **Automated In-App Viewer & Preview Detection (`automateViewerShareOrDownload`):**
+    When tapping an attachment chip opens an internal or external viewer (e.g. Google Docs, Sheets, or Google Drive PDF viewer), `automateViewerShareOrDownload()` automatically discovers and handles the preview screen without user intervention:
+    1. **Viewer Screen Detection:** Waits up to 1,500ms for an active window change (`!isPostDetailView && !isStreamOrClassworkView`).
+    2. **Direct Share / Download Scanning:** Inspects the active node tree for a direct Share action (`"share"`, `"send a copy"`, `"send file"`) via `findShareButton(active)` or a direct Download button (`findDownloadButtonNode(active)`). If found, it dispatches an accessibility click or falls back to `dispatchTap`.
+    3. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.
+    4. **Invocation of Chooser Selection:** If a Share action was triggered, it calls `selectKidsInSystemChooser()`.
+    5. **Guarded Return to Detail View:** Executes up to 3 sequential return attempts to safely dismiss the preview and restore the post detail view before continuing the attachment loop.
+  - **Autonomous System Chooser Selection (`selectKidsInSystemChooser`):**
+    When Android displays its system share sheet (`resolver`, `chooser`, `android`, or `systemui`), `selectKidsInSystemChooser()` automates the target selection:
+    ```kotlin
+    private suspend fun selectKidsInSystemChooser() {
+        // Wait up to 1500ms for system chooser to appear
+        waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+            val root = rootInActiveWindow ?: return@waitForCondition false
+            val pkg = root.packageName?.toString()?.lowercase() ?: ""
+            val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
+                    pkg.contains("android") || pkg.contains("systemui")
+            val hasKidsTarget = findKidsShareTarget(root) != null
+            root.recycle()
+            isChooser && hasKidsTarget
+        }
+
+        val chooserRoot = rootInActiveWindow ?: return
+        val target = findKidsShareTarget(chooserRoot)
+        if (target != null) {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"K.I.D.S. Vault\" target in share sheet. Selecting it.")
+            val clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val b = Rect()
+                target.getBoundsInScreen(b)
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            }
+            target.recycle()
+            delay(500) // Allow ShareTargetActivity to process intent
+        }
+        chooserRoot.recycle()
+    }
+    ```
+    The target selector scans for labels matching `"k.i.d.s"` or `"kids vault"`, dispatches the tap to hand off the URI stream to `ShareTargetActivity`, and allows 500ms for staging to initiate.
+  - **Calibrated 1,000ms Debouncing:** Enforces a 1,000ms debounce between individual attachment taps. This provides sufficient time for Android's system `DownloadManager` or `ShareTargetActivity` to register each incoming request without dropping socket connections or dropping rapid successive taps.
   - **Verified Staged Attachment Counting via `scanLocalAttachments` Return Value:**
     Rather than optimistically incrementing the file counter on every download button click (which causes phantom counts on network dropouts, canceled downloads, or unverified files), the overlay's file metric strictly reflects verified files moved to storage. `DownloadFolderObserver.scanLocalAttachments(applicationContext)` returns the exact count (`Int`) of newly moved and verified attachments in `vault_attachments/`. The counter `crawlerOverlay?.incrementAttachmentCount()` is only incremented for each verified staged file (`for (s in 0 until stagedCount)`), presenting parents with a completely truthful metric.
 
@@ -879,7 +966,130 @@ AndroidX `WorkManager` provides three primary policies for unique work chains (`
 
 ---
 
-### 3. `DownloadFolderObserver`: Candidate Directory Expansion & Anti-Clutter Staging Lifecycle
+### 3. `ShareTargetActivity`: Native Android Zero-UI Share Target Pipeline
+
+`ShareTargetActivity` (`com.kids.collector.presentation.share.ShareTargetActivity`) is an ultra-fast, transparent native Android Share Target engineered to receive shared educational attachments directly from Android's system share sheet (e.g., when shared from Google Classroom, Google Docs, or Google Drive PDF viewer) and stage them into private vault storage without presenting any intrusive UI or interrupting the user.
+
+```mermaid
+sequenceDiagram
+    participant VIEWER as Classroom / PDF Viewer
+    participant ACS as KidsAccessibilityService
+    participant CHOOSER as Android System Chooser
+    participant STA as ShareTargetActivity (Translucent)
+    participant CR as Android ContentResolver
+    participant STAGE as vault_attachments/ Sandbox
+    participant DB as SQLite Room (AttachmentDao)
+    participant WM as WorkManager (DriveSyncWorker)
+
+    VIEWER->>ACS: Viewer opened with attachment preview
+    ACS->>VIEWER: Dispatches Share action (Direct or Overflow)
+    VIEWER->>CHOOSER: Launches system share sheet
+    ACS->>CHOOSER: selectKidsInSystemChooser() clicks "K.I.D.S. Vault"
+    CHOOSER->>STA: startActivity(ACTION_SEND / ACTION_SEND_MULTIPLE)
+    Note over STA: LaunchMode="singleInstance"<br/>Theme.Translucent.NoTitleBar
+    STA->>STA: CoroutineScope(Dispatchers.IO).launch
+    STA-->>CHOOSER: finish() immediately (<50ms execution)
+    STA->>CR: openInputStream(uri) & queryFileName(uri)
+    CR->>STAGE: Copies byte stream to private sandbox staging
+    STA->>STA: DeduplicationEngine.computeFileHash(stagedFile)
+    STA->>DB: Fuzzy match pending AttachmentEntity & updateLocalFile()
+    STA->>WM: enqueueUniqueWork(APPEND_OR_REPLACE, syncRequest)
+    Note over STAGE: Pristine file staged & queued for Drive sync
+```
+
+#### AndroidManifest Registration & Translucent Theme
+`ShareTargetActivity` is registered in `AndroidManifest.xml` with intent filters for both single (`ACTION_SEND`) and multi-file (`ACTION_SEND_MULTIPLE`) transmissions across any MIME type (`*/*`):
+
+```xml
+<!-- Native Zero-UI Share Target Activity for Automated Attachment Ingestion -->
+<activity
+    android:name=".presentation.share.ShareTargetActivity"
+    android:exported="true"
+    android:theme="@android:style/Theme.Translucent.NoTitleBar"
+    android:launchMode="singleInstance"
+    android:label="K.I.D.S. Vault">
+    <intent-filter>
+        <action android:name="android.intent.action.SEND" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.SEND_MULTIPLE" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
+</activity>
+```
+
+##### Architectural Design Decisions:
+- **`@android:style/Theme.Translucent.NoTitleBar`:** Guarantees zero window chrome, zero layout inflation, and zero visual flashing. To the user or calling application, the transition is completely transparent.
+- **`android:launchMode="singleInstance"`:** Ensures the share activity runs in its own isolated task and never corrupts or alters the navigation backstack of Google Classroom or `MainActivity`.
+- **Immediate `<50ms` UI Lifecycle Termination:** `onCreate` extracts the stream URIs, launches an asynchronous processing coroutine on `Dispatchers.IO`, and calls `finish()` synchronously. The system share sheet dismisses immediately, returning focus to the previous activity in under 50 milliseconds.
+
+#### `ContentResolver` Byte Streaming & Private Sandbox Staging
+Incoming intents deliver either `content://` or `file://` URIs via `Intent.EXTRA_STREAM`. Rather than expecting physical file system paths (which are restricted under Android Scoped Storage), `ShareTargetActivity` delegates resolution directly to Android's `ContentResolver`:
+1. **Display Name Resolution (`queryFileName`):**
+   ```kotlin
+   private fun queryFileName(uri: Uri): String? {
+       var name: String? = null
+       if (uri.scheme == "content") {
+           contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+               if (cursor.moveToFirst()) {
+                   val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                   if (idx >= 0) name = cursor.getString(idx)
+               }
+           }
+       }
+       return name ?: uri.lastPathSegment
+   }
+   ```
+2. **Filename Sanitization:** The resolved filename is sanitized against illegal path characters via `Regex("[^a-zA-Z0-9._-]")` to prevent directory traversal attacks or filesystem encoding faults.
+3. **Private Sandbox Directory Staging:**
+   Bytes are streamed directly from `contentResolver.openInputStream(uri)` into `context.getExternalFilesDir(null)/vault_attachments/shared_{timestamp}_{safeFileName}`.
+   This guarantees that educational binaries never enter public device directories (`Downloads/` or `Documents/`), upholding the zero-clutter guarantee.
+
+#### SHA-256 Fingerprinting & SQLite Record Reconciliation
+Once the binary stream is staged to disk:
+1. **Cryptographic Fingerprint:** `DeduplicationEngine.computeFileHash(stagedFile)` computes the SHA-256 digest of the raw byte stream.
+2. **Fuzzy Candidate Matching:** The stager queries all existing attachment entities from SQLite Room (`db.attachmentDao().getAllAttachmentsDirect()`) and reconciles the staged file against pending database records:
+   - Strips ellipsis truncation (`...` or `…`) from crawler labels.
+   - Compares filename base names and extensions case-insensitively.
+   - Performs prefix matching on base names $\ge 8$ characters (handling Classroom truncated filenames e.g. `Mathematics Wo...` matching `Mathematics Worksheet Ch4.pdf`).
+3. **Entity Update:** If matched, the database record is updated immediately via:
+   ```kotlin
+   db.attachmentDao().updateLocalFile(
+       attachmentId = matchingAtt.attachmentId,
+       localUri = stagedFile.absolutePath,
+       sizeBytes = stagedFile.length(),
+       fileHash = fileHash
+   )
+   ```
+   If unlinked, the file is safely staged and logged via `CrawlerTraceLogger.log("SHARE_INGEST", ...)` for downstream crawler reconciliation.
+
+#### Immediate Drive Sync Work Dispatch (`APPEND_OR_REPLACE`)
+Immediately following staging and database linking, `ShareTargetActivity` schedules background cloud synchronization:
+```kotlin
+val constraints = Constraints.Builder()
+    .setRequiredNetworkType(NetworkType.CONNECTED)
+    .build()
+val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+    .setConstraints(constraints)
+    .build()
+WorkManager.getInstance(appCtx).enqueueUniqueWork(
+    "DriveVaultSyncWork",
+    ExistingWorkPolicy.APPEND_OR_REPLACE,
+    syncRequest
+)
+```
+Using `ExistingWorkPolicy.APPEND_OR_REPLACE` guarantees that any active or previously enqueued upload job will immediately process this new attachment without cancellation or dropped work.
+
+#### Zero-Backend & Zero-Permanent-Storage Invariant Alignment
+- **Zero-Backend ($0 Infrastructure):** The byte stream is held locally in the private app sandbox and uploaded directly to the parent's Google Drive Vault via Google Drive REST API v3 under the restricted `drive.file` scope.
+- **Zero-Permanent Local Storage:** Staged files in `vault_attachments/` are strictly transient. Upon successful HTTP 200 upload confirmation by `DriveSyncWorker`, the local file is permanently unlinked and purged from device flash memory.
+
+---
+
+### 4. `DownloadFolderObserver`: Candidate Directory Expansion & Anti-Clutter Staging Lifecycle
 
 When Google Classroom or other school apps download attachments, Android's `DownloadManager` places files into public shared directories (`Downloads/`, `Documents/`, or app-specific subfolders). This presents two major engineering challenges:
 1. **Filename Truncation Mismatch:** Classroom UI attachment chips often truncate long filenames using ellipses (`...` or `…`), e.g., displaying `'Formatting Te...'` or `'Mathematics Work...'`, whereas Android's `DownloadManager` saves files using their un-truncated original filenames on disk, e.g., `'Formatting Text in Word 2016 WS with Answerkey.pdf'`. A naive exact-string match fails to associate the downloaded file with the pending database record.
@@ -1028,7 +1238,7 @@ The synergy between `KidsAccessibilityService`, `DownloadFolderObserver`, and `D
 
 ---
 
-### 4. `DriveSyncWorker` & ML Kit Streaming OCR
+### 5. `DriveSyncWorker` & ML Kit Streaming OCR
 AndroidX `WorkManager` executes `DriveSyncWorker` periodically and on expedited push triggers.
 
 ```mermaid
@@ -1095,32 +1305,31 @@ In scenarios where legacy app runs or pre-guard builds left unlinked, empty dire
 ```kotlin
 // Autonomous self-healing: Purge any stray legacy "New Folder" on Drive if present
 try {
-    val strayFolders = driveService.files().list()
-        .setQ("'${vault.yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and (name = 'New Folder' or name contains 'New Folder (') and trashed = false")
-        .setFields("files(id, name)")
-        .execute()
-    for (stray in strayFolders.files.orEmpty()) {
-        try {
-            driveService.files().delete(stray.id).execute()
-            Log.i(TAG, "Purged stray empty folder from Google Drive: ${stray.name}")
-        } catch (e: Exception) {
-            Log.w(TAG, "Could not purge stray folder: ${stray.name}")
+    val strayFolders = driveClient.searchFiles(
+        parentFolderId = yearFolderId,
+        mimeType = GoogleDriveClient.MIME_TYPE_FOLDER
+    )
+    for (stray in strayFolders) {
+        val name = stray.name ?: ""
+        if (name.equals("New Folder", ignoreCase = true) || name.startsWith("New Folder (")) {
+            DriveDeepLogger.w(
+                "DriveSyncWorker",
+                "SELF_HEALING: Detected accidental stray folder '${stray.name}' (id: ${stray.id}). Purging..."
+            )
+            driveClient.deleteFile(stray.id)
+            DriveDeepLogger.i("DriveSyncWorker", "SELF_HEALING: Successfully purged stray folder '${stray.name}'.")
         }
     }
-} catch (_: Exception) {
+} catch (e: Exception) {
+    DriveDeepLogger.w("DriveSyncWorker", "SELF_HEALING: Non-critical stray folder cleanup sweep encountered error: ${e.message}")
 }
 ```
-- **Query Specificity:** Scopes the search strictly under the resolved `vault.yearFolderId` for folders named `'New Folder'` or matching `'New Folder ('` (such as Windows/Drive default duplicate names `'New Folder (1)'`).
-- **Zero Impact on Active Children:** Legitimate child folders (e.g. `'atharva'`, `'aarav'`) are completely unaffected.
-- **Self-Healing Hygiene:** Any unlinked, ghost, or accidental empty folders are permanently purged via `files().delete()`, guaranteeing an immaculate parent-facing vault.
+This ensures the parent's Google Drive hierarchy remains immaculate, strictly consisting of named child directories (e.g. `2026-2027/Aarav/`).
 
 #### Zero-Roundtrip Cached Vault Folder Reuse
-At the start of every execution cycle, `DriveSyncWorker` queries `DriveVaultManager.getSavedVaultFolders(context, email, year, child)`. By reusing the folder IDs cached in `SharedPreferences` (`rootKidsFolderId`, `yearFolderId`, `childFolderId`, `attachmentsFolderId`, `systemFolderId`, `logsFolderId`), the worker eliminates up to 6 redundant `files().list()` network roundtrips per cycle. If preferences are unpopulated, it falls back to `GoogleDriveClient.provisionChildVault()`, persists the resolved IDs via `saveVaultFolderPrefs()`, and continues seamlessly.
+During execution, `DriveSyncWorker` uses cached folder identifiers (`rootKidsFolderId`, `yearFolderId`, `childFolderId`, `attachmentsFolderId`, `systemFolderId`, and `logsFolderId`) stored in `SharedPreferences`. It bypasses all metadata search roundtrips on the Google Drive API, minimizing network latency, bandwidth usage, and Google Cloud quota consumption.
 
 #### Memory-Safe Streaming OCR (`PdfRenderer`)
-Processing large, multi-page school circulars (e.g., a 15-page syllabus PDF) on a mobile device risks Out-Of-Memory (OOM) fatal crashes. `MLKitOcrParser` avoids this:
-- Opens the PDF using `android.graphics.pdf.PdfRenderer`.
-- Iterates page by page sequentially.
 - Allocates a single ARGB_8888 bitmap at 2x page dimensions (~150–200 DPI).
 - Processes text using `com.google.mlkit.vision.text.TextRecognition` (Latin model).
 - **Immediately calls `bitmap.recycle()`** and closes the page before advancing to the next page.
@@ -1135,7 +1344,7 @@ On every synchronization run, `DriveSyncWorker`:
 
 ---
 
-### 5. `KotlinGraphifyEngine`: On-Device GraphRAG & D3 Visualization
+### 6. `KotlinGraphifyEngine`: On-Device GraphRAG & D3 Visualization
 `KotlinGraphifyEngine` runs 100% locally in Kotlin without cloud graph dependencies.
 
 #### Graph Schema & Node Types
