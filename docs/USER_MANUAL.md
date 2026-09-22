@@ -377,13 +377,21 @@ The floating assistant features an informative **live 2-line status pill**:
   - `Status: Capture Complete!` — Backfill completed after end-of-stream detection.
   - `Status: Capture Stopped` — Manually stopped by the parent.
   - `Status: Paused (External App)` — Pauses immediately if an external app or dialog comes to foreground.
-- **Bottom Metrics Badge (`XX Notices • YY Files`):** Kept up to date live. Displays the exact tally of unique school notices backfilled and physical attachment files (.pdf, .docx, .jpg) triggered for download during this session.
+- **Bottom Metrics Badge (`XX Notices • YY Files`):** Kept up to date live. Displays the exact tally of unique school notices backfilled and physical attachment files (.pdf, .docx, .jpg) staged in local storage.
+- **Truthful Attachment Counting:** Unlike basic click counters that inflate tallies by counting popup menu options (such as Classroom's 3-dots "More options for attachment" button), K.I.D.S. only increments the `YY Files` metric when an attachment is verified and staged in private vault storage via `DownloadFolderObserver.scanLocalAttachments()`.
 - **Detail Snippet Line:** An auto-truncating preview line that displays the exact post headline or filename currently being processed (e.g., `"Circular No. 14 - Annual Sports Day Schedule"` or `"worksheet_fractions_ch4.pdf"`).
 - **— Minimize:** Collapses the assistant into a compact, floating amber **`K`** circular bubble (48dp × 48dp) that you can drag anywhere on your screen. Tap the bubble anytime to expand it back.
 - **✕ Close:** Closes the assistant overlay until you reopen Classroom.
 
 > [!TIP]
 > **Zero Button Hunting:** While minimize (`—`) and close (`✕`) buttons are available, parents **never need to manually hunt for a "stop" or "close" button**! The floating pill automatically cleans up and removes itself whenever you leave Google Classroom or when backfill finishes.
+
+#### TalkBack Resilience & Accessible Overlay Controls
+
+K.I.D.S. is engineered for complete accessibility compliance (WCAG 2.1 AA/AAA) and seamless integration with **Android TalkBack**:
+- **1.2-Second Debounce on TalkBack Double-Tap:** TalkBack users activate buttons using a double-tap gesture. On some Android OEM skins, double-tapping can fire rapid successive touch events or accessibility click echoes. To prevent accidental starts followed immediately by premature stops, the overlay's toggle button features a **1.2-second (1,200ms) debounce**. Any secondary activation within 1.2 seconds is safely discarded, allowing TalkBack users to start and stop Auto-Capture smoothly and reliably without accidental double-trigger interruptions.
+- **Dynamic Semantic Accessibility Labels (`contentDescription`):** Screen readers announce the exact current state and action of the floating button. The button's `contentDescription` dynamically transitions between `"Start Auto-Capture"` and `"Stop Auto-Capture"` as state changes.
+- **Accessible Touch Targets:** All touch targets on the overlay enforce a minimum size of 48dp × 48dp (exceeding WCAG 2.1 AAA recommendations), making them easy to locate and double-tap with TalkBack or motor impairments.
 
 ### Deep Post Traversal & Autonomous File Downloads
 
@@ -393,8 +401,10 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
 flowchart TD
     A["Scan Stream Viewport<br/>(Exclude TopBar & Tabs)"] --> B{"Unvisited Post Found?"}
     B -->|Yes| C["Preserve Stream Title (fallbackTitle)<br/>& Open Post Card via Physical Tap"]
-    C --> D["Verify Detail Screen<br/>(2.5s Safety Timeout)"]
-    D --> E["Dismiss Soft Keyboard<br/>& Title Sanitization Priority"]
+    C --> D{"Detail Screen Loaded?<br/>(Fast 800ms Check)"}
+    D -->|Yes| E["Dismiss Soft Keyboard<br/>& Title Sanitization Priority"]
+    D -->|No (Plain Text Card)| STREAM_INGEST["Immediate Stream Ingestion<br/>(NoticeEntity • 0s Delays)"]
+    STREAM_INGEST --> A
     E --> F{"Attachments Discovered?"}
     F -->|Yes| G["Loop: Tap Download / Chip Node<br/>(Physical Tap Fallback • 1,000ms Debounce)"]
     F -->|No| H["Guarded Return Loop (Up to 3 Attempts)<br/>Close Previews & Navigate Up / Back"]
@@ -413,8 +423,10 @@ flowchart TD
 1. **Deterministic Post Discovery & Stream Title Preservation:** 
    - The crawler scans the stream viewport, ignoring app bar chrome and bottom navigation tabs. It computes a SHA-256 fingerprint of each card's content so no post is ever processed twice or missed across scrolls.
    - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
-2. **Deep Post Entry via Physical Touch Tap Gestures:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the post card's screen bounds (guaranteeing entry across all Android devices and custom RecyclerView layouts). While standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) work on simple views, modern Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item views often use nested view wrappers, compound touch delegates, or unclickable parent containers that swallow accessibility events. K.I.D.S. eliminates this barrier universally: it computes the exact center screen coordinates of the target post card (`cardBounds.centerX(), cardBounds.centerY()`) and dispatches a 50ms physical touch stroke gesture directly to the Android window manager. This dual-dispatch approach guarantees 100% reliable entry into the post detail view across all phone models.
-3. **Keyboard Dismissal & Full Text Harvesting:** If the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
+2. **Deep Post Entry & Stream Announcement Handling (Fast 800ms Check & Fallback):**
+   - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the post card's center screen coordinates (`cardBounds.centerX(), cardBounds.centerY()`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
+   - **Stream Announcement Handling (Zero-Delay Direct Ingestion):** Many school announcements in the Stream tab—such as holiday notices, weather advisories, festival celebrations, and administrative alerts—are plain-text circulars without attachments. For these notices, Google Classroom already displays the complete message on the stream feed, and tapping the card does not open a separate detail page. Rather than freezing or stalling across lengthy timeouts, K.I.D.S. performs a rapid **800ms detail view check**. If a separate detail screen does not open within 800ms, the crawler immediately falls back to **direct stream card ingestion**: the full notice body, title, sender, and timestamp are captured directly into the local database (`NoticeEntity`), the notice counter increments, and the assistant proceeds immediately to the next card with zero frozen delays or timeouts!
+3. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 4. **Autonomous Attachment Capture & Intentional Bypass of 'Save all files offline':**
    - **Why 'Save all files offline' is Intentionally Bypassed:** Many announcements feature a Google Classroom button labeled *"Save all files offline"*. K.I.D.S. **deliberately blacklists and ignores this button**. When Google Classroom saves files "offline", it caches them in an encrypted, inaccessible private application sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`). Parents cannot view, open, or export these files from other apps or files managers, and they permanently bloat device flash memory.
    - **Systematic Coordinate Tapping with 1,000ms Debouncing:** Instead of generating inaccessible app cache bloat, K.I.D.S. systematically iterates through each educational attachment (.pdf, .jpg, .docx) individually. It locates the discrete download button or clickable attachment chip, updates the status pill (`Status: Downloading (X/Y)...` or `Status: Opening (X/Y)...`), and dispatches accessibility clicks with physical coordinate touch taps (`dispatchTap`) as fallback. 

@@ -205,7 +205,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
                 if (unvisitedCard != null) {
                     consecutiveZeroDiscoveryCount = 0
-                    val (title, fingerprint, clickableNode, cardBounds) = unvisitedCard
+                    val (title, fullText, fingerprint, clickableNode, cardBounds) = unvisitedCard
                     crawlerOverlay?.updateStatus("Status: Opening Post...", title)
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
@@ -219,8 +219,8 @@ class KidsAccessibilityService : AccessibilityService() {
                     // 2. Dispatch physical tap gesture to guarantee detail view opens
                     dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
 
-                    // Wait up to 2500ms for Detail View to load
-                    val enteredDetail = waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
+                    // Wait up to 800ms for Detail View to load
+                    val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
                         val active = rootInActiveWindow ?: return@waitForCondition false
                         val isDetail = isPostDetailView(active)
                         active.recycle()
@@ -228,9 +228,46 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
 
                     if (!enteredDetail) {
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Timed out waiting for detail view for \"$title\". Skipping.")
+                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Stream card did not open detail view (plain text notice). Ingesting directly from stream.")
+                        val db = KidsDatabase.getInstance(applicationContext)
+                        val childEntities = db.childProfileDao().getAllChildren().firstOrNull().orEmpty()
+                        val children = childEntities.map { e ->
+                            ChildProfile(e.childId, e.firstName, e.grade, e.academicYear, e.schoolName, e.accountEmail, e.disambiguationTag, e.photoUri, e.channels, e.createdAtMs)
+                        }
+                        val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+                        val router = MultiChildRouter(children)
+                        val targetChild = router.route("com.google.android.apps.classroom", title, fullText)
+                        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+
+                        val hash = deduplicationEngine.computeNoticeHash(
+                            childId = targetChildId,
+                            sourceApp = "com.google.android.apps.classroom",
+                            title = title,
+                            body = fullText
+                        )
+
+                        val existing = db.noticeDao().findByHash(hash)
+                        if (existing == null) {
+                            val noticeEntity = NoticeEntity(
+                                noticeId = UUID.randomUUID().toString(),
+                                childId = targetChildId,
+                                sourceApp = "com.google.android.apps.classroom",
+                                category = classifier.classify(title, fullText).name,
+                                title = title,
+                                body = fullText,
+                                sender = "Google Classroom",
+                                timestampMs = System.currentTimeMillis(),
+                                hashSha256 = hash,
+                                syncStatus = SyncStatus.PENDING.name,
+                                driveFileId = null,
+                                attachmentCount = 0
+                            )
+                            db.noticeDao().insert(noticeEntity)
+                            crawlerOverlay?.incrementNoticeCount()
+                            CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled from stream: \"$title\"")
+                        }
                         visitedPostFingerprints.add(fingerprint)
-                        delay(400)
+                        delay(200)
                         continue
                     }
 
@@ -441,7 +478,6 @@ class KidsAccessibilityService : AccessibilityService() {
                     att.downloadNode.getBoundsInScreen(b)
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
-                crawlerOverlay?.incrementAttachmentCount()
                 delay(1000) // Calibrated debounce between downloads
             } else if (att.clickableChip != null && att.clickableChip.isClickable) {
                 crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
@@ -452,7 +488,6 @@ class KidsAccessibilityService : AccessibilityService() {
                     att.clickableChip.getBoundsInScreen(b)
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
-                crawlerOverlay?.incrementAttachmentCount()
                 delay(1000)
 
                 // If tapping the chip opened an in-app viewer/preview, close it to restore detail view for next attachments
@@ -473,7 +508,10 @@ class KidsAccessibilityService : AccessibilityService() {
 
         if (attachments.isNotEmpty()) {
             delay(1200) // Allow system DownloadManager to register downloads
-            com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+            val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+            for (s in 0 until stagedCount) {
+                crawlerOverlay?.incrementAttachmentCount()
+            }
         }
     }
 
@@ -516,6 +554,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private data class UnvisitedCard(
         val title: String,
+        val fullText: String,
         val fingerprint: String,
         val clickableNode: AccessibilityNodeInfo,
         val bounds: Rect
@@ -560,7 +599,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
                 val cardBounds = Rect(rect)
                 card.recycle()
-                return UnvisitedCard(title, fingerprint, clickable, cardBounds)
+                return UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
             }
             card.recycle()
         }
@@ -614,11 +653,17 @@ class KidsAccessibilityService : AccessibilityService() {
     ) {
         val text = node.text?.toString()?.trim()
         val desc = node.contentDescription?.toString()?.trim()
+
+        val isOptionsButton = (desc?.contains("options", ignoreCase = true) == true) ||
+                (text?.contains("options", ignoreCase = true) == true) ||
+                (desc?.contains("more options", ignoreCase = true) == true)
+
         val candidate = when {
+            isOptionsButton -> null
             !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
                 if (text.contains('.')) text else "$text.pdf"
             }
-            !desc.isNullOrBlank() && (extensions.any { desc.contains(it, ignoreCase = true) } || desc.contains("attachment", ignoreCase = true) || desc.contains("pdf", ignoreCase = true)) -> {
+            !desc.isNullOrBlank() && (extensions.any { desc.contains(it, ignoreCase = true) } || (desc.contains("attachment", ignoreCase = true) && !desc.contains("options", ignoreCase = true)) || desc.contains("pdf", ignoreCase = true)) -> {
                 if (desc.contains('.')) desc else "$desc.pdf"
             }
             else -> null

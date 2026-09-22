@@ -159,6 +159,7 @@ class FloatingCrawlerOverlay(
 
                 val btnMin = TextView(service).apply {
                     text = " — "
+                    contentDescription = "Minimize assistant overlay"
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f)
                     gravity = Gravity.CENTER
@@ -171,6 +172,7 @@ class FloatingCrawlerOverlay(
 
                 val btnClose = TextView(service).apply {
                     text = " ✕ "
+                    contentDescription = "Close assistant overlay"
                     setTextColor(Color.parseColor("#CBD5E1"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
                     gravity = Gravity.CENTER
@@ -248,6 +250,7 @@ class FloatingCrawlerOverlay(
                         LinearLayout.LayoutParams.WRAP_CONTENT
                     )
                     setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6))
+                    contentDescription = "Start Auto-Capture"
                     setOnClickListener {
                         toggleAutoScroll()
                     }
@@ -381,7 +384,16 @@ class FloatingCrawlerOverlay(
         dismissAndRemove()
     }
 
+    private var lastToggleTimeMs = 0L
+
     private fun toggleAutoScroll() {
+        val now = System.currentTimeMillis()
+        if (now - lastToggleTimeMs < 1200L) {
+            Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
+            return
+        }
+        lastToggleTimeMs = now
+
         if (isAutoScrolling) {
             stopAutoScroll()
         } else {
@@ -394,6 +406,7 @@ class FloatingCrawlerOverlay(
         isAutoScrolling = true
         CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
         autoButton?.text = "⏹ Stop Capture"
+        autoButton?.contentDescription = "Stop Auto-Capture"
         autoButton?.setTextColor(Color.WHITE)
         autoButton?.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE
@@ -409,6 +422,7 @@ class FloatingCrawlerOverlay(
         isAutoScrolling = false
         CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture. Halting crawler and triggering Drive sync.")
         autoButton?.text = "▶ Start Auto-Capture"
+        autoButton?.contentDescription = "Start Auto-Capture"
         autoButton?.setTextColor(Color.parseColor("#0F172A"))
         autoButton?.background = GradientDrawable().apply {
             shape = GradientDrawable.RECTANGLE

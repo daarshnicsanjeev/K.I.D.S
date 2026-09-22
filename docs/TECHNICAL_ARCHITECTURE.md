@@ -461,8 +461,17 @@ sequenceDiagram
   ```
   - `GestureDescription.StrokeDescription(path, 0, 50)` specifies a precise **50ms contact duration**, simulating a genuine, high-responsiveness finger tap.
   - A post-tap stabilization delay of **120ms** allows the Android window manager and view hierarchy to dispatch the touch event before subsequent coroutine polling begins.
-- **2.5-Second Screen Verification:** Rather than assuming immediate transition, the crawler invokes `waitForCondition(timeoutMs = 2500, pollIntervalMs = 200)` and inspects `rootInActiveWindow` via `isPostDetailView(active)`.
-- **Failure Recovery:** If the card click fails or the detail screen fails to load within 2,500ms, the card is marked as visited in `visitedPostFingerprints` and skipped, preventing indefinite hangs.
+- **Fast 800ms Screen Verification & Stream Announcement Fallback:**
+  Rather than waiting 2,500ms and freezing the screen when plain text announcements do not navigate to a separate detail screen, the crawler invokes a fast **800ms check**:
+  ```kotlin
+  val enteredDetail = waitForCondition(timeoutMs = 800, pollIntervalMs = 150) {
+      val active = rootInActiveWindow ?: return@waitForCondition false
+      val isDetail = isPostDetailView(active)
+      active.recycle()
+      isDetail
+  }
+  ```
+  - If `enteredDetail` is false (plain text announcement without coursework detail screen), it immediately writes `NoticeEntity` directly to Room SQLite using the headline and full body captured on the stream card, increments the notice count, adds the fingerprint to `visitedPostFingerprints`, and continues without delay.
 
 ##### 3. `IN_DETAIL_VIEW` (Title Sanitization, Full Text Harvesting & Autonomous Attachment Capture)
 - **Soft Keyboard Dismissal:** Classroom frequently focuses the `"Add class comment"` input field upon entering detail view, popping up the software keyboard and occluding attachment buttons. `clearFocusIfInputFocused(detailRoot)` scans for `EditText` views and dispatches `ACTION_CLEAR_FOCUS`.
@@ -491,7 +500,7 @@ sequenceDiagram
   val title = cleanFallback ?: titleCandidate?.take(80) ?: "Classroom Notice"
   ```
   - **`fallbackTitle` Stream Prioritization:** If a clean stream title was captured before entering the detail view (`cleanFallback != null`), it is chosen unconditionally over interior candidate strings.
-  - **Expanded `excludedChrome` Filtering:** Thoroughly excludes navigation chrome, comments headers, attachment option indicators, and offline button labels:
+  - **Expanded `excludedChrome` Filtering & 3-Dots Popup Exclusion:** Thoroughly excludes navigation chrome, comments headers, attachment option indicators, and offline button labels:
     ```kotlin
     private val excludedChrome = setOf(
         "open navigation menu", "show menu", "more options", "navigate up", "back",
@@ -503,10 +512,7 @@ sequenceDiagram
         "for your reference", "for reference"
     )
     ```
-- **Intentional Bypass of 'Save all files offline' (Anti-Cache Bloat Invariant):**
-  - Classroom renders a master button labeled `"Save all files offline"`.
-  - **Why It Is Bypassed:** In Google Classroom, clicking "Save all offline" writes attachments into encrypted, internal application cache storage (`/data/user/0/com.google.android.apps.classroom/cache/`). This storage is completely sandboxed: parents cannot open, share, or access these files from external apps or file explorers, yet the files permanently bloat the phone's flash memory.
-  - By adding `"save all files offline"`, `"save all offline"`, and `"save offline"` to `excludedChrome`, K.I.D.S. deliberately avoids clicking this button, protecting device flash memory from inaccessible in-app cache bloat.
+  - **3-Dots Options Exclusion (`findNodesWithExtensions`):** Classroom renders a 3-dots popup button next to attachments with contentDescription `"More options for attachment [filename]"`. By checking `isOptionsButton = desc.contains("options") || text.contains("options")`, these buttons are strictly filtered out to prevent opening popup menus.
 - **Autonomous Attachment Capture Pipeline:**
   Instead of internal app caching, K.I.D.S. systematically extracts and downloads each attachment individually:
   ```kotlin
@@ -520,7 +526,6 @@ sequenceDiagram
               att.downloadNode.getBoundsInScreen(b)
               dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
           }
-          crawlerOverlay?.incrementAttachmentCount()
           delay(1000) // Calibrated debounce between downloads
       } else if (att.clickableChip != null && att.clickableChip.isClickable) {
           crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
@@ -530,11 +535,19 @@ sequenceDiagram
               att.clickableChip.getBoundsInScreen(b)
               dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
           }
-          crawlerOverlay?.incrementAttachmentCount()
           delay(1000)
       }
       att.downloadNode?.recycle()
       att.clickableChip?.recycle()
+  }
+
+  // Truthful File Metric: Increment strictly based on staged files
+  if (attachments.isNotEmpty()) {
+      delay(1200) // Allow system DownloadManager to stage files
+      val stagedCount = DownloadFolderObserver.scanLocalAttachments(applicationContext)
+      for (s in 0 until stagedCount) {
+          crawlerOverlay?.incrementAttachmentCount()
+      }
   }
   ```
   - **Systematic Attachment Node/Chip Coordinate Tapping:** Evaluates both explicit download icon nodes (`att.downloadNode`) and clickable chips (`att.clickableChip`). If the accessibility action fails or is swallowed by custom views, it dispatches a 50ms physical touch tap gesture at the node's screen center (`dispatchTap`).
@@ -726,9 +739,24 @@ class FloatingCrawlerOverlay(...) {
   - **Top Row:** Title (`K.I.D.S. Assistant`), real-time counter badge (`XX Notices • YY Files`), minimize (`—`), and close (`✕`).
   - **Status Row:** Live FSM state indicator (`statusTextView`).
   - **Detail Row:** Active post headline or attachment filename (`detailTextView`), auto-truncated with ellipsis.
-- **Single-Action Responsive Button:**
-  - In idle state: Displays `▶ Start Auto-Capture` in Amber Orange (`#ED8936`).
-  - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with a minimum 44dp touch target.
+- **Single-Action Responsive Button with 1,200ms TalkBack Debounce:**
+  - In idle state: Displays `▶ Start Auto-Capture` in Amber Orange (`#ED8936`) with `contentDescription = "Start Auto-Capture"`.
+  - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with `contentDescription = "Stop Auto-Capture"`.
+  - **WCAG 2.1 AA/AAA 48dp Touch Targets:** Enforces `minHeight = dpToPx(48)` and `minWidth = dpToPx(48)` on `autoButton`, minimize button (`btnMin`), and close button (`btnClose`).
+  - **1,200ms TalkBack Double-Tap Guard:** TalkBack activates controls via rapid double-tap gestures. To prevent accidental double-tap activation from triggering `startAutoScroll()` and immediately following with `stopAutoScroll()` within 100ms, `toggleAutoScroll()` enforces a 1,200ms debounce:
+    ```kotlin
+    private var lastToggleTimeMs = 0L
+
+    private fun toggleAutoScroll() {
+        val now = System.currentTimeMillis()
+        if (now - lastToggleTimeMs < 1200L) {
+            Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
+            return
+        }
+        lastToggleTimeMs = now
+        if (isAutoScrolling) stopAutoScroll() else startAutoScroll()
+    }
+    ```
 - **Automated Background Sync on Stop:**
   - Calling `stopAutoScroll()` automatically triggers `KidsAccessibilityService.triggerDriveSync(applicationContext)`, enqueuing `DriveSyncWorker` to upload all newly harvested notices and staged attachments to the parent's Google Drive immediately.
 
