@@ -9,19 +9,19 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `af79d640`
+- Built from commit: `2be305c2`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - FloatingCrawlerOverlay
 - KidsAccessibilityService
-- ChildProfile
 - GoogleDriveClient
+- ChildProfile
 - NoticeDao
-- GoogleDriveClient.kt
 - MLKitOcrParser.kt
 - ci_watch.py
+- K.I.D.S. Android Collector (PRD)
 - OnboardingWizardScreen
 - ChildrenGridDashboard.kt
 - StreamManifest
@@ -93,29 +93,29 @@ Nodes (22): AccessibilityService, FloatingCrawlerOverlay, GestureResultCallback,
 Cohesion: 0.11
 Nodes (5): ExtractedAttachmentDetail, KidsAccessibilityService, AccessibilityNodeInfo, Context, UnvisitedCard
 
-### Community 2 - "ChildProfile"
+### Community 2 - "GoogleDriveClient"
+Cohesion: 0.07
+Nodes (23): DriveVaultManager, Failure, Context, Result, ProvisionStep1Result, Success, UserConsentRequired, ChannelVaultFolders (+15 more)
+
+### Community 3 - "ChildProfile"
 Cohesion: 0.08
 Nodes (24): GraphEdge, GraphNode, KnowledgeGraph, KotlinGraphifyEngine, Attachment, ChannelType, FILE_IMPORT, GOOGLE_CLASSROOM (+16 more)
-
-### Community 3 - "GoogleDriveClient"
-Cohesion: 0.11
-Nodes (13): DriveVaultManager, Failure, Context, Result, ProvisionStep1Result, Success, UserConsentRequired, ChannelVaultFolders (+5 more)
 
 ### Community 4 - "NoticeDao"
 Cohesion: 0.09
 Nodes (10): ChildProfileDao, NoticeDao, KidsDatabase, Context, ChildProfileEntity, database, Flow, NoticeEntity (+2 more)
 
-### Community 5 - "GoogleDriveClient.kt"
-Cohesion: 0.06
-Nodes (26): AI-Native Storage (JSONL & Markdown), DriveQuotaInfo, ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest, async, bytearraycontent, bytearrayoutputstream (+18 more)
-
-### Community 6 - "MLKitOcrParser.kt"
+### Community 5 - "MLKitOcrParser.kt"
 Cohesion: 0.12
 Nodes (19): Activity, Context, Result, SafVaultFolders, SafVaultManager, MLKitOcrParser, OcrExtractionResult, ShareTargetActivity (+11 more)
 
-### Community 7 - "ci_watch.py"
+### Community 6 - "ci_watch.py"
 Cohesion: 0.08
 Nodes (27): AttachmentEntity, ChildProfileEntity, NoticeEntity, NoticeFtsEntity, Converters, ChannelConfig, encodetostring, entity (+19 more)
+
+### Community 7 - "K.I.D.S. Android Collector (PRD)"
+Cohesion: 0.09
+Nodes (16): AI-Native Storage (JSONL & Markdown), ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest, Dual WhatsApp Catch-Up Engine, 5-Point Cloud Health Probe, Google Credential Manager API, inputstream (+8 more)
 
 ### Community 8 - "OnboardingWizardScreen"
 Cohesion: 0.22
@@ -202,7 +202,7 @@ Cohesion: 0.83
 Nodes (3): gradlew script, die(), warn()
 
 ## Knowledge Gaps
-- **36 isolated node(s):** `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `AttachmentEntity` (+31 more)
+- **36 isolated node(s):** `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `CloudHealthReport`, `AttachmentEntity` (+31 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 188 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
 - **15 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -213,7 +213,7 @@ _Questions this graph is uniquely positioned to answer:_
   _High betweenness centrality (0.152) - this node is a cross-community bridge._
 - **Why does `ChildProfile` connect `ChildProfile` to `OnboardingWizardScreen`, `ChildrenGridDashboard.kt`, `KidsAccessibilityService`, `KidsNotificationListenerService.kt`?**
   _High betweenness centrality (0.116) - this node is a cross-community bridge._
-- **Why does `OnboardingWizardScreen()` connect `OnboardingWizardScreen` to `ChildProfile`, `GoogleDriveClient`, `ci_watch.py`, `OnboardingWizardScreen.kt`, `PermissionHelper.kt`, `MainActivity.kt`?**
+- **Why does `OnboardingWizardScreen()` connect `OnboardingWizardScreen` to `GoogleDriveClient`, `ChildProfile`, `ci_watch.py`, `OnboardingWizardScreen.kt`, `PermissionHelper.kt`, `MainActivity.kt`?**
   _High betweenness centrality (0.085) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `KidsAccessibilityService` (e.g. with `ContentClassifier` and `DeduplicationEngine`) actually correct?**
   _`KidsAccessibilityService` has 2 INFERRED edges - model-reasoned connections that need verification._
@@ -221,5 +221,5 @@ _Questions this graph is uniquely positioned to answer:_
   _`GoogleDriveClient` has 4 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 4 inferred relationships involving `ChildProfile` (e.g. with `.onCreate()` and `OnboardingWizardScreen()`) actually correct?**
   _`ChildProfile` has 4 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics` to the rest of the system?**
+- **What connects `DeviceInfo`, `PipelineMetrics`, `StepStatus` to the rest of the system?**
   _36 weakly-connected nodes found - possible documentation gaps or missing edges._
