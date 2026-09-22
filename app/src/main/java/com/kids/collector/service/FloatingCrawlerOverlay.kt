@@ -454,37 +454,19 @@ class FloatingCrawlerOverlay(
     }
 
     private fun performScrollGesture(onComplete: () -> Unit) {
-        // 1. Primary: Native ACTION_SCROLL_FORWARD on the primary scrollable list container
-        try {
-            val rootNode = service.rootInActiveWindow
-            if (rootNode != null) {
-                val scrollableNode = findPrimaryScrollableNode(rootNode)
-                if (scrollableNode != null) {
-                    val scrolled = scrollableNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                    scrollableNode.recycle()
-                    if (scrolled) {
-                        CrawlerTraceLogger.log("SCROLLER_ACTION", "Native ACTION_SCROLL_FORWARD succeeded on list container")
-                        onComplete()
-                        return
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            CrawlerTraceLogger.log("SCROLLER_ACTION_ERROR", "Error attempting native scroll: ${e.message}")
-        }
-
-        // 2. Fallback: Touch swipe offset to the right side (75% width) away from floating overlay
         val displayMetrics = service.resources.displayMetrics
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        val startX = width * 0.75f
-        val startY = height * 0.70f
-        val endY = height * 0.25f
+        // Physical touch swipe: Start at 75% height and swipe upwards to 20% height
+        // Placed at 65% width to avoid right-edge back gestures and left-side overlay
+        val startX = width * 0.65f
+        val startY = height * 0.75f
+        val endY = height * 0.20f
 
         CrawlerTraceLogger.log(
             "SCROLLER_SWIPE",
-            "Dispatching swipe fallback: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}, density=${displayMetrics.density}"
+            "Dispatching physical scroll swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
         )
 
         val path = Path().apply {
@@ -492,25 +474,39 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        // Calibrated 450ms swipe
-        val stroke = GestureDescription.StrokeDescription(path, 0, 450)
+        // Calibrated 400ms kinetic swipe to trigger RecyclerView fling & pagination
+        val stroke = GestureDescription.StrokeDescription(path, 0, 400)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
             override fun onCompleted(gestureDescription: GestureDescription?) {
-                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Swipe gesture COMPLETED")
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe COMPLETED")
                 onComplete()
             }
 
             override fun onCancelled(gestureDescription: GestureDescription?) {
-                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Swipe gesture CANCELLED")
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe CANCELLED, executing native fallback")
+                fallbackNativeScroll()
                 onComplete()
             }
         }, null)
 
         if (!dispatched) {
-            CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch gesture (service or window not ready)")
+            CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch physical swipe, executing native fallback")
+            fallbackNativeScroll()
             onComplete()
+        }
+    }
+
+    private fun fallbackNativeScroll() {
+        try {
+            val rootNode = service.rootInActiveWindow ?: return
+            val scrollable = findPrimaryScrollableNode(rootNode)
+            scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            scrollable?.recycle()
+            rootNode.recycle()
+        } catch (e: Exception) {
+            Log.w(TAG, "Fallback scroll error: ${e.message}")
         }
     }
 

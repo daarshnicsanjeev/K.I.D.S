@@ -308,10 +308,14 @@ stateDiagram-v2
     GUARDED_RETURN --> SCANNING_STREAM: Stream Re-settled (isStreamOrClassworkView Verified, <=2s + 600ms)
     
     SCROLLING --> SCANNING_STREAM: New Unvisited Cards Found (850ms Settle Delay)
-    SCROLLING --> CAPTURE_COMPLETE: 2 Consecutive Empty Scrolls (End of Stream)
+    SCROLLING --> PAGINATION_WAIT: 0 New Cards Found (consecutiveZeroDiscoveryCount < 5)
+    PAGINATION_WAIT --> SCROLLING: Delay 1,500ms (Classroom Network Pagination Wait)
+    SCROLLING --> CAPTURE_COMPLETE: 5 Consecutive Empty Scrolls (End of Stream Confirmed)
     
-    CAPTURE_COMPLETE --> SHOW_COMPLETION: showCompletion(notices, files)
+    CAPTURE_COMPLETE --> SHOW_COMPLETION: totalNotices > 0 (showCompletion)
+    CAPTURE_COMPLETE --> STREAM_UP_TO_DATE: totalNotices == 0 ("✓ Stream Up to Date")
     SHOW_COMPLETION --> AUTO_DISMISS: 2.5s Display ("✓ Backfill Complete!")
+    STREAM_UP_TO_DATE --> TERMINAL_SYNC: Clean Overlay Halt & Background Sync
     AUTO_DISMISS --> TERMINAL_SYNC: dismissAndRemove() -> removeViewImmediate()
     TERMINAL_SYNC --> IDLE: WorkManager APPEND_OR_REPLACE Enqueued
     
@@ -427,10 +431,32 @@ sequenceDiagram
     end
 ```
 
-##### 1. `SCANNING_STREAM` (Safe Viewport, Stream Title Preservation & SHA-256 Fingerprinting)
+##### 1. `SCANNING_STREAM` (Safe Viewport, Relaxed Visibility, Stream Title Preservation & SHA-256 Fingerprinting)
 - **Safe Viewport Filtering:** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
   $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - 170\text{px}$$
   This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
+- **Relaxed Card Viewport Visibility Calculation:**
+  In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the display as the list scrolls. Prematurely discarding partially occluded cards causes missed announcements. `findNextUnvisitedPost()` applies a relaxed viewport visibility formula:
+  ```kotlin
+  val cardHeight = rect.height().coerceAtLeast(1)
+  val visibleTop = rect.top.coerceAtLeast(minTop)
+  val visibleBottom = rect.bottom.coerceAtMost(maxBottom)
+  val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
+  val visibilityFraction = visibleHeight.toFloat() / cardHeight.toFloat()
+
+  if (visibilityFraction < 0.35f && rect.centerY() !in minTop..maxBottom) {
+      card.recycle()
+      continue
+  }
+  ```
+  A card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the safe bounds** (`rect.centerY() in minTop..maxBottom`).
+- **Safe Center Y Clamping for Click Dispatch:**
+  When dispatching physical touch injection into cards that are partially clipped at viewport edges, tapping the unconstrained geometric center (`rect.centerY()`) could cause the touch to land off-screen or strike the top app bar or bottom tabs. `KidsAccessibilityService` clamps the vertical coordinate into a guaranteed safe touch strip:
+  ```kotlin
+  val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+  val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+  ```
+  This guarantees that physical tap gestures always hit the interactive body of the card safely within screen boundaries.
 - **Stream Title Extraction (`fallbackTitle`):** Before navigating into any card, the scanner extracts the headline directly from the stream card (`findNextUnvisitedPost`), filtering out excluded chrome. This candidate is packaged into `UnvisitedCard(title, fingerprint, clickableNode, bounds)` and passed forward to `processPostDetailAndDownload(detailRoot, title)`.
 - **Chrome & Noise Rejection:** Ignores non-post navigation elements (`excludedChrome`) such as `"open navigation menu"`, `"signed in as"`, `"tasks due"`, `"back to stream"`, and cards with content length $\le 20$ characters.
 - **Classroom Stream Comment Counter Filter:**
@@ -475,11 +501,13 @@ sequenceDiagram
 - **Deterministic SHA-256 Fingerprinting:** For each eligible post card, `computeCardFingerprint(cardItems)` aggregates sanitized text tokens delimited by pipe (`|`), calculates a SHA-256 hash, and truncates to the first 8 hex characters:
   $$\text{Fingerprint} = \text{Hex}(\text{SHA-256}(\text{filteredTokens}))[0..7]$$
   Fingerprints are maintained in `visitedPostFingerprints` (`ConcurrentHashMap.newKeySet()`), ensuring no post is visited twice even when list recycling re-renders nodes.
+- **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
+  `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. As an intentional architectural invariant, `visitedPostFingerprints` is **strictly preserved across crawl session toggles** (when the parent starts, stops, or re-initiates auto-capture). It is **not** cleared when stopping crawl jobs. This invariant guarantees that stopping capture to review notices or pausing and restarting will never cause the crawler to re-enter, re-read, or re-download attachments from post cards already parsed during that session, saving battery, device memory, and preventing duplicate processing.
 
 ##### 2. `NAVIGATING_TO_DETAIL` (Physical Touch Tap Dispatch & Screen Verification)
 - **Dual Action Click & Physical Touch Tap (`dispatchTap`):** Standard accessibility actions (`AccessibilityNodeInfo.ACTION_CLICK`) often fail on custom `RecyclerView` item layouts, compound touch listeners, card wrappers, or OEM skins (Samsung One UI, Xiaomi HyperOS, Oppo ColorOS) that swallow accessibility clicks. To guarantee post opening across all Android devices, the crawler performs a dual-action dispatch:
   1. Executes `clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)`.
-  2. Dispatches a physical touch tap gesture directly at the center of the post card's screen bounds:
+  2. Dispatches a physical touch tap gesture directly at the safe clamped center of the post card's screen bounds:
      ```kotlin
      dispatchTap(cardBounds.centerX().toFloat(), cardBounds.centerY().toFloat())
      ```
@@ -687,8 +715,55 @@ sequenceDiagram
   }
   ```
   - **Automated In-App Viewer & Preview Detection (`automateViewerShareOrDownload`):**
-    When tapping an attachment chip opens an internal or external viewer (e.g. Google Docs, Sheets, or Google Drive PDF viewer), `automateViewerShareOrDownload()` automatically discovers and handles the preview screen without user intervention:
-    1. **Viewer Screen Detection:** Waits up to 1,500ms for an active window change (`!isPostDetailView && !isStreamOrClassworkView`).
+    When tapping an attachment chip opens an internal or external viewer (e.g. Google Docs, Sheets, Drive PDF viewer, or system document viewers), `automateViewerShareOrDownload()` automatically discovers and handles the preview screen without user intervention:
+    1. **Viewer Screen Detection & Exclusion Invariant (`isDocumentViewerScreen` vs. `isPostDetailView`):**
+       To reliably trigger viewer automation without mistaking a PDF or image preview for a post detail screen, `KidsAccessibilityService` deploys a two-tier screen inspection:
+       ```kotlin
+       private fun isDocumentViewerScreen(combinedText: String): Boolean {
+           val lower = combinedText.lowercase()
+           return lower.contains("page 1 of") ||
+                   lower.contains("page 1/") ||
+                   lower.contains("fit to width") ||
+                   lower.contains("fit to screen") ||
+                   lower.contains("zoom in") ||
+                   lower.contains("send a copy") ||
+                   lower.contains("send file")
+       }
+
+       private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
+           val textList = mutableListOf<String>()
+           collectQuickText(rootNode, textList)
+           val combined = textList.joinToString(" ").lowercase()
+
+           // 1. If it has document viewer controls, it is a document viewer, not post detail
+           if (isDocumentViewerScreen(combined)) {
+               return false
+           }
+
+           val hasDetailIndicators = combined.contains("add class comment") ||
+                   combined.contains("class comments") ||
+                   combined.contains("your work") ||
+                   combined.contains("assigned") ||
+                   combined.contains("attachments") ||
+                   combined.contains("attachment") ||
+                   combined.contains("save all files offline") ||
+                   combined.contains("save all") ||
+                   combined.contains("save offline") ||
+                   combined.contains("for your reference") ||
+                   combined.contains("points")
+           val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
+                   combined.contains("tab 1 of 3") ||
+                   combined.contains("tab 2 of 3")
+           val hasBackArrow = hasNavigateUpButton(rootNode)
+           return hasDetailIndicators && hasBackArrow && !hasBottomTabs
+       }
+       ```
+       - **Strict Detail View Constraint:** A screen is categorized as a post detail view **only** if it possesses both detail indicators (`"add class comment"`, `"your work"`, `"assigned"`, etc.) **and** a confirmed Navigate Up back arrow, **and** lacks bottom stream/classwork navigation tabs, **and** contains **zero** document viewer controls (`!isDocumentViewerScreen(combined)`).
+       - **Reliable Viewer Handoff:** When a PDF or image preview opens, `isDocumentViewerScreen()` detects controls like `"fit to width"` or `"page 1 of"`, causing `isPostDetailView()` to return `false`. The viewer wait loop in `automateViewerShareOrDownload()`:
+         ```kotlin
+         val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
+         ```
+         evaluates to `true`, deterministically detecting that the document viewer has taken foreground within 1,500ms and proceeding directly to Share/Download automation.
     2. **Direct Share / Download Scanning:** Inspects the active node tree for a direct Share action (`"share"`, `"send a copy"`, `"send file"`) via `findShareButton(active)` or a direct Download button (`findDownloadButtonNode(active)`). If found, it dispatches an accessibility click or falls back to `dispatchTap`.
     3. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.
     4. **Invocation of Chooser Selection:** If a Share action was triggered, it calls `selectKidsInSystemChooser()`.
@@ -777,22 +852,35 @@ sequenceDiagram
   - Calls `waitForCondition(timeoutMs = 2000, pollIntervalMs = 200)` checking `isStreamOrClassworkView(active)` to verify that bottom tabs are visible.
   - Applies a **600ms stabilization delay** post-return, giving the Android `RecyclerView` time to rebind views and settle scroll physics before resuming the scan.
 
-##### 5. `SCROLLING` (Dual-Strategy Scroll & Settle Delay)
-- **Primary Mechanism:** Performs `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` on the primary scrollable container (`findPrimaryScrollableNode`). This produces clean, system-native list scrolling.
-- **Fallback Swipe Path:** If the container does not respond to native accessibility scroll actions, it constructs a calibrated 450ms touch swipe path via `dispatchGesture()`. The swipe is deliberately offset to 75% screen width:
-  $$(0.75 \times \text{width}, 0.70 \times \text{height}) \longrightarrow (0.75 \times \text{width}, 0.25 \times \text{height})$$
-  This guarantees the pointer never collides with or drags the floating overlay on the left side.
+##### 5. `SCROLLING` (Kinetic Physical Swipe Gesture & Viewport Settling)
+- **Primary Mechanism (400ms Kinetic Physical Swipe):**
+  Modern Google Classroom `RecyclerView` implementations rely on real pointer velocity and `OnScrollListener` fling callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) frequently report success without generating physical touch velocity, causing Classroom's pagination adapter to stall.
+  `FloatingCrawlerOverlay.performScroll()` prioritizes an authentic physical pointer swipe gesture constructed via `GestureDescription.Builder`:
+  - **Kinetic Swipe Coordinates:** Starts at 75% screen height and sweeps upward to 20% screen height:
+    $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
+  - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, the swipe safely avoids triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoids colliding with or dragging the floating assistant overlay.
+  - **Calibrated 400ms Duration:** The 400ms stroke (`GestureDescription.StrokeDescription(path, 0, 400)`) generates genuine kinetic inertia and fling velocity, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older announcements.
+  - **Graceful Native Fallback:** If the physical gesture is cancelled or fails to dispatch, `fallbackNativeScroll()` executes `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` on the primary scrollable container (`findPrimaryScrollableNode`).
 - **850ms Settling Delay:** Following scroll completion, the crawler halts for **850ms** to allow view recycling, text binding, and view layout passes to finish before inspecting newly presented post cards.
 
-##### 6. `END-OF-STREAM DETECTION` & Autonomous Completion Pipeline
-- **Dual Empty Scroll Threshold:** After each scroll pass, the crawler checks if new unvisited cards appeared on screen. If zero unvisited cards are discovered, `consecutiveZeroDiscoveryCount` increments. When **2 consecutive scrolls** yield zero new cards (`consecutiveZeroDiscoveryCount >= 2`), the crawler concludes that the bottom of the historical announcement feed or classwork topic tree has been reached.
-- **Autonomous Zero-Click Completion Flow (`showCompletion`):**
-  Instead of abruptly terminating or waiting for manual confirmation, the crawler executes an autonomous 4-stage completion pipeline:
-  1. **Visual State Transformation (`showCompletion`):** The crawler invokes `crawlerOverlay?.showCompletion(totalNotices, totalFiles)`. The overlay pill's background instantly shifts from standard navy to **Deep Success Green** (`#1B4D3E` with a `#4ADE80` bright emerald stroke). The status text updates to `"✓ Backfill Complete!"` in light green (`#86EFAC`), the detail line displays `"$countNotices Notices • $countFiles Files Saved"` in crisp white, and the action button hides (`View.GONE`).
-  2. **2.5-Second Visual Dwell Delay:** The overlay schedules a 2,500ms timer via `handler.postDelayed(..., 2500)`. This guarantees that the parent can comfortably observe the final backfill tallies without feeling rushed or wondering if the operation succeeded.
-  3. **Guaranteed View Teardown (`dismissAndRemove`):** When the 2.5s timer expires, `dismissAndRemove()` executes, invoking `windowManager.removeViewImmediate(view)` to synchronously detach the overlay from Android's window hierarchy.
-  4. **Terminal Sync Enqueue (`ExistingWorkPolicy.APPEND_OR_REPLACE`):** The completion callback fires, executing `stopDeepCrawl()` (cancelling the coroutine job) and invoking `triggerDriveSync(applicationContext)`, which queues a terminal synchronization task in `WorkManager` using `ExistingWorkPolicy.APPEND_OR_REPLACE`.
-  - **Zero User Interaction Required:** The entire flow from final scroll to screen cleanup and cloud synchronization executes 100% hands-free with zero button taps.
+##### 6. `END-OF-STREAM DETECTION` (5-Attempt Pagination Tolerance & Autonomous Completion)
+- **5-Attempt Zero-Discovery Tolerance & 1,500ms Network Delay:**
+  When zero unvisited cards are detected after a scroll pass (`!hasNew`), `consecutiveZeroDiscoveryCount` increments. Because Classroom requires network latency to query Google servers and bind earlier posts, K.I.D.S. does not assume end-of-stream prematurely:
+  - If `consecutiveZeroDiscoveryCount < 5`:
+    The crawler updates the overlay status to `"Checking for earlier posts..."` with detail `"Waiting for stream pagination ($consecutiveZeroDiscoveryCount/5)"`, and executes a **1,500ms network settling delay** (`delay(1500)`) to allow Classroom ample time to fetch older announcements.
+  - When **5 consecutive scrolls and pagination waits yield zero new cards (`5/5`)**, the crawler concludes that the historical stream has been fully traversed.
+- **Differentiated Autonomous Outcomes (`showCompletion` vs. `"✓ Stream Up to Date"`):**
+  Instead of abruptly terminating or waiting for manual confirmation, the crawler executes an autonomous completion pipeline:
+  1. **New Notices Captured (`totalNotices > 0`):**
+     - **Visual State Transformation (`showCompletion`):** The overlay pill's background instantly shifts from standard navy to **Deep Success Green** (`#1B4D3E` with a `#4ADE80` bright emerald stroke). The status text updates to `"✓ Backfill Complete!"` in light green (`#86EFAC`), the detail line displays `"$countNotices Notices • $countFiles Files Saved"` in crisp white, and the action button hides (`View.GONE`).
+     - **2.5-Second Visual Dwell Delay:** Schedules a 2,500ms timer via `handler.postDelayed(..., 2500)` so parents can comfortably observe final tallies.
+     - **Guaranteed View Teardown & Sync:** `dismissAndRemove()` invokes `windowManager.removeViewImmediate(view)`, and `stopDeepCrawl()` queues a terminal synchronization task in `WorkManager` using `ExistingWorkPolicy.APPEND_OR_REPLACE`.
+  2. **Stream Already Up to Date (`totalNotices == 0`):**
+     - If all announcements were already captured in previous runs, the overlay **does not abruptly vanish or disappear silently** (which would leave parents wondering if the crawler ran).
+     - Instead, the overlay remains visible, clearly displaying:
+       $$\text{Status: "✓ Stream Up to Date"}$$
+       $$\text{Detail: "All current stream posts already captured"}$$
+     - It then cleanly stops (`stopDeepCrawl()`), initiates a background Google Drive verification sync, and finishes hands-free.
 
 ---
 
@@ -851,6 +939,11 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
    - In Android, `AccessibilityNodeInfo` instances are heavy IPC proxies allocated across the `system_server` binder interface. Failing to recycle them causes fatal binder transaction buffer exhaustion (`TransactionTooLargeException`) and service disconnection.
    - Every node returned from `rootInActiveWindow`, `getChild()`, `findNodesWithExtensions()`, and helper lookups is recycled deterministically in `finally` blocks and traversal loops using `.recycle()`.
 
+6. **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
+   - `visitedPostFingerprints` is initialized as a thread-safe concurrent hash set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level.
+   - It is intentionally **preserved across crawl session toggles** (when the parent starts, stops, or re-initiates auto-capture within the same app lifecycle).
+   - Stopping or completing a crawl job invokes `stopDeepCrawl()` (cancelling the coroutine), but intentionally leaves `visitedPostFingerprints` intact. This invariant guarantees that pausing capture to review notices or stopping and re-starting will never cause the crawler to re-enter, re-read, or re-download attachments from post cards already parsed during that session, eliminating redundant processing and preventing duplicate Room database operations.
+
 ---
 
 #### `FloatingCrawlerOverlay`: Dynamic Status API & Decoupled Architecture
@@ -858,7 +951,7 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
 `FloatingCrawlerOverlay` provides the user interface for the backfill assistant. It attaches directly to Android's `WindowManager` using `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` (falling back gracefully to `TYPE_APPLICATION_OVERLAY` or `TYPE_PHONE` if restricted), requiring **zero extra overlay permissions**.
 
 ##### Dynamic Status & Teardown API
-The overlay exposes a clean, decoupled API used by `KidsAccessibilityService` to communicate FSM state changes and manage hands-free teardown:
+The overlay exposes a clean, decoupled API used by `KidsAccessibilityService` to communicate FSM state changes, execute kinetic physical scrolling, and manage hands-free teardown:
 
 ```kotlin
 class FloatingCrawlerOverlay(...) {
@@ -878,11 +971,84 @@ class FloatingCrawlerOverlay(...) {
     fun isAutoScrollingActive(): Boolean
     fun isShowing(): Boolean
     
+    // Physical kinetic list scrolling
+    fun performScroll(onComplete: () -> Unit)
+    
     // Autonomous Zero-Click Completion & Clean Teardown
     fun showCompletion(countNotices: Int, countFiles: Int, onDismissed: () -> Unit = {})
     fun dismissAndRemove()
 }
 ```
+
+- **Physical Kinetic Scroll Dispatcher (`performScroll` & `performScrollGesture`):**
+  Classroom's `RecyclerView` requires actual pointer motion and velocity events to invoke internal pagination listeners. `performScroll()` routes gesture execution to the main UI thread via `handler.post`, where `performScrollGesture()` constructs a kinetic swipe:
+  ```kotlin
+  fun performScroll(onComplete: () -> Unit) {
+      handler.post {
+          performScrollGesture(onComplete)
+      }
+  }
+
+  private fun performScrollGesture(onComplete: () -> Unit) {
+      val displayMetrics = service.resources.displayMetrics
+      val width = displayMetrics.widthPixels
+      val height = displayMetrics.heightPixels
+
+      // Physical touch swipe: Start at 75% height and swipe upwards to 20% height
+      // Placed at 65% width to avoid right-edge back gestures and left-side overlay
+      val startX = width * 0.65f
+      val startY = height * 0.75f
+      val endY = height * 0.20f
+
+      CrawlerTraceLogger.log(
+          "SCROLLER_SWIPE",
+          "Dispatching physical scroll swipe: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
+      )
+
+      val path = Path().apply {
+          moveTo(startX, startY)
+          lineTo(startX, endY)
+      }
+
+      // Calibrated 400ms kinetic swipe to trigger RecyclerView fling & pagination
+      val stroke = GestureDescription.StrokeDescription(path, 0, 400)
+      val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+      val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+          override fun onCompleted(gestureDescription: GestureDescription?) {
+              CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe COMPLETED")
+              onComplete()
+          }
+
+          override fun onCancelled(gestureDescription: GestureDescription?) {
+              CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Physical swipe CANCELLED, executing native fallback")
+              fallbackNativeScroll()
+              onComplete()
+          }
+      }, null)
+
+      if (!dispatched) {
+          CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Failed to dispatch physical swipe, executing native fallback")
+          fallbackNativeScroll()
+          onComplete()
+      }
+  }
+
+  private fun fallbackNativeScroll() {
+      try {
+          val rootNode = service.rootInActiveWindow ?: return
+          val scrollable = findPrimaryScrollableNode(rootNode)
+          scrollable?.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+          scrollable?.recycle()
+          rootNode.recycle()
+      } catch (e: Exception) {
+          Log.w(TAG, "Fallback scroll error: ${e.message}")
+      }
+  }
+  ```
+  - **Kinetic Fling Mechanics:** The stroke moves from $(0.65w, 0.75h)$ to $(0.65w, 0.20h)$ in 400ms. This generates authentic fling inertia that fires Android's `OnScrollListener`, triggering Classroom's pagination adapter to fetch earlier notices.
+  - **Placement Invariant (65% Screen Width):** Swiping along $x = 0.65w$ avoids Android 10+ edge back gestures (active on the outer 10-15% display bounds) and keeps the gesture clear of the left-anchored floating assistant overlay.
+  - **Graceful Native Fallback:** If gesture dispatch is cancelled or fails, `fallbackNativeScroll()` executes `ACTION_SCROLL_FORWARD` on the primary scrollable node, ensuring scrolling never halts.
 
 - **Guaranteed View Teardown (`dismissAndRemove` via `removeViewImmediate`):**
   A critical challenge with Android accessibility overlays is the risk of "ghost" windows—orphaned, invisible, or non-responsive views that linger across app switches and intercept user touches on the Home screen.

@@ -334,12 +334,21 @@ class KidsAccessibilityService : AccessibilityService() {
 
                     if (!hasNew) {
                         consecutiveZeroDiscoveryCount++
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Scroll yielded 0 new cards ($consecutiveZeroDiscoveryCount/2)")
-                        if (consecutiveZeroDiscoveryCount >= 2) {
-                            CrawlerTraceLogger.log("DEEP_CRAWLER", "End of stream reached. Completing capture.")
-                            val totalNotices = crawlerOverlay?.getCapturedCount() ?: visitedPostFingerprints.size
-                            val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
-                            crawlerOverlay?.showCompletion(totalNotices, totalFiles) {
+                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Scroll yielded 0 new cards ($consecutiveZeroDiscoveryCount/5)")
+                        if (consecutiveZeroDiscoveryCount < 5) {
+                            crawlerOverlay?.updateStatus("Checking for earlier posts...", "Waiting for stream pagination ($consecutiveZeroDiscoveryCount/5)")
+                            delay(1500) // Allow Classroom time to fetch older posts from network
+                        } else {
+                            CrawlerTraceLogger.log("DEEP_CRAWLER", "End of stream confirmed after 5 scrolls. Completing capture.")
+                            val totalNotices = crawlerOverlay?.getCapturedCount() ?: 0
+                            val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: 0
+                            if (totalNotices > 0) {
+                                crawlerOverlay?.showCompletion(totalNotices, totalFiles) {
+                                    stopDeepCrawl()
+                                    triggerDriveSync(applicationContext)
+                                }
+                            } else {
+                                crawlerOverlay?.updateStatus("✓ Stream Up to Date", "All current stream posts already captured")
                                 stopDeepCrawl()
                                 triggerDriveSync(applicationContext)
                             }
@@ -633,9 +642,9 @@ class KidsAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase() ?: ""
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
 
-        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file")) ||
-                (text == "share" || text.contains("send a copy") || text.contains("send file")) ||
-                viewId.contains("share")
+        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file") || desc.contains("export") || desc.contains("open in") || desc.contains("open with")) ||
+                (text == "share" || text.contains("send a copy") || text.contains("send file") || text.contains("export") || text.contains("open in") || text.contains("open with")) ||
+                viewId.contains("share") || viewId.contains("export")
 
         if (isShare) {
             if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
@@ -795,8 +804,15 @@ class KidsAccessibilityService : AccessibilityService() {
         val rect = Rect()
         for (card in postCards) {
             card.getBoundsInScreen(rect)
-            // Viewport guard: Skip cards partially occluded at top or bottom
-            if (rect.top < minTop || rect.bottom > maxBottom) {
+            
+            // Viewport guard: Ensure card is visibly accessible (at least 35% visible or center in viewport)
+            val cardHeight = rect.height().coerceAtLeast(1)
+            val visibleTop = rect.top.coerceAtLeast(minTop)
+            val visibleBottom = rect.bottom.coerceAtMost(maxBottom)
+            val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
+            val visibilityFraction = visibleHeight.toFloat() / cardHeight.toFloat()
+
+            if (visibilityFraction < 0.35f && rect.centerY() !in minTop..maxBottom) {
                 card.recycle()
                 continue
             }
@@ -834,7 +850,8 @@ class KidsAccessibilityService : AccessibilityService() {
 
             if (!visitedPostFingerprints.contains(fingerprint)) {
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-                val cardBounds = Rect(rect)
+                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                 card.recycle()
                 return UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
             }
@@ -949,10 +966,27 @@ class KidsAccessibilityService : AccessibilityService() {
         return hasBottomTabs
     }
 
+    private fun isDocumentViewerScreen(combinedText: String): Boolean {
+        val lower = combinedText.lowercase()
+        return lower.contains("page 1 of") ||
+                lower.contains("page 1/") ||
+                lower.contains("fit to width") ||
+                lower.contains("fit to screen") ||
+                lower.contains("zoom in") ||
+                lower.contains("send a copy") ||
+                lower.contains("send file")
+    }
+
     private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
         val textList = mutableListOf<String>()
         collectQuickText(rootNode, textList)
         val combined = textList.joinToString(" ").lowercase()
+
+        // 1. If it has document viewer controls, it is a document viewer, not post detail
+        if (isDocumentViewerScreen(combined)) {
+            return false
+        }
+
         val hasDetailIndicators = combined.contains("add class comment") ||
                 combined.contains("class comments") ||
                 combined.contains("your work") ||
@@ -968,7 +1002,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("tab 1 of 3") ||
                 combined.contains("tab 2 of 3")
         val hasBackArrow = hasNavigateUpButton(rootNode)
-        return (hasDetailIndicators || hasBackArrow) && !hasBottomTabs
+        return hasDetailIndicators && hasBackArrow && !hasBottomTabs
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {

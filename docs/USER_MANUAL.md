@@ -409,8 +409,8 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
 
 ```mermaid
 flowchart TD
-    A["Scan Stream Viewport<br/>(Exclude TopBar, Tabs & Comment Noise)"] --> B{"Unvisited Post Found?"}
-    B -->|Yes| C["Preserve Stream Title (fallbackTitle)<br/>& Open Post Card via Physical Tap"]
+    A["Scan Stream Viewport<br/>(Exclude TopBar, Tabs & Comment Noise)"] --> B{"Unvisited Post Found?<br/>(Relaxed Viewport: >=35% Visible or Center In-Bounds)"}
+    B -->|Yes| C["Preserve Stream Title (fallbackTitle)<br/>& Open Post Card via Clamped Center Tap"]
     C --> D{"Detail Screen Loaded?<br/>(Fast 800ms Check)"}
     D -->|Yes| E["Dismiss Soft Keyboard<br/>& Title Sanitization Priority"]
     D -->|No (Plain Text Card)| STREAM_INGEST["Immediate Stream Ingestion<br/>(NoticeEntity • 0s Delays)"]
@@ -427,22 +427,28 @@ flowchart TD
     RET --> I{"Stream / Classwork Restored?<br/>(isStreamOrClassworkView <=2s)"}
     I -->|Yes (Stabilize 600ms)| A
     I -->|No (Retry Return)| RET
-    B -->|No| K["Native Scroll Forward<br/>(Status: Scrolling Stream...)"]
+    B -->|No| K["Kinetic Physical Swipe Scroll<br/>(400ms Swipe • Trigger Fling & Pagination)"]
     K --> L{"New Posts Found After Scroll?<br/>(850ms Viewport Settling)"}
     L -->|Yes (Reset Counter)| A
-    L -->|No (Counter + 1)| M{"2 Consecutive Empty Scrolls?"}
-    M -->|No| K
-    M -->|Yes| N["Status: Capture Complete!<br/>Trigger Immediate Drive Sync"]
+    L -->|No (Counter + 1)| M{"5 Consecutive Empty Scrolls?<br/>(1,500ms Network Pagination Wait)"}
+    M -->|No| WAIT_PAG["Status: Checking for earlier posts...<br/>Waiting for stream pagination (X/5) • 1,500ms"]
+    WAIT_PAG --> K
+    M -->|Yes| N{"Any Notices Captured?<br/>(totalNotices > 0)"}
+    N -->|Yes| O["Status: ✓ Backfill Complete!<br/>(2.5s Success Display & Cloud Sync)"]
+    N -->|No| P["Status: ✓ Stream Up to Date<br/>(All Current Posts Already Captured)"]
 ```
 
-1. **Deterministic Post Discovery & Stream Comment Noise Filtering:** 
+1. **Deterministic Post Discovery & Relaxed Viewport Tolerance:** 
    - The crawler scans the stream viewport, ignoring app bar chrome, bottom navigation tabs, and dynamic comment widgets.
+   - **Relaxed Viewport Tolerance & Safe Center Clamping:** In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the screen as the list scrolls. In previous systems, partially visible cards were often skipped, causing missed notices. K.I.D.S. implements a **relaxed viewport tolerance rule**: a card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the viewport** (`rect.centerY() in minTop..maxBottom`). To guarantee reliable physical tap dispatch, K.I.D.S. safely clamps the click target's vertical coordinate:
+     $$\text{safeCenterY} = \text{rect.centerY().coerceIn}(\text{minTop} + 40, \text{maxBottom} - 40)$$
+     This ensures that injected taps always land safely inside the visible screen bounds rather than striking off-screen coordinates or hitting the top app bar or bottom navigation tabs.
    - **Automated Classroom Stream Comment Filtering:** Google Classroom posts frequently feature noisy comment counters and buttons (e.g. `"0 class comments for post by..."`, `"class comments for..."`, `"add class comment"`, or dynamic counts like `"3 class comments"`). K.I.D.S. handles these seamlessly through a dual-layer filtering defense:
      - **Viewport Traversal Filter:** `findNextUnvisitedPost()` checks candidate card nodes and immediately ignores any comment header chips, comment count rows, and comment input fields matching `^\d+\s+class\s+comments?.*`. Comment widgets are never mistaken for announcements and never stall scrolling.
      - **Dynamic Counter Stripping in Fingerprinting:** Before calculating the SHA-256 card fingerprint in `computeCardFingerprint()`, K.I.D.S. strips all regex comment matches (`\b\d+\s+class\s+comments?.*`) and filters out lines containing `"class comments for"`. This ensures that when other parents or students post new comments to an announcement later, the underlying announcement fingerprint remains strictly identical, preventing duplicate notices from ever being generated.
    - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
 2. **Deep Post Entry & Stream Announcement Handling (Fast 800ms Check & Fallback):**
-   - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the post card's center screen coordinates (`cardBounds.centerX(), cardBounds.centerY()`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
+   - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the clamped post card screen coordinates (`cardBounds.centerX(), safeCenterY`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
    - **Stream Announcement Handling (Zero-Delay Direct Ingestion):** Many school announcements in the Stream tab—such as holiday notices, weather advisories, festival celebrations, and administrative alerts—are plain-text circulars without attachments. For these notices, Google Classroom already displays the complete message on the stream feed, and tapping the card does not open a separate detail page. Rather than freezing or stalling across lengthy timeouts, K.I.D.S. performs a rapid **800ms detail view check**. If a separate detail screen does not open within 800ms, the crawler immediately falls back to **direct stream card ingestion**: the full notice body, title, sender, and timestamp are captured directly into the local database (`NoticeEntity`), the notice counter increments, and the assistant proceeds immediately to the next card with zero frozen delays or timeouts!
 3. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 4. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
@@ -465,7 +471,15 @@ flowchart TD
      - If still inside a document viewer or post detail view, it triggers `performReturnToStream`: first attempting `ACTION_CLICK` on the Navigate Up (`←`) toolbar icon, falling back to physical tap on the icon bounds, and finally dispatching Android's system-level `GLOBAL_ACTION_BACK`.
      - It allows a 600ms delay between attempts, effortlessly dismissing any document previewers before returning to the stream.
    - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
-6. **Zero-Permanent-Storage Guarantee & Automatic Cloud Sync:**
+6. **Physical Kinetic Pointer Swipes & Autonomous Stream Scrolling:**
+   - **Why Physical Swipes are Essential:** Modern Google Classroom `RecyclerView` implementations rely on physical finger fling momentum and `OnScrollListener` velocity callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) often return a "success" status from the Android accessibility framework without generating actual scrolling physics, leaving Classroom's pagination adapter stalled and failing to request older historical notices.
+   - **The 400ms Physical Kinetic Swipe:** K.I.D.S. dispatches an authentic physical pointer swipe gesture using Android's `GestureDescription` API:
+     - **Swipe Path:** Starts at 75% screen height and sweeps upward to 20% screen height:
+       $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
+     - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, the swipe safely avoids triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoids colliding with or dragging the floating assistant overlay.
+     - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
+     - **Native Scroll Fallback:** If the physical gesture is cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` on the primary scroll container.
+7. **Zero-Permanent-Storage Guarantee & Automatic Cloud Sync:**
    - Whether files land in staging via the **Native Share Target** or via public folder sweeping (`Downloads/`, `Documents/`), all attachments are staged exclusively in private sandbox staging (`Android/data/com.kids.collector/files/vault_attachments/`).
    - `DriveSyncWorker` performs offline ML Kit OCR and uploads the attachments directly to your Google Drive Vault under `attachments/` using your restricted `drive.file` OAuth scope ($0 cloud cost, zero third-party servers).
    - **Immediate Local Purge:** As soon as upload succeeds, the staged files are **permanently deleted from phone storage**. Net storage impact is **zero bytes**, leaving your personal download folders and phone memory pristine! Parents never have to manually share files or manage hidden app caches.
@@ -480,13 +494,20 @@ The K.I.D.S. Auto-Capture engine is engineered with a **zero-click, hands-free p
 - **Automated Cloud Sync on Exit:** Exiting Google Classroom instantly triggers an automated background synchronization cycle to your Google Drive Vault via AndroidX `WorkManager`. Every notice extracted and every attachment downloaded up to the exact moment you navigated away is reliably saved and uploaded.
 - **Intelligent Transient Shield:** You do not have to worry about brief, everyday system interruptions. When a software keyboard pops up, a system permission dialog appears, or you tap an attachment that opens in a document previewer (like Google Docs or Sheets), the assistant smoothly pauses without shutting down. The moment you return to Classroom, capture continues seamlessly.
 
-#### Hands-Free Auto-Close on Stream Completion
-- **End-of-Stream Detection:** When all post cards on the active screen have been visited, the assistant automatically scrolls forward and pauses for 850ms to allow newly loaded posts to bind and settle. If two consecutive scrolls discover zero new cards (`2/2`), the assistant recognizes that it has reached the very end of historical announcements in that class.
-- **2.5-Second Visual Outcome Display:** The floating pill immediately transforms into an elegant, high-visibility **Success Green** state (`#1B4D3E` background with a `#4ADE80` emerald border). The action button disappears, and the status header clearly displays:
-  $$\text{✓ Backfill Complete!}$$
-  $$\text{X Notices } \bullet\text{ Y Files Saved}$$
-  This confirmation banner stays visible on your screen for **exactly 2.5 seconds** so you can comfortably see the final tally of backfilled notices and downloaded worksheets.
-- **Zero-Click Self-Dismissal & Drive Sync:** After 2.5 seconds, the pill **automatically closes and removes itself from the screen** and dispatches a background synchronization request to Google Drive—**without requiring a single tap or confirmation from you**.
+#### 5-Attempt Pagination Tolerance & Hands-Free Auto-Close
+- **5-Attempt Network Pagination Tolerance:** When the crawler reaches the bottom of the currently visible posts, Google Classroom often requires network round-trip time to load earlier announcements from Google's servers. If zero new notices are visible immediately after a scroll, K.I.D.S. does **not** prematurely assume the stream has ended. Instead, it enters an intelligent **5-attempt pagination retry loop**:
+  - The status line displays: `"Checking for earlier posts..."` with detail `"Waiting for stream pagination (X/5)"`.
+  - It pauses for a dedicated **1,500ms network settling delay** between attempts, providing Classroom's pagination adapter generous time to fetch older announcements over the network.
+  - Only when **5 consecutive scrolls and pagination waits yield zero new cards (`5/5`)** does the crawler conclude that the historical stream has been fully traversed.
+- **Reassuring Visual Outcome (New Notices Captured vs. Stream Up to Date):**
+  - **When New Notices Were Captured (`totalNotices > 0`):** The floating pill transforms into an elegant **Success Green** state (`#1B4D3E` background with a `#4ADE80` emerald border). The action button disappears, and the status header clearly displays:
+    $$\text{✓ Backfill Complete!}$$
+    $$\text{X Notices } \bullet\text{ Y Files Saved}$$
+    This confirmation banner stays visible on your screen for **exactly 2.5 seconds** so you can comfortably observe the final count of backfilled notices and worksheets. After 2.5 seconds, the pill **automatically closes and cleans itself from the screen** and dispatches background sync to Google Drive.
+  - **When Stream Was Already Up to Date (`totalNotices == 0`):** If you run Auto-Capture on a stream where all notices were already captured previously, the overlay **does not abruptly vanish or disappear silently**. Doing so would leave parents wondering if the assistant worked. Instead, the overlay remains visible, clearly displaying:
+    $$\text{✓ Stream Up to Date}$$
+    $$\text{All current stream posts already captured}$$
+    The assistant then cleanly concludes, initiates a background Google Drive verification sync, and removes itself from the screen.
 - **100% Hands-Free:** You never need to hunt for an "OK", "Dismiss", or "Close" button. Once you tap `▶ Start Auto-Capture`, you can set your phone on your desk and let K.I.D.S. do all the heavy lifting. When it finishes, your screen is left completely clear, and your Google Drive Vault is fully up to date.
 
 ### Manual Stop & Instant Coroutine Cancellation
