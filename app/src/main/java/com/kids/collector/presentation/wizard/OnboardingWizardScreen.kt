@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,6 +34,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
 import android.app.Activity
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -828,9 +832,16 @@ fun OnboardingWizardScreen(
 
                                 OutlinedTextField(
                                     value = childName,
-                                    onValueChange = { childName = it },
+                                    onValueChange = { childName = it.replace("\n", "").replace("\r", "") },
                                     label = { Text("Child First Name *") },
                                     placeholder = { Text("Enter child's first name") },
+                                    singleLine = true,
+                                    maxLines = 1,
+                                    keyboardOptions = KeyboardOptions(
+                                        capitalization = KeyboardCapitalization.Words,
+                                        keyboardType = KeyboardType.Text,
+                                        imeAction = ImeAction.Done
+                                    ),
                                     modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
                                 )
 
