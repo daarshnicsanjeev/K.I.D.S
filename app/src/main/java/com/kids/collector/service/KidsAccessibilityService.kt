@@ -971,21 +971,33 @@ class KidsAccessibilityService : AccessibilityService() {
                         overflow.recycle()
                         delay(400) // Wait for popup menu to appear
 
+                        var popupShare: AccessibilityNodeInfo? = null
                         val popupRoot = rootInActiveWindow
                         if (popupRoot != null) {
-                            val popupShare = findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
-                            if (popupShare != null) {
-                                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found Share/Download in overflow menu. Clicking it.")
-                                val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                                if (!clickOk) {
-                                    val b = Rect()
-                                    popupShare.getBoundsInScreen(b)
-                                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                                }
-                                popupShare.recycle()
-                                sharedOrDownloaded = true
-                            }
+                            popupShare = findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
                             popupRoot.recycle()
+                        }
+                        if (popupShare == null) {
+                            for (w in windows) {
+                                val r = w.root ?: continue
+                                popupShare = findShareButton(r) ?: findDownloadButtonNode(r)
+                                if (popupShare != null) {
+                                    r.recycle()
+                                    break
+                                }
+                                r.recycle()
+                            }
+                        }
+                        if (popupShare != null) {
+                            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found Share/Download in overflow menu. Clicking it.")
+                            val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            if (!clickOk) {
+                                val b = Rect()
+                                popupShare.getBoundsInScreen(b)
+                                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                            }
+                            popupShare.recycle()
+                            sharedOrDownloaded = true
                         }
                     }
                 }
@@ -1020,8 +1032,8 @@ class KidsAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase() ?: ""
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
 
-        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file") || desc.contains("export") || desc.contains("open in") || desc.contains("open with")) ||
-                (text == "share" || text.contains("send a copy") || text.contains("send file") || text.contains("export") || text.contains("open in") || text.contains("open with")) ||
+        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file") || desc.contains("export")) ||
+                (text == "share" || text.contains("send a copy") || text.contains("send file") || text.contains("export")) ||
                 viewId.contains("share") || viewId.contains("export")
 
         if (isShare) {
