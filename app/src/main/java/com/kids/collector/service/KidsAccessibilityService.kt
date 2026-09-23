@@ -57,12 +57,45 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val TAG = "KidsAccessibility"
         private const val APP_EXIT_DEBOUNCE_MILLIS = 3_000L
         private const val APP_RELAUNCH_RECOVERY_DELAY_MILLIS = 2_000L
+        private const val MIN_COURSE_CARD_WIDTH_PX = 300
+        private const val MIN_COURSE_CARD_HEIGHT_PX = 150
+        private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
+        private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
+        private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
         private val AUTHORIZED_SCHOOL_PACKAGES = setOf(
             "com.google.android.apps.classroom",
             "com.entab.campuscare",
             "com.toddleapp",
             "com.edunext.student"
         )
+
+        fun triggerDriveSync(context: Context) {
+            val constraints = Constraints.Builder()
+                .setRequiredNetworkType(NetworkType.CONNECTED)
+                .build()
+
+            val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+                .setConstraints(constraints)
+                .build()
+
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "DriveVaultSyncWork",
+                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                syncRequest
+            )
+        }
+
+        fun isEnabled(context: Context): Boolean {
+            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
+            val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+            for (enabled in enabledServices) {
+                val serviceInfo = enabled.resolveInfo.serviceInfo
+                if (serviceInfo.packageName == context.packageName && serviceInfo.name == KidsAccessibilityService::class.java.name) {
+                    return true
+                }
+            }
+            return false
+        }
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -2670,42 +2703,5 @@ class KidsAccessibilityService : AccessibilityService() {
         stopDeepCrawl()
         crawlerOverlay?.dismissAndRemove()
         crawlerOverlay = null
-    }
-
-    companion object {
-        private const val TAG = "KidsAccessibilityService"
-        private const val MIN_COURSE_CARD_WIDTH_PX = 300
-        private const val MIN_COURSE_CARD_HEIGHT_PX = 150
-        private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
-        private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
-        private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
-
-        fun triggerDriveSync(context: Context) {
-            val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
-                .build()
-
-            val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
-                .setConstraints(constraints)
-                .build()
-
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                "DriveVaultSyncWork",
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
-                syncRequest
-            )
-        }
-
-        fun isEnabled(context: Context): Boolean {
-            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
-            val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            for (enabled in enabledServices) {
-                val serviceInfo = enabled.resolveInfo.serviceInfo
-                if (serviceInfo.packageName == context.packageName && serviceInfo.name == KidsAccessibilityService::class.java.name) {
-                    return true
-                }
-            }
-            return false
-        }
     }
 }
