@@ -301,7 +301,7 @@ flowchart TD
 - **Why it is needed:** When educational attachments (worksheets, circular PDFs, syllabus guides) are downloaded from Google Classroom or shared from school viewers, Android routes files through storage.
 - **Zero-Permanent-Storage Guarantee:** K.I.D.S. guarantees that educational attachments (.pdf, .jpg, .docx) are uploaded directly to your personal Google Drive Vault **without eating any permanent phone storage**. Files are transited temporarily through a private staging sandbox (`Android/data/com.kids.collector/files/vault_attachments/`) and immediately deleted the millisecond upload is confirmed by Google Drive.
 - **Dual Autonomous Ingestion Pathways:**
-  1. **Direct Native Share Target Ingestion ("Share to K.I.D.S. Vault"):** When attachments open in school previewers or document viewers, K.I.D.S. automatically routes them through Android's system share sheet directly into `ShareTargetActivity` without touching public folders.
+  1. **Direct Native Share Target Ingestion ("Share to K.I.D.S. Vault" / "Open with K.I.D.S. Vault"):** When attachments open in school previewers or document viewers, K.I.D.S. automatically routes them through Android's system share sheet directly into `ShareTargetActivity` (seamlessly supporting both `ACTION_SEND` and `ACTION_VIEW` intent actions) without touching public folders.
   2. **Public Downloads Staging via `DownloadFolderObserver`:** If a file lands in public `Download/` or `Documents/` folders, K.I.D.S. immediately sweeps and relocates it into private vault staging, keeping public folders spotless.
 - **Zero Manual Management:** Parents never need to manually share files via external share-sheets, use USB cables, or hunt down hidden in-app caches.
 
@@ -579,9 +579,10 @@ One of the greatest challenges in automating school apps is visual instability: 
 #### 1. Autonomous Position Displacement Recovery
 If the target post is not immediately visible on screen after returning from detail view or during stream navigation:
 1. **Screen Fingerprint Scan:** The assistant scans all post cards currently visible in the safe viewport (`getVisibleCardFingerprints()`).
-2. **Relative Index Comparison:** It matches the visible fingerprints against their assigned indices in the `StreamManifest`:
-   - **Displaced Below Target (`minVisibleIndex > target.index`):** If the visible notices are numbered after the target notice, the crawler scrolled too far down. The overlay displays `Recovering Position...` (`Scrolling up to post #X`) and automatically triggers a kinetic backward swipe (`performScrollBackward()`) to seek upward.
-   - **Target is Ahead (`minVisibleIndex <= target.index`):** If the target notice is further down the list, the overlay displays `Navigating to Post...` (`Seeking post #X/Total`) and triggers a forward scroll (`performScroll()`).
+2. **Relative Index Comparison & Pass 2 Reverse Navigation:** It matches visible post fingerprints against their assigned indices in the `StreamManifest`:
+   - **Traversing Toward Stream Top (`targetAhead == false`):** In Pass 2 reverse crawling, the assistant traverses from the bottom of the stream upwards toward post #1 (top of stream). Unless the target is verified to be further down (`nextItem.index > maxVisibleIndex`), the assistant defaults to backward/upward traversal. The overlay displays `Recovering Position...` (`Seeking post #X/Total`) and executes a **Full Kinetic Upward Swipe (`performScrollBackward()`)**. By deploying full kinetic swipes instead of micro-nudges, preceding **600–800px assignment and material cards** are swept fully into the viewport, completely exposing their title, instructions, and discrete attachment chips.
+   - **Target is Further Down / Ahead (`targetAhead == true`):** If scroll overshoots or layout re-anchoring place the target notice below the current visible range (`nextItem.index > maxVisibleIndex`), the overlay displays `Navigating to Post...` (`Seeking post #X/Total`) and triggers a forward scroll (`performScroll()`).
+   - **Oscillation-Guarded Micro-Scrolling:** Micro-scrolling (16% screen height gentle nudge) is strictly reserved for breaking confirmed directional oscillation (`isOscillating`), preventing endless ping-pong seeking while allowing full cards to display unclipped.
 3. **Movement Progress Awareness:** When seeking a distant notice across multiple scrolls, K.I.D.S. monitors viewport motion. As long as the list is progressing closer toward the target notice, the engine never falsely penalizes or skips the item.
 4. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
 
@@ -670,10 +671,22 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      1. **Attachment Discovery:** The assistant inspects the announcement card and locates all individual attachment chips (`.pdf`, `.docx`, `.xlsx`, `.jpg`, `.png`).
      2. **Automated Chip Tap:** It programmatically taps the first clickable attachment chip (`clickableChip`), opening the document in Google Classroom's document previewer or Google Drive Viewer.
      3. **Real-Time Viewer & Preview Detection:** Within 3,000ms, `automateViewerShareOrDownload()` automatically detects that the active screen has transitioned to a document viewer (`isDocumentViewerScreen`).
-     4. **Autonomous Share Triggering:** The assistant scans the viewer for a direct **Share** action (`"share"`, `"send a copy"`, `"send file"`, `"export"`). If hidden inside an overflow menu, it automatically taps the **More options** (⋮) button and selects the Share action.
-     5. **System Chooser Interception (`selectKidsInSystemChooser`):** When Android's native system share sheet appears, K.I.D.S. monitors the chooser window (up to 2,500ms) and autonomously selects **"K.I.D.S. Vault"** (`ShareTargetActivity`).
-     6. **Instant Staging via `ShareTargetActivity` (<50ms):** Android routes the pristine file byte stream directly into K.I.D.S.'s translucent `ShareTargetActivity`. The activity copies the stream into private vault staging (`Android/data/com.kids.collector/files/vault_attachments/`), computes the SHA-256 fingerprint, matches the file to the parent notice in SQLite Room, and enqueues Google Drive upload via WorkManager—all within 50ms and with zero screen flicker!
-     7. **Guarded Return & Repetition:** The assistant executes a guarded return back to the Classroom detail view, taps the next attachment chip, and repeats the pipeline until 100% of attachments attached to the notice are safely captured and staged.
+     4. **Autonomous Share Triggering & Universal Menu Action Support (Both "Send file..." and "Open with..."):**
+        The assistant scans the viewer for direct document transfer actions. Different viewers and OEM apps present different menu items:
+        - **"Send file...", "Send a copy", or "Share":** Standard export options in Google Classroom, Google Drive Viewer, and Google Docs.
+        - **"Open with...":** Common alternative in standalone PDF viewers, image viewers, and OEM document viewers.
+        Because K.I.D.S. Vault registers intent filters for both **`ACTION_SEND` / `ACTION_SEND_MULTIPLE`** and **`ACTION_VIEW`** (`*/*`), K.I.D.S. seamlessly receives and stages attachments from **any** viewer menu option. If actions are concealed in an overflow menu, K.I.D.S. automatically taps the **More options** (⋮) button and triggers the action.
+     5. **Dynamic Share Target Discovery (Zero Hardcoded Positions):**
+        When Android's native system share sheet appears, OEM skins (such as Xiaomi HyperOS/MIUI, Samsung One UI, OnePlus OxygenOS, and Oppo ColorOS) arrange app icons dynamically based on recent usage, device context, and OEM-specific direct share carousels. Target positions are **never hardcoded**.
+        - K.I.D.S. scans across all active accessibility windows and system dialog layers via `findKidsShareTargetInAllWindows()`.
+        - It normalizes app labels via `isKidsVaultLabel()`, stripping punctuation, whitespace, and underscores to reliably match `"K.I.D.S. Vault"`, `"Kids Vault"`, or package identifiers across any OEM skin.
+     6. **Sharesheet Scroll-to-Find Fallback:**
+        If "K.I.D.S. Vault" is not visible among the immediate top 4 apps in the sharesheet grid, K.I.D.S. does not abort. Instead, it executes an autonomous **Scroll-to-Find Fallback**:
+        - **Attempt 1 (Horizontal Swipe across Apps Row):** Dispatches a calibrated horizontal gesture ($0.80w \to 0.20w$ at $0.75h$) across the share sheet apps row to reveal hidden lateral app icons, followed by a multi-window rescan.
+        - **Attempt 2 (Vertical Drag to Expand Bottom Sheet):** If still not visible, it dispatches an upward vertical swipe ($0.50w, 0.75h \to 0.50w, 0.40h$) to expand the bottom sheet into a full multi-row grid and rescans.
+        - **Dynamic Bounds Selection:** Once located, K.I.D.S. computes the exact screen bounds of the "K.I.D.S. Vault" tile and performs `ACTION_CLICK` (or dispatches a physical center tap), launching ingestion.
+     7. **Instant Staging via `ShareTargetActivity` (<50ms):** Android routes the pristine file byte stream directly into K.I.D.S.'s translucent `ShareTargetActivity`. The activity copies the stream into private vault staging (`Android/data/com.kids.collector/files/vault_attachments/`), computes the SHA-256 fingerprint, matches the file to the parent notice in SQLite Room, and enqueues Google Drive upload via WorkManager—all within 50ms and with zero screen flicker!
+     8. **Guarded Return & Repetition:** The assistant executes a guarded return back to the Classroom detail view, taps the next attachment chip, and repeats the pipeline until 100% of attachments attached to the notice are safely captured and staged.
    - **Calibrated Debouncing:** When direct download buttons are present alongside chips, a 1,000ms debounce gives Android's system `DownloadManager` ample time to register the download request without queue dropouts or socket contention.
 7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
@@ -682,7 +695,7 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      - If still inside a document viewer or post detail view, it triggers `performReturnToStream`: first attempting `ACTION_CLICK` on the Navigate Up (`←`) toolbar icon, falling back to physical tap on the icon bounds, and finally dispatching Android's system-level `GLOBAL_ACTION_BACK`.
      - It allows a 600ms delay between attempts, effortlessly dismissing any document previewers before returning to the stream.
    - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
-8. **Physical Kinetic Pointer Swipes (Forward Ingestion & Backward Rewind):**
+8. **Physical Kinetic Pointer Swipes & Pass 2 Full Kinetic Upward Swiping:**
    - **Why Physical Swipes are Essential:** Modern Google Classroom `RecyclerView` implementations rely on physical finger fling momentum and `OnScrollListener` velocity callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) often return a "success" status from the Android accessibility framework without generating actual scrolling physics, leaving Classroom's pagination adapter stalled and failing to request older historical notices.
    - **Forward Kinetic Swipe (`performScroll`):** Starts at 75% screen height and sweeps upward to 20% screen height:
      $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
@@ -690,6 +703,10 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
    - **Backward Kinetic Rewind Swipe (`performScrollBackward`):** Starts at 25% screen height and sweeps downward to 75% screen height:
      $$(0.65 \times \text{width}, 0.25 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.75 \times \text{height})$$
      Dispatched over 400ms to return to the stream start during Pass 1.5 Rewind and re-anchor upward during Auto-Recovery position correction.
+   - **Pass 2 Full Kinetic Upward Swiping (Replacing Micro-Nudges):**
+     In Pass 2, the crawler navigates bottom-to-top from the oldest post toward post #1 at the top of the stream. Classroom assignment and material cards are substantial UI elements measuring **600 to 800 pixels in vertical height**.
+     - Legacy micro-nudges (16% screen height) frequently left these large cards clipped off-screen or stranded beneath the viewport boundary, hiding their attachment chips and action buttons.
+     - Pass 2 now uses **Full Kinetic Upward Swipes (`performScrollBackward`)** when traversing bottom-to-top (`targetAhead == false`), completely revealing 600–800px cards so their attachment chips can be opened and downloaded. Micro-scrolls are strictly reserved for breaking confirmed directional oscillation.
    - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, both swipes safely avoid triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoid colliding with or dragging the floating assistant overlay.
    - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
    - **Native Scroll Fallback:** If physical gestures are cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scroll container.

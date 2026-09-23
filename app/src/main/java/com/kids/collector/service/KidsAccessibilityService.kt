@@ -603,7 +603,14 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
 
                     // Adaptive swiping & oscillation detection
-                    val targetAhead = (minVisibleIndex == null || minVisibleIndex < nextItem.index)
+                    // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
+                    // If target index is greater than maxVisibleIndex, target is further down (forward).
+                    // Otherwise, target is towards the top (backward).
+                    val targetAhead = if (maxVisibleIndex != null) {
+                        nextItem.index > maxVisibleIndex
+                    } else {
+                        false // Default in bottom-to-top pass: scroll backward towards the top!
+                    }
                     val distance = if (minVisibleIndex != null) Math.abs(nextItem.index - minVisibleIndex) else 5
 
                     recentScrollDirections.addLast(targetAhead)
@@ -650,7 +657,8 @@ class KidsAccessibilityService : AccessibilityService() {
                         continue
                     }
 
-                    val useMicroScroll = isOscillating || distance <= 2
+                    // Only use micro-scroll if oscillation is detected; otherwise use full kinetic swipe so previous 600-800px cards are revealed!
+                    val useMicroScroll = isOscillating
 
                     if (!targetAhead) {
                         CrawlerTraceLogger.log(
@@ -1029,8 +1037,11 @@ class KidsAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findShareButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
             child.recycle()
-            if (found != null) return found
         }
         return null
     }
@@ -1058,57 +1069,39 @@ class KidsAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findOverflowMenuButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
             child.recycle()
-            if (found != null) return found
         }
         return null
     }
 
-    private suspend fun selectKidsInSystemChooser() {
-        // Wait up to 2500ms for system chooser to appear
-        waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
-            val root = rootInActiveWindow ?: return@waitForCondition false
-            val pkg = root.packageName?.toString()?.lowercase() ?: ""
-            val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
-                    pkg.contains("android") || pkg.contains("systemui")
-            val hasKidsTarget = findKidsShareTarget(root) != null
-            root.recycle()
-            isChooser && hasKidsTarget
-        }
-
-        val chooserRoot = rootInActiveWindow ?: return
-        val target = findKidsShareTarget(chooserRoot)
-        if (target != null) {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"K.I.D.S. Vault\" target in share sheet. Selecting it.")
-            val clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val b = Rect()
-                target.getBoundsInScreen(b)
-                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-            }
-            target.recycle()
-            delay(500) // Allow ShareTargetActivity to process intent
-        } else {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in immediate chooser view")
-        }
-        chooserRoot.recycle()
+    private fun isKidsVaultLabel(raw: String?): Boolean {
+        if (raw.isNullOrBlank()) return false
+        val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "")
+        return clean.contains("kidsvault") || clean == "kids" || clean.startsWith("kids")
     }
 
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val text = node.text?.toString()?.lowercase() ?: ""
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()
+        val desc = node.contentDescription?.toString()
         val pkg = node.packageName?.toString()?.lowercase() ?: ""
 
-        val isTarget = text.contains("k.i.d.s") || desc.contains("k.i.d.s") ||
-                text.contains("kids vault") || desc.contains("kids vault") ||
-                pkg == applicationContext.packageName.lowercase()
+        val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc) ||
+                (pkg == applicationContext.packageName.lowercase() && !node.className.toString().contains("RecyclerView"))
 
         if (isTarget) {
-            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
-            var parent = node.parent
-            while (parent != null) {
-                if (parent.isClickable) return parent
-                parent = parent.parent
+            // Walk up to find the clickable app tile or container
+            var current: AccessibilityNodeInfo? = node
+            while (current != null) {
+                if (current.isClickable) {
+                    return AccessibilityNodeInfo.obtain(current)
+                }
+                val parentNode = current.parent
+                if (current != node) current.recycle()
+                current = parentNode
             }
             return AccessibilityNodeInfo.obtain(node)
         }
@@ -1116,10 +1109,93 @@ class KidsAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findKidsShareTarget(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
             child.recycle()
-            if (found != null) return found
         }
         return null
+    }
+
+    private fun findKidsShareTargetInAllWindows(): AccessibilityNodeInfo? {
+        val allRoots = mutableListOf<AccessibilityNodeInfo>()
+        try {
+            // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
+            val currentWindows = windows
+            for (w in currentWindows) {
+                w.root?.let { allRoots.add(it) }
+            }
+            // 2. Also inspect active window if not already present
+            rootInActiveWindow?.let { active ->
+                if (allRoots.none { it == active }) {
+                    allRoots.add(active)
+                } else {
+                    active.recycle()
+                }
+            }
+
+            for (root in allRoots) {
+                val target = findKidsShareTarget(root)
+                if (target != null) {
+                    return target
+                }
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Error scanning windows for share target: ${e.message}")
+        } finally {
+            for (r in allRoots) {
+                r.recycle()
+            }
+        }
+        return null
+    }
+
+    private suspend fun selectKidsInSystemChooser() {
+        var target: AccessibilityNodeInfo? = null
+
+        // Wait up to 3000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
+        waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+            target = findKidsShareTargetInAllWindows()
+            target != null
+        }
+
+        // If not found in immediate view, scroll the sharesheet horizontally or vertically to reveal it
+        if (target == null) {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
+            val displayMetrics = resources.displayMetrics
+            val w = displayMetrics.widthPixels
+            val h = displayMetrics.heightPixels
+
+            // Attempt 1: Horizontal swipe across apps row (from 80% width to 20% width at 75% height)
+            dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)
+            delay(400)
+            target = findKidsShareTargetInAllWindows()
+
+            // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet
+            if (target == null) {
+                dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)
+                delay(400)
+                target = findKidsShareTargetInAllWindows()
+            }
+        }
+
+        if (target != null) {
+            val bounds = Rect()
+            target!!.getBoundsInScreen(bounds)
+            CrawlerTraceLogger.log(
+                "ATTACHMENT_SHARE",
+                "Dynamically located \"K.I.D.S. Vault\" in share sheet at bounds ($bounds). Selecting it."
+            )
+            val clicked = target!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+            }
+            target!!.recycle()
+            delay(800) // Allow ShareTargetActivity to process intent and stage file
+        } else {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling.")
+        }
     }
 
     private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
@@ -1159,6 +1235,32 @@ class KidsAccessibilityService : AccessibilityService() {
             }, null)
         } finally {
             // Keep flag active slightly past gesture completion to swallow any synthetic touch events
+        }
+        delay(150)
+        isDispatchingCrawlerGesture = false
+        return dispatched && completed
+    }
+
+    private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300): Boolean {
+        isDispatchingCrawlerGesture = true
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, endY)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        var completed = false
+        val dispatched = try {
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    completed = false
+                }
+            }, null)
+        } finally {
         }
         delay(150)
         isDispatchingCrawlerGesture = false
@@ -1763,8 +1865,11 @@ class KidsAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findInputNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
             child.recycle()
-            if (found != null) return found
         }
         return null
     }
@@ -1800,8 +1905,11 @@ class KidsAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findDownloadButtonNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
             child.recycle()
-            if (found != null) return found
         }
         return null
     }

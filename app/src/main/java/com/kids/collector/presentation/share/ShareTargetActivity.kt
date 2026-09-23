@@ -57,6 +57,14 @@ class ShareTargetActivity : Activity() {
                     }
                     finish()
                 }
+                Intent.ACTION_VIEW -> {
+                    val uri = intent.data ?: intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                    if (uri != null) {
+                        processIncomingUri(uri)
+                    } else {
+                        finish()
+                    }
+                }
                 else -> finish()
             }
         } catch (e: Exception) {

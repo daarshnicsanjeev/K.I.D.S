@@ -833,16 +833,46 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
        }
        ```
        If `boundedAttempts < 3`, it selects `candidateCard = findBestCandidateCardOnScreen()` and dispatches a tap at candidate bounds.
-  2. **Oscillation Breaker:** Maintains a 6-step direction history window (`recentScrollDirections`). If alternating directions $\ge 4$ times (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), oscillation around the target is confirmed. The engine logs an oscillation event, triggers a micro-nudge, and increments the item's attempt counter to prevent infinite ping-pong seek loops.
-  3. **Micro-Scrolling (16% Gentle Nudge):** When target distance $\le 2$ or oscillation is detected (`val useMicroScroll = isOscillating || distance <= 2`), the crawler dispatches `performMicroScroll()` instead of full kinetic swipes:
-     - **Forward Micro-Nudge:** Sweeps from $0.58h$ to $0.42h$ (16% screen height).
-     - **Backward Micro-Nudge:** Sweeps from $0.46h$ to $0.62h$ (16% screen height).
-     - **220ms Duration & Zero Momentum:** Stroke duration of 220ms with zero fling momentum achieves millimeter-level card re-centering without overshooting.
-  4. **Relative Position Arithmetic & Upward Progression:**
-     - In reverse ingestion, target items progress towards lower indices (top of feed).
-     - When visible cards are after the target (`minVisibleIndex > targetItem.index`), the crawler scrolls backward / upward via `performScrollBackward` (or backward micro-scroll).
-     - When the target is ahead in scroll direction (`minVisibleIndex <= targetItem.index`), the crawler scrolls forward via `performScroll` (or forward micro-scroll).
-     - As long as `minVisibleIndex` moves closer to `targetItem.index`, failure attempts are never incremented. After 4 confirmed stuck attempts (`attempts >= 4`), the item is marked `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs.
+   2. **Oscillation Breaker:** Maintains a 6-step direction history window (`recentScrollDirections`). If alternating directions $\ge 4$ times (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), oscillation around the target is confirmed. The engine logs an oscillation event, triggers a micro-nudge, and increments the item's attempt counter to prevent infinite ping-pong seek loops.
+   3. **Pass 2 Reverse Scroll Navigation (`targetAhead` & `maxVisibleIndex`):**
+      In Pass 2 reverse crawling, the crawler traverses from the stream bottom upwards towards post #1 (top of stream).
+      ```kotlin
+      // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
+      // If target index is greater than maxVisibleIndex, target is further down (forward).
+      // Otherwise, target is towards the top (backward).
+      val targetAhead = if (maxVisibleIndex != null) {
+          nextItem.index > maxVisibleIndex
+      } else {
+          false // Default in bottom-to-top pass: scroll backward towards the top!
+      }
+      ```
+      - If `nextItem.index > maxVisibleIndex`, the target is confirmed to be further down the list, and forward scrolling is dispatched (`performScroll()`).
+      - Otherwise, the target is towards the top of the feed (`!targetAhead`). When `maxVisibleIndex == null`, it defaults cleanly to backward (upward) navigation towards post #1.
+   4. **Full Kinetic Upward Swiping (Replacing Micro-Nudges):**
+      In earlier implementations, micro-scrolling was invoked whenever target distance was $\le 2$. However, Classroom assignment and material cards typically measure **600 to 800 pixels in vertical height**. Micro-nudges (16% screen height) frequently left these large cards clipped off-screen or stranded beneath the viewport boundary, hiding their attachment chips.
+      The crawler now restricts micro-scrolls strictly to confirmed directional oscillations:
+      ```kotlin
+      // Only use micro-scroll if oscillation is detected; otherwise use full kinetic swipe so previous 600-800px cards are revealed!
+      val useMicroScroll = isOscillating
+
+      if (!targetAhead) {
+          if (useMicroScroll) {
+              crawlerOverlay?.performMicroScroll(forward = false) { scrollDone = true }
+          } else {
+              crawlerOverlay?.performScrollBackward { scrollDone = true }
+          }
+      } else {
+          if (useMicroScroll) {
+              crawlerOverlay?.performMicroScroll(forward = true) { scrollDone = true }
+          } else {
+              crawlerOverlay?.performScroll { scrollDone = true }
+          }
+      }
+      ```
+      Full kinetic upward swipes (`performScrollBackward`) sweep large 600–800px cards completely into view, ensuring all attachment chips and download buttons are fully rendered and accessible.
+   5. **Movement Tracking & Stuck Safeguard:**
+      - As long as `minVisibleIndex` moves closer to `nextItem.index`, recovery attempts are not incremented.
+      - If the screen is confirmed stuck for 3+ consecutive static cycles, attempt counters increment. After 4 confirmed stuck recovery attempts (`attempts >= 4`), the item is marked `StreamItemStatus.FAILED_SKIPPED` in the manifest and skipped cleanly, ensuring the crawler never hangs.
 
 ###### 4. `NAVIGATING_TO_DETAIL` (Safe Tap Targeting, 2,500ms Extended Timeout & Comment Sheet Auto-Dismissal)
 - **Safe Tap Targeting (`bounds.top + 50`) & Comment Node Disqualification:**
@@ -1233,70 +1263,172 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
     4. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.
     5. **Invocation of Chooser Selection:** If a Share action was triggered, it calls `selectKidsInSystemChooser()`.
     6. **Guarded Return to Detail View:** Executes up to 3 sequential return attempts to safely dismiss the preview and restore the post detail view before continuing the attachment loop.
-  - **Autonomous System Chooser Selection & Package-Aware Target Detection (`selectKidsInSystemChooser`):**
-    When Android displays its system share sheet (`resolver`, `chooser`, `android`, or `systemui`), `selectKidsInSystemChooser()` automates target selection with an extended **2,500ms timeout**:
-    ```kotlin
-    private suspend fun selectKidsInSystemChooser() {
-        // Wait up to 2500ms for system chooser to appear
-        waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
-            val root = rootInActiveWindow ?: return@waitForCondition false
-            val pkg = root.packageName?.toString()?.lowercase() ?: ""
-            val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
-                    pkg.contains("android") || pkg.contains("systemui")
-            val hasKidsTarget = findKidsShareTarget(root) != null
-            root.recycle()
-            isChooser && hasKidsTarget
-        }
+  - **Dynamic Sharesheet Resolution & Multi-Window Target Detection (`selectKidsInSystemChooser`):**
+    When Android triggers the system sharesheet (`resolver`, `chooser`, `android`, or OEM skin dialogs), `selectKidsInSystemChooser()` automates target selection without hardcoded screen coordinates or static slot expectations:
+    
+    1. **Label Normalization (`isKidsVaultLabel`):**
+       OEM implementations (HyperOS, One UI, ColorOS) often alter punctuation, capitalization, or spacing in share target titles. `isKidsVaultLabel` normalizes input strings by stripping dots, spaces, and underscores:
+       ```kotlin
+       private fun isKidsVaultLabel(raw: String?): Boolean {
+           if (raw.isNullOrBlank()) return false
+           val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "")
+           return clean.contains("kidsvault") || clean == "kids" || clean.startsWith("kids")
+       }
+       ```
 
-        val chooserRoot = rootInActiveWindow ?: return
-        val target = findKidsShareTarget(chooserRoot)
-        if (target != null) {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"K.I.D.S. Vault\" target in share sheet. Selecting it.")
-            val clicked = target.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val b = Rect()
-                target.getBoundsInScreen(b)
-                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-            }
-            target.recycle()
-            delay(500) // Allow ShareTargetActivity to process intent
-        } else {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in immediate chooser view")
-        }
-        chooserRoot.recycle()
-    }
-    ```
-    - **Package-Name-Aware Matching in `findKidsShareTarget`:**
-      ```kotlin
-      private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-          val text = node.text?.toString()?.lowercase() ?: ""
-          val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-          val pkg = node.packageName?.toString()?.lowercase() ?: ""
+    2. **Target Node Discovery (`findKidsShareTarget`):**
+       Inspects accessibility node text, content description, and package identity:
+       ```kotlin
+       private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+           val text = node.text?.toString()
+           val desc = node.contentDescription?.toString()
+           val pkg = node.packageName?.toString()?.lowercase() ?: ""
 
-          val isTarget = text.contains("k.i.d.s") || desc.contains("k.i.d.s") ||
-                  text.contains("kids vault") || desc.contains("kids vault") ||
-                  pkg == applicationContext.packageName.lowercase()
+           val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc) ||
+                   (pkg == applicationContext.packageName.lowercase() && !node.className.toString().contains("RecyclerView"))
 
-          if (isTarget) {
-              if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
-              var parent = node.parent
-              while (parent != null) {
-                  if (parent.isClickable) return parent
-                  parent = parent.parent
-              }
-              return AccessibilityNodeInfo.obtain(node)
-          }
+           if (isTarget) {
+               // Walk up to find the clickable app tile or container
+               var current: AccessibilityNodeInfo? = node
+               while (current != null) {
+                   if (current.isClickable) {
+                       return AccessibilityNodeInfo.obtain(current)
+                   }
+                   val parentNode = current.parent
+                   if (current != node) current.recycle()
+                   current = parentNode
+               }
+               return AccessibilityNodeInfo.obtain(node)
+           }
 
-          for (i in 0 until node.childCount) {
-              val child = node.getChild(i) ?: continue
-              val found = findKidsShareTarget(child)
-              child.recycle()
-              if (found != null) return found
-          }
-          return null
-      }
-      ```
-      By pairing text and contentDescription queries with `pkg == applicationContext.packageName.lowercase()`, target resolution succeeds across all OEM share sheet implementations (including customized OEM grid adapters on Samsung One UI, Xiaomi HyperOS, and Oppo ColorOS) even if the visible text label is truncated or localized.
+           for (i in 0 until node.childCount) {
+               val child = node.getChild(i) ?: continue
+               val found = findKidsShareTarget(child)
+               if (found != null) {
+                   child.recycle()
+                   return found
+               }
+               child.recycle()
+           }
+           return null
+       }
+       ```
+
+    3. **Multi-Window Scanning (`findKidsShareTargetInAllWindows`):**
+       In modern Android and custom OEM distributions, the share chooser or bottom sheet is frequently rendered in an auxiliary window layer (`AccessibilityWindowInfo`) rather than `rootInActiveWindow`. `findKidsShareTargetInAllWindows()` aggregates roots from all accessibility windows, scans each hierarchy, and recycles all node references in a `finally` block to prevent accessibility memory leaks:
+       ```kotlin
+       private fun findKidsShareTargetInAllWindows(): AccessibilityNodeInfo? {
+           val allRoots = mutableListOf<AccessibilityNodeInfo>()
+           try {
+               // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
+               val currentWindows = windows
+               for (w in currentWindows) {
+                   w.root?.let { allRoots.add(it) }
+               }
+               // 2. Also inspect active window if not already present
+               rootInActiveWindow?.let { active ->
+                   if (allRoots.none { it == active }) {
+                       allRoots.add(active)
+                   } else {
+                       active.recycle()
+                   }
+               }
+
+               for (root in allRoots) {
+                   val target = findKidsShareTarget(root)
+                   if (target != null) {
+                       return target
+                   }
+               }
+           } catch (e: Exception) {
+               CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Error scanning windows for share target: ${e.message}")
+           } finally {
+               for (r in allRoots) {
+                   r.recycle()
+               }
+           }
+           return null
+       }
+       ```
+
+    4. **Autonomous Chooser Selection & Scroll-to-Find Fallback (`selectKidsInSystemChooser`):**
+       Waits up to 3,000ms for the sharesheet to display and resolves the target. If "K.I.D.S. Vault" is not visible in the initial top app row, it initiates a two-stage scroll-to-find recovery:
+       - **Stage 1 (Horizontal Swipe across Apps Row):** Dispatches `dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)` to scroll laterally through the horizontal app carousel, followed by a 400ms settling pause and rescan.
+       - **Stage 2 (Vertical Drag to Expand Bottom Sheet):** If still not found, dispatches `dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)` to vertically drag up and expand the bottom sheet into a multi-row grid.
+       - **Dynamic Bounds Tap:** When the target is located, its on-screen bounding rectangle (`Rect`) is computed. The engine attempts `ACTION_CLICK`, and if unhandled by the OEM view, dispatches `dispatchTap(bounds.centerX(), bounds.centerY())`:
+       ```kotlin
+       private suspend fun selectKidsInSystemChooser() {
+           var target: AccessibilityNodeInfo? = null
+
+           // Wait up to 3000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
+           waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+               target = findKidsShareTargetInAllWindows()
+               target != null
+           }
+
+           // If not found in immediate view, scroll the sharesheet horizontally or vertically to reveal it
+           if (target == null) {
+               CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
+               val displayMetrics = resources.displayMetrics
+               val w = displayMetrics.widthPixels
+               val h = displayMetrics.heightPixels
+
+               // Attempt 1: Horizontal swipe across apps row (from 80% width to 20% width at 75% height)
+               dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)
+               delay(400)
+               target = findKidsShareTargetInAllWindows()
+
+               // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet
+               if (target == null) {
+                   dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)
+                   delay(400)
+                   target = findKidsShareTargetInAllWindows()
+               }
+           }
+
+           if (target != null) {
+               val bounds = Rect()
+               target!!.getBoundsInScreen(bounds)
+               CrawlerTraceLogger.log(
+                   "ATTACHMENT_SHARE",
+                   "Dynamically located \"K.I.D.S. Vault\" in share sheet at bounds ($bounds). Selecting it."
+               )
+               val clicked = target!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+               if (!clicked) {
+                   dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+               }
+               target!!.recycle()
+               delay(800) // Allow ShareTargetActivity to process intent and stage file
+           } else {
+               CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling.")
+           }
+       }
+       ```
+
+    5. **Calibrated Gesture Dispatch (`dispatchSwipe`):**
+       To perform horizontal sharesheet carousels and vertical expansion gestures, `KidsAccessibilityService` utilizes `dispatchSwipe`:
+       ```kotlin
+       private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300): Boolean {
+           isDispatchingCrawlerGesture = true
+           val path = Path().apply {
+               moveTo(startX, startY)
+               lineTo(endX, endY)
+           }
+           val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+           val gesture = GestureDescription.Builder().addStroke(stroke).build()
+           var completed = false
+           val dispatched = try {
+               dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                   override fun onCompleted(gestureDescription: GestureDescription?) { completed = true }
+                   override fun onCancelled(gestureDescription: GestureDescription?) { completed = false }
+               }, null)
+           } finally {
+           }
+           delay(150)
+           isDispatchingCrawlerGesture = false
+           return dispatched && completed
+       }
+       ```
   - **Calibrated 1,000ms Debouncing:** Enforces a 1,000ms debounce between individual attachment taps. This provides sufficient time for Android's system `DownloadManager` or `ShareTargetActivity` to register each incoming request without dropping socket connections or dropping rapid successive taps.
   - **Verified Staged Attachment Counting via `scanLocalAttachments` Return Value:**
     Rather than optimistically incrementing the file counter on every download button click (which causes phantom counts on network dropouts, canceled downloads, or unverified files), the overlay's file metric strictly reflects verified files moved to storage. `DownloadFolderObserver.scanLocalAttachments(applicationContext)` returns the exact count (`Int`) of newly moved and verified attachments in `vault_attachments/`. The counter `crawlerOverlay?.incrementAttachmentCount()` is only incremented for each verified staged file (`for (s in 0 until stagedCount)`), presenting parents with a completely truthful metric.
@@ -1759,7 +1891,7 @@ sequenceDiagram
     ACS->>VIEWER: Dispatches Share action (Direct or Overflow)
     VIEWER->>CHOOSER: Launches system share sheet
     ACS->>CHOOSER: selectKidsInSystemChooser() clicks "K.I.D.S. Vault"
-    CHOOSER->>STA: startActivity(ACTION_SEND / ACTION_SEND_MULTIPLE)
+    CHOOSER->>STA: startActivity(ACTION_SEND / ACTION_SEND_MULTIPLE / ACTION_VIEW)
     Note over STA: LaunchMode="singleInstance"<br/>Theme.Translucent.NoTitleBar
     STA->>STA: CoroutineScope(Dispatchers.IO).launch
     STA-->>CHOOSER: finish() immediately (<50ms execution)
@@ -1771,8 +1903,8 @@ sequenceDiagram
     Note over STAGE: Pristine file staged & queued for Drive sync
 ```
 
-#### AndroidManifest Registration & Translucent Theme
-`ShareTargetActivity` is registered in `AndroidManifest.xml` with intent filters for both single (`ACTION_SEND`) and multi-file (`ACTION_SEND_MULTIPLE`) transmissions across any MIME type (`*/*`):
+#### AndroidManifest Registration & ACTION_VIEW Intent Filter
+`ShareTargetActivity` is registered in `AndroidManifest.xml` with intent filters for single-file sharing (`ACTION_SEND`), multi-file sharing (`ACTION_SEND_MULTIPLE`), and direct document viewing (`ACTION_VIEW`) across any MIME type (`*/*`):
 
 ```xml
 <!-- Native Zero-UI Share Target Activity for Automated Attachment Ingestion -->
@@ -1792,6 +1924,11 @@ sequenceDiagram
         <category android:name="android.intent.category.DEFAULT" />
         <data android:mimeType="*/*" />
     </intent-filter>
+    <intent-filter>
+        <action android:name="android.intent.action.VIEW" />
+        <category android:name="android.intent.category.DEFAULT" />
+        <data android:mimeType="*/*" />
+    </intent-filter>
 </activity>
 ```
 
@@ -1800,8 +1937,42 @@ sequenceDiagram
 - **`android:launchMode="singleInstance"`:** Ensures the share activity runs in its own isolated task and never corrupts or alters the navigation backstack of Google Classroom or `MainActivity`.
 - **Immediate `<50ms` UI Lifecycle Termination:** `onCreate` extracts the stream URIs, launches an asynchronous processing coroutine on `Dispatchers.IO`, and calls `finish()` synchronously. The system share sheet dismisses immediately, returning focus to the previous activity in under 50 milliseconds.
 
+#### Intent Routing & `ACTION_VIEW` (`intent.data`) Support
+In addition to standard system sharing (`ACTION_SEND`), document previewers (such as Google Drive Viewer, OEM PDF viewers, or image viewers) often present an *"Open with..."* option that issues `Intent.ACTION_VIEW` rather than `ACTION_SEND`.
+
+`ShareTargetActivity.onCreate()` routes both intent models seamlessly:
+```kotlin
+override fun onCreate(savedInstanceState: Bundle?) {
+    super.onCreate(savedInstanceState)
+    try {
+        when (intent?.action) {
+            Intent.ACTION_SEND -> {
+                val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (uri != null) processIncomingUri(uri) else finish()
+            }
+            Intent.ACTION_SEND_MULTIPLE -> {
+                val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
+                if (!uris.isNullOrEmpty()) {
+                    for (u in uris) processIncomingUri(u)
+                }
+                finish()
+            }
+            Intent.ACTION_VIEW -> {
+                val uri = intent.data ?: intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                if (uri != null) processIncomingUri(uri) else finish()
+            }
+            else -> finish()
+        }
+    } catch (e: Exception) {
+        Log.e(TAG, "Error handling incoming share intent: ${e.message}", e)
+        finish()
+    }
+}
+```
+- **Universal Attachment Interception:** By resolving `intent.data ?: intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)`, the stager captures documents identically whether delivered via *"Share / Send file..."* or *"Open with..."*.
+
 #### `ContentResolver` Byte Streaming & Private Sandbox Staging
-Incoming intents deliver either `content://` or `file://` URIs via `Intent.EXTRA_STREAM`. Rather than expecting physical file system paths (which are restricted under Android Scoped Storage), `ShareTargetActivity` delegates resolution directly to Android's `ContentResolver`:
+Incoming intents deliver either `content://` or `file://` URIs via `Intent.EXTRA_STREAM` or `intent.data`. Rather than expecting physical file system paths (which are restricted under Android Scoped Storage), `ShareTargetActivity` delegates resolution directly to Android's `ContentResolver`:
 1. **Display Name Resolution (`queryFileName`):**
    ```kotlin
    private fun queryFileName(uri: Uri): String? {
