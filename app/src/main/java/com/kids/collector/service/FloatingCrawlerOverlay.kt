@@ -263,7 +263,8 @@ class FloatingCrawlerOverlay(
 
                 // Drag listener attached specifically to headerRow and minimizedBubble, leaving action buttons freely clickable
                 setupDragListener(headerRow, root, p)
-                setupDragListener(minimizedBubble, root, p)
+                minimizedBubble?.let { setupDragListener(it, root, p) }
+
 
                 overlayView = root
                 try {
