@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
 import android.content.Context
+import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
 import android.util.Log
@@ -103,8 +104,9 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
-        // 0. Drop our own app events so we never capture our own wizard UI
+        // 0. Drop our own app events and dismiss overlay so we never capture or obscure our own UI
         if (packageName == applicationContext.packageName) {
+            crawlerOverlay?.dismissAndRemove()
             return
         }
 
@@ -131,15 +133,51 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun relaunchSchoolApp() {
+        try {
+            val targetPkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+            val launchIntent = packageManager.getLaunchIntentForPackage(targetPkg)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            }
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Re-launched school app ($targetPkg) to foreground")
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Failed to relaunch school app: ${e.message}")
+        }
+    }
+
     private fun handleAppExitEvent(foreignPackage: String) {
         if (exitDebounceJob?.isActive == true) return
 
         exitDebounceJob = serviceScope.launch {
-            delay(1200) // 1.2-second debounce for stability against transient window changes
+            delay(3500) // 3.5-second debounce to give transient dialogs and returns time to settle
+            val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+            if (isAuthorizedSchoolApp(currentPkg)) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - already back inside $currentPkg")
+                return@launch
+            }
+
+            if (crawlerOverlay?.isAutoScrollingActive() == true) {
+                // If auto-crawl is running, self-heal and bring Classroom back before giving up!
+                CrawlerTraceLogger.log(
+                    "DEEP_CRAWLER",
+                    "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to Classroom..."
+                )
+                relaunchSchoolApp()
+                delay(2000)
+                val recoveredPkg = rootInActiveWindow?.packageName?.toString() ?: ""
+                if (isAuthorizedSchoolApp(recoveredPkg)) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded! Back in $recoveredPkg")
+                    return@launch
+                }
+            }
+
             if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
                 CrawlerTraceLogger.log(
                     "DEEP_CRAWLER",
-                    "Exited school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
+                    "Confirmed exit from school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
                 )
                 stopDeepCrawl()
                 crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "Exited school app to $foreignPackage")
@@ -150,18 +188,15 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun getOrCreateOverlay(): FloatingCrawlerOverlay {
-        if (crawlerOverlay == null) {
-            crawlerOverlay = FloatingCrawlerOverlay(
-                service = this,
-                onStartAutoCapture = {
-                    startDeepCrawl()
-                },
-                onStopAutoCapture = {
-                    stopDeepCrawl()
-                }
-            )
-        }
-        return crawlerOverlay!!
+        return crawlerOverlay ?: FloatingCrawlerOverlay(
+            service = this,
+            onStartAutoCapture = {
+                startDeepCrawl()
+            },
+            onStopAutoCapture = {
+                stopDeepCrawl()
+            }
+        ).also { crawlerOverlay = it }
     }
 
     private fun startDeepCrawl() {
@@ -220,6 +255,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 performReturnToStream(root)
                 root.recycle()
                 delay(600)
+                continue
+            }
+
+            // AUTO-RECOVERY: If displaced to People or Classwork tab, re-select Stream tab!
+            if (isPeopleOrClassworkTabActive(root)) {
+                CrawlerTraceLogger.log("STREAM_RECOVERY", "Displaced to People/Classwork tab in survey. Switching back to Stream...")
+                switchToStreamTab(root)
+                root.recycle()
+                delay(1000)
                 continue
             }
 
@@ -348,6 +392,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 performReturnToStream(root)
                 root.recycle()
                 delay(600)
+                continue
+            }
+
+            // AUTO-RECOVERY: If displaced to People or Classwork tab, re-select Stream tab!
+            if (isPeopleOrClassworkTabActive(root)) {
+                CrawlerTraceLogger.log("STREAM_RECOVERY", "Displaced to People/Classwork tab in crawl. Switching back to Stream...")
+                switchToStreamTab(root)
+                root.recycle()
+                delay(1000)
                 continue
             }
 
@@ -1075,7 +1128,7 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         // Step C: Guarded return to detail view (up to 3 attempts)
-        delay(400)
+        delay(600)
         var returnAttempts = 0
         while (returnAttempts < 3) {
             val cur = rootInActiveWindow ?: break
@@ -1085,7 +1138,7 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             performReturnToStream(cur)
             cur.recycle()
-            delay(500)
+            delay(1000)
             returnAttempts++
         }
     }
@@ -1176,7 +1229,9 @@ class KidsAccessibilityService : AccessibilityService() {
             var current: AccessibilityNodeInfo? = node
             while (current != null) {
                 if (current.isClickable) {
-                    return AccessibilityNodeInfo.obtain(current)
+                    val result = AccessibilityNodeInfo.obtain(current)
+                    if (current != node) current.recycle()
+                    return result
                 }
                 val parentNode = current.parent
                 if (current != node) current.recycle()
@@ -1199,26 +1254,26 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun findKidsShareTargetInAllWindows(): AccessibilityNodeInfo? {
         val allRoots = mutableListOf<AccessibilityNodeInfo>()
-        val myPkg = applicationContext.packageName.lowercase()
+        val collectorPackageName = applicationContext.packageName.lowercase()
         try {
             // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
             val currentWindows = windows
-            for (w in currentWindows) {
-                val r = w.root ?: continue
-                val pkg = r.packageName?.toString()?.lowercase() ?: ""
-                if (pkg == myPkg) {
-                    r.recycle()
+            for (window in currentWindows) {
+                val windowRoot = window.root ?: continue
+                val windowPackage = windowRoot.packageName?.toString()?.lowercase() ?: ""
+                if (windowPackage == collectorPackageName) {
+                    windowRoot.recycle()
                     continue
                 }
-                allRoots.add(r)
+                allRoots.add(windowRoot)
             }
             // 2. Also inspect active window if not our own app
-            rootInActiveWindow?.let { active ->
-                val activePkg = active.packageName?.toString()?.lowercase() ?: ""
-                if (activePkg != myPkg && allRoots.none { it == active }) {
-                    allRoots.add(active)
+            rootInActiveWindow?.let { activeRoot ->
+                val activePackage = activeRoot.packageName?.toString()?.lowercase() ?: ""
+                if (activePackage != collectorPackageName && allRoots.none { it == activeRoot }) {
+                    allRoots.add(activeRoot)
                 } else {
-                    active.recycle()
+                    activeRoot.recycle()
                 }
             }
 
@@ -1231,8 +1286,8 @@ class KidsAccessibilityService : AccessibilityService() {
         } catch (e: Exception) {
             CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Error scanning windows for share target: ${e.message}")
         } finally {
-            for (r in allRoots) {
-                r.recycle()
+            for (root in allRoots) {
+                root.recycle()
             }
         }
         return null
@@ -1251,37 +1306,46 @@ class KidsAccessibilityService : AccessibilityService() {
         if (target == null) {
             CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
             val displayMetrics = resources.displayMetrics
-            val w = displayMetrics.widthPixels
-            val h = displayMetrics.heightPixels
+            val screenWidth = displayMetrics.widthPixels
+            val screenHeight = displayMetrics.heightPixels
 
-            // Attempt 1: Horizontal swipe across apps row (from 80% width to 20% width at 75% height)
-            dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)
-            delay(400)
+            // Attempt 1: Horizontal swipe across apps row (from 85% width to 15% width at 75% height)
+            dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.75f, screenWidth * 0.15f, screenHeight * 0.75f, 300)
+            delay(500)
             target = findKidsShareTargetInAllWindows()
 
-            // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet
+            // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet to full screen
             if (target == null) {
-                dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)
-                delay(400)
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
+                delay(600)
+                target = findKidsShareTargetInAllWindows()
+            }
+
+            // Attempt 3: Vertical scroll down the expanded app list to find K.I.D.S. Vault
+            if (target == null) {
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.35f, 400)
+                delay(600)
                 target = findKidsShareTargetInAllWindows()
             }
         }
 
-        if (target != null) {
+        target?.let { shareTargetNode ->
             val bounds = Rect()
-            target!!.getBoundsInScreen(bounds)
+            shareTargetNode.getBoundsInScreen(bounds)
             CrawlerTraceLogger.log(
                 "ATTACHMENT_SHARE",
                 "Dynamically located \"K.I.D.S. Vault\" in share sheet at bounds ($bounds). Selecting it."
             )
-            val clicked = target!!.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
+            val isClickDispatched = shareTargetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!isClickDispatched) {
                 dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
             }
-            target!!.recycle()
+            shareTargetNode.recycle()
             delay(800) // Allow ShareTargetActivity to process intent and stage file
-        } else {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling.")
+        } ?: run {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling. Dismissing share sheet.")
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            delay(800)
         }
     }
 
@@ -1301,6 +1365,12 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             navUp.recycle()
         } else {
+            val pkg = root.packageName?.toString() ?: ""
+            if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Outside school app ($pkg), restoring Classroom instead of dispatching BACK")
+                relaunchSchoolApp()
+                return
+            }
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
             performGlobalAction(GLOBAL_ACTION_BACK)
         }
@@ -1808,12 +1878,69 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun isStreamOrClassworkView(rootNode: AccessibilityNodeInfo): Boolean {
+    private fun isPeopleOrClassworkTabActive(rootNode: AccessibilityNodeInfo): Boolean {
         val textList = mutableListOf<String>()
         collectQuickText(rootNode, textList)
         val combined = textList.joinToString(" ").lowercase()
         val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
-                combined.contains("people") ||
+                combined.contains("tab 1 of 3") ||
+                combined.contains("tab 2 of 3") ||
+                combined.contains("tab 3 of 3") ||
+                combined.contains("people")
+        if (!hasBottomTabs) return false
+        return combined.contains("teachers") || combined.contains("classmates")
+    }
+
+    private fun findStreamTabButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase().orEmpty()
+        val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+        val isStreamLabel = text == "stream" || desc.contains("stream") || desc.contains("tab 1 of")
+
+        if (isStreamLabel) {
+            if (node.isClickable) {
+                return AccessibilityNodeInfo.obtain(node)
+            }
+            val parentNode = node.parent
+            if (parentNode != null) {
+                val isParentClickable = parentNode.isClickable
+                val result = if (isParentClickable) AccessibilityNodeInfo.obtain(parentNode) else null
+                parentNode.recycle()
+                if (result != null) return result
+            }
+        }
+        for (childIndex in 0 until node.childCount) {
+            val child = node.getChild(childIndex) ?: continue
+            val found = findStreamTabButton(child)
+            child.recycle()
+            if (found != null) return found
+        }
+        return null
+    }
+
+    private suspend fun switchToStreamTab(rootNode: AccessibilityNodeInfo): Boolean {
+        val streamTabButtonNode = findStreamTabButton(rootNode)
+        if (streamTabButtonNode != null) {
+            CrawlerTraceLogger.log("STREAM_RECOVERY", "Found Stream tab button. Clicking to restore Stream view...")
+            val clicked = streamTabButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            streamTabButtonNode.recycle()
+            delay(1000)
+            return clicked
+        }
+        val displayMetrics = resources.displayMetrics
+        val tapX = displayMetrics.widthPixels * STREAM_TAB_FALLBACK_HORIZONTAL_RATIO
+        val tapY = displayMetrics.heightPixels * STREAM_TAB_FALLBACK_VERTICAL_RATIO
+        CrawlerTraceLogger.log("STREAM_RECOVERY", "Dispatching gesture tap to restore Stream tab at ($tapX, $tapY)...")
+        dispatchTap(tapX, tapY)
+        delay(1000)
+        return true
+    }
+
+    private fun isStreamOrClassworkView(rootNode: AccessibilityNodeInfo): Boolean {
+        if (isPeopleOrClassworkTabActive(rootNode)) return false
+        val textList = mutableListOf<String>()
+        collectQuickText(rootNode, textList)
+        val combined = textList.joinToString(" ").lowercase()
+        val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
                 combined.contains("tab 1 of 3") ||
                 combined.contains("tab 2 of 3")
         return hasBottomTabs
@@ -2400,6 +2527,8 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val MIN_COURSE_CARD_WIDTH_PX = 300
         private const val MIN_COURSE_CARD_HEIGHT_PX = 150
         private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
+        private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
+        private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
 
         fun triggerDriveSync(context: Context) {
             val constraints = Constraints.Builder()

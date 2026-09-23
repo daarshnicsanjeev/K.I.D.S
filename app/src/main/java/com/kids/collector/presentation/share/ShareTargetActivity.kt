@@ -18,6 +18,7 @@ import com.kids.collector.service.DriveSyncWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 
@@ -32,12 +33,19 @@ class ShareTargetActivity : Activity() {
     companion object {
         private const val TAG = "ShareTargetActivity"
         private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]")
+        private val FILENAME_SANITIZATION_REGEX = Regex("[^a-zA-Z0-9._-]")
         private const val MIN_PREFIX_MATCH_LENGTH = 6
         private const val PREFIX_SLICE_LENGTH = 12
         private const val MIN_SUBSTRING_MATCH_LENGTH = 8
     }
 
     private val deduplicationEngine = DeduplicationEngine()
+    private val activityScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
+
+    override fun onDestroy() {
+        super.onDestroy()
+        kotlinx.coroutines.cancel(activityScope)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,7 +55,7 @@ class ShareTargetActivity : Activity() {
                 Intent.ACTION_SEND -> {
                     val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
                     if (uri != null) {
-                        processIncomingUri(uri)
+                        processIncomingUris(listOf(uri))
                     } else {
                         finish()
                     }
@@ -55,11 +63,10 @@ class ShareTargetActivity : Activity() {
                 Intent.ACTION_SEND_MULTIPLE -> {
                     val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
                     if (!uris.isNullOrEmpty()) {
-                        for (u in uris) {
-                            processIncomingUri(u)
-                        }
+                        processIncomingUris(uris)
+                    } else {
+                        finish()
                     }
-                    finish()
                 }
                 else -> finish()
             }
@@ -69,22 +76,40 @@ class ShareTargetActivity : Activity() {
         }
     }
 
-    private fun processIncomingUri(uri: Uri) {
-        val appCtx = applicationContext
-        // Launch in background so we don't block the caller or cause ANR
-        CoroutineScope(Dispatchers.IO).launch {
+    private fun processIncomingUris(uris: List<Uri>) {
+        val appContext = applicationContext
+        val resolver = contentResolver
+        // Process in background while keeping Activity alive until copy completes
+        activityScope.launch {
+            try {
+                for (uri in uris) {
+                    processSingleUri(uri, appContext, resolver)
+                }
+            } finally {
+                withContext(Dispatchers.Main) {
+                    finish()
+                }
+            }
+        }
+    }
+
+    private suspend fun processSingleUri(
+        uri: Uri,
+        appContext: android.content.Context,
+        resolver: android.content.ContentResolver
+    ) {
             try {
                 val resolvedFileName = queryFileName(uri) ?: "attachment_${System.currentTimeMillis()}.pdf"
-                val safeFileName = resolvedFileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+                val safeFileName = resolvedFileName.replace(FILENAME_SANITIZATION_REGEX, "_")
 
-                val stagingDir = File(appCtx.getExternalFilesDir(null), "vault_attachments").apply {
+                val stagingDir = File(appContext.getExternalFilesDir(null), "vault_attachments").apply {
                     if (!exists()) mkdirs()
                 }
 
                 // Deterministic staged file prefix
                 val stagedFile = File(stagingDir, "shared_${System.currentTimeMillis().toString().takeLast(6)}_$safeFileName")
 
-                appCtx.contentResolver.openInputStream(uri)?.use { input ->
+                resolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(stagedFile).use { output ->
                         input.copyTo(output)
                     }
@@ -92,7 +117,7 @@ class ShareTargetActivity : Activity() {
 
                 if (stagedFile.exists() && stagedFile.length() > 0L) {
                     val fileHash = deduplicationEngine.computeFileHash(stagedFile)
-                    val db = KidsDatabase.getInstance(appCtx)
+                    val db = KidsDatabase.getInstance(appContext)
                     val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
 
                     // Match against pending attachment entities by normalized filename or prefix
@@ -158,7 +183,7 @@ class ShareTargetActivity : Activity() {
                     val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
                         .setConstraints(constraints)
                         .build()
-                    WorkManager.getInstance(appCtx).enqueueUniqueWork(
+                    WorkManager.getInstance(appContext).enqueueUniqueWork(
                         "DriveVaultSyncWork",
                         ExistingWorkPolicy.APPEND_OR_REPLACE,
                         syncRequest
@@ -167,8 +192,6 @@ class ShareTargetActivity : Activity() {
             } catch (e: Exception) {
                 CrawlerTraceLogger.log("SHARE_INGEST", "Failed processing shared URI: ${e.message}")
             }
-        }
-        finish()
     }
 
     private fun queryFileName(uri: Uri): String? {
@@ -177,9 +200,9 @@ class ShareTargetActivity : Activity() {
             try {
                 contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
                     if (cursor.moveToFirst()) {
-                        val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                        if (idx >= 0) {
-                            name = cursor.getString(idx)
+                        val displayNameColumnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (displayNameColumnIndex >= 0) {
+                            name = cursor.getString(displayNameColumnIndex)
                         }
                     }
                 }

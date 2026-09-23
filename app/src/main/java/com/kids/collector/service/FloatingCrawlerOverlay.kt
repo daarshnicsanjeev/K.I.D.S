@@ -157,7 +157,7 @@ class FloatingCrawlerOverlay(
                 }
                 counterTextView = counter
 
-                val btnMin = TextView(service).apply {
+                val minimizeButton = TextView(service).apply {
                     text = " — "
                     contentDescription = "Minimize assistant overlay"
                     setTextColor(Color.parseColor("#CBD5E1"))
@@ -170,7 +170,7 @@ class FloatingCrawlerOverlay(
                     }
                 }
 
-                val btnClose = TextView(service).apply {
+                val closeButton = TextView(service).apply {
                     text = " ✕ "
                     contentDescription = "Close assistant overlay"
                     setTextColor(Color.parseColor("#CBD5E1"))
@@ -185,8 +185,8 @@ class FloatingCrawlerOverlay(
 
                 headerRow.addView(titleText)
                 headerRow.addView(counter)
-                headerRow.addView(btnMin)
-                headerRow.addView(btnClose)
+                headerRow.addView(minimizeButton)
+                headerRow.addView(closeButton)
                 expanded.addView(headerRow)
 
                 // Status Row (Live FSM State Indicator)
@@ -235,7 +235,7 @@ class FloatingCrawlerOverlay(
                 }
 
                 // Single Clear Action Button
-                val btnAuto = Button(service).apply {
+                val toggleCaptureButton = Button(service).apply {
                     text = "▶ Start Auto-Capture"
                     setTextColor(Color.parseColor("#0F172A"))
                     setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
@@ -259,8 +259,8 @@ class FloatingCrawlerOverlay(
                         toggleAutoScroll()
                     }
                 }
-                autoButton = btnAuto
-                buttonRow.addView(btnAuto)
+                autoButton = toggleCaptureButton
+                buttonRow.addView(toggleCaptureButton)
 
                 expanded.addView(buttonRow)
                 root.addView(expanded)
@@ -410,75 +410,91 @@ class FloatingCrawlerOverlay(
         }
     }
 
-    fun startAutoScroll() {
-        if (isAutoScrolling) return
-        isAutoScrolling = true
-        CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
-        autoButton?.text = "⏹ Stop Capture"
-        autoButton?.contentDescription = "Stop Auto-Capture"
-        autoButton?.setTextColor(Color.WHITE)
-        autoButton?.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dpToPx(8).toFloat()
-            setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
+    private fun runOnMainThread(action: () -> Unit) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action()
+        } else {
+            handler.post(action)
         }
-        updateStatus("Status: Scanning Stream...")
-        minimize()
-        onStartAutoCapture()
+    }
+
+    fun startAutoScroll() {
+        runOnMainThread {
+            if (isAutoScrolling) return@runOnMainThread
+            isAutoScrolling = true
+            CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
+            autoButton?.text = "⏹ Stop Capture"
+            autoButton?.contentDescription = "Stop Auto-Capture"
+            autoButton?.setTextColor(Color.WHITE)
+            autoButton?.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dpToPx(8).toFloat()
+                setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
+            }
+            updateStatus("Status: Scanning Stream...")
+            minimize()
+            onStartAutoCapture()
+        }
     }
 
     fun stopAutoScroll(isUserInitiated: Boolean = true, reason: String = "User clicked Stop") {
-        if (!isAutoScrolling) return
-        isAutoScrolling = false
-        CrawlerTraceLogger.log(
-            "SCROLLER_UI",
-            "Auto-Capture stopped (Initiator: ${if (isUserInitiated) "USER" else "SYSTEM"}, Reason: $reason). Halting crawler and triggering Drive sync."
-        )
-        autoButton?.text = "▶ Start Auto-Capture"
-        autoButton?.contentDescription = "Start Auto-Capture"
-        autoButton?.setTextColor(Color.parseColor("#0F172A"))
-        autoButton?.background = GradientDrawable().apply {
-            shape = GradientDrawable.RECTANGLE
-            cornerRadius = dpToPx(8).toFloat()
-            setColor(Color.parseColor("#ED8936")) // Amber
+        runOnMainThread {
+            if (!isAutoScrolling) return@runOnMainThread
+            isAutoScrolling = false
+            CrawlerTraceLogger.log(
+                "SCROLLER_UI",
+                "Auto-Capture stopped (Initiator: ${if (isUserInitiated) "USER" else "SYSTEM"}, Reason: $reason). Halting crawler and triggering Drive sync."
+            )
+            autoButton?.text = "▶ Start Auto-Capture"
+            autoButton?.contentDescription = "Start Auto-Capture"
+            autoButton?.setTextColor(Color.parseColor("#0F172A"))
+            autoButton?.background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dpToPx(8).toFloat()
+                setColor(Color.parseColor("#ED8936")) // Amber
+            }
+            updateStatus("Status: Capture Stopped")
+            expand()
+            onStopAutoCapture()
+            // Trigger a single background sync cycle to Google Drive now that capture finished
+            KidsAccessibilityService.triggerDriveSync(service.applicationContext)
         }
-        updateStatus("Status: Capture Stopped")
-        expand()
-        onStopAutoCapture()
-        // Trigger a single background sync cycle to Google Drive now that capture finished
-        KidsAccessibilityService.triggerDriveSync(service.applicationContext)
     }
 
     fun minimize() {
-        isMinimized = true
-        expandedContent?.visibility = View.GONE
-        minimizedBubble?.visibility = View.VISIBLE
-        params?.let { p ->
-            val displayMetrics = service.resources.displayMetrics
-            p.x = displayMetrics.widthPixels - dpToPx(56)
-            p.y = dpToPx(140)
-            overlayView?.let { v ->
-                try {
-                    windowManager.updateViewLayout(v, p)
-                } catch (e: Exception) {
-                    // Ignore layout update errors if detached
+        runOnMainThread {
+            isMinimized = true
+            expandedContent?.visibility = View.GONE
+            minimizedBubble?.visibility = View.VISIBLE
+            params?.let { p ->
+                val displayMetrics = service.resources.displayMetrics
+                p.x = displayMetrics.widthPixels - dpToPx(56)
+                p.y = dpToPx(140)
+                overlayView?.let { v ->
+                    try {
+                        windowManager.updateViewLayout(v, p)
+                    } catch (e: Exception) {
+                        // Ignore layout update errors if detached
+                    }
                 }
             }
         }
     }
 
     fun expand() {
-        isMinimized = false
-        minimizedBubble?.visibility = View.GONE
-        expandedContent?.visibility = View.VISIBLE
-        params?.let { p ->
-            p.x = dpToPx(20)
-            p.y = dpToPx(140)
-            overlayView?.let { v ->
-                try {
-                    windowManager.updateViewLayout(v, p)
-                } catch (e: Exception) {
-                    // Ignore layout update errors if detached
+        runOnMainThread {
+            isMinimized = false
+            minimizedBubble?.visibility = View.GONE
+            expandedContent?.visibility = View.VISIBLE
+            params?.let { p ->
+                p.x = dpToPx(20)
+                p.y = dpToPx(140)
+                overlayView?.let { v ->
+                    try {
+                        windowManager.updateViewLayout(v, p)
+                    } catch (e: Exception) {
+                        // Ignore layout update errors if detached
+                    }
                 }
             }
         }
@@ -495,11 +511,11 @@ class FloatingCrawlerOverlay(
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        // Physical touch swipe: Start at 75% height and swipe upwards to 20% height
-        // Placed at 65% width to avoid right-edge back gestures and left-side overlay
-        val startX = width * 0.65f
-        val startY = height * 0.75f
-        val endY = height * 0.20f
+        // Physical touch swipe: Start at 70% height and swipe upwards to 25% height
+        // Horizontally centered (50% width) to stay completely clear of side edge gestures and bottom tabs
+        val startX = width * SWIPE_HORIZONTAL_CENTER_RATIO
+        val startY = height * FORWARD_SWIPE_START_VERTICAL_RATIO
+        val endY = height * FORWARD_SWIPE_END_VERTICAL_RATIO
 
         CrawlerTraceLogger.log(
             "SCROLLER_SWIPE",
@@ -511,8 +527,8 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        // Calibrated 400ms kinetic swipe to trigger RecyclerView fling & pagination
-        val stroke = GestureDescription.StrokeDescription(path, 0, 400)
+        // Calibrated kinetic swipe to trigger RecyclerView fling & pagination
+        val stroke = GestureDescription.StrokeDescription(path, 0, DEFAULT_SWIPE_DURATION_MS)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
@@ -606,11 +622,11 @@ class FloatingCrawlerOverlay(
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        // Physical touch swipe downward: Start at safe mid-height (42%) and swipe downwards to 82% height
-        // Avoids top 35% header/banner and SwipeRefreshLayout pull-to-refresh triggers, staying clear of bottom tabs
-        val startX = width * 0.65f
-        val startY = height * 0.42f
-        val endY = height * 0.82f
+        // Physical touch swipe downward: Start at safe mid-height (35%) and swipe downwards to 68% height
+        // Horizontally centered (50% width) to avoid pull-to-refresh headers and stay completely clear of bottom tabs
+        val startX = width * SWIPE_HORIZONTAL_CENTER_RATIO
+        val startY = height * REWIND_SWIPE_START_VERTICAL_RATIO
+        val endY = height * REWIND_SWIPE_END_VERTICAL_RATIO
 
         CrawlerTraceLogger.log(
             "SCROLLER_SWIPE",
@@ -622,7 +638,7 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        val stroke = GestureDescription.StrokeDescription(path, 0, 350)
+        val stroke = GestureDescription.StrokeDescription(path, 0, FAST_SWIPE_DURATION_MS)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
@@ -656,11 +672,11 @@ class FloatingCrawlerOverlay(
         val width = displayMetrics.widthPixels
         val height = displayMetrics.heightPixels
 
-        val startX = width * 0.65f
+        val startX = width * SWIPE_HORIZONTAL_CENTER_RATIO
         val (startY, endY) = if (forward) {
-            Pair(height * 0.58f, height * 0.42f)
+            Pair(height * NUDGE_FORWARD_START_VERTICAL_RATIO, height * NUDGE_FORWARD_END_VERTICAL_RATIO)
         } else {
-            Pair(height * 0.46f, height * 0.62f)
+            Pair(height * NUDGE_REWIND_START_VERTICAL_RATIO, height * NUDGE_REWIND_END_VERTICAL_RATIO)
         }
 
         CrawlerTraceLogger.log(
@@ -673,7 +689,7 @@ class FloatingCrawlerOverlay(
             lineTo(startX, endY)
         }
 
-        val stroke = GestureDescription.StrokeDescription(path, 0, 220)
+        val stroke = GestureDescription.StrokeDescription(path, 0, NUDGE_SWIPE_DURATION_MS)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
 
         val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
@@ -768,5 +784,17 @@ class FloatingCrawlerOverlay(
 
     companion object {
         private const val TAG = "FloatingCrawlerOverlay"
+        private const val SWIPE_HORIZONTAL_CENTER_RATIO = 0.50f
+        private const val FORWARD_SWIPE_START_VERTICAL_RATIO = 0.70f
+        private const val FORWARD_SWIPE_END_VERTICAL_RATIO = 0.25f
+        private const val REWIND_SWIPE_START_VERTICAL_RATIO = 0.35f
+        private const val REWIND_SWIPE_END_VERTICAL_RATIO = 0.68f
+        private const val NUDGE_FORWARD_START_VERTICAL_RATIO = 0.58f
+        private const val NUDGE_FORWARD_END_VERTICAL_RATIO = 0.42f
+        private const val NUDGE_REWIND_START_VERTICAL_RATIO = 0.46f
+        private const val NUDGE_REWIND_END_VERTICAL_RATIO = 0.62f
+        private const val DEFAULT_SWIPE_DURATION_MS = 400L
+        private const val FAST_SWIPE_DURATION_MS = 350L
+        private const val NUDGE_SWIPE_DURATION_MS = 220L
     }
 }
