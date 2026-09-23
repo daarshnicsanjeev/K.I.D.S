@@ -344,6 +344,12 @@ sequenceDiagram
 5. **Automatic Cleanup & Storage Clearance:** As soon as Google Drive confirms a successful upload, the file is **cleared from phone storage** (permanently deleted from private staging). Local storage consumption drops back to near zero.
 6. **Residual Deletion:** If an already-synced file ever lingers or is redownloaded in public Downloads or Documents, K.I.D.S. automatically detects and cleans it from phone storage.
 
+#### Seamless Attachment Staging & Normalized Filename Linking
+Educational materials, worksheets, and circulars shared via the system Share Sheet or downloaded to storage often encounter formatting mismatches between Google Classroom's UI labels and the physical filesystem:
+- **Normalized Filename Recognition:** K.I.D.S. employs intelligent filename normalization that strips punctuation, spaces, and formatting symbols (`Regex("[^a-z0-9]")`). It effortlessly reconciles differences such as `"Doc1_Bones_and_Muscles.pdf"` vs `"Doc1 Bones and Muscles.pdf"`, or Classroom UI truncations like `"Mathematics Wo..."` matching `"Mathematics Worksheet Ch4.pdf"`.
+- **Immediate Database Linking:** Files are matched instantly against pending attachment records in SQLite Room, linking their local file paths, file sizes, and cryptographic SHA-256 hashes without requiring manual parent intervention.
+- **Continuous Staging Rescan:** If an attachment shared through the system Share Sheet arrives before its corresponding post notice has completed indexing in the database, the file is safely held in the private `vault_attachments/` staging sandbox. `DownloadFolderObserver` scans this staging folder on every background sync cycle, immediately linking previously unlinked files the moment their notice is recorded and ensuring 100% reliable synchronization to Google Drive.
+
 > [!NOTE]
 > WhatsApp documents and images are indexed in place and are **never moved or deleted**, ensuring your WhatsApp chat media remains fully functional in your chat threads.
 
@@ -577,15 +583,17 @@ When tapping an attachment chip, Android or Google Classroom may open the docume
 
 One of the greatest challenges in automating school apps is visual instability: items can shift when comments render, network pagination can jump, or system notifications can nudge the scroll position. K.I.D.S. solves this with a **Manifest-Driven Auto-Recovery Engine**:
 
-#### Autonomous Stream Recovery & 1-Screen-Behind Protection
+#### Autonomous Stream Recovery & 1-Screen-Behind Protection (Classes List Auto-Recovery)
 During automated backfill, dismissing a full-screen PDF preview or encountering an unexpected OEM gesture can occasionally cause Google Classroom to back out **1 screen behind the stream** into the main **Classes / Courses List**:
 - **Automatic Classes List Detection:** K.I.D.S. continuously monitors the active window. If the stream disappears and the Classes list appears (identified by indicators such as `"Class options for"`, `"Google Classroom"`, or enrolled class cards), the assistant immediately flags the displaced state (`isClassesListScreen`).
 - **Course Title Locking:** During the initial stream survey, K.I.D.S. automatically locks the exact course title (e.g., `"Grade 3B CAIE 2026-27"`) directly from the stream header banner via `extractCourseTitle`.
+- **Target Course Card Body Discovery (Anti-3-Dots Trap):** In Google Classroom's Classes list, each enrolled class card features a prominent 3-dots overflow button in the upper-right corner labeled *"Class options for [Course Name]"*. Tapping this 3-dots button pops open an unwanted modal menu (*Unenroll*, *Share link*), blocking navigation. K.I.D.S. avoids this trap entirely: it identifies candidate cards by climbing up to the substantive card container (enforcing a minimum size of 300px × 150px and rejecting the 132px × 132px options button).
+- **Safe Center-Left Tap Coordinates:** Rather than tapping indiscriminately or clicking near the top-right corner, `recoverToStreamFromClassesList` dispatches a synthetic tap at **35% of the card width and 50% height** (`rect.left + rect.width() * 0.35f`, `rect.centerY()`). This safely strikes the course title text in the center-left area of the card body, cleanly re-entering the stream feed without triggering the course options menu.
 - **Zero-Touch Autonomous Re-Entry:** When displaced to the Classes list, K.I.D.S. does not freeze or abort. Instead, `recoverToStreamFromClassesList` automatically searches the enrolled courses list:
   1. Searches for a card matching the locked course title.
   2. If truncated or altered, matches against the child's configured grade level (e.g., `"Grade 3"`).
   3. Falls back gracefully to the first enrolled course card.
-  It automatically clicks the card (or dispatches a physical center tap), restoring the active course stream within 1,200ms without requiring any parent intervention!
+  It automatically re-enters the active course stream within 1,200ms without requiring any parent intervention!
 - **Loop Guard Invariant (Stream Gating):** In Pass 2, attempt counters and loop-guard force-completions are **strictly gated**: they are evaluated **ONLY** when verified to be on the active stream (`isStreamOrClassworkView`). If displaced to the Classes list or a viewer, K.I.D.S. prioritizes navigation recovery instead of burning through attempt limits.
 
 #### 1. Autonomous Position Displacement Recovery

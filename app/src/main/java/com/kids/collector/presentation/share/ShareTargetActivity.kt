@@ -31,6 +31,10 @@ class ShareTargetActivity : Activity() {
 
     companion object {
         private const val TAG = "ShareTargetActivity"
+        private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]")
+        private const val MIN_PREFIX_MATCH_LENGTH = 6
+        private const val PREFIX_SLICE_LENGTH = 12
+        private const val MIN_SUBSTRING_MATCH_LENGTH = 8
     }
 
     private val deduplicationEngine = DeduplicationEngine()
@@ -89,32 +93,56 @@ class ShareTargetActivity : Activity() {
                 if (stagedFile.exists() && stagedFile.length() > 0L) {
                     val fileHash = deduplicationEngine.computeFileHash(stagedFile)
                     val db = KidsDatabase.getInstance(appCtx)
-                    val allAtts = db.attachmentDao().getAllAttachmentsDirect()
+                    val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
 
-                    // Match against pending attachment entities by filename or prefix
+                    // Match against pending attachment entities by normalized filename or prefix
                     val targetBaseName = safeFileName.substringBeforeLast('.').lowercase()
-                    val targetExt = safeFileName.substringAfterLast('.', "").lowercase()
+                    val targetExtension = safeFileName.substringAfterLast('.', "").lowercase()
+                    val normalizedTargetBaseName = normalizeForMatching(targetBaseName)
 
-                    val matchingAtt = allAtts.firstOrNull { att ->
-                        val cleanExpected = att.fileName.replace("...", "").trim().lowercase()
-                        val expBase = cleanExpected.substringBeforeLast('.')
-                        val expExt = cleanExpected.substringAfterLast('.', "")
-                        (expExt.isBlank() || expExt == targetExt) &&
-                                (expBase == targetBaseName ||
-                                        (expBase.length >= 8 && targetBaseName.startsWith(expBase.take(15))) ||
-                                        (targetBaseName.length >= 8 && expBase.startsWith(targetBaseName.take(15))))
-                    }
+                    // Prioritize attachment entities that currently lack a local file
+                    val unlinkedAttachments = allAttachments.filter { it.localUri.isBlank() }
+                    val candidatePool = if (unlinkedAttachments.isNotEmpty()) unlinkedAttachments else allAttachments
 
-                    if (matchingAtt != null) {
+                    val matchingAttachment = candidatePool.firstOrNull { attachmentEntity ->
+                        val cleanExpected = attachmentEntity.fileName.replace("...", "").trim().lowercase()
+                        val expectedBaseName = cleanExpected.substringBeforeLast('.')
+                        val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                        val normalizedExpectedBaseName = normalizeForMatching(expectedBaseName)
+
+                        val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
+                        if (!isExtensionCompatible) return@firstOrNull false
+
+                        // 1. Direct or normalized match
+                        if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@firstOrNull true
+
+                        // 2. Substantial prefix match
+                        if (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+                        if (normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+
+                        // 3. Substring containment
+                        if (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedTargetBaseName.contains(normalizedExpectedBaseName)) return@firstOrNull true
+                        if (normalizedTargetBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedTargetBaseName)) return@firstOrNull true
+
+                        false
+                    } ?: if (unlinkedAttachments.size == 1) {
+                        // Fallback: Exactly 1 attachment is awaiting a local file with compatible extension
+                        val singleAttachment = unlinkedAttachments.first()
+                        val cleanExpected = singleAttachment.fileName.replace("...", "").trim().lowercase()
+                        val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                        if (expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension) singleAttachment else null
+                    } else null
+
+                    if (matchingAttachment != null) {
                         db.attachmentDao().updateLocalFile(
-                            attachmentId = matchingAtt.attachmentId,
+                            attachmentId = matchingAttachment.attachmentId,
                             localUri = stagedFile.absolutePath,
                             sizeBytes = stagedFile.length(),
                             fileHash = fileHash
                         )
                         CrawlerTraceLogger.log(
                             "SHARE_INGEST",
-                            "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAtt.attachmentId.take(8)}"
+                            "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAttachment.attachmentId.take(8)}"
                         )
                     } else {
                         CrawlerTraceLogger.log(
@@ -163,5 +191,9 @@ class ShareTargetActivity : Activity() {
             name = uri.lastPathSegment
         }
         return name
+    }
+
+    private fun normalizeForMatching(input: String): String {
+        return input.lowercase().replace(NON_ALPHANUMERIC_REGEX, "")
     }
 }

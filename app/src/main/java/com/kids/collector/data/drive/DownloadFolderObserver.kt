@@ -18,6 +18,13 @@ import java.io.File
  */
 object DownloadFolderObserver {
     private const val TAG = "DownloadFolderObserver"
+    private val SHARED_PREFIX_REGEX = Regex("^shared_\\d+_")
+    private val HASH_PREFIX_REGEX = Regex("^[a-f0-9]{8}_")
+    private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]")
+    private const val MIN_PREFIX_MATCH_LENGTH = 6
+    private const val PREFIX_SLICE_LENGTH = 12
+    private const val MIN_SUBSTRING_MATCH_LENGTH = 8
+
     private val deduplicationEngine = DeduplicationEngine()
 
     suspend fun scanLocalAttachments(context: Context): Int = withContext(Dispatchers.IO) {
@@ -45,6 +52,11 @@ object DownloadFolderObserver {
             }
 
             val candidateDirs = mutableListOf<File>()
+
+            // 0. Private staging directory (for shared attachments received via Share Sheet)
+            if (stagingDir.exists()) {
+                candidateDirs.add(stagingDir)
+            }
 
             // 1. Standard Downloads directory
             val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -78,52 +90,65 @@ object DownloadFolderObserver {
 
             for (dir in candidateDirs) {
                 val files = dir.listFiles() ?: continue
-                val isPublicDownloadDir = dir.absolutePath.contains("Download", ignoreCase = true) ||
+                val isStagingDir = dir.absolutePath == stagingDir.absolutePath
+                val isPublicDownloadDir = !isStagingDir && (
+                        dir.absolutePath.contains("Download", ignoreCase = true) ||
                         dir.absolutePath.contains("Documents", ignoreCase = true)
+                )
 
                 for (file in files) {
                     if (file.isDirectory || file.length() == 0L) continue
                     val fileName = file.name.lowercase()
                     val fileExt = file.extension.lowercase()
                     val fileBaseName = file.nameWithoutExtension.lowercase()
+                    val cleanFileBaseName = fileBaseName
+                        .replace(SHARED_PREFIX_REGEX, "")
+                        .replace(HASH_PREFIX_REGEX, "")
+                    val normalizedFileBaseName = cleanFileBaseName.replace(NON_ALPHANUMERIC_REGEX, "")
 
                     // A. Check against pending attachments needing a local file
-                    var matchedPending = false
-                    for (att in pendingAttachments) {
-                        val rawExpected = att.fileName.trim().lowercase()
+                    var hasMatchedPendingAttachment = false
+                    for (pendingAttachment in pendingAttachments) {
+                        val rawExpected = pendingAttachment.fileName.trim().lowercase()
                         val cleanExpected = rawExpected.replace("...", "").trim()
                         if (cleanExpected.isBlank()) continue
 
-                        val expectedExt = cleanExpected.substringAfterLast('.', "")
-                        val isExtensionCompatible = fileExt.isNotBlank() && (expectedExt.isBlank() || fileExt == expectedExt)
+                        val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                        val isExtensionCompatible = fileExt.isNotBlank() && (expectedExtension.isBlank() || fileExt == expectedExtension)
                         val expectedBaseName = cleanExpected.substringBeforeLast('.').lowercase()
+                        val normalizedExpectedBaseName = expectedBaseName.replace(NON_ALPHANUMERIC_REGEX, "")
 
-                        // Strict, safe matching: requires matching extension and either exact name or substantial prefix (>= 8 chars)
+                        // Robust normalized matching: tolerates spaces vs underscores, hyphens, and truncations
                         val isMatch = isExtensionCompatible && (
                             fileBaseName == expectedBaseName ||
-                            fileName == cleanExpected ||
-                            (fileBaseName.length >= 8 && fileBaseName.startsWith(expectedBaseName.take(15))) ||
-                            (expectedBaseName.length >= 8 && expectedBaseName.startsWith(fileBaseName.take(15)))
+                            cleanFileBaseName == expectedBaseName ||
+                            normalizedFileBaseName == normalizedExpectedBaseName ||
+                            (normalizedFileBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedFileBaseName.take(PREFIX_SLICE_LENGTH))) ||
+                            (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedFileBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) ||
+                            (normalizedFileBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedFileBaseName)) ||
+                            (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedFileBaseName.contains(normalizedExpectedBaseName))
                         )
 
                         if (isMatch) {
-                            val targetFile = if (isPublicDownloadDir) {
+                            val targetFile = if (isStagingDir) {
+                                file
+                            } else if (isPublicDownloadDir) {
                                 // Sanitize leaf filename and avoid directory traversal
                                 val safeName = file.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
-                                val stagedName = "${att.attachmentId.take(8)}_$safeName"
-                                val destFile = File(stagingDir, stagedName)
+                                val stagedName = "${pendingAttachment.attachmentId.take(8)}_$safeName"
+                                val destinationFile = File(stagingDir, stagedName)
 
                                 // Assert canonical path boundary
-                                if (!destFile.canonicalPath.startsWith(stagingDir.canonicalPath + File.separator)) {
+                                if (!destinationFile.canonicalPath.startsWith(stagingDir.canonicalPath + File.separator)) {
                                     Log.e(TAG, "Path traversal attempt blocked for: ${file.name}")
                                     continue
                                 }
 
-                                val moved = try {
-                                    if (file.renameTo(destFile)) {
+                                val isFileRelocatedSuccessfully = try {
+                                    if (file.renameTo(destinationFile)) {
                                         true
                                     } else {
-                                        file.copyTo(destFile, overwrite = true)
+                                        file.copyTo(destinationFile, overwrite = true)
                                         file.delete()
                                         true
                                     }
@@ -131,7 +156,7 @@ object DownloadFolderObserver {
                                     Log.w(TAG, "Failed moving ${file.name} to staging: ${e.message}")
                                     false
                                 }
-                                if (moved && destFile.exists()) destFile else file
+                                if (isFileRelocatedSuccessfully && destinationFile.exists()) destinationFile else file
                             } else {
                                 // Keep WhatsApp files intact in their original chat location
                                 file
@@ -139,23 +164,27 @@ object DownloadFolderObserver {
 
                             val hash = deduplicationEngine.computeFileHash(targetFile)
                             db.attachmentDao().updateLocalFile(
-                                attachmentId = att.attachmentId,
+                                attachmentId = pendingAttachment.attachmentId,
                                 localUri = targetFile.absolutePath,
                                 sizeBytes = targetFile.length(),
                                 fileHash = hash
                             )
                             matchedCount++
-                            matchedPending = true
+                            hasMatchedPendingAttachment = true
                             CrawlerTraceLogger.log(
-                                "DOWNLOAD_MOVE",
-                                "Moved \"${file.name}\" out of public storage into private vault staging (${targetFile.length()} bytes) -> linked to attachment ${att.attachmentId.take(8)}"
+                                if (isStagingDir) "STAGING_LINK" else "DOWNLOAD_MOVE",
+                                if (isStagingDir) {
+                                    "Linked staged attachment \"${file.name}\" (${targetFile.length()} bytes) -> attachment ${pendingAttachment.attachmentId.take(8)}"
+                                } else {
+                                    "Moved \"${file.name}\" out of public storage into private vault staging (${targetFile.length()} bytes) -> linked to attachment ${pendingAttachment.attachmentId.take(8)}"
+                                }
                             )
                             break
                         }
                     }
 
                     // B. If not pending, check if it is an already-synced file lingering in public storage
-                    if (!matchedPending && isPublicDownloadDir) {
+                    if (!hasMatchedPendingAttachment && isPublicDownloadDir && !isStagingDir) {
                         for (syncedAtt in alreadySyncedAttachments) {
                             val expected = syncedAtt.fileName.trim().lowercase()
                             if (expected.isBlank()) continue

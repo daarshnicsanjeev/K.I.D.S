@@ -280,4 +280,67 @@ class StreamManifestAndCardTest {
         val assignmentDetailContent = "New assignment: Math Homework Due Tomorrow Assigned Your work Add private comment 100 points"
         assertThat(isCommentsOnlyScreenSimulated(assignmentDetailContent)).isFalse()
     }
+
+    @Test
+    fun `normalized filename matching reconciles underscores, spaces, hyphens and truncations`() {
+        fun normalizeForMatching(input: String): String {
+            return input.lowercase().replace(Regex("[^a-z0-9]"), "")
+        }
+
+        fun isAttachmentMatchSimulated(stagedName: String, expectedName: String): Boolean {
+            val stagedBase = stagedName.substringBeforeLast('.').lowercase()
+                .replace(Regex("^shared_\\d+_"), "")
+                .replace(Regex("^[a-f0-9]{8}_"), "")
+            val stagedExt = stagedName.substringAfterLast('.', "").lowercase()
+
+            val cleanExpected = expectedName.replace("...", "").trim().lowercase()
+            val expBase = cleanExpected.substringBeforeLast('.')
+            val expExt = cleanExpected.substringAfterLast('.', "")
+
+            val isExtCompat = expExt.isBlank() || stagedExt.isBlank() || expExt == stagedExt
+            if (!isExtCompat) return false
+
+            val normStaged = normalizeForMatching(stagedBase)
+            val normExp = normalizeForMatching(expBase)
+
+            return normStaged == normExp ||
+                    (normStaged.length >= 6 && normExp.startsWith(normStaged.take(12))) ||
+                    (normExp.length >= 6 && normStaged.startsWith(normExp.take(12))) ||
+                    (normStaged.length >= 8 && normExp.contains(normStaged)) ||
+                    (normExp.length >= 8 && normStaged.contains(normExp))
+        }
+
+        // Exact match with underscores vs spaces (User's real case)
+        val sharedFromIntent = "Doc1_Bones_and_Muscles.pdf"
+        val expectedInNotice = "Doc1 Bones and Muscles.pdf"
+        assertThat(isAttachmentMatchSimulated(sharedFromIntent, expectedInNotice)).isTrue()
+
+        // Staged file with timestamp prefix
+        val stagedWithPrefix = "shared_146799_Doc1_Bones_and_Muscles.pdf"
+        assertThat(isAttachmentMatchSimulated(stagedWithPrefix, expectedInNotice)).isTrue()
+
+        // Truncated title with ellipsis
+        val truncatedNotice = "Doc1 Bones and Musc....pdf"
+        assertThat(isAttachmentMatchSimulated(sharedFromIntent, truncatedNotice)).isTrue()
+
+        // Incompatible extension is rejected
+        assertThat(isAttachmentMatchSimulated("Doc1_Bones_and_Muscles.pdf", "Doc1 Bones and Muscles.docx")).isFalse()
+    }
+
+    @Test
+    fun `classes list card filtering strictly rejects 132x132 options overflow button`() {
+        fun isValidCourseCardBounds(width: Int, height: Int): Boolean {
+            return width > 300 && height > 150
+        }
+
+        // 3-dots overflow button from real trace log: Rect(904, 698 - 1036, 830) -> 132 x 132
+        val optionsButtonWidth = 1036 - 904
+        val optionsButtonHeight = 830 - 698
+        assertThat(isValidCourseCardBounds(optionsButtonWidth, optionsButtonHeight)).isFalse()
+
+        // Real course card container: Rect(30, 200 - 1050, 600) -> 1020 x 400
+        val cardWidth = 1050 - 30
+        val cardHeight = 600 - 200
+        assertThat(isValidCourseCardBounds(cardWidth, cardHeight)).isTrue()
+    }
 }

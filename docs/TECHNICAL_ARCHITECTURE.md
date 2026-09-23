@@ -978,6 +978,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
           if (isCommentsOnlyScreen(activeAfter)) {
               CrawlerTraceLogger.log("DEEP_CRAWLER", "Comments dialog detected instead of post detail. Dismissing comments dialog...")
               performReturnToStream(activeAfter)
+              delay(800) // Allow dismissal transition to complete before re-evaluating window
           }
           activeAfter.recycle()
       }
@@ -992,7 +993,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       continue
   }
   ```
-  - **Instant Dismissal:** Identifies the comments dialog via `isCommentsOnlyScreen(root)` and immediately invokes `performReturnToStream()`, safely dismissing the sheet and restoring the stream feed without operator intervention.
+  - **Instant Dismissal & Settling Hygiene:** Identifies the comments dialog via `isCommentsOnlyScreen(root)` and immediately invokes `performReturnToStream()`, enforcing an **800ms settling delay** to allow the sheet exit transition to finish before re-evaluating window state, safely restoring the stream feed without operator intervention.
 
 - **Material Retry Bounds & Guaranteed Progression:**
   If `!enteredDetail` after the full retry window, `KidsAccessibilityService` enforces bounded retries with index-based manifest completion:
@@ -1551,11 +1552,73 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
      }
      ```
   
-  3. **Target Course Selection & Stream Re-Entry (`findCourseCardInClassesList` & `recoverToStreamFromClassesList`):**
-     Identifies course card containers by locating `"class options for"` action nodes and resolving their clickable parents. Performs 3-tier matching:
-     - *Priority 1:* Exact or prefix match against locked `activeCourseTitle`.
-     - *Priority 2:* Substring match against the child profile's registered grade (`activeCourseGrade`).
-     - *Priority 3:* Fallback to the first enrolled course card.
+  3. **Target Course Selection, Dimension Filtering & Safe Stream Re-Entry (`collectCourseCardNodes`, `findCourseCardInClassesList`, `recoverToStreamFromClassesList`):**
+     - **Course Card Dimension Filtering (`collectCourseCardNodes`):**
+       In Google Classroom's Classes list, each course entry contains a 3-dots overflow button (`"class options for..."`, typically $132\times132$ px) in the top-right corner. Tapping this button triggers an unwanted modal popup (*Unenroll*, *Share link*), blocking navigation.
+       To completely prevent this trap:
+       - `collectCourseCardNodes` climbs the view hierarchy (`depth = 1..5`) from the options button to target the enclosing card container.
+       - Strictly enforces substantive dimension filtering: `rect.width() > 300 && rect.height() > 150`, completely rejecting the compact 132×132 3-dots button.
+       - Also collects direct clickable `CardView`, `ViewGroup`, or `FrameLayout` containers exceeding $300\times150$ containing course indicators (`grade`, `class`, `caie`, `section`).
+     ```kotlin
+     private fun collectCourseCardNodes(
+         node: AccessibilityNodeInfo,
+         outList: MutableList<AccessibilityNodeInfo>
+     ) {
+         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+         val className = node.className?.toString() ?: ""
+
+         // Case A: Options button ("class options for...") -> climb up to parent card container
+         if (desc.startsWith("class options for") || desc.contains("class options")) {
+             var current: AccessibilityNodeInfo? = node.parent
+             var depth = 1
+             while (current != null && depth <= 5) {
+                 if (current.isClickable) {
+                     val rect = Rect()
+                     current.getBoundsInScreen(rect)
+                     // Card container must be substantive (width > 300, height > 150), completely rejecting the 132x132 3-dots button!
+                     if (rect.width() > 300 && rect.height() > 150) {
+                         if (outList.none { it == current }) {
+                             outList.add(AccessibilityNodeInfo.obtain(current))
+                         }
+                         break
+                     }
+                 }
+                 val parentNode = current.parent
+                 current.recycle()
+                 current = parentNode
+                 depth++
+             }
+             current?.recycle()
+         }
+
+         // Case B: Direct clickable CardView or class item container
+         if (node.isClickable && (className.contains("CardView") || className.contains("ViewGroup") || className.contains("FrameLayout"))) {
+             val rect = Rect()
+             node.getBoundsInScreen(rect)
+             if (rect.width() > 300 && rect.height() > 150) {
+                 val nodeText = mutableListOf<String>()
+                 collectQuickText(node, nodeText)
+                 val combined = nodeText.joinToString(" ").lowercase()
+                 if (combined.contains("grade") || combined.contains("class") || combined.contains("caie") || combined.contains("section")) {
+                     if (outList.none { it == node }) {
+                         outList.add(AccessibilityNodeInfo.obtain(node))
+                     }
+                 }
+             }
+         }
+
+         for (i in 0 until node.childCount) {
+             val child = node.getChild(i) ?: continue
+             collectCourseCardNodes(child, outList)
+             child.recycle()
+         }
+     }
+     ```
+     - **Safe Tap Coordinates (`recoverToStreamFromClassesList`):**
+       Once a candidate card is matched (via locked `activeCourseTitle`, child grade level, or first card fallback), `recoverToStreamFromClassesList` dispatches a synthetic pointer tap:
+       $$\text{safeClickX} = \text{rect.left} + (\text{rect.width()} \times 0.35\text{f})$$
+       $$\text{safeClickY} = \text{rect.centerY().toFloat()}$$
+       Targeting the center-left area ($35\%$ width, $50\%$ height) lands squarely over the course title text in the card body and safely away from the top-right corner where the 3-dots menu button lives.
      ```kotlin
      private suspend fun recoverToStreamFromClassesList(
          root: AccessibilityNodeInfo,
@@ -1576,17 +1639,27 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
                  "STREAM_RECOVERY",
                  "Found target class card at $rect. Clicking to re-enter stream..."
              )
-             val clicked = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-             if (!clicked) {
-                 dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+             // Tap the card in the safe left-center area (35% across width, 50% height)
+             // NEVER tap near the top-right corner where the 3-dots options menu button lives!
+             val safeClickX = rect.left + (rect.width() * 0.35f)
+             val safeClickY = rect.centerY().toFloat()
+
+             var success = dispatchTap(safeClickX, safeClickY)
+             if (!success) {
+                 success = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
              }
              card.recycle()
-             delay(1200) // Allow class stream to load
-             return true
+             delay(1500) // Allow class stream to load
+             return success
          }
          return false
      }
      ```
+
+  - **Transition Settling Hygiene:**
+    To prevent race conditions, touch-event clashing, and premature back actions during screen transitions:
+    1. **800ms Comments Dismissal Delay:** After invoking `performReturnToStream(activeAfter)` upon detecting an accidental comments dialog, the crawler halts for `delay(800)` to allow the dialog exit transition to settle before re-evaluating the active window.
+    2. **600ms Classroom In-Transition Grace Period:** When active inside Google Classroom (`currentPkg == "com.google.android.apps.classroom"`) on a screen that is neither stream, comments, detail, nor classes list, the engine checks for a Navigate Up button. If Navigate Up is absent, the window is likely in a transient fragment transition. The engine logs `"Classroom window in transition. Waiting for UI to settle..."` and pauses for a **600ms grace period** (`delay(600)`) without dispatching a blind `GLOBAL_ACTION_BACK`, preventing race conditions and unintentional app exit.
 
 - **Stream Immunity to Comments Check (`isCommentsOnlyScreen`):**
   Stream announcements display `"0 class comments"` or `"Add class comment"`. To mathematically prevent false classification of the stream feed as a comments dialog:
@@ -2119,10 +2192,19 @@ Incoming intents deliver either `content://` or `file://` URIs via `Intent.EXTRA
 #### SHA-256 Fingerprinting & SQLite Record Reconciliation
 Once the binary stream is staged to disk:
 1. **Cryptographic Fingerprint:** `DeduplicationEngine.computeFileHash(stagedFile)` computes the SHA-256 digest of the raw byte stream.
-2. **Fuzzy Candidate Matching:** The stager queries all existing attachment entities from SQLite Room (`db.attachmentDao().getAllAttachmentsDirect()`) and reconciles the staged file against pending database records:
-   - Strips ellipsis truncation (`...` or `…`) from crawler labels.
-   - Compares filename base names and extensions case-insensitively.
-   - Performs prefix matching on base names $\ge 8$ characters (handling Classroom truncated filenames e.g. `Mathematics Wo...` matching `Mathematics Worksheet Ch4.pdf`).
+2. **Normalized Candidate Matching (`normalizeForMatching`):** 
+   Classroom post notices often record attachment names with spaces or ellipses (e.g., `"Doc1 Bones and Muscles"` or `"Mathematics Wo..."`), while viewers or downloaders export them with underscores, hyphens, or full titles (e.g., `"Doc1_Bones_and_Muscles.pdf"`). 
+   To eliminate linking failures, `ShareTargetActivity` implements normalized filename reconciliation:
+   ```kotlin
+   private fun normalizeForMatching(input: String): String {
+       return input.lowercase().replace(Regex("[^a-z0-9]"), "")
+   }
+   ```
+   The stager queries existing attachment entities from SQLite Room (`db.attachmentDao().getAllAttachmentsDirect()`), prioritizing unlinked attachments (`localUri.isBlank()`), and matches using a 4-tier evaluation:
+   - **Tier 1 (Direct or Normalized Match):** `expBase == targetBaseName || normExpBase == normTargetBase` (reconciles `"Doc1_Bones_and_Muscles"` vs `"Doc1 Bones and Muscles"`).
+   - **Tier 2 (Substantial Prefix Anchor):** For strings with $\ge 6$ alphanumeric characters, checks `normExpBase.startsWith(normTargetBase.take(12))` or `normTargetBase.startsWith(normExpBase.take(12))`.
+   - **Tier 3 (Substring Containment):** For strings with $\ge 8$ characters, checks `normTargetBase.contains(normExpBase)` or `normExpBase.contains(normTargetBase)`.
+   - **Tier 4 (Single Unlinked Fallback):** If exactly one unlinked attachment is pending with a compatible extension, resolves to that record.
 3. **Entity Update:** If matched, the database record is updated immediately via:
    ```kotlin
    db.attachmentDao().updateLocalFile(
@@ -2132,7 +2214,7 @@ Once the binary stream is staged to disk:
        fileHash = fileHash
    )
    ```
-   If unlinked, the file is safely staged and logged via `CrawlerTraceLogger.log("SHARE_INGEST", ...)` for downstream crawler reconciliation.
+   If unlinked, the file is safely preserved in `vault_attachments/` and logged via `CrawlerTraceLogger.log("SHARE_INGEST", ...)` for subsequent reconciliation during `DownloadFolderObserver` scans.
 
 #### Immediate Drive Sync Work Dispatch (`APPEND_OR_REPLACE`)
 Immediately following staging and database linking, `ShareTargetActivity` schedules background cloud synchronization:
@@ -2165,12 +2247,20 @@ When Google Classroom or other school apps download attachments, Android's `Down
 
 `DownloadFolderObserver` resolves both challenges through an autonomous scanning, cleaning, and staging pipeline with candidate directory expansion.
 
-#### Candidate Storage Directories Expansion
-
-Modern Android OEM implementations and Classroom app updates save attachments across multiple shared paths. `DownloadFolderObserver.scanLocalAttachments(context)` comprehensively expands candidate directory discovery across three primary storage targets:
+#### Candidate Storage Directories Expansion & Staging Directory Scan
+Modern Android OEM implementations and Classroom app updates save attachments across multiple shared paths. `DownloadFolderObserver.scanLocalAttachments(context)` comprehensively expands candidate directory discovery across four storage targets, explicitly incorporating the private staging directory so unlinked shared files are re-evaluated upon subsequent sync cycles:
 
 ```kotlin
+val stagingDir = File(context.getExternalFilesDir(null), "vault_attachments").apply {
+    if (!exists()) mkdirs()
+}
+
 val candidateDirs = mutableListOf<File>()
+
+// 0. Private staging directory (for shared attachments received via Share Sheet)
+if (stagingDir.exists()) {
+    candidateDirs.add(stagingDir)
+}
 
 // 1. Standard Downloads directory & Classroom subdirectory
 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
@@ -2200,34 +2290,49 @@ if (externalStorage != null && externalStorage.exists()) {
 
 Public shared folders are dynamically identified via path inspection:
 ```kotlin
-val isPublicDownloadDir = dir.absolutePath.contains("Download", ignoreCase = true) ||
-        dir.absolutePath.contains("Documents", ignoreCase = true)
+val isStagingDir = dir.absolutePath == stagingDir.absolutePath
+val isPublicDownloadDir = !isStagingDir && (
+    dir.absolutePath.contains("Download", ignoreCase = true) ||
+    dir.absolutePath.contains("Documents", ignoreCase = true)
+)
 ```
 
-#### Ellipsis Stripping & Heuristic Match Architecture
+#### Ellipsis Stripping & Normalized Filename Matching Architecture (`normalizeForMatching`)
 
-When scanning storage directories, `DownloadFolderObserver` extracts the expected name registered from the UI chip (`rawExpected`) and strips trailing ellipses to isolate the substantive prefix:
+When scanning storage directories, `DownloadFolderObserver` cleans the candidate filename (stripping synthetic prefixes like `shared_\d+_` and `[a-f0-9]{8}_`), extracts the expected name registered from the UI chip (`rawExpected`), strips trailing ellipses, and normalizes both candidate and expected base names by removing all non-alphanumeric characters (`Regex("[^a-z0-9]")`):
+
 ```kotlin
+val fileBaseName = file.nameWithoutExtension.lowercase()
+val cleanFileBaseName = fileBaseName
+    .replace(Regex("^shared_\\d+_"), "")
+    .replace(Regex("^[a-f0-9]{8}_"), "")
+val normFileBase = cleanFileBaseName.replace(Regex("[^a-z0-9]"), "")
+
 val rawExpected = att.fileName.trim().lowercase()
 val cleanExpected = rawExpected.replace("...", "").trim()
-```
+val expectedExt = cleanExpected.substringAfterLast('.', "")
+val isExtensionCompatible = fileExt.isNotBlank() && (expectedExt.isBlank() || fileExt == expectedExt)
+val expectedBaseName = cleanExpected.substringBeforeLast('.').lowercase()
+val normExpectedBase = expectedBaseName.replace(Regex("[^a-z0-9]"), "")
 
-It then evaluates incoming candidate files using a 4-tier match expression:
-```kotlin
-val isMatch = fileName == rawExpected ||
-        fileName.contains(rawExpected) ||
-        rawExpected.contains(fileName) ||
-        fileName == cleanExpected ||
-        fileName.contains(cleanExpected) ||
-        cleanExpected.contains(fileName) ||
-        (cleanExpected.length > 5 && fileName.contains(cleanExpected.take(12)))
+// Robust normalized matching: tolerates spaces vs underscores, hyphens, and truncations
+val isMatch = isExtensionCompatible && (
+    fileBaseName == expectedBaseName ||
+    cleanFileBaseName == expectedBaseName ||
+    normFileBase == normExpectedBase ||
+    (normFileBase.length >= 6 && normExpectedBase.startsWith(normFileBase.take(12))) ||
+    (normExpectedBase.length >= 6 && normFileBase.startsWith(normExpectedBase.take(12))) ||
+    (normFileBase.length >= 8 && normExpectedBase.contains(normFileBase)) ||
+    (normExpectedBase.length >= 8 && normFileBase.contains(normExpectedBase))
+)
 ```
 
 ##### Match Tier Rationale:
-- **Tier 1 (Exact Match):** Handles attachments where the UI chip displayed the full un-truncated filename (`fileName == rawExpected`).
-- **Tier 2 (Bidirectional Substring Match):** Handles cases where either the chip string or the on-disk filename embeds minor formatting variants or parenthetical tags (`fileName.contains(rawExpected) || rawExpected.contains(fileName)`).
-- **Tier 3 (Ellipsis-Free Equivalence):** Matches the clean prefix directly against the filesystem name after eliminating `"..."` (`fileName.contains(cleanExpected)`).
-- **Tier 4 (Truncated Prefix Anchor):** For severely truncated names (e.g. `'Formatting Te...'`), takes the first 12 characters of the clean prefix and verifies that the on-disk filename starts with or contains those 12 characters (`fileName.contains(cleanExpected.take(12))`). For example, `'formatting text in word 2016 ws with answerkey.pdf'` cleanly matches `'formatting te...'` anchored on `'formatting t'`.
+- **Tier 1 (Exact & Clean Base Match):** Handles attachments where the UI chip displayed the full un-truncated filename, or matches after stripping generated staging prefixes (`fileBaseName == expectedBaseName || cleanFileBaseName == expectedBaseName`).
+- **Tier 2 (Normalized Alphanumeric Equivalence):** Strips punctuation, hyphens, and underscores via `replace(Regex("[^a-z0-9]"), "")` (`normFileBase == normExpectedBase`), effortlessly reconciling discrepancies like `"Doc1_Bones_and_Muscles"` vs `"Doc1 Bones and Muscles"`.
+- **Tier 3 (Bidirectional Substantial Prefix Match):** For strings with $\ge 6$ alphanumeric characters, tests whether either name anchors the other's initial 12 characters, handling aggressive OEM or UI truncation (`normExpectedBase.startsWith(normFileBase.take(12)) || normFileBase.startsWith(normExpectedBase.take(12))`).
+- **Tier 4 (Substring Containment):** For strings with $\ge 8$ characters, tests mutual containment (`normExpectedBase.contains(normFileBase) || normFileBase.contains(normExpectedBase)`).
+- **Staging Rescan & Relinking:** If the matched file resides in the private `stagingDir` (`isStagingDir == true`), the file is not copied or moved again; `DownloadFolderObserver` directly links the staged path to `AttachmentEntity` via `AttachmentDao.updateLocalFile()`, logs `STAGING_LINK`, and enqueues cloud upload. This ensures that any unlinked shared files arriving via the system Share Sheet are re-evaluated and linked upon subsequent sync cycles!
 
 #### The 5-Stage Anti-Clutter Staging & Cloud Sync Lifecycle
 

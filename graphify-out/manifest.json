@@ -1,193 +1,193 @@
 {
   "app/build.gradle.kts": {
-    "mtime": 1790145250.0193377,
-    "seen": 1790145257.9761355,
+    "mtime": 1789928431.153115,
+    "seen": 1790149413.9219766,
     "ast_hash": "a491d77c540a20a83bc8b9f2597d083e",
     "semantic_hash": "a491d77c540a20a83bc8b9f2597d083e"
   },
   "app/src/main/java/com/kids/collector/KidsApplication.kt": {
-    "mtime": 1790145250.0201614,
-    "seen": 1790145257.9761384,
-    "ast_hash": "f5ac883e33e17965b947fc0d6c09daae",
-    "semantic_hash": "f5ac883e33e17965b947fc0d6c09daae"
+    "mtime": 1790081544.5169332,
+    "seen": 1790149413.9219804,
+    "ast_hash": "8a55260b58300ae277c6a0dc313e5d59",
+    "semantic_hash": "8a55260b58300ae277c6a0dc313e5d59"
   },
   "app/src/main/java/com/kids/collector/data/db/Daos.kt": {
-    "mtime": 1790145250.0202684,
-    "seen": 1790145257.9761398,
-    "ast_hash": "b271ce62f928f1b2360b3d32596325f1",
-    "semantic_hash": "b271ce62f928f1b2360b3d32596325f1"
+    "mtime": 1790039219.2869976,
+    "seen": 1790149413.9219823,
+    "ast_hash": "d59f20346896fa366ee46d8671a8df51",
+    "semantic_hash": "d59f20346896fa366ee46d8671a8df51"
   },
   "app/src/main/java/com/kids/collector/data/db/Entities.kt": {
-    "mtime": 1790145250.020369,
-    "seen": 1790145257.9761407,
+    "mtime": 1789851676.616332,
+    "seen": 1790149413.921983,
     "ast_hash": "22ca7ba058a7d35686e0617181c4890a",
     "semantic_hash": "22ca7ba058a7d35686e0617181c4890a"
   },
   "app/src/main/java/com/kids/collector/data/db/KidsDatabase.kt": {
-    "mtime": 1790145250.020369,
-    "seen": 1790145257.976142,
+    "mtime": 1789851686.437978,
+    "seen": 1790149413.9219837,
     "ast_hash": "e45ca8bf6c4113c896aa6fa2678aed6e",
     "semantic_hash": "e45ca8bf6c4113c896aa6fa2678aed6e"
   },
   "app/src/main/java/com/kids/collector/data/drive/GoogleDriveClient.kt": {
-    "mtime": 1790145250.0205898,
-    "seen": 1790145257.9761457,
-    "ast_hash": "6751870e5ad80a98e93266f9e0e11e6f",
-    "semantic_hash": "6751870e5ad80a98e93266f9e0e11e6f"
+    "mtime": 1790086666.0390098,
+    "seen": 1790149413.921987,
+    "ast_hash": "7fe86a871e5faf56e5e22bee888efa46",
+    "semantic_hash": "7fe86a871e5faf56e5e22bee888efa46"
   },
   "app/src/main/java/com/kids/collector/data/ocr/MLKitOcrParser.kt": {
-    "mtime": 1790145250.0205898,
-    "seen": 1790145257.9761474,
+    "mtime": 1789851657.0381658,
+    "seen": 1790149413.921989,
     "ast_hash": "092f14acbd3582d8b1092ddf36f19d1a",
     "semantic_hash": "092f14acbd3582d8b1092ddf36f19d1a"
   },
   "app/src/main/java/com/kids/collector/domain/classifier/ContentClassifier.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761488,
+    "mtime": 1789885476.067107,
+    "seen": 1790149413.9219897,
     "ast_hash": "25b8b91b03359939d618baf422a51507",
     "semantic_hash": "25b8b91b03359939d618baf422a51507"
   },
   "app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761496,
+    "mtime": 1789964723.2983484,
+    "seen": 1790149413.9219906,
     "ast_hash": "1a62a17a251697d6f374b73f97b3d5cf",
     "semantic_hash": "1a62a17a251697d6f374b73f97b3d5cf"
   },
   "app/src/main/java/com/kids/collector/domain/filter/PrivacyFilter.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761505,
+    "mtime": 1789849244.534551,
+    "seen": 1790149413.9219913,
     "ast_hash": "cf056c5f099057b5def7613ca03e9fa3",
     "semantic_hash": "cf056c5f099057b5def7613ca03e9fa3"
   },
   "app/src/main/java/com/kids/collector/domain/graph/KotlinGraphifyEngine.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761512,
+    "mtime": 1789851668.726235,
+    "seen": 1790149413.9219923,
     "ast_hash": "b5dfbf95c84146800f6314beb30b8033",
     "semantic_hash": "b5dfbf95c84146800f6314beb30b8033"
   },
   "app/src/main/java/com/kids/collector/domain/model/Models.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761531,
+    "mtime": 1789896425.8002734,
+    "seen": 1790149413.9219935,
     "ast_hash": "f2118238a14780e0604b9b28c8a089ec",
     "semantic_hash": "f2118238a14780e0604b9b28c8a089ec"
   },
   "app/src/main/java/com/kids/collector/domain/router/MultiChildRouter.kt": {
-    "mtime": 1790145250.0215616,
-    "seen": 1790145257.9761562,
+    "mtime": 1789849251.9541306,
+    "seen": 1790149413.9219959,
     "ast_hash": "c0b813336a4f937bdd53043eaa7f534a",
     "semantic_hash": "c0b813336a4f937bdd53043eaa7f534a"
   },
   "app/src/main/java/com/kids/collector/presentation/MainActivity.kt": {
-    "mtime": 1790145250.0215616,
-    "seen": 1790145257.9761572,
+    "mtime": 1789976883.9188862,
+    "seen": 1790149413.9219968,
     "ast_hash": "74eb88a13e9acf70e6b1a5bbbc52213a",
     "semantic_hash": "74eb88a13e9acf70e6b1a5bbbc52213a"
   },
   "app/src/main/java/com/kids/collector/presentation/telemetry/DiagnosticFeedScreen.kt": {
-    "mtime": 1790145250.0222762,
-    "seen": 1790145257.976162,
+    "mtime": 1789922865.0407126,
+    "seen": 1790149413.9220011,
     "ast_hash": "672a611928b9b3614f3424d20830f023",
     "semantic_hash": "672a611928b9b3614f3424d20830f023"
   },
   "app/src/main/java/com/kids/collector/presentation/theme/Color.kt": {
-    "mtime": 1790145250.0222762,
-    "seen": 1790145257.9761631,
+    "mtime": 1789849222.9618356,
+    "seen": 1790149413.9220018,
     "ast_hash": "336e9089d46fcd309cc106c579abfc7f",
     "semantic_hash": "336e9089d46fcd309cc106c579abfc7f"
   },
   "app/src/main/java/com/kids/collector/presentation/theme/KidsTheme.kt": {
-    "mtime": 1790145250.0226085,
-    "seen": 1790145257.976164,
+    "mtime": 1789849236.081026,
+    "seen": 1790149413.9220028,
     "ast_hash": "26dfb8a0ef6d98f2e1f3dc386d095590",
     "semantic_hash": "26dfb8a0ef6d98f2e1f3dc386d095590"
   },
   "app/src/main/java/com/kids/collector/presentation/theme/Type.kt": {
-    "mtime": 1790145250.0226085,
-    "seen": 1790145257.9761648,
+    "mtime": 1789849228.6251588,
+    "seen": 1790149413.9220033,
     "ast_hash": "8679da508d6d049ee7ff9e77941388e2",
     "semantic_hash": "8679da508d6d049ee7ff9e77941388e2"
   },
   "app/src/main/java/com/kids/collector/presentation/wizard/OnboardingWizardScreen.kt": {
-    "mtime": 1790145250.0226085,
-    "seen": 1790145257.9761658,
-    "ast_hash": "dd513d84d2c6bc8d61f6453daf66e8df",
-    "semantic_hash": "dd513d84d2c6bc8d61f6453daf66e8df"
+    "mtime": 1790089020.1164374,
+    "seen": 1790149413.922004,
+    "ast_hash": "42b506e4b71c91121a2cafe6f4247537",
+    "semantic_hash": "42b506e4b71c91121a2cafe6f4247537"
   },
   "app/src/main/java/com/kids/collector/service/BootReceiver.kt": {
-    "mtime": 1790145250.0226085,
-    "seen": 1790145257.9761667,
+    "mtime": 1789849308.3094258,
+    "seen": 1790149413.9220047,
     "ast_hash": "2a7753e822b2b4456a34e1206e1abe5c",
     "semantic_hash": "2a7753e822b2b4456a34e1206e1abe5c"
   },
   "app/src/main/java/com/kids/collector/service/DriveSyncWorker.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.9761684,
-    "ast_hash": "07ef0145aa93e85e0b095f27d16a965d",
-    "semantic_hash": "07ef0145aa93e85e0b095f27d16a965d"
+    "mtime": 1790084142.8175585,
+    "seen": 1790149413.9220061,
+    "ast_hash": "59dc442953dfd146cb43c52dc3a3189f",
+    "semantic_hash": "59dc442953dfd146cb43c52dc3a3189f"
   },
   "app/src/main/java/com/kids/collector/service/KidsAccessibilityService.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.9761703,
-    "ast_hash": "5ef2c362d5cc34668db2fbc0d2de97d0",
-    "semantic_hash": "5ef2c362d5cc34668db2fbc0d2de97d0"
+    "mtime": 1790149359.0799613,
+    "seen": 1790149413.9220076,
+    "ast_hash": "1ed846b702233354ed8504b9cad343c4",
+    "semantic_hash": "1ed846b702233354ed8504b9cad343c4"
   },
   "app/src/main/java/com/kids/collector/service/KidsNotificationListenerService.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.9761713,
+    "mtime": 1789954654.9037652,
+    "seen": 1790149413.9220083,
     "ast_hash": "79695f51887f3f9fd069c85a26a538fb",
     "semantic_hash": "79695f51887f3f9fd069c85a26a538fb"
   },
   "app/src/main/java/com/kids/collector/telemetry/DriveDeepLogger.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.976172,
+    "mtime": 1789849290.4473279,
+    "seen": 1790149413.922009,
     "ast_hash": "6076c3bcd08373f137e9dbd118081233",
     "semantic_hash": "6076c3bcd08373f137e9dbd118081233"
   },
   "app/src/test/java/com/kids/collector/ContentClassifierTest.kt": {
-    "mtime": 1790145250.0245903,
-    "seen": 1790145257.9761732,
+    "mtime": 1789849332.3406837,
+    "seen": 1790149413.9220097,
     "ast_hash": "16458d568641ccc21160338b9bd1cc9c",
     "semantic_hash": "16458d568641ccc21160338b9bd1cc9c"
   },
   "app/src/test/java/com/kids/collector/DeduplicationHashTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.9761739,
+    "mtime": 1789849340.3409235,
+    "seen": 1790149413.9220104,
     "ast_hash": "f2549f5a0b15f43df71739b2888c7227",
     "semantic_hash": "f2549f5a0b15f43df71739b2888c7227"
   },
   "app/src/test/java/com/kids/collector/KnowledgeGraphBuilderTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.976176,
+    "mtime": 1789851779.362175,
+    "seen": 1790149413.9220116,
     "ast_hash": "98fd3cce6cd5a3df29f89ae171044df5",
     "semantic_hash": "98fd3cce6cd5a3df29f89ae171044df5"
   },
   "app/src/test/java/com/kids/collector/MultiChildAttributionTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.9761772,
+    "mtime": 1789849336.6734772,
+    "seen": 1790149413.9220123,
     "ast_hash": "b85f0b4cd50c6ce9b8568a27c6a56e38",
     "semantic_hash": "b85f0b4cd50c6ce9b8568a27c6a56e38"
   },
   "app/src/test/java/com/kids/collector/PrivacyFilterTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.976179,
+    "mtime": 1789849327.7892604,
+    "seen": 1790149413.9220142,
     "ast_hash": "86a3d36e8d17d308ee7ed03c39c51290",
     "semantic_hash": "86a3d36e8d17d308ee7ed03c39c51290"
   },
   "build.gradle.kts": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.9761817,
+    "mtime": 1789849169.2940066,
+    "seen": 1790149413.9220161,
     "ast_hash": "20a4eb1e27e622fee9e3442973bd22ab",
     "semantic_hash": "20a4eb1e27e622fee9e3442973bd22ab"
   },
   "gradlew": {
-    "mtime": 1790145250.02697,
-    "seen": 1790145257.9761827,
+    "mtime": 1789870687.8293016,
+    "seen": 1790149413.922017,
     "ast_hash": "da8caf41291a44f86a85f27f2148970a",
     "semantic_hash": "da8caf41291a44f86a85f27f2148970a"
   },
   "settings.gradle.kts": {
-    "mtime": 1790145250.0410738,
-    "seen": 1790145257.9761848,
+    "mtime": 1789870796.6937485,
+    "seen": 1790149413.9220188,
     "ast_hash": "0064cf4d9a51849da7f6770c39403f0f",
     "semantic_hash": "0064cf4d9a51849da7f6770c39403f0f"
   },
@@ -210,111 +210,111 @@
     "semantic_hash": "0c274021e7817817fb9069f4d797f5db"
   },
   "app/src/main/java/com/kids/collector/data/db/TypeConverters.kt": {
-    "mtime": 1790145250.020369,
-    "seen": 1790145257.9761426,
+    "mtime": 1789851672.524149,
+    "seen": 1790149413.9219844,
     "ast_hash": "d54a0e5813f98977588cd01d4f7c1996",
     "semantic_hash": "d54a0e5813f98977588cd01d4f7c1996"
   },
   "app/src/main/java/com/kids/collector/domain/importer/WhatsAppChatExportParser.kt": {
-    "mtime": 1790145250.0210822,
-    "seen": 1790145257.9761524,
+    "mtime": 1789885488.3691611,
+    "seen": 1790149413.9219928,
     "ast_hash": "5dc8466d20dca796e6fb565f9e95ff32",
     "semantic_hash": "5dc8466d20dca796e6fb565f9e95ff32"
   },
   "app/src/main/java/com/kids/collector/domain/parser/NotificationParser.kt": {
-    "mtime": 1790145250.0215616,
-    "seen": 1790145257.976155,
+    "mtime": 1789885681.2815013,
+    "seen": 1790149413.921995,
     "ast_hash": "e70323a2e5aaae92bbdec511f89db783",
     "semantic_hash": "e70323a2e5aaae92bbdec511f89db783"
   },
   "app/src/main/java/com/kids/collector/presentation/dashboard/ChildrenGridDashboard.kt": {
-    "mtime": 1790145250.0218647,
-    "seen": 1790145257.976158,
+    "mtime": 1789883626.2136743,
+    "seen": 1790149413.9219978,
     "ast_hash": "d8cee222312a0dc3cc2b58684cdc973d",
     "semantic_hash": "d8cee222312a0dc3cc2b58684cdc973d"
   },
   "app/src/test/java/com/kids/collector/NotificationParserTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.9761782,
+    "mtime": 1789885520.9539802,
+    "seen": 1790149413.9220133,
     "ast_hash": "7a497eb8b4f3a6e1a97d70cb0a1f148d",
     "semantic_hash": "7a497eb8b4f3a6e1a97d70cb0a1f148d"
   },
   "app/src/test/java/com/kids/collector/WhatsAppChatExportParserTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.976181,
+    "mtime": 1789851771.6982112,
+    "seen": 1790149413.9220154,
     "ast_hash": "aa272180a5a7097956c4a4409923e5cd",
     "semantic_hash": "aa272180a5a7097956c4a4409923e5cd"
   },
   "app/src/main/java/com/kids/collector/data/drive/DownloadFolderObserver.kt": {
-    "mtime": 1790145250.020369,
-    "seen": 1790145257.9761436,
-    "ast_hash": "35aa9b39c472dc3badcb2a524fe19dcc",
-    "semantic_hash": "35aa9b39c472dc3badcb2a524fe19dcc"
+    "mtime": 1790149359.0782392,
+    "seen": 1790149413.9219856,
+    "ast_hash": "993a941c3d38cc4fb21ae797127d4df1",
+    "semantic_hash": "993a941c3d38cc4fb21ae797127d4df1"
   },
   "app/src/main/java/com/kids/collector/data/drive/DriveVaultManager.kt": {
-    "mtime": 1790145250.0205898,
-    "seen": 1790145257.9761446,
-    "ast_hash": "269c65265db3bbf7438173fd4330cbbd",
-    "semantic_hash": "269c65265db3bbf7438173fd4330cbbd"
+    "mtime": 1790086666.038483,
+    "seen": 1790149413.9219863,
+    "ast_hash": "d3515104d1201416e0460dd104cb0f15",
+    "semantic_hash": "d3515104d1201416e0460dd104cb0f15"
   },
   "app/src/main/java/com/kids/collector/data/drive/SafVaultManager.kt": {
-    "mtime": 1790145250.0205898,
-    "seen": 1790145257.9761467,
+    "mtime": 1789928441.5864532,
+    "seen": 1790149413.921988,
     "ast_hash": "8d2033e4e4a82577a3546555e712fd05",
     "semantic_hash": "8d2033e4e4a82577a3546555e712fd05"
   },
   "app/src/main/java/com/kids/collector/presentation/permission/PermissionHelper.kt": {
-    "mtime": 1790145250.0218647,
-    "seen": 1790145257.9761593,
+    "mtime": 1789974177.3387778,
+    "seen": 1790149413.9219985,
     "ast_hash": "123f85dff44ae13d3e71b393f37b4f02",
     "semantic_hash": "123f85dff44ae13d3e71b393f37b4f02"
   },
   "app/src/main/java/com/kids/collector/presentation/permission/PermissionSetupDialog.kt": {
-    "mtime": 1790145250.0222762,
-    "seen": 1790145257.9761603,
+    "mtime": 1789926033.649168,
+    "seen": 1790149413.9219997,
     "ast_hash": "e09063ec8f061d6ceb8c19156e52d747",
     "semantic_hash": "e09063ec8f061d6ceb8c19156e52d747"
   },
   "app/src/main/java/com/kids/collector/service/CrawlerTraceLogger.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.9761677,
-    "ast_hash": "5ec6c9558d9394220d3e3827857f08d1",
-    "semantic_hash": "5ec6c9558d9394220d3e3827857f08d1"
+    "mtime": 1790081544.518578,
+    "seen": 1790149413.9220054,
+    "ast_hash": "df5cfc755cb532d2e9384eeefe2758e5",
+    "semantic_hash": "df5cfc755cb532d2e9384eeefe2758e5"
   },
   "app/src/main/java/com/kids/collector/service/FloatingCrawlerOverlay.kt": {
-    "mtime": 1790145250.0228894,
-    "seen": 1790145257.9761696,
-    "ast_hash": "f33cb7d5b407a6f51480ce171c744842",
-    "semantic_hash": "f33cb7d5b407a6f51480ce171c744842"
+    "mtime": 1790125474.2612486,
+    "seen": 1790149413.9220068,
+    "ast_hash": "6399198875459a13c7282c30fb3e127e",
+    "semantic_hash": "6399198875459a13c7282c30fb3e127e"
   },
   "app/src/test/java/com/kids/collector/DriveVaultManagerTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.9761748,
+    "mtime": 1789928591.7139525,
+    "seen": 1790149413.922011,
     "ast_hash": "d750627b386852311075cdeecd9a7485",
     "semantic_hash": "d750627b386852311075cdeecd9a7485"
   },
   "scripts/ci_watch.py": {
-    "mtime": 1790145250.0410738,
-    "seen": 1790145257.976184,
-    "ast_hash": "54b7f4b365f600374e6e7587d25eb241",
-    "semantic_hash": "54b7f4b365f600374e6e7587d25eb241"
+    "mtime": 1789970178.2048178,
+    "seen": 1790149413.922018,
+    "ast_hash": "07acae027150d01a9cb79dc351050756",
+    "semantic_hash": "07acae027150d01a9cb79dc351050756"
   },
   "app/src/main/java/com/kids/collector/presentation/share/ShareTargetActivity.kt": {
-    "mtime": 1790145250.0222762,
-    "seen": 1790145257.976161,
-    "ast_hash": "43fede29d63f9da083e6d821fb43c370",
-    "semantic_hash": "43fede29d63f9da083e6d821fb43c370"
+    "mtime": 1790149359.0789456,
+    "seen": 1790149413.9220004,
+    "ast_hash": "b96934e026c97349a345c44c03fbda62",
+    "semantic_hash": "b96934e026c97349a345c44c03fbda62"
   },
   "app/src/main/java/com/kids/collector/domain/model/StreamManifest.kt": {
-    "mtime": 1790145250.0215616,
-    "seen": 1790145257.976154,
-    "ast_hash": "b465848a808778b165c51cbf50cac0cd",
-    "semantic_hash": "b465848a808778b165c51cbf50cac0cd"
+    "mtime": 1790130235.2608993,
+    "seen": 1790149413.9219942,
+    "ast_hash": "40534b0c4dd87b44e64edb1e1908d42f",
+    "semantic_hash": "40534b0c4dd87b44e64edb1e1908d42f"
   },
   "app/src/test/java/com/kids/collector/StreamManifestAndCardTest.kt": {
-    "mtime": 1790145250.0246878,
-    "seen": 1790145257.97618,
-    "ast_hash": "3651f8ff2453240ad74b92ebacbadc9b",
-    "semantic_hash": "3651f8ff2453240ad74b92ebacbadc9b"
+    "mtime": 1790149359.0814798,
+    "seen": 1790149413.9220147,
+    "ast_hash": "7f56665cf010cd9a11548853c3ec2c2a",
+    "semantic_hash": "7f56665cf010cd9a11548853c3ec2c2a"
   }
 }

@@ -370,9 +370,25 @@ class KidsAccessibilityService : AccessibilityService() {
                     continue
                 }
 
-                // If not on stream and not comments/detail/classes, perform guarded return to stream
-                CrawlerTraceLogger.log("STREAM_RECOVERY", "Active window is not stream view ($currentPkg). Returning to stream...")
-                performReturnToStream(root)
+                // If in Classroom but neither stream, comments, detail, nor classes list:
+                if (currentPkg == "com.google.android.apps.classroom") {
+                    val navigateUpNode = findNavigateUpButton(root)
+                    if (navigateUpNode != null) {
+                        navigateUpNode.recycle()
+                        CrawlerTraceLogger.log("STREAM_RECOVERY", "Active window has Navigate Up button. Returning to stream...")
+                        performReturnToStream(root)
+                    } else {
+                        // Might be in transition between fragments! Wait briefly and re-inspect before sending blind back gesture
+                        CrawlerTraceLogger.log("STREAM_RECOVERY", "Classroom window in transition. Waiting for UI to settle...")
+                        root.recycle()
+                        delay(600)
+                        continue
+                    }
+                } else {
+                    // If external non-transient window, perform guarded return
+                    CrawlerTraceLogger.log("STREAM_RECOVERY", "Active window is not stream view ($currentPkg). Returning to stream...")
+                    performReturnToStream(root)
+                }
                 root.recycle()
                 delay(700)
                 continue
@@ -524,6 +540,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         if (isCommentsOnlyScreen(activeAfter)) {
                             CrawlerTraceLogger.log("DEEP_CRAWLER", "Comments dialog detected instead of post detail. Dismissing comments dialog...")
                             performReturnToStream(activeAfter)
+                            delay(800) // Allow dismissal transition to complete before re-evaluating window
                         }
                         activeAfter.recycle()
                     }
@@ -1882,31 +1899,54 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun collectCourseCardNodes(
         node: AccessibilityNodeInfo,
-        outList: MutableList<AccessibilityNodeInfo>
+        collectedCardNodes: MutableList<AccessibilityNodeInfo>
     ) {
         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val className = node.className?.toString() ?: ""
+
+        // Case A: Options button ("class options for...") -> climb up to parent card container
         if (desc.startsWith("class options for") || desc.contains("class options")) {
-            // Find clickable card container (parent of the options button)
-            var current: AccessibilityNodeInfo? = node
-            var depth = 0
-            while (current != null && depth < 4) {
+            var current: AccessibilityNodeInfo? = node.parent
+            var depth = 1
+            while (current != null && depth <= 5) {
                 if (current.isClickable) {
-                    if (outList.none { it == current }) {
-                        outList.add(AccessibilityNodeInfo.obtain(current))
+                    val rect = Rect()
+                    current.getBoundsInScreen(rect)
+                    // Card container must be substantive, completely rejecting the 132x132 3-dots button!
+                    if (rect.width() > MIN_COURSE_CARD_WIDTH_PX && rect.height() > MIN_COURSE_CARD_HEIGHT_PX) {
+                        if (collectedCardNodes.none { it == current }) {
+                            collectedCardNodes.add(AccessibilityNodeInfo.obtain(current))
+                        }
+                        break
                     }
-                    break
                 }
                 val parentNode = current.parent
-                if (current != node) current.recycle()
+                current.recycle()
                 current = parentNode
                 depth++
             }
-            if (current != null && current != node) current.recycle()
+            current?.recycle()
+        }
+
+        // Case B: Direct clickable CardView or class item container
+        if (node.isClickable && (className.contains("CardView") || className.contains("ViewGroup") || className.contains("FrameLayout"))) {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.width() > MIN_COURSE_CARD_WIDTH_PX && rect.height() > MIN_COURSE_CARD_HEIGHT_PX) {
+                val nodeText = mutableListOf<String>()
+                collectQuickText(node, nodeText)
+                val combined = nodeText.joinToString(" ").lowercase()
+                if (combined.contains("grade") || combined.contains("class") || combined.contains("caie") || combined.contains("section")) {
+                    if (collectedCardNodes.none { it == node }) {
+                        collectedCardNodes.add(AccessibilityNodeInfo.obtain(node))
+                    }
+                }
+            }
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            collectCourseCardNodes(child, outList)
+            collectCourseCardNodes(child, collectedCardNodes)
             child.recycle()
         }
     }
@@ -1976,13 +2016,18 @@ class KidsAccessibilityService : AccessibilityService() {
                 "STREAM_RECOVERY",
                 "Found target class card at $rect. Clicking to re-enter stream..."
             )
-            val clicked = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+            // Tap the card in the safe left-center area (35% across width, 50% height)
+            // NEVER tap near the top-right corner where the 3-dots options menu button lives!
+            val safeClickX = rect.left + (rect.width() * SAFE_CARD_TAP_HORIZONTAL_RATIO)
+            val safeClickY = rect.centerY().toFloat()
+
+            var isReentrySuccessful = dispatchTap(safeClickX, safeClickY)
+            if (!isReentrySuccessful) {
+                isReentrySuccessful = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             }
             card.recycle()
-            delay(1200) // Allow class stream to load
-            return true
+            delay(1500) // Allow class stream to load
+            return isReentrySuccessful
         }
         return false
     }
@@ -2352,6 +2397,9 @@ class KidsAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "KidsAccessibilityService"
+        private const val MIN_COURSE_CARD_WIDTH_PX = 300
+        private const val MIN_COURSE_CARD_HEIGHT_PX = 150
+        private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
 
         fun triggerDriveSync(context: Context) {
             val constraints = Constraints.Builder()
