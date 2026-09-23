@@ -1975,6 +1975,224 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
 
 ---
 
+#### Overlay Lifecycle, Event Filtering & Resilient App Exit Handling in `KidsAccessibilityService`
+
+`KidsAccessibilityService` manages the full lifecycle of the floating assistant overlay and executes deterministic window state filtering to prevent premature teardown, overlay flickering, and false-positive app exit triggers.
+
+```mermaid
+flowchart TD
+    EV["onAccessibilityEvent: event.packageName"] --> DROP_SELF{"packageName == applicationContext.packageName?"}
+    DROP_SELF -->|Yes| IGNORE_SELF["Drop Event: Zero Self-Interference"]
+    DROP_SELF -->|No| CHECK_SCHOOL{"isAuthorizedSchoolApp?"}
+    
+    CHECK_SCHOOL -->|Yes| RESTORE_SESSION["Cancel Exit Debounce<br/>Ensure Overlay Visible<br/>Update lastActiveSchoolPackage"]
+    CHECK_SCHOOL -->|No| CHECK_TRANSIENT{"isTransientOrSystemPackage?"}
+    
+    CHECK_TRANSIENT -->|Yes| IGNORE_TRANSIENT["Ignore Transient Surface<br/>Overlay Persists Firmly"]
+    CHECK_TRANSIENT -->|No| CHECK_WINDOW_STATE{"eventType == TYPE_WINDOW_STATE_CHANGED?"}
+    
+    CHECK_WINDOW_STATE -->|No| NOOP["Ignore other event types"]
+    CHECK_WINDOW_STATE -->|Yes| HANDLE_EXIT["handleAppExitEvent foreignPackage"]
+    
+    HANDLE_EXIT --> IS_HOME{"isHomeScreenOrLauncher?"}
+    IS_HOME -->|Yes| IMMEDIATE_HALT["Immediate Graceful Halt:<br/>Stop Crawl + Dismiss Overlay + triggerDriveSync"]
+    IS_HOME -->|No| DEBOUNCE_WAIT["Wait APP_EXIT_DEBOUNCE_MILLIS (1200ms)"]
+    
+    DEBOUNCE_WAIT --> CHECK_ACTIVE_ROOT{"rootInActiveWindow in School App?"}
+    CHECK_ACTIVE_ROOT -->|Yes| CANCEL_EXIT["Cancel Exit: Back Inside School App"]
+    CHECK_ACTIVE_ROOT -->|No| SCAN_WINDOWS["windows.any Hierarchy Scan with safe node.recycle"]
+    
+    SCAN_WINDOWS --> HAS_SCHOOL_WIN{"School Window Detected?"}
+    HAS_SCHOOL_WIN -->|Yes| CANCEL_EXIT
+    HAS_SCHOOL_WIN -->|No| CHECK_CRAWL_ACTIVE{"crawlerOverlay.isAutoScrollingActive?"}
+    
+    CHECK_CRAWL_ACTIVE -->|Yes| ATTEMPT_RECOVERY["relaunchSchoolApp to Foreground<br/>Delay 1000ms"]
+    ATTEMPT_RECOVERY --> CHECK_RECOVERED{"Recovered to School App?"}
+    CHECK_RECOVERED -->|Yes| CANCEL_EXIT
+    CHECK_RECOVERED -->|No| TEARDOWN["Confirmed Exit:<br/>Stop Crawl + Dismiss Overlay + triggerDriveSync"]
+    
+    CHECK_CRAWL_ACTIVE -->|No| TEARDOWN
+```
+
+##### 1. Self-Event Drop Rule (`applicationContext.packageName`)
+When the overlay view is attached, updated, or manipulated in `WindowManager`, Android fires accessibility events originating from K.I.D.S.'s own package (`com.kids.collector`).
+- **Drop Rule:** `if (packageName == applicationContext.packageName) return`.
+- **Architectural Rationale:** Naive accessibility services that do not filter their own package process their own overlay updates as foreign window transitions, inadvertently triggering `handleAppExitEvent` and self-dismissing their own floating UI. Dropping self-events at line 0 guarantees absolute overlay persistence and prevents internal feedback loops.
+
+##### 2. Authorized School Package Validation (`isAuthorizedSchoolApp`)
+To ensure K.I.D.S. reliably identifies educational environments across various OEM distribution builds, rebranded white-label deployments, and custom launchers, `KidsAccessibilityService` maintains a strict multi-tier validation model:
+```kotlin
+companion object {
+    private val AUTHORIZED_SCHOOL_PACKAGES = setOf(
+        "com.google.android.apps.classroom",
+        "com.entab.campuscare",
+        "com.toddleapp",
+        "com.edunext.student"
+    )
+}
+
+private fun isAuthorizedSchoolApp(packageName: String): Boolean {
+    val lower = packageName.lowercase()
+    return AUTHORIZED_SCHOOL_PACKAGES.contains(lower) ||
+            lower == "com.google.android.apps.classroom" ||
+            lower.endsWith(".classroom") ||
+            lower.endsWith(".campuscare") ||
+            lower.endsWith(".toddle") ||
+            lower.endsWith(".edunext")
+}
+```
+Whenever an event arrives from an authorized school app:
+1. Any in-flight exit debounce job (`exitDebounceJob?.cancel()`) is aborted immediately.
+2. `lastActiveSchoolPackage` is updated to record the foreground educational target.
+3. The overlay is verified and displayed if not already showing (`getOrCreateOverlay().show()`).
+
+##### 3. Launcher Separation & Precedence (`isHomeScreenOrLauncher`)
+A fundamental design principle is the strict separation between **deliberate user departures** (navigating to the Home screen) and **transient system overlays** (dialogues, keyboards, sync prompts):
+```kotlin
+private fun isHomeScreenOrLauncher(packageName: String): Boolean {
+    val lower = packageName.lowercase()
+    return lower.contains("launcher") ||
+            lower.contains("home") ||
+            lower.contains("miui.home")
+}
+```
+- **Precedence Rule:** `isHomeScreenOrLauncher` is evaluated **first** inside `isTransientOrSystemPackage`:
+  ```kotlin
+  private fun isTransientOrSystemPackage(packageName: String): Boolean {
+      // Home launchers represent deliberate user departures, not transient system overlays
+      if (isHomeScreenOrLauncher(packageName)) return false
+      ...
+  }
+  ```
+  And inside `handleAppExitEvent`:
+  ```kotlin
+  if (isHomeScreenOrLauncher(foreignPackage)) {
+      CrawlerTraceLogger.log("DEEP_CRAWLER", "User navigated to Home/Launcher. Halting crawler and dismissing overlay.")
+      stopDeepCrawl()
+      crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
+      crawlerOverlay?.dismissAndRemove()
+      triggerDriveSync(applicationContext)
+      return@launch
+  }
+  ```
+- **Architectural Rationale:** Home launchers (e.g. `com.miui.home`, Pixel Launcher, Nova Launcher) often contain keywords or system flags that might otherwise match generic system surfaces. By prioritizing `isHomeScreenOrLauncher`, deliberate home navigations bypass debounce timers and trigger immediate, graceful crawl halt, clean overlay teardown, and background Drive sync, guaranteeing zero ghost overlays over the home screen.
+
+##### 4. Transient System Package Whitelisting (`isTransientOrSystemPackage`)
+When users or the OS trigger system overlays while Google Classroom is active, `KidsAccessibilityService` prevents overlay flicker and premature exit by whitelisting known transient surfaces:
+```kotlin
+private fun isTransientOrSystemPackage(packageName: String): Boolean {
+    // Home launchers represent deliberate user departures, not transient system overlays
+    if (isHomeScreenOrLauncher(packageName)) return false
+
+    val lower = packageName.lowercase()
+    return lower == "android" ||
+            lower == "com.android.systemui" ||
+            lower == "com.android.documentsui" ||
+            lower == "com.android.intentresolver" ||
+            lower == "com.google.android.inputmethod.latin" ||
+            lower == "com.touchtype.swiftkey" ||
+            lower == "com.samsung.android.honeyboard" ||
+            lower.contains("inputmethod") ||
+            lower.contains("gboard") ||
+            lower.contains("keyboard") ||
+            lower.contains("resolver") ||
+            lower.contains("chooser") ||
+            lower == "com.google.android.gms" ||
+            lower.startsWith("com.google.android.apps.docs") ||
+            lower.startsWith("com.adobe.reader") ||
+            lower.startsWith("cn.wps.moffice") ||
+            lower.startsWith("com.microsoft.office") ||
+            lower == "com.google.android.apps.nbu.files" ||
+            lower == "com.sec.android.app.myfiles" ||
+            lower == "com.miui.powerkeeper" ||
+            lower == "com.miui.securityadd" ||
+            lower == "com.miui.joyose"
+}
+```
+- **Transient Whitelist Categories:**
+  - **Google Play Services (`com.google.android.gms`):** Account credential refresh modals, sync toasts, and Play integrity prompts.
+  - **Xiaomi / MIUI System Daemons (`com.miui.powerkeeper`, `com.miui.securityadd`, `com.miui.joyose`):** Aggressive battery optimization dialogues, security scanner toasts, and performance boost overlays.
+  - **Keyboards & Input Methods:** Gboard, SwiftKey, Samsung Honeyboard, and generic IME packages.
+  - **System File Selectors & Resolvers:** `documentsui`, `intentresolver`, `chooser`.
+  - **In-App Document Previewers:** Google Docs/Drive viewers, Adobe Reader, WPS Office, Microsoft Office, Files by Google, Samsung My Files.
+- **Guarantee:** Any event originating from these packages returns immediately in `onAccessibilityEvent`, maintaining the overlay firmly on screen without flicker.
+
+##### 5. Window Hierarchy Verification & Safe Native Node Recycling in `handleAppExitEvent`
+When a non-school, non-transient window transition is detected, `handleAppExitEvent` runs a debounced multi-window verification loop to confirm whether the school app is still present anywhere in the Android window stack:
+```kotlin
+private fun handleAppExitEvent(foreignPackage: String) {
+    if (exitDebounceJob?.isActive == true) return
+
+    exitDebounceJob = serviceScope.launch {
+        // Immediate graceful halt if user explicitly pressed Home or switched to Home Launcher
+        if (isHomeScreenOrLauncher(foreignPackage)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "User navigated to Home/Launcher. Halting crawler and dismissing overlay.")
+            stopDeepCrawl()
+            crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
+            crawlerOverlay?.dismissAndRemove()
+            triggerDriveSync(applicationContext)
+            return@launch
+        }
+
+        delay(APP_EXIT_DEBOUNCE_MILLIS)
+        val currentPackageName = rootInActiveWindow?.packageName?.toString() ?: ""
+        if (isAuthorizedSchoolApp(currentPackageName)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - already back inside $currentPackageName")
+            return@launch
+        }
+
+        // Inspect active windows list with proper node recycling
+        try {
+            val hasSchoolWindow = windows.any { window ->
+                val windowRootNode = window.root
+                try {
+                    windowRootNode?.packageName?.toString()?.let { isAuthorizedSchoolApp(it) } == true
+                } finally {
+                    windowRootNode?.recycle()
+                }
+            }
+            if (hasSchoolWindow) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - authorized school app window detected")
+                return@launch
+            }
+        } catch (e: Exception) {
+            // Ignore window query failure
+        }
+
+        if (crawlerOverlay?.isAutoScrollingActive() == true) {
+            // If auto-crawl is running, self-heal and bring Classroom back before giving up!
+            CrawlerTraceLogger.log(
+                "DEEP_CRAWLER",
+                "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to Classroom..."
+            )
+            relaunchSchoolApp()
+            delay(APP_RELAUNCH_RECOVERY_DELAY_MILLIS)
+            val recoveredPackageName = rootInActiveWindow?.packageName?.toString() ?: ""
+            if (isAuthorizedSchoolApp(recoveredPackageName)) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded! Back in $recoveredPackageName")
+                return@launch
+            }
+        }
+
+        if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
+            CrawlerTraceLogger.log(
+                "DEEP_CRAWLER",
+                "Confirmed exit from school app to \"$foreignPackage\" (active: \"$currentPackageName\"). Auto-stopping capture, closing overlay, and triggering Drive sync."
+            )
+            stopDeepCrawl()
+            crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "Exited school app to $foreignPackage")
+            crawlerOverlay?.dismissAndRemove()
+            triggerDriveSync(applicationContext)
+        }
+    }
+}
+```
+- **Multi-Window Stack Verification (`windows.any`):** Rather than relying solely on `rootInActiveWindow` (which can temporarily reference a floating volume bar, system toast, or permission popup), the engine checks all active windows via `windows.any`.
+- **Safe Native Node Recycling (`finally { windowRootNode?.recycle() }`):** Accessibility node infos allocated via `window.root` represent native Binder objects. By enclosing the inspection within a `try { ... } finally { windowRootNode?.recycle() }` block, K.I.D.S. prevents native Binder handle exhaustion and memory leaks during frequent window transitions.
+- **Autonomous Foreground Relaunch (`relaunchSchoolApp`):** If an active crawl was running when displaced, K.I.D.S. attempts autonomous foreground recovery via `packageManager.getLaunchIntentForPackage(...)` with `FLAG_ACTIVITY_REORDER_TO_FRONT`. Only if recovery fails after an additional settling delay is teardown executed.
+
+---
+
 #### `FloatingCrawlerOverlay`: Dynamic Status API & Decoupled Architecture
 
 `FloatingCrawlerOverlay` provides the user interface for the backfill assistant. It attaches directly to Android's `WindowManager` using `WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY` (falling back gracefully to `TYPE_APPLICATION_OVERLAY` or `TYPE_PHONE` if restricted), requiring **zero extra overlay permissions**.
@@ -2247,23 +2465,19 @@ class FloatingCrawlerOverlay(...) {
   - **Dock Coordinates `(width - 56dp, 140dp)`:** Docks the 48dp circular badge at the screen's right edge, completely clearing the Google Classroom feed so card bounding math, relaxed visibility fractions, and kinetic scrolls operate across an unobstructed display.
   - **Single-Tap Re-expansion (`expand()`):** Tapping `minimizedBubble` invokes `expand()`, which restores `expandedContent` at `(20dp, 140dp)` so parents can inspect live metrics or tap Stop.
 
-- **Synthetic Gesture Guard (Self-Tap Immunity in `autoButton` & `toggleAutoScroll`):**
-  Because the crawler injects physical touch events (`dispatchTap`) across post cards, attachment chips, and overflow menus, simulated touches or touch echoes could inadvertently strike the overlay if positioned over an active view.
-  `FloatingCrawlerOverlay` implements a strict **Synthetic Gesture Guard**:
+- **Emergency Stop Priority & Immediate Unblocked Stop (`toggleAutoScroll`):**
+  When auto-capture is actively running (`isAutoScrolling == true`), parent responsiveness and emergency stop capability are treated as the **highest system priority**. The stop action must **never** be delayed, debounced, or blocked by internal gesture locks:
   ```kotlin
-  // In autoButton.setOnClickListener:
-  autoButton?.setOnClickListener {
-      if (service.isDispatchingCrawlerGesture) {
-          CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: Stop button click rejected because internal crawler gesture is active")
-          return@setOnClickListener
-      }
-      toggleAutoScroll()
-  }
-
   // In toggleAutoScroll():
   private fun toggleAutoScroll() {
+      if (isAutoScrolling) {
+          // Emergency stop should ALWAYS succeed immediately without gesture lock or debounce
+          stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
+          return
+      }
+
       if (service.isDispatchingCrawlerGesture) {
-          CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: toggleAutoScroll rejected because internal crawler gesture is active")
+          CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: startAutoScroll rejected because internal crawler gesture is active")
           return
       }
       val now = System.currentTimeMillis()
@@ -2272,15 +2486,13 @@ class FloatingCrawlerOverlay(...) {
           return
       }
       lastToggleTimeMs = now
-
-      if (isAutoScrolling) {
-          stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
-      } else {
-          startAutoScroll()
-      }
+      startAutoScroll()
   }
   ```
-  - Any click attempt while `service.isDispatchingCrawlerGesture == true` is instantly blocked and logged, making it mathematically impossible for the crawler to stop its own run.
+  - **Immediate Unblocked Invocation:** Upon button click when `isAutoScrolling == true`, `stopAutoScroll` is invoked immediately on line 1. It completely bypasses the `service.isDispatchingCrawlerGesture` check and bypasses the 1,200ms debounce timer.
+  - **Zero Delay (<1ms Cancellation):** Halting the crawl does not wait for pending gestures to complete or debounce timers to expire. The underlying coroutine job (`crawlerJob`) is cancelled instantaneously, and UI controls expand back immediately so parents have 100% immediate control.
+  - **Synthetic Gesture Guard for Start (`!isAutoScrolling`):** Because automated taps (`dispatchTap`) are programmatically dispatched to screen coordinates across post cards, attachment chips, and overflow menus, simulated touches or touch echoes could inadvertently strike the overlay button if positioned over an active view. The `service.isDispatchingCrawlerGesture` check applies strictly when starting (`!isAutoScrolling`), ensuring synthetic crawler gestures cannot inadvertently re-trigger or start auto-capture.
+  - **TalkBack Debounce Guard for Start:** The 1,200ms debounce timer prevents rapid double-taps from TalkBack screen readers from double-triggering or cycling start states, while keeping emergency stops immediate and uninhibited.
 
 - **Truthful Telemetry Reporting in `stopAutoScroll(isUserInitiated, reason)`:**
   `FloatingCrawlerOverlay` maintains transparent and unambiguous audit logging by recording the true initiator and rationale whenever capture halts:

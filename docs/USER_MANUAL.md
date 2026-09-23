@@ -44,6 +44,7 @@ As parents, keeping up with school communications is exhausting. Homework assign
 4. [Google Classroom Deep Auto-Capture Guide](#4-google-classroom-deep-auto-capture-guide)
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
+     - [Floating Assistant Reliability & Transient System Dialog Immunity](#floating-assistant-reliability--transient-system-dialog-immunity)
      - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
      - [Announcement Discrimination & Zero-Click Direct Stream Ingestion](#announcement-discrimination--zero-click-direct-stream-ingestion)
@@ -407,6 +408,23 @@ When active, the action button dynamically changes to a prominent red stop butto
 |  +-------------------------------------------------+  |
 +-------------------------------------------------------+
 ```
+
+#### Floating Assistant Reliability & Transient System Dialog Immunity
+
+The K.I.D.S. Floating Assistant is engineered for rock-solid on-screen persistence and complete resilience against mobile operating system noise:
+
+1. **Solid On-Screen Persistence Whenever Google Classroom Is Open:**
+   The floating assistant overlay remains **solidly and reliably present on screen** whenever Google Classroom is open. It does not vanish, flicker, or drop unexpectedly when you scroll the announcement stream, tap into post details, navigate between the **Stream** and **Classwork** tabs, or inspect student assignments. The assistant continuously monitors the window hierarchy, ensuring that as long as an authorized school application is actively in the foreground, the overlay is maintained and ready for immediate parent interaction.
+
+2. **Immunity to Transient Device Dialogues & Battery Popups:**
+   On modern Android devices—particularly Xiaomi (MIUI / HyperOS), Samsung (One UI), and Google Pixel—the system frequently presents transient dialogues that momentarily interrupt the foreground window:
+   - **Xiaomi / MIUI Battery Optimizations:** System battery saver prompts and performance overlays (`com.miui.powerkeeper`, `com.miui.securityadd`, `com.miui.joyose`).
+   - **Google Play Services Account Sync Dialogues:** Account verification, Play Services sync toasts, or credential refresh modals (`com.google.android.gms`).
+   - **System Input & Picker Overlays:** On-screen software keyboards (Gboard, SwiftKey, Samsung Honeyboard), file choosers (`com.android.documentsui`), and intent resolvers (`com.android.intentresolver`).
+   
+   In naive accessibility implementations, any appearance of these third-party package names falsely triggers an "app exit" event, causing floating overlays to abruptly disappear or flicker frantically.
+   
+   **The K.I.D.S. Guarantee:** K.I.D.S. features an exhaustive **transient package whitelist**. When any of these system dialogues or sync popups appear, K.I.D.S. classifies them as temporary, non-disruptive surfaces and **never dismisses or flickers the assistant overlay**. The overlay remains firmly anchored over Google Classroom, patiently waiting for the transient dialogue to resolve so capture can proceed smoothly.
 
 #### Real-Time Status & Metrics Display
 The floating assistant features an informative **live 2-line status pill**:
@@ -832,7 +850,7 @@ The K.I.D.S. Auto-Capture engine is engineered with a **zero-click, hands-free p
 ### Manual Stop & Instant Coroutine Cancellation
 
 While hands-free exit and auto-close handle everyday operation autonomously, you maintain absolute manual control:
-- **Instant Cancellation:** Tapping **`⏹ Stop Capture`** immediately stops the crawler. The underlying Kotlin coroutine job is cancelled instantaneously (<1ms)—there are **no queued or lingering taps**, no delayed scrolls, and no unwanted navigation actions after you tap stop.
+- **Immediate Emergency Stop Priority (Zero Delay):** Parents can tap **`⏹ Stop Capture`** at any moment for an **immediate emergency stop with zero delay**. Emergency stop is given absolute execution priority: unlike start toggles which feature debouncing, tapping "Stop Capture" instantly halts the crawler without delay, completely bypassing any internal gesture locking or debounce timers. Coroutine operations terminate in <1ms with zero lingering taps, no delayed scrolls, and no unwanted navigation actions after you tap stop.
 - **Guaranteed Terminal Sync:** The moment you tap stop, K.I.D.S. enqueues an immediate background Google Drive synchronization cycle via AndroidX `WorkManager`, guaranteeing that all notices and staged attachment files gathered during that session are pushed to Google Drive without delay.
 
 ---
@@ -962,6 +980,7 @@ Devices running Xiaomi MIUI or HyperOS enforce aggressive background restriction
 2. Enable **Autostart**.
 3. Set **Battery Saver** to **No restrictions**.
 4. Tap **Other permissions** and ensure **Display pop-up windows while running in the background** is allowed. This allows the Floating Assistant overlay to appear over Google Classroom.
+5. **Immunity to System Battery Dialogs:** Transient dialogues from MIUI PowerKeeper (`com.miui.powerkeeper`), Security Add-on (`com.miui.securityadd`), or Joyose (`com.miui.joyose`) are automatically filtered and whitelisted. They will not cause the floating assistant to dismiss or flicker while Google Classroom is active.
 
 ### Google Drive Authorization & SHA-1 Registration
 If Step 1 of the wizard displays an authorization error (*"Additional consent required"* or *"API access blocked"*):
@@ -993,6 +1012,9 @@ If Step 1 of the wizard displays an authorization error (*"Additional consent re
 
 **Q: Will student or parent comments on Classroom announcements cause duplicates or stall scrolling?**
 *A: Not at all. K.I.D.S. features active comment noise filtering. Stream comment chips (such as "0 class comments for post by...", "add class comment", and dynamic comment tallies) are automatically filtered out during screen traversal. In addition, comment counters are stripped before generating the card's SHA-256 fingerprint, ensuring that dynamic comment threads never alter notice identity or produce duplicate records.*
+
+**Q: What happens if an OEM battery popup or Google Play sync dialog appears during Auto-Capture?**
+*A: Nothing to worry about! K.I.D.S. includes built-in transient package whitelisting. System dialogues (such as Xiaomi/MIUI battery alerts or Google Play account sync modals) are recognized as temporary non-school surfaces, so the floating overlay will remain securely on screen without dismissing or flickering, and capture will resume smoothly.*
 
 ---
 

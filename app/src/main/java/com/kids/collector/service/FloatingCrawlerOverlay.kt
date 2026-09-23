@@ -252,10 +252,6 @@ class FloatingCrawlerOverlay(
                     setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6))
                     contentDescription = "Start Auto-Capture"
                     setOnClickListener {
-                        if (service.isDispatchingCrawlerGesture) {
-                            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: Stop button click rejected because internal crawler gesture is active")
-                            return@setOnClickListener
-                        }
                         toggleAutoScroll()
                     }
                 }
@@ -299,15 +295,18 @@ class FloatingCrawlerOverlay(
 
     fun dismissAndRemove() {
         handler.post {
+            Log.i(TAG, "dismissAndRemove() called. isAutoScrolling=$isAutoScrolling, overlayView != null: ${overlayView != null}")
             if (isAutoScrolling) {
                 stopAutoScroll(isUserInitiated = false, reason = "Overlay dismissed/removed")
             }
             overlayView?.let { view ->
                 try {
                     windowManager.removeViewImmediate(view)
+                    Log.i(TAG, "Overlay view removed immediately from WindowManager")
                 } catch (e: Exception) {
                     try {
                         windowManager.removeView(view)
+                        Log.i(TAG, "Overlay view removed from WindowManager")
                     } catch (e2: Exception) {
                         Log.w(TAG, "Error removing overlay view: ${e2.message}")
                     }
@@ -392,8 +391,14 @@ class FloatingCrawlerOverlay(
     private var lastToggleTimeMs = 0L
 
     private fun toggleAutoScroll() {
+        if (isAutoScrolling) {
+            // Emergency stop should ALWAYS succeed immediately without gesture lock or debounce
+            stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
+            return
+        }
+
         if (service.isDispatchingCrawlerGesture) {
-            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: toggleAutoScroll rejected because internal crawler gesture is active")
+            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: startAutoScroll rejected because internal crawler gesture is active")
             return
         }
         val now = System.currentTimeMillis()
@@ -402,12 +407,7 @@ class FloatingCrawlerOverlay(
             return
         }
         lastToggleTimeMs = now
-
-        if (isAutoScrolling) {
-            stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
-        } else {
-            startAutoScroll()
-        }
+        startAutoScroll()
     }
 
     private fun runOnMainThread(action: () -> Unit) {

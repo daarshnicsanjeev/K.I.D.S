@@ -53,6 +53,18 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class KidsAccessibilityService : AccessibilityService() {
 
+    companion object {
+        private const val TAG = "KidsAccessibility"
+        private const val APP_EXIT_DEBOUNCE_MILLIS = 3_000L
+        private const val APP_RELAUNCH_RECOVERY_DELAY_MILLIS = 2_000L
+        private val AUTHORIZED_SCHOOL_PACKAGES = setOf(
+            "com.google.android.apps.classroom",
+            "com.entab.campuscare",
+            "com.toddleapp",
+            "com.edunext.student"
+        )
+    }
+
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val classifier = ContentClassifier()
     private val deduplicationEngine = DeduplicationEngine()
@@ -104,9 +116,8 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
-        // 0. Drop our own app events and dismiss overlay so we never capture or obscure our own UI
+        // 0. Drop our own app events so we never self-trigger or interfere with our own overlay
         if (packageName == applicationContext.packageName) {
-            crawlerOverlay?.dismissAndRemove()
             return
         }
 
@@ -116,7 +127,7 @@ class KidsAccessibilityService : AccessibilityService() {
             exitDebounceJob = null
             lastActiveSchoolPackage = packageName
 
-            if (event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+            if (crawlerOverlay == null || crawlerOverlay?.isShowing() != true) {
                 getOrCreateOverlay().show()
             }
             return
@@ -135,13 +146,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun relaunchSchoolApp() {
         try {
-            val targetPkg = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
-            val launchIntent = packageManager.getLaunchIntentForPackage(targetPkg)?.apply {
+            val targetPackageName = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+            val launchIntent = packageManager.getLaunchIntentForPackage(targetPackageName)?.apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
             }
             if (launchIntent != null) {
                 startActivity(launchIntent)
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "Re-launched school app ($targetPkg) to foreground")
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Re-launched school app ($targetPackageName) to foreground")
             }
         } catch (e: Exception) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Failed to relaunch school app: ${e.message}")
@@ -152,11 +163,39 @@ class KidsAccessibilityService : AccessibilityService() {
         if (exitDebounceJob?.isActive == true) return
 
         exitDebounceJob = serviceScope.launch {
-            delay(3500) // 3.5-second debounce to give transient dialogs and returns time to settle
-            val currentPkg = rootInActiveWindow?.packageName?.toString() ?: ""
-            if (isAuthorizedSchoolApp(currentPkg)) {
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - already back inside $currentPkg")
+            // Immediate graceful halt if user explicitly pressed Home or switched to Home Launcher
+            if (isHomeScreenOrLauncher(foreignPackage)) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "User navigated to Home/Launcher. Halting crawler and dismissing overlay.")
+                stopDeepCrawl()
+                crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
+                crawlerOverlay?.dismissAndRemove()
+                triggerDriveSync(applicationContext)
                 return@launch
+            }
+
+            delay(APP_EXIT_DEBOUNCE_MILLIS)
+            val currentPackageName = rootInActiveWindow?.packageName?.toString() ?: ""
+            if (isAuthorizedSchoolApp(currentPackageName)) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - already back inside $currentPackageName")
+                return@launch
+            }
+
+            // Inspect active windows list with proper node recycling
+            try {
+                val hasSchoolWindow = windows.any { window ->
+                    val windowRootNode = window.root
+                    try {
+                        windowRootNode?.packageName?.toString()?.let { isAuthorizedSchoolApp(it) } == true
+                    } finally {
+                        windowRootNode?.recycle()
+                    }
+                }
+                if (hasSchoolWindow) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Cancelled exit event - authorized school app window detected")
+                    return@launch
+                }
+            } catch (e: Exception) {
+                // Ignore window query failure
             }
 
             if (crawlerOverlay?.isAutoScrollingActive() == true) {
@@ -166,10 +205,10 @@ class KidsAccessibilityService : AccessibilityService() {
                     "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to Classroom..."
                 )
                 relaunchSchoolApp()
-                delay(2000)
-                val recoveredPkg = rootInActiveWindow?.packageName?.toString() ?: ""
-                if (isAuthorizedSchoolApp(recoveredPkg)) {
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded! Back in $recoveredPkg")
+                delay(APP_RELAUNCH_RECOVERY_DELAY_MILLIS)
+                val recoveredPackageName = rootInActiveWindow?.packageName?.toString() ?: ""
+                if (isAuthorizedSchoolApp(recoveredPackageName)) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded! Back in $recoveredPackageName")
                     return@launch
                 }
             }
@@ -177,7 +216,7 @@ class KidsAccessibilityService : AccessibilityService() {
             if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
                 CrawlerTraceLogger.log(
                     "DEEP_CRAWLER",
-                    "Confirmed exit from school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
+                    "Confirmed exit from school app to \"$foreignPackage\" (active: \"$currentPackageName\"). Auto-stopping capture, closing overlay, and triggering Drive sync."
                 )
                 stopDeepCrawl()
                 crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "Exited school app to $foreignPackage")
@@ -2572,41 +2611,48 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isAuthorizedSchoolApp(packageName: String): Boolean {
         val lower = packageName.lowercase()
-        return lower.contains("classroom") ||
-                lower.contains("campuscare") ||
-                lower.contains("toddle") ||
-                lower.contains("edunext")
+        return AUTHORIZED_SCHOOL_PACKAGES.contains(lower) ||
+                lower == "com.google.android.apps.classroom" ||
+                lower.endsWith(".classroom") ||
+                lower.endsWith(".campuscare") ||
+                lower.endsWith(".toddle") ||
+                lower.endsWith(".edunext")
     }
 
-    private fun isTransientOrSystemPackage(pkg: String): Boolean {
-        val lower = pkg.lowercase()
-        return lower.contains("systemui") ||
-                lower.contains("inputmethod") ||
-                lower.contains("gboard") ||
-                lower.contains("keyboard") ||
-                lower.contains("swiftkey") ||
-                lower.contains("samsungime") ||
-                lower == "android" ||
-                lower.contains("resolver") ||
-                lower.contains("chooser") ||
-                lower.contains("documentsui") ||
-                lower.contains("miui.securitycenter") ||
-                lower.contains("google.android.apps.docs") ||
-                lower.contains("docs.editors") ||
-                lower.contains("adobe.reader") ||
-                lower.contains("cn.wps") ||
-                lower.contains("viewer") ||
-                lower.contains("microsoft.office") ||
-                lower.contains("google.android.apps.nbu.files") ||
-                lower.contains("fileexplorer") ||
-                lower.contains("sec.android.app.myfiles")
-    }
-
-    private fun isHomeScreenOrLauncher(pkg: String): Boolean {
-        val lower = pkg.lowercase()
+    private fun isHomeScreenOrLauncher(packageName: String): Boolean {
+        val lower = packageName.lowercase()
         return lower.contains("launcher") ||
                 lower.contains("home") ||
                 lower.contains("miui.home")
+    }
+
+    private fun isTransientOrSystemPackage(packageName: String): Boolean {
+        // Home launchers represent deliberate user departures, not transient system overlays
+        if (isHomeScreenOrLauncher(packageName)) return false
+
+        val lower = packageName.lowercase()
+        return lower == "android" ||
+                lower == "com.android.systemui" ||
+                lower == "com.android.documentsui" ||
+                lower == "com.android.intentresolver" ||
+                lower == "com.google.android.inputmethod.latin" ||
+                lower == "com.touchtype.swiftkey" ||
+                lower == "com.samsung.android.honeyboard" ||
+                lower.contains("inputmethod") ||
+                lower.contains("gboard") ||
+                lower.contains("keyboard") ||
+                lower.contains("resolver") ||
+                lower.contains("chooser") ||
+                lower == "com.google.android.gms" ||
+                lower.startsWith("com.google.android.apps.docs") ||
+                lower.startsWith("com.adobe.reader") ||
+                lower.startsWith("cn.wps.moffice") ||
+                lower.startsWith("com.microsoft.office") ||
+                lower == "com.google.android.apps.nbu.files" ||
+                lower == "com.sec.android.app.myfiles" ||
+                lower == "com.miui.powerkeeper" ||
+                lower == "com.miui.securityadd" ||
+                lower == "com.miui.joyose"
     }
 
     override fun onInterrupt() {
