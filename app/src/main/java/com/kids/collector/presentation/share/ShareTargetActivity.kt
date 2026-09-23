@@ -17,6 +17,7 @@ import com.kids.collector.service.CrawlerTraceLogger
 import com.kids.collector.service.DriveSyncWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -44,7 +45,7 @@ class ShareTargetActivity : Activity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        kotlinx.coroutines.cancel(activityScope)
+        activityScope.cancel()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
