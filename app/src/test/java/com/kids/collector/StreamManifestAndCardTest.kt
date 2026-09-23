@@ -193,4 +193,36 @@ class StreamManifestAndCardTest {
         assertThat(manifest.isAllFinished()).isTrue()
         assertThat(manifest.progressPercent).isEqualTo(100)
     }
+
+    @Test
+    fun `reverse traversal retrieves items from bottom to top accurately`() {
+        manifest.addItem("fp_1", "Notice 1 (Top / Newest)", "Body 1", false)
+        manifest.addItem("fp_2", "Notice 2 (Middle)", "Body 2", false)
+        manifest.addItem("fp_3", "Notice 3 (Bottom / Oldest)", "Body 3", false)
+
+        // Reverse mode should select item 3 first
+        val itemFirst = manifest.getNextPendingItemReverse()
+        assertThat(itemFirst?.fingerprint).isEqualTo("fp_3")
+        assertThat(itemFirst?.index).isEqualTo(3)
+
+        manifest.markCompleted("fp_3")
+
+        // Next should select item 2
+        val itemSecond = manifest.getNextPendingItemReverse()
+        assertThat(itemSecond?.fingerprint).isEqualTo("fp_2")
+        assertThat(itemSecond?.index).isEqualTo(2)
+
+        manifest.markCompleted("fp_2")
+
+        // Next should select item 1
+        val itemThird = manifest.getNextPendingItemReverse()
+        assertThat(itemThird?.fingerprint).isEqualTo("fp_1")
+        assertThat(itemThird?.index).isEqualTo(1)
+
+        manifest.markCompleted("fp_1")
+
+        // Once all completed, returns null
+        assertThat(manifest.getNextPendingItemReverse()).isNull()
+        assertThat(manifest.isAllFinished()).isTrue()
+    }
 }

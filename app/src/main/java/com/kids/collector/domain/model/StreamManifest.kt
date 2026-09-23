@@ -73,6 +73,10 @@ class StreamManifest {
         return _items.firstOrNull { it.status == StreamItemStatus.PENDING }
     }
 
+    fun getNextPendingItemReverse(): StreamManifestItem? {
+        return _items.lastOrNull { it.status == StreamItemStatus.PENDING }
+    }
+
     fun findByFingerprint(fingerprint: String): StreamManifestItem? {
         return _items.firstOrNull { it.fingerprint == fingerprint }
     }

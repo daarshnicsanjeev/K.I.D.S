@@ -199,10 +199,21 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             val currentPkg = root.packageName?.toString() ?: ""
-            if (currentPkg != "com.google.android.apps.classroom") {
+            val isClassroom = isAuthorizedSchoolApp(currentPkg)
+            val isTransient = isTransientOrSystemPackage(currentPkg)
+
+            if (!isClassroom && !isTransient) {
                 crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
                 root.recycle()
                 delay(1000)
+                continue
+            }
+
+            if (isTransient) {
+                CrawlerTraceLogger.log("VIEWER_RECOVERY", "Active window in survey is transient component ($currentPkg). Returning to Classroom...")
+                performReturnToStream(root)
+                root.recycle()
+                delay(600)
                 continue
             }
 
@@ -273,56 +284,12 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         // =========================================================================
-        // PASS 1.5: REWIND TO START
+        // PASS 2: MANIFEST-DRIVEN REVERSE INGESTION (Bottom-to-Top)
+        // We are already at the bottom of the stream after Pass 1!
+        // We capture from oldest to newest directly upwards, eliminating 37+ redundant rewind swipes.
         // =========================================================================
-        crawlerOverlay?.updateStatus("Returning to Start...", "Preparing $total notices for capture")
-        val rewindStartTime = System.currentTimeMillis()
-        CrawlerTraceLogger.logRewindStart(total)
-
-        var rewindAttempts = 0
-        val firstFingerprint = manifest.items.first().fingerprint
-        val maxRewindAttempts = maxOf(40, manifest.totalCount * 2)
-        var lastRewindVisible = listOf<String>()
-        var topBoundaryStaticCount = 0
-
-        while (rewindAttempts < maxRewindAttempts && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-            val root = rootInActiveWindow
-            val (startVisible, currentVisible) = if (root != null) {
-                val isVisible = isItemVisible(root, firstFingerprint)
-                val fps = getVisibleCardFingerprints(root)
-                root.recycle()
-                Pair(isVisible, fps)
-            } else Pair(false, emptyList())
-
-            if (startVisible) {
-                val rewindDuration = System.currentTimeMillis() - rewindStartTime
-                CrawlerTraceLogger.logRewindComplete(rewindAttempts, rewindDuration)
-                break
-            }
-
-            if (currentVisible.isNotEmpty() && currentVisible == lastRewindVisible) {
-                topBoundaryStaticCount++
-                if (topBoundaryStaticCount >= 2 && rewindAttempts >= 3) {
-                    val rewindDuration = System.currentTimeMillis() - rewindStartTime
-                    CrawlerTraceLogger.logRewindComplete(rewindAttempts, rewindDuration)
-                    break
-                }
-            } else {
-                topBoundaryStaticCount = 0
-            }
-            lastRewindVisible = currentVisible
-
-            var rewindDone = false
-            crawlerOverlay?.performScrollBackward { rewindDone = true }
-            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-            delay(400)
-            rewindAttempts++
-        }
-
-        // =========================================================================
-        // PASS 2: MANIFEST-DRIVEN DEEP INGESTION WITH ADAPTIVE AUTO-RECOVERY
-        // =========================================================================
-        CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven deep ingestion...")
+        crawlerOverlay?.updateStatus("Status: Capturing Notices...", "Ingesting from bottom upwards ($total notices)")
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven reverse deep ingestion (Bottom-to-Top)...")
 
         val db = KidsDatabase.getInstance(applicationContext)
         var lastRecoveryMinIndex: Int? = null
@@ -330,7 +297,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val recentScrollDirections = ArrayDeque<Boolean>(6) // true = forward, false = backward
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-            val nextItem = manifest.getNextPendingItem()
+            val nextItem = manifest.getNextPendingItemReverse()
             if (nextItem == null) {
                 CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
                 break
@@ -343,10 +310,22 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             val currentPkg = root.packageName?.toString() ?: ""
-            if (currentPkg != "com.google.android.apps.classroom") {
+            val isClassroom = isAuthorizedSchoolApp(currentPkg)
+            val isTransient = isTransientOrSystemPackage(currentPkg)
+
+            if (!isClassroom && !isTransient) {
                 crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
                 root.recycle()
                 delay(1000)
+                continue
+            }
+
+            if (isTransient) {
+                CrawlerTraceLogger.log("VIEWER_RECOVERY", "Active window in Pass 2 is viewer or system component ($currentPkg). Returning to Classroom...")
+                crawlerOverlay?.updateStatus("Processing File...", currentPkg)
+                performReturnToStream(root)
+                root.recycle()
+                delay(600)
                 continue
             }
 
@@ -418,17 +397,18 @@ class KidsAccessibilityService : AccessibilityService() {
                             title.contains("answer key", ignoreCase = true) ||
                             title.contains("answerkey", ignoreCase = true)
 
-                    if (isLikelyMaterial) {
+                    val attempts = manifest.incrementAttempt(fingerprint)
+
+                    if (isLikelyMaterial && attempts < 2) {
                         CrawlerTraceLogger.log(
                             "DEEP_CRAWLER",
-                            "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retaining PENDING status."
+                            "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retrying (Attempt $attempts/2)..."
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
-                        manifest.incrementAttempt(fingerprint)
                     } else {
                         CrawlerTraceLogger.log(
                             "DEEP_CRAWLER",
-                            "Card did not open detail. Ingesting directly from stream: \"$title\""
+                            "Card did not open detail view (Attempts: $attempts). Ingesting directly from stream: \"$title\""
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
                         manifest.markCompleted(fingerprint)
@@ -1908,10 +1888,14 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("documentsui") ||
                 lower.contains("miui.securitycenter") ||
                 lower.contains("google.android.apps.docs") ||
+                lower.contains("docs.editors") ||
                 lower.contains("adobe.reader") ||
                 lower.contains("cn.wps") ||
                 lower.contains("viewer") ||
-                lower.contains("microsoft.office")
+                lower.contains("microsoft.office") ||
+                lower.contains("google.android.apps.nbu.files") ||
+                lower.contains("fileexplorer") ||
+                lower.contains("sec.android.app.myfiles")
     }
 
     private fun isHomeScreenOrLauncher(pkg: String): Boolean {
