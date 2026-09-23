@@ -143,6 +143,13 @@ class StreamManifest {
         }
     }
 
+    fun markItemCompleted(targetIndex: Int, attachmentCount: Int = 0) {
+        _items.firstOrNull { it.index == targetIndex }?.let {
+            it.status = StreamItemStatus.COMPLETED
+            it.attachmentCount = attachmentCount
+        }
+    }
+
     fun markSkipped(fingerprint: String) {
         findByFingerprint(fingerprint)?.let {
             it.status = StreamItemStatus.FAILED_SKIPPED

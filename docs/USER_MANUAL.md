@@ -46,6 +46,10 @@ As parents, keeping up with school communications is exhausting. Homework assign
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
      - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
+     - [Announcement Discrimination & Zero-Click Direct Stream Ingestion](#announcement-discrimination--zero-click-direct-stream-ingestion)
+     - [Safe Tap Targeting (Top-Third Strategy)](#safe-tap-targeting-top-third-strategy)
+     - [Comment Sheet Auto-Dismissal](#comment-sheet-auto-dismissal)
+     - [Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit)](#pass-2-anti-loop-guard-strict-2-attempt-limit)
    - [Manifest-Driven Auto-Recovery & SQLite Instant Skipping](#manifest-driven-auto-recovery--sqlite-instant-skipping)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
    - [Zero-Click Hands-Free Exit & Auto-Completion](#zero-click-hands-free-exit--auto-completion)
@@ -470,14 +474,21 @@ flowchart TD
     subgraph P2["Pass 2: Reverse Deep Ingestion (Bottom-to-Top)"]
         I1 -->|Pending > 0| K1["Direct Transition at Stream Bottom<br/>(ZERO Rewind Pass Needed!)"]
         K1 --> N1["Fetch Target from StreamManifest<br/>(manifest.getNextPendingItemReverse())"]
-        N1 --> O1{"Target Notice Visible on Screen?<br/>(findCardForTarget)"}
-        O1 -->|Yes| P1["Overlay: 'Capturing (X/Total - Y%)...'<br/>Clamped Center Tap -> Post Detail"]
-        P1 --> Q1{"Detail Transition Success?<br/>(1200ms + Center-Tap Retry)"}
+        N1 --> LG{"Pass 2 Loop Guard<br/>(consecutiveTargetAttempts > 2?)"}
+        LG -->|Yes (Limit Exceeded)| S3["Guaranteed Progression Fallback:<br/>ingestNoticeDirect() & manifest.markItemCompleted()"]
+        LG -->|No| O1{"Target Notice Visible on Screen?<br/>(findCardForTarget)"}
+        O1 -->|Yes| AD{"Announcement Discrimination<br/>(!cardIsMaterial?)"}
+        AD -->|Announcement / Circular| AN1["Zero-Click Direct Stream Ingestion<br/>(No click, comment buttons prevented)"]
+        AN1 --> T1["Mark Status: COMPLETED in Manifest<br/>Increment Notice & File Counters"]
+        AD -->|Material / Assignment| P1["Overlay: 'Capturing (X/Total - Y%)...'<br/>Safe Top-Third Tap (bounds.top + 50)"]
+        P1 --> Q1{"Detail Transition Success?<br/>(1200ms + Top-Tap Retry)"}
+        Q1 -->|Comments Sheet Detected| CD["Auto-Dismiss Comment Sheet<br/>(performReturnToStream & Return)"]
+        CD --> S1{"Attempts < 2?"}
         Q1 -->|Yes| R1["Extract Body + Auto-Download Attachments<br/>Intelligent Viewer Handling & Guarded Return"]
-        Q1 -->|No| S1{"Attempts < 2 & Material Post?"}
+        Q1 -->|No| S1{"Attempts < 2?"}
         S1 -->|Yes| S2["Retry Detail Tap & Retain Pending"]
-        S1 -->|No| S3["Guaranteed Progression Fallback:<br/>ingestNoticeDirect() & manifest.markCompleted()"]
-        R1 --> T1["Mark Status: COMPLETED in Manifest<br/>Increment Notice & File Counters"]
+        S1 -->|No| S3
+        R1 --> T1
         S3 --> T1
         T1 --> U1{"All Items Finished?<br/>(manifest.isAllFinished())"}
         U1 -->|No| N1
@@ -519,6 +530,39 @@ flowchart TD
 - **Live Counter & Percentage Metric:** Parents observe real-time progress on the floating status pill:
   $$\text{Capturing (X/Total - Y%)...}$$
   $$\text{[Current Announcement Headline Preview]}$$
+- **Announcement Discrimination & Zero-Click Direct Stream Ingestion:**
+  In Google Classroom, teacher communications fall into two fundamentally different structural types:
+  1. **Announcements & Circulars:** Teacher notices, daily announcements, holiday greetings, and circular texts posted directly into the stream feed. In Google Classroom, **announcements do NOT have a separate detail activity or screen**. Their full message is already visible right on the stream card. Tapping an announcement card either does nothing or inadvertently pops up the class comments dialog.
+  2. **Materials, Assignments, Questions & Quizzes:** Structured educational posts containing attached files (PDF worksheets, study packs) that expand into dedicated detail screens with submission controls and attachments.
+  
+  K.I.D.S. features **Automated Announcement Discrimination (`!cardIsMaterial`)**:
+  - The crawler evaluates if the post title or body contains material indicators (`material`, `assignment`, `question`, `quiz`).
+  - If the post is an announcement or circular, K.I.D.S. **ingests it directly from the stream card without clicking** (`ingestNoticeDirect`).
+  - The full text, author, and timestamp are captured instantly, the notice is marked completed in the manifest (`markItemCompleted`), and the overlay counter increments.
+  - **Zero Accidental Comment Clicks:** Because announcements are never tapped, accidental clicks on comment buttons or bottom comment sheets are **100% prevented**!
+
+- **Safe Tap Targeting (Top-Third Strategy):**
+  When a post does contain materials or assignments and needs to be opened to harvest attachments:
+  - At the bottom of every Classroom card sits the class comment button (*"Add class comment"* or *"X class comments"*). In older automation systems, tapping the vertical center or bottom of a card frequently struck the comment button, opening comment dialogs instead of the post's assignment detail.
+  - K.I.D.S. implements **Safe Tap Targeting**: taps are dispatched strictly to the **top third of the card** (`safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)`), landing squarely on the title and header area.
+  - In addition, the accessibility engine actively inspects candidate clickable nodes: any node containing the word `"comment"` in its accessibility text or content description is strictly disqualified from receiving clicks.
+
+- **Comment Sheet Auto-Dismissal:**
+  If a class comments dialog or bottom sheet ever appears on screen—whether because a parent had it open prior to starting Auto-Capture, or due to an OEM touch glitch:
+  - K.I.D.S. immediately evaluates the screen with `isCommentsOnlyScreen()`. It recognizes that the window displays comment controls (*"Add class comment"*, *"Class comments"*) without assignment features (*"Your work"*, *"Assigned"*, *"Attachments"*).
+  - Rather than mistaking comments for a post detail view or getting stuck, K.I.D.S. flags it instantly, logs `"Comments dialog detected instead of post detail"`, dispatches an automatic Back action (`performReturnToStream`), dismisses the comment sheet, and returns cleanly to the stream.
+
+- **Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit):**
+  A classic hazard in mobile UI automation is an item that refuses to open due to an OEM animation glitch or network hiccup, causing the crawler to retry indefinitely. K.I.D.S. implements a mathematical **Anti-Loop Guard**:
+  - The crawler monitors `lastTargetIndex` and tracks `consecutiveTargetAttempts`.
+  - Every notice has a **strict 2-attempt limit**.
+  - If a notice card cannot transition to detail view after 2 consecutive attempts (`consecutiveTargetAttempts > 2`):
+    - The Loop Guard activates automatically.
+    - K.I.D.S. logs `LOOP_GUARD: Target reached attempts without progress. Force-marking completed and advancing.`
+    - Directly ingests the notice title and preview text from the stream card into SQLite Room (`ingestNoticeDirect`).
+    - Force-marks the notice as completed in the manifest by its exact target index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint.
+    - Adds the fingerprint to `visitedPostFingerprints`, increments the notice count, resets the attempt counter, and advances immediately to the next pending item.
+  - **Mathematical Guarantee:** Infinite loops and frozen crawler sessions are **mathematically impossible**.
 - **Autonomous Detail View Downward Scrolling for Big Announcements:** When an announcement contains extensive paragraphs of text, Google Classroom pushes attachments and download buttons below the fold. K.I.D.S. resiliently identifies the detail screen and scrolls downward within the detail view (up to 3 gentle sweeps), scanning for and capturing all below-the-fold worksheets and download controls before returning to the stream.
 
 #### 3. Intelligent Viewer Whitelisting (Seamless Document Capture)
@@ -595,22 +639,24 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
    - **100% Preservation:** K.I.D.S. completely eliminates this over-aggressive drop! Standalone comment chips (where a node contains *only* `"0 class comments"` with no body text, `< 35` chars) are ignored, but whenever comment indicators appear inside a valid announcement card, the announcement is **fully preserved and never dropped**.
    - **Dynamic Counter Stripping for Fingerprints:** When computing the post's SHA-256 fingerprint, comment counter lines are stripped before hashing. If other parents or students post new comments later, the announcement's fingerprint remains completely stable, preventing duplicate notices or false changes.
 
-3. **Deterministic Viewport Discovery & Safe Center Clamping:**
-   - **Relaxed Viewport Tolerance & Safe Center Clamping:** In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the screen as the list scrolls. In previous systems, partially visible cards were often skipped, causing missed notices. K.I.D.S. implements a **relaxed viewport tolerance rule**: a card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the viewport** (`rect.centerY() in minTop..maxBottom`). To guarantee reliable physical tap dispatch, K.I.D.S. safely clamps the click target's vertical coordinate:
-     $$\text{safeCenterY} = \text{rect.centerY().coerceIn}(\text{minTop} + 40, \text{maxBottom} - 40)$$
-     This ensures that injected taps always land safely inside the visible screen bounds rather than striking off-screen coordinates or hitting the top app bar or bottom navigation tabs.
+3. **Deterministic Viewport Discovery & Safe Tap Targeting (Top-Third Strategy):**
+   - **Relaxed Viewport Tolerance:** In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the screen as the list scrolls. In previous systems, partially visible cards were often skipped, causing missed notices. K.I.D.S. implements a **relaxed viewport tolerance rule**: a card is accepted for inspection if **at least 35% of its height is within the safe viewport** (`visibilityFraction >= 0.35f`) OR if **its vertical center is within the viewport** (`rect.centerY() in minTop..maxBottom`).
+   - **Safe Tap Targeting (Top Third):** Rather than blindly clicking the vertical center or bottom of a card—where Classroom's *"Add class comment"* or comment count button sits—K.I.D.S. calculates:
+     $$\text{safeTapY} = (\text{bounds.top} + 50)\text{.coerceIn}(\text{minTop} + 20, \text{maxBottom} - 20)$$
+     This guarantees that injected taps always land safely in the **top third of the card** (header, title, and course icon), remaining completely isolated from the bottom comment button.
    - **Title Sanitization & Stream Prioritization:** Before tapping into any post card, K.I.D.S. extracts the clean headline candidate directly from the stream announcement and retains it as `fallbackTitle`. When detail views open, Google Classroom often lacks a distinct header or presents confusing navigation labels (e.g., `"Navigate up"`, `"Back to stream"`, `"Add class comment"`). K.I.D.S. rigorously filters out all navigation chrome and prioritizes `fallbackTitle` from the stream, ensuring that your Google Drive digests and notifications feature pristine, human-readable titles (e.g., `"Mathematics Worksheet - Fractions Chapter 4"`) rather than stray navigation arrows or comment prompts.
 
-4. **Deep Post Entry, Material Retry Bounds & Guaranteed Progression:**
-   - **Universal Touch Injection:** Auto-Capture enters posts by dispatching physical touch tap gestures directly at the clamped post card screen coordinates (`cardBounds.centerX(), safeCenterY`). This guarantees entry across all Android OEM interfaces (Samsung One UI, Xiaomi HyperOS/MIUI, Oppo ColorOS) and customized Classroom `RecyclerView` item wrappers.
-   - **Extended 2,500ms Detail View Window with Physical Center-Tap Retry:** When opening a post card, K.I.D.S. observes screen transitions with an extended 2,500ms multi-stage window:
+4. **Deep Post Entry, Safe Tap Targeting, Material Retry Bounds & Guaranteed Progression:**
+   - **Announcement Discrimination (Zero-Click Direct Stream Ingestion):** Stream announcements and circulars (`!cardIsMaterial`) have no detail activity. K.I.D.S. skips clicking them entirely and ingests them directly from the stream card via `ingestNoticeDirect()`, completely preventing inadvertent comment clicks and cutting backfill latency.
+   - **Safe Touch Injection & Comment Node Disqualification:** For materials and assignments, K.I.D.S. inspects candidate clickable nodes. Any node whose description or text contains `"comment"` is disqualified. The assistant performs `ACTION_CLICK` on the non-comment node or dispatches a physical tap at `(bounds.centerX(), safeTapY)`.
+   - **Extended 2,500ms Detail View Window with Top-Tap Retry:** When opening a post card, K.I.D.S. observes screen transitions with an extended 2,500ms multi-stage window:
      1. Waits up to 1,200ms for the detail screen to initialize.
-     2. If sluggish view loading or an OEM touch debounce delays opening, K.I.D.S. immediately dispatches an automated center-tap retry directly on the card coordinates.
-     3. A secondary 1,300ms verification window confirms entry into the post detail.
+     2. If sluggish view loading or an OEM touch debounce delays opening, K.I.D.S. automatically dispatches a physical retry tap directly at the top of the card `(bounds.centerX(), safeTapY)`.
+     3. A secondary 1,500ms verification window confirms entry into the post detail.
+   - **Comment Sheet Auto-Dismissal:** If a class comments dialog or bottom sheet opens accidentally after a tap, K.I.D.S. immediately evaluates `isCommentsOnlyScreen(activeAfter)`, logs `"Comments dialog detected instead of post detail. Dismissing comments dialog..."`, and dismisses it via `performReturnToStream(activeAfter)` to return safely to the stream.
    - **Material Retry Bounds & Guaranteed Progression:**
-     Notice cards containing educational materials, worksheets, and study guides (`material`, `worksheet`, `notes`, `answer key`, `answerkey`) are prioritized for detail view entry so all attachments can be downloaded. If the detail view does not open on the first tap, K.I.D.S. retries with a physical center-tap. If after **2 attempts** the post card still fails to open a detail view (for example, inline posts or non-expandable material stubs), K.I.D.S. activates **guaranteed progression**: it captures the full title, body, and preview directly from the stream card via `ingestNoticeDirect()`, marks the item completed (`manifest.markCompleted()`), records it in `visitedPostFingerprints`, and advances cleanly to the next notice. This guarantees that the assistant never gets trapped in infinite retry loops at the top of the feed or stalls on unopenable posts.
-   - **Stream Announcement Handling (Fast Fallback for Plain-Text Alerts):**
-     Many school announcements in the Stream tab—such as urgent holiday alerts, weather advisories, festival greetings, and administrative notices—are purely text-based without any attachments. For these notices, tapping does not open a separate screen. Only after the detail timeout confirms the card has no detail view and is not a study material post, K.I.D.S. safely falls back to **direct stream card ingestion**: capturing the full message body, title, author, and timestamp into local storage (`NoticeEntity`), updating the counter, and proceeding smoothly to the next notice.
+     Notice cards containing educational materials, worksheets, and study guides (`material`, `worksheet`, `notes`, `answer key`, `answerkey`) are prioritized for detail view entry so all attachments can be downloaded. If after **2 attempts** the post card still fails to open a detail view (for example, inline posts or non-expandable material stubs), K.I.D.S. activates **guaranteed progression**: it captures the full title, body, and preview directly from the stream card via `ingestNoticeDirect()`, marks the item completed (`manifest.markItemCompleted(nextItem.index)` and `manifest.markCompleted(fingerprint)`), records it in `visitedPostFingerprints`, and advances cleanly to the next notice.
+   - **Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit):** At the top of Pass 2, `consecutiveTargetAttempts > 2` acts as a fail-safe mathematical loop breaker. If any target item stalls or repeats for more than 2 attempts, K.I.D.S. force-marks it completed (`manifest.markItemCompleted(nextItem.index)`), ingests stream text, and moves forward. Infinite retry loops are mathematically impossible.
 5. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 6. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
    - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous and hands-free.

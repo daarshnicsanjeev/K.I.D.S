@@ -318,15 +318,22 @@ stateDiagram-v2
     PASS_1_5_REWIND --> PASS_2_DEEP_INGESTION: Stream re-anchored at top notice
 
     state PASS_2_DEEP_INGESTION {
-        [*] --> FETCH_NEXT_PENDING: getNextPendingItem()
-        FETCH_NEXT_PENDING --> CHECK_TARGET_VISIBLE: Pending notice retrieved
+        [*] --> FETCH_NEXT_PENDING: getNextPendingItemReverse()
         FETCH_NEXT_PENDING --> ALL_FINISHED: nextItem == null
+        FETCH_NEXT_PENDING --> CHECK_LOOP_GUARD: Pending notice retrieved
         
-        CHECK_TARGET_VISIBLE --> OPENING_POST: findCardByFingerprint() != null
-        OPENING_POST --> DETAIL_VIEW_CHECK: Clamped center tap (dispatchTap)
+        CHECK_LOOP_GUARD --> FORCE_ADVANCE: consecutiveTargetAttempts > 2
+        FORCE_ADVANCE --> FETCH_NEXT_PENDING: ingestNoticeDirect() & markItemCompleted()
+        CHECK_LOOP_GUARD --> CHECK_TARGET_VISIBLE: consecutiveTargetAttempts <= 2
+
+        CHECK_TARGET_VISIBLE --> DISCRIMINATE_CARD: findCardForTarget() != null
+        DISCRIMINATE_CARD --> STREAM_INGEST: !cardIsMaterial (Announcement: Zero-Click Direct Ingestion)
+        DISCRIMINATE_CARD --> OPENING_POST: cardIsMaterial (Material/Assignment: Top-Third Tap bounds.top + 50)
         
-        DETAIL_VIEW_CHECK --> IN_DETAIL_VIEW: isPostDetailView == true (<=800ms)
-        DETAIL_VIEW_CHECK --> STREAM_INGEST: Timeout (Plain-text stream announcement)
+        OPENING_POST --> COMMENTS_DISMISSAL: isCommentsOnlyScreen == true (Accidental Comment Sheet)
+        COMMENTS_DISMISSAL --> OPENING_POST: performReturnToStream() & Retry
+        OPENING_POST --> IN_DETAIL_VIEW: isPostDetailView == true (<=1200ms)
+        OPENING_POST --> STREAM_INGEST: Timeout (Retry limit reached / Plain-text notice)
         
         IN_DETAIL_VIEW --> DOWNLOADING_ATTACHMENTS: Attachments detected (.pdf, .docx, .jpg)
         DOWNLOADING_ATTACHMENTS --> DOWNLOADING_ATTACHMENTS: 1,000ms calibrated debounce
@@ -335,7 +342,7 @@ stateDiagram-v2
         
         STREAM_INGEST --> ITEM_COMPLETED: NoticeEntity saved to Room
         GUARDED_RETURN --> ITEM_COMPLETED: performReturnToStream() (Up to 3 attempts, <=2.0s)
-        ITEM_COMPLETED --> FETCH_NEXT_PENDING: markCompleted(fingerprint) & increment counter
+        ITEM_COMPLETED --> FETCH_NEXT_PENDING: markCompleted() / markItemCompleted() & increment counter
 
         CHECK_TARGET_VISIBLE --> AUTO_RECOVERY: findCardByFingerprint() == null (Displaced)
         state AUTO_RECOVERY {
@@ -430,33 +437,45 @@ sequenceDiagram
         end
 
         Note over ACS,MAN: ==================== PASS 2: MANIFEST-DRIVEN INGESTION ====================
-        loop Deep Ingestion Loop (Until getNextPendingItem() == null)
-            ACS->>MAN: getNextPendingItem()
+        loop Reverse Deep Ingestion Loop (Until getNextPendingItemReverse() == null)
+            ACS->>MAN: getNextPendingItemReverse()
             MAN-->>ACS: nextItem (index, title, fingerprint)
-            ACS->>GC: findCardByFingerprint(nextItem.fingerprint)
-            alt Card Visible on Screen
-                ACS->>OV: updateStatus("Capturing (X/Total - Y%)...", title)
-                ACS->>GC: dispatchTap(centerX, safeCenterY) [50ms touch stroke]
-                alt Detail View Opened (<=800ms)
-                    ACS->>OV: updateStatus("Reading Detail (X/Total)...")
-                    ACS->>GC: Clear focus on comment EditText
-                    ACS->>GC: Extract full announcement text & author
-                    opt Attachments Present
-                        loop Download / Share Each Attachment
-                            ACS->>OV: updateStatus("Downloading (X/Y)...", fileName)
-                            ACS->>GC: Tap attachment chip / download action
-                            GC->>DM: Route to system DownloadManager or ShareTargetActivity
-                            ACS->>OV: incrementAttachmentCount()
+            alt consecutiveTargetAttempts > 2 (Loop Guard)
+                ACS->>ACS: ingestNoticeDirect() & force mark completed
+                ACS->>MAN: markItemCompleted(nextItem.index)
+            else Normal Progression
+                ACS->>GC: findCardForTarget(nextItem)
+                alt Card Visible on Screen
+                    alt Announcement / Circular (!cardIsMaterial)
+                        ACS->>ACS: ingestNoticeDirect(): Zero-Click stream card ingestion
+                        ACS->>MAN: markItemCompleted(nextItem.index)
+                        ACS->>OV: incrementNoticeCount()
+                    else Material / Assignment (cardIsMaterial)
+                        ACS->>OV: updateStatus("Capturing (X/Total - Y%)...", title)
+                        ACS->>GC: dispatchTap(centerX, safeTapY) [Top-third bounds.top + 50]
+                        alt Comments Sheet Detected (isCommentsOnlyScreen)
+                            ACS->>GC: performReturnToStream() (Dismiss comments sheet)
+                        else Detail View Opened (<=1200ms + Top-Tap Retry)
+                            ACS->>OV: updateStatus("Reading Detail (X/Total)...")
+                            ACS->>GC: Clear focus on comment EditText
+                            ACS->>GC: Extract full announcement text & author
+                            opt Attachments Present
+                                loop Download / Share Each Attachment
+                                    ACS->>OV: updateStatus("Downloading (X/Y)...", fileName)
+                                    ACS->>GC: Tap attachment chip / download action
+                                    GC->>DM: Route to system DownloadManager or ShareTargetActivity
+                                    ACS->>OV: incrementAttachmentCount()
+                                end
+                            end
+                            ACS->>GC: performReturnToStream() (Up to 3 attempts, <=2.0s)
+                        else Detail Timeout (Attempts >= 2)
+                            ACS->>ACS: ingestNoticeDirect(): fallback to stream card text
                         end
+                        ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
+                        ACS->>MAN: markCompleted(nextItem.fingerprint)
+                        ACS->>OV: incrementNoticeCount()
                     end
-                    ACS->>GC: performReturnToStream() (Up to 3 attempts, <=2.0s)
-                else Plain Text Card (Detail check timeout 800ms)
-                    ACS->>ACS: ingestNoticeDirect(): extract fullText directly from stream
-                end
-                ACS->>DB: Insert NoticeEntity (SyncStatus.PENDING)
-                ACS->>MAN: markCompleted(nextItem.fingerprint)
-                ACS->>OV: incrementNoticeCount()
-            else Card NOT Visible (Viewport Displaced - AUTO-RECOVERY)
+                else Card NOT Visible (Viewport Displaced - AUTO-RECOVERY)
                 ACS->>GC: getVisibleCardFingerprints()
                 ACS->>MAN: Compare visibleIndices vs nextItem.index
                 ACS->>MAN: incrementAttempt(nextItem.fingerprint)
@@ -666,6 +685,18 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   ```
   If the target notice's index is bounded within the visible range `[minVisibleIndex..maxVisibleIndex]`, scrolling is completely inhibited. The crawler immediately executes `findBestCandidateCardOnScreen()` and dispatches a direct tap, preventing overshoot.
 
+- **Direct Index-Based Completion (`markItemCompleted`):**
+  In addition to cryptographic fingerprint-based completion (`markCompleted(fingerprint, attachmentCount)`), `StreamManifest` provides direct ordinal index-based resolution:
+  ```kotlin
+  fun markItemCompleted(targetIndex: Int, attachmentCount: Int = 0) {
+      _items.firstOrNull { it.index == targetIndex }?.let {
+          it.status = StreamItemStatus.COMPLETED
+          it.attachmentCount = attachmentCount
+      }
+  }
+  ```
+  - **Loop Guard & Fallback Resilience:** While `markCompleted(fingerprint)` updates item status using the SHA-256 hash computed during survey, dynamic stream rendering or comment changes can occasionally perturb candidate hash calculations. `markItemCompleted(targetIndex)` allows the Pass 2 Loop Guard and direct fallback paths to definitively mark an item as `COMPLETED` by its immutable ordinal position `index`, mathematically guaranteeing that `manifest.getNextPendingItemReverse()` advances and avoids re-querying the same stalled post.
+
 - **Session-Persistent In-Memory Post Fingerprints (`visitedPostFingerprints` Invariant):**
   `visitedPostFingerprints` is initialized as a thread-safe concurrent set (`ConcurrentHashMap.newKeySet<String>()`) at the service instance level. Preserving `visitedPostFingerprints` across session toggles guarantees that re-running Auto-Capture will immediately tag previously ingested notices as `ALREADY_SYNCED`, establishing full bounds without re-downloading existing media.
 
@@ -685,12 +716,88 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   - **40% to 50% Reduction in Total Swipes & Halved Crawl Duration:** Ingesting bottom-to-top cuts total physical swipes by 40–50%, significantly conserves device battery, minimizes screen refresh wear, and reduces overall crawl time by half.
   - **Sequential Bottom-to-Top Processing:** The loop calls `val nextItem = manifest.getNextPendingItemReverse()`. If `nextItem == null`, all manifest notices have been processed, and the crawler terminates cleanly.
 
+- **Pass 2 Anti-Loop Guard (`lastTargetIndex`, `consecutiveTargetAttempts > 2`):**
+  To mathematically ensure the crawler never hangs or loops endlessly on a stubborn or unclickable card, Pass 2 evaluates an upfront loop guard at the beginning of each iteration:
+  ```kotlin
+  // Loop Guard: Prevent any single target from looping indefinitely
+  if (nextItem.index == lastTargetIndex) {
+      consecutiveTargetAttempts++
+  } else {
+      lastTargetIndex = nextItem.index
+      consecutiveTargetAttempts = 1
+  }
+
+  if (consecutiveTargetAttempts > 2) {
+      CrawlerTraceLogger.log(
+          "LOOP_GUARD",
+          "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
+      )
+      ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+      manifest.markItemCompleted(nextItem.index)
+      manifest.markCompleted(nextItem.fingerprint)
+      visitedPostFingerprints.add(nextItem.fingerprint)
+      crawlerOverlay?.incrementNoticeCount()
+      consecutiveTargetAttempts = 0
+      delay(300)
+      continue
+  }
+  ```
+  - **Loop Invariant:** If the reverse traversal queries the same item index for more than 2 consecutive cycles (`consecutiveTargetAttempts > 2`), the loop guard automatically triggers direct stream ingestion (`ingestNoticeDirect`), force-marks completion in the manifest using both ordinal index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint (`manifest.markCompleted(nextItem.fingerprint)`), adds the hash to `visitedPostFingerprints`, resets `consecutiveTargetAttempts = 0`, and advances to the next notice.
+
+- **Announcement Discrimination (`!cardIsMaterial`) & Zero-Click Direct Stream Ingestion:**
+  In Google Classroom, feed items possess two fundamentally distinct UI structural behaviors:
+  1. **Announcements / Circulars:** General teacher posts and circular messages. In Google Classroom, announcements do **NOT** have a separate detail activity. All content is already rendered directly on the stream card. Tapping an announcement is either completely inert or accidentally invokes the class comments sheet.
+  2. **Materials, Assignments, Questions & Quizzes:** Activity posts containing attachments, points, or due dates that transition into a dedicated post detail activity (`isPostDetailView`).
+  
+  K.I.D.S. discriminates between announcements and materials prior to dispatching touch events:
+  ```kotlin
+  val isMaterialOrAssignment = nextItem.title.contains("material", ignoreCase = true) ||
+          nextItem.title.contains("assignment", ignoreCase = true) ||
+          nextItem.title.contains("question", ignoreCase = true) ||
+          nextItem.title.contains("quiz", ignoreCase = true) ||
+          nextItem.previewText.contains("new material", ignoreCase = true) ||
+          nextItem.previewText.contains("new assignment", ignoreCase = true) ||
+          nextItem.previewText.contains("new question", ignoreCase = true)
+
+  val cardIsMaterial = isMaterialOrAssignment ||
+          title.contains("material", ignoreCase = true) ||
+          title.contains("assignment", ignoreCase = true) ||
+          title.contains("question", ignoreCase = true) ||
+          fullText.contains("new material", ignoreCase = true) ||
+          fullText.contains("new assignment", ignoreCase = true) ||
+          fullText.contains("new question", ignoreCase = true)
+
+  if (!cardIsMaterial) {
+      // ANNOUNCEMENT / CIRCULAR: In Google Classroom, announcements have no separate detail screen.
+      // The announcement body is directly on the stream card. Tapping the card either does nothing or opens comments.
+      CrawlerTraceLogger.log(
+          "STREAM_SURVEY",
+          "Notice #${nextItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
+      )
+      ingestNoticeDirect(title, fullText, fingerprint)
+      manifest.markItemCompleted(nextItem.index)
+      manifest.markCompleted(fingerprint)
+      manifest.markCompleted(nextItem.fingerprint)
+      visitedPostFingerprints.add(fingerprint)
+      visitedPostFingerprints.add(nextItem.fingerprint)
+      crawlerOverlay?.incrementNoticeCount()
+      crawlerOverlay?.updateStatus(
+          "Captured (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+          title
+      )
+      clickableNode.recycle()
+      delay(300)
+      continue
+  }
+  ```
+  - **Zero-Click Ingestion & Comment Prevention:** Because non-material announcements are ingested directly from the stream card, physical taps are never dispatched on announcement cards. Accidental clicks on *"Add class comment"* or comment counters are **100% prevented**, while throughput increases dramatically.
+
 - **Card Seeking & Detail View Scrolling:**
   The crawler scans the screen for the target item using multi-factor matching (`findCardForTarget(root, nextItem)`):
   If the target card is visible in the safe viewport:
   1. Sets status to `StreamItemStatus.IN_PROGRESS`.
   2. Updates overlay status to `"Capturing (X/Total - Y%)..."`.
-  3. Dispatches physical tap gesture (`dispatchTap`) at safe clamped center coordinates (`safeCenterY`).
+  3. Dispatches physical tap gesture (`dispatchTap`) at safe top-third coordinates (`safeTapY = (bounds.top + 50)`).
   4. Enters detail view (or falls back to direct stream ingestion if plain-text notice or upon reaching material retry bounds).
   5. In detail view, if body text is extensive and attachments are below the fold, executes downward kinetic sweeps (`performDetailScrollDown`) up to 3 times to scan and harvest all attachments.
   6. Safely returns to the stream, marks the item `StreamItemStatus.COMPLETED` via `manifest.markCompleted(fingerprint, savedAttCount)`, and increments notice tallies.
@@ -737,15 +844,36 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
      - When the target is ahead in scroll direction (`minVisibleIndex <= targetItem.index`), the crawler scrolls forward via `performScroll` (or forward micro-scroll).
      - As long as `minVisibleIndex` moves closer to `targetItem.index`, failure attempts are never incremented. After 4 confirmed stuck attempts (`attempts >= 4`), the item is marked `StreamItemStatus.FAILED_SKIPPED` to guarantee the crawler never hangs.
 
-##### 4. `NAVIGATING_TO_DETAIL` (Physical Tap, 2,500ms Extended Timeout & Attachment Invariant)
-- **Dual Action Click & Physical Touch Tap (`dispatchTap`):**
-  1. Executes `clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)`.
-  2. If `!clicked`, dispatches a physical touch tap gesture directly at the safe clamped center of the post card:
-     ```kotlin
-     dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
-     ```
+###### 4. `NAVIGATING_TO_DETAIL` (Safe Tap Targeting, 2,500ms Extended Timeout & Comment Sheet Auto-Dismissal)
+- **Safe Tap Targeting (`bounds.top + 50`) & Comment Node Disqualification:**
+  In Google Classroom, post cards locate comment buttons (*"Add class comment"*, *"0 class comments"*) across the bottom portion of the card. Naively dispatching clicks to the card center or bottom strikes the comment button rather than opening the material detail screen.
+  `KidsAccessibilityService` enforces **Safe Tap Targeting** to strictly isolate taps to the upper third (header and title):
+  ```kotlin
+  val displayMetrics = resources.displayMetrics
+  val minTop = 140
+  val maxBottom = displayMetrics.heightPixels - 170
+  val safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
+
+  val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""
+  val nodeText = clickableNode.text?.toString()?.lowercase() ?: ""
+  val isCommentNode = nodeDesc.contains("comment") || nodeText.contains("comment")
+
+  val openStart = System.currentTimeMillis()
+  val clicked = if (!isCommentNode && clickableNode.isClickable) {
+      clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+  } else {
+      false
+  }
+  if (!clicked) {
+      dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
+  }
+  clickableNode.recycle()
+  ```
+  - **Comment Node Disqualification:** Any accessibility node bearing `"comment"` in its content description or visible text is disqualified from receiving `ACTION_CLICK`.
+  - **Safe Top-Third Tap:** Physical touch taps are clamped safely at `(bounds.top + 50)`, landing squarely on the announcement title or subject icon and remaining far above the bottom comment section.
   - Contact duration: 50ms (`GestureDescription.StrokeDescription(path, 0, 50)`).
   - Stabilization delay: 150ms.
+
 - **Gesture Synchronization (`@Volatile var isDispatchingCrawlerGesture: Boolean`):**
   To prevent the accessibility service's own automated taps from triggering overlay click listeners (such as the overlay's Stop button), `KidsAccessibilityService` maintains an atomic, memory-visible volatile boolean:
   ```kotlin
@@ -776,7 +904,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   - **Echo Settlement Delay:** The flag is set to `true` prior to building and dispatching the gesture, kept active during gesture callbacks, and held for an additional 150ms delay post-gesture to completely absorb and neutralize synthetic touch echoes and Android input queue propagation.
   - **Direct Consumer:** `FloatingCrawlerOverlay` reads this property directly in touch event and click handlers, rejecting simulated taps that fall on assistant controls.
 
-- **Extended 2,500ms Detail View Window with Center-Tap Retry:**
+- **Extended 2,500ms Detail View Window with Top-Tap Retry:**
   Rather than freezing or failing on slow OEM window animations, `KidsAccessibilityService` uses a multi-stage 2,500ms window:
   ```kotlin
   // Stage 1: Initial 1200ms wait
@@ -787,13 +915,13 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       isDetail
   }
 
-  // Stage 2: Physical center-tap retry and 1300ms secondary wait
+  // Stage 2: Physical top-tap retry and 1500ms secondary wait
   if (!enteredDetail) {
       CrawlerTraceLogger.log(
           "DEEP_CRAWLER",
-          "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical center-tap at (${bounds.centerX()}, ${bounds.centerY()})"
+          "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
       )
-      dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+      dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
       enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
           val active = rootInActiveWindow ?: return@waitForCondition false
           val isDetail = isPostDetailView(active)
@@ -803,21 +931,41 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   }
   ```
 
-- **Material Retry Bounds & Guaranteed Progression:**
-  If `!enteredDetail` after the full 2,500ms retry window, `KidsAccessibilityService` enforces bounded material retries to guarantee forward progression without infinite loops:
+- **Comment Sheet Auto-Dismissal:**
+  If a class comments dialog or bottom sheet is opened—either prior to crawling or inadvertently during screen transitions:
   ```kotlin
-  val isLikelyMaterial = title.contains("material", ignoreCase = true) ||
-          title.contains("worksheet", ignoreCase = true) ||
-          title.contains("notes", ignoreCase = true) ||
-          title.contains("answer key", ignoreCase = true) ||
-          title.contains("answerkey", ignoreCase = true)
+  if (!enteredDetail) {
+      // Check if comments dialog opened by accident and dismiss it
+      val activeAfter = rootInActiveWindow
+      if (activeAfter != null) {
+          if (isCommentsOnlyScreen(activeAfter)) {
+              CrawlerTraceLogger.log("DEEP_CRAWLER", "Comments dialog detected instead of post detail. Dismissing comments dialog...")
+              performReturnToStream(activeAfter)
+          }
+          activeAfter.recycle()
+      }
+  ```
+  And upon service startup/resume:
+  ```kotlin
+  if (isCommentsOnlyScreen(root) || (isPostDetailView(root) && !isStreamOrClassworkView(root))) {
+      CrawlerTraceLogger.log("CRAWLER_RECOVERY", "Active window is comments dialog or unclosed detail view. Returning to stream...")
+      performReturnToStream(root)
+      root.recycle()
+      delay(700)
+      continue
+  }
+  ```
+  - **Instant Dismissal:** Identifies the comments dialog via `isCommentsOnlyScreen(root)` and immediately invokes `performReturnToStream()`, safely dismissing the sheet and restoring the stream feed without operator intervention.
 
+- **Material Retry Bounds & Guaranteed Progression:**
+  If `!enteredDetail` after the full retry window, `KidsAccessibilityService` enforces bounded retries with index-based manifest completion:
+  ```kotlin
   val attempts = manifest.incrementAttempt(fingerprint)
 
-  if (isLikelyMaterial && attempts < 2) {
+  if (attempts < 2) {
       CrawlerTraceLogger.log(
           "DEEP_CRAWLER",
-          "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retrying (Attempt $attempts/2)..."
+          "Notice #${nextItem.index} (\"$title\") did not open detail view. Retrying (Attempt $attempts/2)..."
       )
       ingestNoticeDirect(title, fullText, fingerprint)
   } else {
@@ -826,17 +974,19 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
           "Card did not open detail view (Attempts: $attempts). Ingesting directly from stream: \"$title\""
       )
       ingestNoticeDirect(title, fullText, fingerprint)
+      manifest.markItemCompleted(nextItem.index)
       manifest.markCompleted(fingerprint)
+      manifest.markCompleted(nextItem.fingerprint)
       visitedPostFingerprints.add(fingerprint)
+      visitedPostFingerprints.add(nextItem.fingerprint)
       crawlerOverlay?.incrementNoticeCount()
   }
   delay(300)
   continue
   ```
   **Guarantee & Loop Prevention:**
-  - When a notice card matches educational materials (`material`, `worksheet`, `notes`, `answer key`, `answerkey`), it is prioritized for detail entry to harvest attachments.
-  - On transition failure, `manifest.incrementAttempt(fingerprint)` tracks attempts. For `attempts < 2`, the post body is saved via `ingestNoticeDirect`, but the item remains pending to allow an immediate re-tap.
-  - **Bound Threshold:** Once `attempts >= 2` (or immediately on the first failure for plain announcements without materials), the crawler gracefully falls back to `ingestNoticeDirect(title, fullText, fingerprint)`, marks the item completed via `manifest.markCompleted(fingerprint)`, adds it to `visitedPostFingerprints`, increments the overlay notice counter, and advances upward to the next notice in the manifest.
+  - On transition failure, `manifest.incrementAttempt(fingerprint)` tracks attempts. For `attempts < 2`, the post body is saved via `ingestNoticeDirect`, but the item remains pending to allow a second attempt.
+  - **Bound Threshold:** Once `attempts >= 2`, the crawler gracefully falls back to `ingestNoticeDirect(title, fullText, fingerprint)`, marks the item completed via `manifest.markItemCompleted(nextItem.index)` and `manifest.markCompleted(fingerprint)`, adds it to `visitedPostFingerprints`, increments the overlay notice counter, and advances upward to the next notice in the manifest.
   - This bounded threshold completely eliminates infinite re-tap loops at the top of the stream or on non-expandable material cards while preserving all notice text and metadata in Room storage.
 
 ##### 3. `IN_DETAIL_VIEW` (Title Sanitization, Full Text Harvesting & Autonomous Attachment Capture)
@@ -984,8 +1134,8 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
            isNotDetail
        }
        ```
-    2. **Viewer Screen Detection & Exclusion Invariant (`isDocumentViewerScreen` vs. `isPostDetailView`):**
-       To reliably trigger viewer automation without mistaking a PDF or image preview for a post detail screen, `KidsAccessibilityService` deploys a two-tier screen inspection:
+    2. **Viewer & Comments Screen Detection & Exclusion Invariant (`isDocumentViewerScreen`, `isCommentsOnlyScreen` vs. `isPostDetailView`):**
+       To reliably trigger viewer automation without mistaking a PDF preview or comment sheet for a post detail screen, `KidsAccessibilityService` deploys a multi-tier screen inspection:
        ```kotlin
        private fun isDocumentViewerScreen(combinedText: String): Boolean {
            val lower = combinedText.lowercase()
@@ -998,6 +1148,35 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
                    lower.contains("send file")
        }
 
+       private fun isCommentsOnlyScreen(combinedText: String): Boolean {
+           val lower = combinedText.lowercase()
+           val hasCommentHeader = lower.contains("class comment") ||
+                   lower.contains("add class comment") ||
+                   lower.contains("no class comments") ||
+                   lower.contains("0 class comments") ||
+                   lower.contains("class comments (")
+           val hasPostDetailFeatures = lower.contains("new material") ||
+                   lower.contains("new assignment") ||
+                   lower.contains("new question") ||
+                   lower.contains("your work") ||
+                   lower.contains("assigned") ||
+                   lower.contains("attachments") ||
+                   lower.contains("attachment") ||
+                   lower.contains("save all files offline") ||
+                   lower.contains("save all") ||
+                   lower.contains("save offline") ||
+                   lower.contains("for your reference") ||
+                   lower.contains("points")
+           return hasCommentHeader && !hasPostDetailFeatures
+       }
+
+       private fun isCommentsOnlyScreen(rootNode: AccessibilityNodeInfo): Boolean {
+           val textList = mutableListOf<String>()
+           collectQuickText(rootNode, textList)
+           val combined = textList.joinToString(" ").lowercase()
+           return isCommentsOnlyScreen(combined)
+       }
+
        private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
            val textList = mutableListOf<String>()
            collectQuickText(rootNode, textList)
@@ -1008,9 +1187,24 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
                return false
            }
 
-           val hasDetailIndicators = combined.contains("add class comment") ||
-                   combined.contains("class comments") ||
-                   combined.contains("your work") ||
+           // 2. If it is purely a class comments view, it is NOT post detail
+           if (isCommentsOnlyScreen(combined)) {
+               return false
+           }
+
+           val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
+                   combined.contains("tab 1 of 3") ||
+                   combined.contains("tab 2 of 3") ||
+                   combined.contains("people")
+           val hasBackArrow = hasNavigateUpButton(rootNode)
+
+           // Stream and Classwork views ALWAYS display bottom tabs and NEVER have a Navigate Up back arrow.
+           // Detail View NEVER has bottom tabs and ALWAYS has a Navigate Up back arrow.
+           if (hasBottomTabs || !hasBackArrow) {
+               return false
+           }
+
+           val hasDetailIndicators = combined.contains("your work") ||
                    combined.contains("assigned") ||
                    combined.contains("attachments") ||
                    combined.contains("attachment") ||
@@ -1018,15 +1212,22 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
                    combined.contains("save all") ||
                    combined.contains("save offline") ||
                    combined.contains("for your reference") ||
-                   combined.contains("points")
-           val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
-                   combined.contains("tab 1 of 3") ||
-                   combined.contains("tab 2 of 3")
-           val hasBackArrow = hasNavigateUpButton(rootNode)
-           return hasDetailIndicators && hasBackArrow && !hasBottomTabs
+                   combined.contains("points") ||
+                   combined.contains("new material") ||
+                   combined.contains("new assignment") ||
+                   combined.contains("new question")
+
+           // Resilient check: In substantive posts, attachments or instructions are displayed.
+           // If bottom tabs are absent and back arrow is present, substantive body text (>30 chars)
+           // confirms we are inside the detail view.
+           return hasDetailIndicators || combined.length > 30
        }
        ```
-       - **Strict Detail View Constraint:** A screen is categorized as a post detail view **only** if it possesses both detail indicators (`"add class comment"`, `"your work"`, `"assigned"`, etc.) **and** a confirmed Navigate Up back arrow, **and** lacks bottom stream/classwork navigation tabs, **and** contains **zero** document viewer controls (`!isDocumentViewerScreen(combined)`).
+       - **Strict Detail View Constraint & Comment Screen Exclusion:**
+         1. **Early Rejection of Document Viewers:** `isDocumentViewerScreen(combined)` evaluates zoom, pagination, and file export labels, rejecting document viewers immediately.
+         2. **Early Rejection of Comment-Only Screens:** `isCommentsOnlyScreen(combined)` evaluates whether the screen is exclusively a class comment dialog or bottom sheet (e.g. contains `"class comments"`, `"add class comment"`, but lacks substantive post properties like `"your work"`, `"assigned"`, `"attachments"`).
+         3. **Removal of Comment Indicators from Detail Heuristics:** In earlier implementations, `"add class comment"` or `"class comments"` were treated as indicators of a detail view. This caused comment dialogs to be falsely accepted as post detail views. Removing comment indicators and isolating them into `isCommentsOnlyScreen` ensures comments sheets are never misidentified as post detail activities.
+         4. **Resilient Structural Verification:** Requires both the confirmed absence of bottom navigation tabs (`stream`, `classwork`, `tab 1 of 3`) and the presence of a Navigate Up back arrow, combined with explicit post detail indicators or substantive text length ($> 30$ chars).
        - **Reliable Viewer Handoff:** When a PDF or image preview opens, `isDocumentViewerScreen()` detects controls like `"fit to width"` or `"page 1 of"`, causing `isPostDetailView()` to return `false`. The viewer wait loop in `automateViewerShareOrDownload()` evaluates to `true`, deterministically detecting that the document viewer has taken foreground within 3,000ms and proceeding directly to Share/Download automation.
     3. **Direct Share / Download Scanning:** Inspects the active node tree for a direct Share action (`"share"`, `"send a copy"`, `"send file"`) via `findShareButton(active)` or a direct Download button (`findDownloadButtonNode(active)`). If found, it dispatches an accessibility click or falls back to `dispatchTap`.
     4. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.

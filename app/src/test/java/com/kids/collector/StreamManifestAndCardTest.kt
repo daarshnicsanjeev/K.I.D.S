@@ -225,4 +225,59 @@ class StreamManifestAndCardTest {
         assertThat(manifest.getNextPendingItemReverse()).isNull()
         assertThat(manifest.isAllFinished()).isTrue()
     }
+
+    @Test
+    fun `markItemCompleted marks item as completed by index regardless of fingerprint shifts`() {
+        manifest.addItem("fp_old_hash", "Notice 1", "Body 1", false)
+        manifest.addItem("fp_old_hash2", "Notice 2", "Body 2", false)
+
+        assertThat(manifest.pendingCount).isEqualTo(2)
+
+        // Mark item 1 completed by index
+        manifest.markItemCompleted(1, attachmentCount = 3)
+        assertThat(manifest.completedCount).isEqualTo(1)
+        assertThat(manifest.pendingCount).isEqualTo(1)
+
+        // Mark item 2 completed by index
+        manifest.markItemCompleted(2, attachmentCount = 0)
+        assertThat(manifest.completedCount).isEqualTo(2)
+        assertThat(manifest.isAllFinished()).isTrue()
+    }
+
+    @Test
+    fun `comments-only screen is strictly discriminated from actual post detail view`() {
+        fun isCommentsOnlyScreenSimulated(text: String): Boolean {
+            val lower = text.lowercase()
+            val hasCommentHeader = lower.contains("class comment") ||
+                    lower.contains("add class comment") ||
+                    lower.contains("no class comments") ||
+                    lower.contains("0 class comments") ||
+                    lower.contains("class comments (")
+            val hasPostDetailFeatures = lower.contains("new material") ||
+                    lower.contains("new assignment") ||
+                    lower.contains("new question") ||
+                    lower.contains("your work") ||
+                    lower.contains("assigned") ||
+                    lower.contains("attachments") ||
+                    lower.contains("attachment") ||
+                    lower.contains("save all files offline") ||
+                    lower.contains("save all") ||
+                    lower.contains("save offline") ||
+                    lower.contains("for your reference") ||
+                    lower.contains("points")
+            return hasCommentHeader && !hasPostDetailFeatures
+        }
+
+        // Classroom comments screen content
+        val commentsPageContent = "Class comments Navigate up Add class comment Send No class comments"
+        assertThat(isCommentsOnlyScreenSimulated(commentsPageContent)).isTrue()
+
+        // Material post detail screen (contains both comment box and actual post details/attachments)
+        val materialDetailContent = "New material: Chapter 4 Science Navigate up Attachments chapter4.pdf Add class comment"
+        assertThat(isCommentsOnlyScreenSimulated(materialDetailContent)).isFalse()
+
+        // Assignment post detail screen
+        val assignmentDetailContent = "New assignment: Math Homework Due Tomorrow Assigned Your work Add private comment 100 points"
+        assertThat(isCommentsOnlyScreenSimulated(assignmentDetailContent)).isFalse()
+    }
 }

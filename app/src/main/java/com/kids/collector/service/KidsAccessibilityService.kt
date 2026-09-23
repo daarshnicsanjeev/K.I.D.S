@@ -296,6 +296,8 @@ class KidsAccessibilityService : AccessibilityService() {
         val db = KidsDatabase.getInstance(applicationContext)
         var lastRecoveryMinIndex: Int? = null
         var consecutiveStaticRecoveryCount = 0
+        var lastTargetIndex = -1
+        var consecutiveTargetAttempts = 0
         val recentScrollDirections = ArrayDeque<Boolean>(6) // true = forward, false = backward
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
@@ -303,6 +305,29 @@ class KidsAccessibilityService : AccessibilityService() {
             if (nextItem == null) {
                 CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
                 break
+            }
+
+            // Loop Guard: Prevent any single target from looping indefinitely
+            if (nextItem.index == lastTargetIndex) {
+                consecutiveTargetAttempts++
+            } else {
+                lastTargetIndex = nextItem.index
+                consecutiveTargetAttempts = 1
+            }
+
+            if (consecutiveTargetAttempts > 2) {
+                CrawlerTraceLogger.log(
+                    "LOOP_GUARD",
+                    "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
+                )
+                ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                manifest.markItemCompleted(nextItem.index)
+                manifest.markCompleted(nextItem.fingerprint)
+                visitedPostFingerprints.add(nextItem.fingerprint)
+                crawlerOverlay?.incrementNoticeCount()
+                consecutiveTargetAttempts = 0
+                delay(300)
+                continue
             }
 
             val root = rootInActiveWindow
@@ -331,8 +356,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            // Check if trapped in detail view on start/resume
-            if (isPostDetailView(root) && !isStreamOrClassworkView(root)) {
+            // Check if trapped in comments dialog or unclosed detail view on start/resume
+            if (isCommentsOnlyScreen(root) || (isPostDetailView(root) && !isStreamOrClassworkView(root))) {
+                CrawlerTraceLogger.log("CRAWLER_RECOVERY", "Active window is comments dialog or unclosed detail view. Returning to stream...")
                 performReturnToStream(root)
                 root.recycle()
                 delay(700)
@@ -342,6 +368,14 @@ class KidsAccessibilityService : AccessibilityService() {
             // Look for target card on screen using Resilient Multi-Factor Matching
             val unvisitedCard = findCardForTarget(root, nextItem)
             root.recycle()
+
+            val isMaterialOrAssignment = nextItem.title.contains("material", ignoreCase = true) ||
+                    nextItem.title.contains("assignment", ignoreCase = true) ||
+                    nextItem.title.contains("question", ignoreCase = true) ||
+                    nextItem.title.contains("quiz", ignoreCase = true) ||
+                    nextItem.previewText.contains("new material", ignoreCase = true) ||
+                    nextItem.previewText.contains("new assignment", ignoreCase = true) ||
+                    nextItem.previewText.contains("new question", ignoreCase = true)
 
             if (unvisitedCard != null) {
                 // Target card found! Reset recovery tracking
@@ -355,16 +389,61 @@ class KidsAccessibilityService : AccessibilityService() {
                 val clickableNode = unvisitedCard.clickableNode
                 val fullText = unvisitedCard.fullText
 
+                val cardIsMaterial = isMaterialOrAssignment ||
+                        title.contains("material", ignoreCase = true) ||
+                        title.contains("assignment", ignoreCase = true) ||
+                        title.contains("question", ignoreCase = true) ||
+                        fullText.contains("new material", ignoreCase = true) ||
+                        fullText.contains("new assignment", ignoreCase = true) ||
+                        fullText.contains("new question", ignoreCase = true)
+
+                if (!cardIsMaterial) {
+                    // ANNOUNCEMENT / CIRCULAR: In Google Classroom, announcements have no separate detail screen.
+                    // The announcement body is directly on the stream card. Tapping the card either does nothing or opens comments.
+                    CrawlerTraceLogger.log(
+                        "STREAM_SURVEY",
+                        "Notice #${nextItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
+                    )
+                    ingestNoticeDirect(title, fullText, fingerprint)
+                    manifest.markItemCompleted(nextItem.index)
+                    manifest.markCompleted(fingerprint)
+                    manifest.markCompleted(nextItem.fingerprint)
+                    visitedPostFingerprints.add(fingerprint)
+                    visitedPostFingerprints.add(nextItem.fingerprint)
+                    crawlerOverlay?.incrementNoticeCount()
+                    crawlerOverlay?.updateStatus(
+                        "Captured (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+                        title
+                    )
+                    clickableNode.recycle()
+                    delay(300)
+                    continue
+                }
+
                 crawlerOverlay?.updateStatus(
                     "Capturing (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
                     title
                 )
 
-                // Dispatch physical tap
+                // Dispatch physical tap safely: target the top third of the card (bounds.top + 50)
+                // NEVER tap the bottom where comments or "Add class comment" are located!
+                val displayMetrics = resources.displayMetrics
+                val minTop = 140
+                val maxBottom = displayMetrics.heightPixels - 170
+                val safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
+
+                val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""
+                val nodeText = clickableNode.text?.toString()?.lowercase() ?: ""
+                val isCommentNode = nodeDesc.contains("comment") || nodeText.contains("comment")
+
                 val openStart = System.currentTimeMillis()
-                val clicked = clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                val clicked = if (!isCommentNode && clickableNode.isClickable) {
+                    clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                } else {
+                    false
+                }
                 if (!clicked) {
-                    dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
                 }
                 clickableNode.recycle()
 
@@ -379,9 +458,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!enteredDetail) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical center-tap at (${bounds.centerX()}, ${bounds.centerY()})"
+                        "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
                     )
-                    dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
                     enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
                         val active = rootInActiveWindow ?: return@waitForCondition false
                         val isDetail = isPostDetailView(active)
@@ -393,18 +472,22 @@ class KidsAccessibilityService : AccessibilityService() {
                 CrawlerTraceLogger.logPostOpen(nextItem.index, total, title, openLatency, enteredDetail)
 
                 if (!enteredDetail) {
-                    val isLikelyMaterial = title.contains("material", ignoreCase = true) ||
-                            title.contains("worksheet", ignoreCase = true) ||
-                            title.contains("notes", ignoreCase = true) ||
-                            title.contains("answer key", ignoreCase = true) ||
-                            title.contains("answerkey", ignoreCase = true)
+                    // Check if comments dialog opened by accident and dismiss it
+                    val activeAfter = rootInActiveWindow
+                    if (activeAfter != null) {
+                        if (isCommentsOnlyScreen(activeAfter)) {
+                            CrawlerTraceLogger.log("DEEP_CRAWLER", "Comments dialog detected instead of post detail. Dismissing comments dialog...")
+                            performReturnToStream(activeAfter)
+                        }
+                        activeAfter.recycle()
+                    }
 
                     val attempts = manifest.incrementAttempt(fingerprint)
 
-                    if (isLikelyMaterial && attempts < 2) {
+                    if (attempts < 2) {
                         CrawlerTraceLogger.log(
                             "DEEP_CRAWLER",
-                            "Notice #${nextItem.index} (\"$title\") did not open detail view, but appears to contain attachments/worksheets. Retrying (Attempt $attempts/2)..."
+                            "Notice #${nextItem.index} (\"$title\") did not open detail view. Retrying (Attempt $attempts/2)..."
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
                     } else {
@@ -413,8 +496,11 @@ class KidsAccessibilityService : AccessibilityService() {
                             "Card did not open detail view (Attempts: $attempts). Ingesting directly from stream: \"$title\""
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
+                        manifest.markItemCompleted(nextItem.index)
                         manifest.markCompleted(fingerprint)
+                        manifest.markCompleted(nextItem.fingerprint)
                         visitedPostFingerprints.add(fingerprint)
+                        visitedPostFingerprints.add(nextItem.fingerprint)
                         crawlerOverlay?.incrementNoticeCount()
                     }
                     delay(300)
@@ -457,8 +543,11 @@ class KidsAccessibilityService : AccessibilityService() {
                     isStream
                 }
 
+                manifest.markItemCompleted(nextItem.index, savedAttCount)
                 manifest.markCompleted(fingerprint, savedAttCount)
+                manifest.markCompleted(nextItem.fingerprint, savedAttCount)
                 visitedPostFingerprints.add(fingerprint)
+                visitedPostFingerprints.add(nextItem.fingerprint)
                 crawlerOverlay?.incrementNoticeCount()
                 CrawlerTraceLogger.logPostCompleted(nextItem.index, total, title, savedAttCount)
                 delay(500)
@@ -489,6 +578,7 @@ class KidsAccessibilityService : AccessibilityService() {
                                 "Target #${nextItem.index} (\"${nextItem.title}\") failed detail transition after $boundedAttempts attempts. Ingesting directly from stream and advancing."
                             )
                             ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                            manifest.markItemCompleted(nextItem.index)
                             manifest.markCompleted(nextItem.fingerprint)
                             visitedPostFingerprints.add(nextItem.fingerprint)
                             crawlerOverlay?.incrementNoticeCount()
@@ -498,9 +588,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
                         val candidateCard = findBestCandidateCardOnScreen(rootInActiveWindow, nextItem)
                         if (candidateCard != null) {
+                            val displayMetrics = resources.displayMetrics
+                            val minTop = 140
+                            val maxBottom = displayMetrics.heightPixels - 170
+                            val candSafeTapY = (candidateCard.bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
                             val clicked = candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                             if (!clicked) {
-                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candidateCard.bounds.centerY().toFloat())
+                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candSafeTapY.toFloat())
                             }
                             candidateCard.clickableNode.recycle()
                             delay(800)
@@ -547,7 +641,9 @@ class KidsAccessibilityService : AccessibilityService() {
                             "AUTO_RECOVERY",
                             "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($attempts attempts)."
                         )
+                        manifest.markItemCompleted(nextItem.index)
                         manifest.markSkipped(nextItem.fingerprint)
+                        visitedPostFingerprints.add(nextItem.fingerprint)
                         lastRecoveryMinIndex = null
                         consecutiveStaticRecoveryCount = 0
                         recentScrollDirections.clear()
@@ -1541,6 +1637,35 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("send file")
     }
 
+    private fun isCommentsOnlyScreen(combinedText: String): Boolean {
+        val lower = combinedText.lowercase()
+        val hasCommentHeader = lower.contains("class comment") ||
+                lower.contains("add class comment") ||
+                lower.contains("no class comments") ||
+                lower.contains("0 class comments") ||
+                lower.contains("class comments (")
+        val hasPostDetailFeatures = lower.contains("new material") ||
+                lower.contains("new assignment") ||
+                lower.contains("new question") ||
+                lower.contains("your work") ||
+                lower.contains("assigned") ||
+                lower.contains("attachments") ||
+                lower.contains("attachment") ||
+                lower.contains("save all files offline") ||
+                lower.contains("save all") ||
+                lower.contains("save offline") ||
+                lower.contains("for your reference") ||
+                lower.contains("points")
+        return hasCommentHeader && !hasPostDetailFeatures
+    }
+
+    private fun isCommentsOnlyScreen(rootNode: AccessibilityNodeInfo): Boolean {
+        val textList = mutableListOf<String>()
+        collectQuickText(rootNode, textList)
+        val combined = textList.joinToString(" ").lowercase()
+        return isCommentsOnlyScreen(combined)
+    }
+
     private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
         val textList = mutableListOf<String>()
         collectQuickText(rootNode, textList)
@@ -1548,6 +1673,11 @@ class KidsAccessibilityService : AccessibilityService() {
 
         // 1. If it has document viewer controls, it is a document viewer, not post detail
         if (isDocumentViewerScreen(combined)) {
+            return false
+        }
+
+        // 2. If it is purely a class comments view, it is NOT post detail
+        if (isCommentsOnlyScreen(combined)) {
             return false
         }
 
@@ -1563,9 +1693,7 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
-        val hasDetailIndicators = combined.contains("add class comment") ||
-                combined.contains("class comments") ||
-                combined.contains("your work") ||
+        val hasDetailIndicators = combined.contains("your work") ||
                 combined.contains("assigned") ||
                 combined.contains("attachments") ||
                 combined.contains("attachment") ||
@@ -1573,12 +1701,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("save all") ||
                 combined.contains("save offline") ||
                 combined.contains("for your reference") ||
-                combined.contains("points")
+                combined.contains("points") ||
+                combined.contains("new material") ||
+                combined.contains("new assignment") ||
+                combined.contains("new question")
 
-        // Resilient check: In big announcements with long text, comments and attachments are pushed
-        // below the fold. If bottom tabs are absent and back arrow is present, substantive body text (>25 chars)
+        // Resilient check: In substantive posts, attachments or instructions are displayed.
+        // If bottom tabs are absent and back arrow is present, substantive body text (>30 chars)
         // confirms we are inside the detail view.
-        return hasDetailIndicators || combined.length > 25
+        return hasDetailIndicators || combined.length > 30
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {
