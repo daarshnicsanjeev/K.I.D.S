@@ -63,6 +63,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private var crawlerJob: Job? = null
     private val visitedPostFingerprints = ConcurrentHashMap.newKeySet<String>()
     private val capturedAttachmentNames = ConcurrentHashMap.newKeySet<String>()
+    @Volatile var isDispatchingCrawlerGesture: Boolean = false
 
     private val excludedChrome = setOf(
         "open navigation menu", "show menu", "more options", "navigate up", "back",
@@ -141,6 +142,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     "Exited school app to \"$foreignPackage\". Auto-stopping capture, closing overlay, and triggering Drive sync."
                 )
                 stopDeepCrawl()
+                crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "Exited school app to $foreignPackage")
                 crawlerOverlay?.dismissAndRemove()
                 triggerDriveSync(applicationContext)
             }
@@ -689,44 +691,33 @@ class KidsAccessibilityService : AccessibilityService() {
         val initialAtts = extractDetailAttachments(detailRoot)
         allAttachments.addAll(initialAtts)
 
-        var saveAllBtn = findSaveAllOfflineButton(detailRoot)
+        // Detail View Scrolling: scroll down within detail view to discover any below-the-fold attachments
+        var detailScrolls = 0
+        while (detailScrolls < 2) {
+            var scrollDone = false
+            crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+            waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
+            delay(400)
 
-        // Detail View Scrolling: If saveAllBtn is null, or if text is long, scroll down within detail view
-        // to discover below-the-fold attachments and "Save all files offline" button
-        if (saveAllBtn == null) {
-            var detailScrolls = 0
-            while (detailScrolls < 3) {
-                var scrollDone = false
-                crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
-                delay(400)
-
-                val scrolledRoot = rootInActiveWindow
-                if (scrolledRoot != null) {
-                    val scrolledSaveAll = findSaveAllOfflineButton(scrolledRoot)
-                    if (scrolledSaveAll != null) {
-                        saveAllBtn = scrolledSaveAll
-                        scrolledRoot.recycle()
-                        break
+            val scrolledRoot = rootInActiveWindow
+            if (scrolledRoot != null) {
+                val scrolledAtts = extractDetailAttachments(scrolledRoot)
+                for (att in scrolledAtts) {
+                    if (allAttachments.none { it.fileName == att.fileName }) {
+                        allAttachments.add(att)
+                    } else {
+                        att.downloadNode?.recycle()
+                        att.clickableChip?.recycle()
                     }
-                    val scrolledAtts = extractDetailAttachments(scrolledRoot)
-                    for (att in scrolledAtts) {
-                        if (allAttachments.none { it.fileName == att.fileName }) {
-                            allAttachments.add(att)
-                        } else {
-                            att.downloadNode?.recycle()
-                            att.clickableChip?.recycle()
-                        }
-                    }
-                    scrolledRoot.recycle()
                 }
-                detailScrolls++
+                scrolledRoot.recycle()
             }
+            detailScrolls++
         }
 
         CrawlerTraceLogger.log(
             "DEEP_CRAWLER",
-            "Discovered ${allAttachments.size} attachments for \"$title\" (SaveAll: ${saveAllBtn != null})"
+            "Discovered ${allAttachments.size} attachments for \"$title\""
         )
 
         for (att in allAttachments) {
@@ -752,67 +743,54 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Master "Save all files offline" action prioritized if available
-        if (saveAllBtn != null) {
-            crawlerOverlay?.updateStatus("Saving all offline...", title)
-            CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping 'Save all files offline' master button for \"$title\"")
-            val clicked = saveAllBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val b = Rect()
-                saveAllBtn.getBoundsInScreen(b)
-                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+        // Autonomous Attachment Ingestion: Systematically tap each attachment chip,
+        // open the viewer, and trigger Share to "K.I.D.S. Vault"
+        for ((index, att) in allAttachments.withIndex()) {
+            val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
+            val existingAtt = db.attachmentDao().findByFileHash(fileHash)
+            if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
+                !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
+                continue // Already physically downloaded and synced
             }
-            saveAllBtn.recycle()
-            delay(1500)
-        } else {
-            // Autonomous Attachment Download: Systematically tap each attachment chip / download button
-            for ((index, att) in allAttachments.withIndex()) {
-                val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
-                val existingAtt = db.attachmentDao().findByFileHash(fileHash)
-                if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
-                    !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
-                    continue // Already physically downloaded and synced
+
+            if (att.downloadNode != null && att.downloadNode.isClickable) {
+                crawlerOverlay?.updateStatus("Downloading (${index + 1}/${allAttachments.size})...", att.fileName)
+                CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
+                val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val b = Rect()
+                    att.downloadNode.getBoundsInScreen(b)
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
+                delay(1000) // Calibrated debounce between downloads
+            } else if (att.clickableChip != null && att.clickableChip.isClickable) {
+                crawlerOverlay?.updateStatus("Sharing (${index + 1}/${allAttachments.size})...", att.fileName)
+                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
+                val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val b = Rect()
+                    att.clickableChip.getBoundsInScreen(b)
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                }
+                delay(800)
 
-                if (att.downloadNode != null && att.downloadNode.isClickable) {
-                    crawlerOverlay?.updateStatus("Downloading (${index + 1}/${allAttachments.size})...", att.fileName)
-                    CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-                    val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val b = Rect()
-                        att.downloadNode.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                    }
-                    delay(1000) // Calibrated debounce between downloads
-                } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-                    crawlerOverlay?.updateStatus("Opening (${index + 1}/${allAttachments.size})...", att.fileName)
-                    CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-                    val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val b = Rect()
-                        att.clickableChip.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                    }
-                    delay(800)
+                // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
+                automateViewerShareOrDownload(att.fileName)
 
-                    // Automate Share or Download inside viewer and return to detail view
-                    automateViewerShareOrDownload(att.fileName)
-
-                    // Check if file was captured by ShareTargetActivity
-                    val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
-                    if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-                        if (capturedAttachmentNames.add(att.fileName)) {
-                            crawlerOverlay?.incrementAttachmentCount()
-                        }
+                // Check if file was captured by ShareTargetActivity
+                val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+                if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+                    if (capturedAttachmentNames.add(att.fileName)) {
+                        crawlerOverlay?.incrementAttachmentCount()
                     }
                 }
-
-                att.downloadNode?.recycle()
-                att.clickableChip?.recycle()
             }
+
+            att.downloadNode?.recycle()
+            att.clickableChip?.recycle()
         }
 
-        if (allAttachments.isNotEmpty() || saveAllBtn != null) {
+        if (allAttachments.isNotEmpty()) {
             delay(1000) // Allow file staging to finalize
             val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
             for (s in 0 until stagedCount) {
@@ -828,8 +806,8 @@ class KidsAccessibilityService : AccessibilityService() {
      * and returns back to Classroom detail view.
      */
     private suspend fun automateViewerShareOrDownload(fileName: String) {
-        // Wait up to 1500ms for viewer or preview to open
-        val openedViewer = waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+        // Wait up to 3000ms for viewer or preview to open
+        val openedViewer = waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
             val root = rootInActiveWindow ?: return@waitForCondition false
             val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
             root.recycle()
@@ -991,8 +969,8 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun selectKidsInSystemChooser() {
-        // Wait up to 1500ms for system chooser to appear
-        waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+        // Wait up to 2500ms for system chooser to appear
+        waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
             val root = rootInActiveWindow ?: return@waitForCondition false
             val pkg = root.packageName?.toString()?.lowercase() ?: ""
             val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
@@ -1023,9 +1001,11 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val text = node.text?.toString()?.lowercase() ?: ""
         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val pkg = node.packageName?.toString()?.lowercase() ?: ""
 
         val isTarget = text.contains("k.i.d.s") || desc.contains("k.i.d.s") ||
-                text.contains("kids vault") || desc.contains("kids vault")
+                text.contains("kids vault") || desc.contains("kids vault") ||
+                pkg == applicationContext.packageName.lowercase()
 
         if (isTarget) {
             if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
@@ -1064,22 +1044,28 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun dispatchTap(x: Float, y: Float): Boolean {
+        isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(x, y)
         }
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         var completed = false
-        val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
-            override fun onCompleted(gestureDescription: GestureDescription?) {
-                completed = true
-            }
+        val dispatched = try {
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                }
 
-            override fun onCancelled(gestureDescription: GestureDescription?) {
-                completed = false
-            }
-        }, null)
-        delay(120)
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    completed = false
+                }
+            }, null)
+        } finally {
+            // Keep flag active slightly past gesture completion to swallow any synthetic touch events
+        }
+        delay(150)
+        isDispatchingCrawlerGesture = false
         return dispatched && completed
     }
 
@@ -1627,29 +1613,6 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findSaveAllOfflineButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val text = node.text?.toString()?.lowercase() ?: ""
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-        if (text.contains("save all files offline") || desc.contains("save all files offline") ||
-            text.contains("save all") || desc.contains("save all") ||
-            text.contains("save offline") || desc.contains("save offline")
-        ) {
-            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
-            var parent = node.parent
-            while (parent != null) {
-                if (parent.isClickable) return parent
-                parent = parent.parent
-            }
-            return AccessibilityNodeInfo.obtain(node)
-        }
-        for (i in 0 until node.childCount) {
-            val child = node.getChild(i) ?: continue
-            val found = findSaveAllOfflineButton(child)
-            child.recycle()
-            if (found != null) return found
-        }
-        return null
-    }
 
     private fun clearFocusIfInputFocused(rootNode: AccessibilityNodeInfo) {
         val input = findInputNode(rootNode)

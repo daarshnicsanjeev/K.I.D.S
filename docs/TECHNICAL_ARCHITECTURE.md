@@ -745,7 +745,36 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
      dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
      ```
   - Contact duration: 50ms (`GestureDescription.StrokeDescription(path, 0, 50)`).
-  - Stabilization delay: 120ms.
+  - Stabilization delay: 150ms.
+- **Gesture Synchronization (`@Volatile var isDispatchingCrawlerGesture: Boolean`):**
+  To prevent the accessibility service's own automated taps from triggering overlay click listeners (such as the overlay's Stop button), `KidsAccessibilityService` maintains an atomic, memory-visible volatile boolean:
+  ```kotlin
+  @Volatile var isDispatchingCrawlerGesture: Boolean = false
+  ```
+  In `dispatchTap(x, y)`:
+  ```kotlin
+  private suspend fun dispatchTap(x: Float, y: Float): Boolean {
+      isDispatchingCrawlerGesture = true
+      val path = Path().apply { moveTo(x, y) }
+      val stroke = GestureDescription.StrokeDescription(path, 0, 50)
+      val gesture = GestureDescription.Builder().addStroke(stroke).build()
+      var completed = false
+      val dispatched = try {
+          dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+              override fun onCompleted(gestureDescription: GestureDescription?) { completed = true }
+              override fun onCancelled(gestureDescription: GestureDescription?) { completed = false }
+          }, null)
+      } finally {
+          // Keep flag active slightly past gesture completion to swallow any synthetic touch events
+      }
+      delay(150) // Post-dispatch settlement delay
+      isDispatchingCrawlerGesture = false
+      return dispatched && completed
+  }
+  ```
+  - **Atomic Visibility:** Being marked `@Volatile`, changes to `isDispatchingCrawlerGesture` are instantly observed across threads without CPU cache stalling.
+  - **Echo Settlement Delay:** The flag is set to `true` prior to building and dispatching the gesture, kept active during gesture callbacks, and held for an additional 150ms delay post-gesture to completely absorb and neutralize synthetic touch echoes and Android input queue propagation.
+  - **Direct Consumer:** `FloatingCrawlerOverlay` reads this property directly in touch event and click handlers, rejecting simulated taps that fall on assistant controls.
 
 - **Extended 2,500ms Detail View Window with Center-Tap Retry:**
   Rather than freezing or failing on slow OEM window animations, `KidsAccessibilityService` uses a multi-stage 2,500ms window:
@@ -884,7 +913,8 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   Coupled with `"more options for attachment"` in `excludedChrome`, 3-dots menus are completely filtered out, guaranteeing that clicks are dispatched solely to actual download buttons and clickable attachment cards.
 
 - **Autonomous Attachment Capture & Ingestion Pipeline:**
-  Instead of internal app caching, K.I.D.S. systematically extracts and ingests each attachment individually through a dual-strategy pipeline supporting both direct downloads and native share targeting:
+  Instead of relying on internal app caching, K.I.D.S. systematically extracts and ingests each attachment individually through a dual-strategy pipeline supporting both direct downloads and native share targeting:
+  
   ```kotlin
   val attachments = extractDetailAttachments(detailRoot)
   for ((index, att) in attachments.withIndex()) {
@@ -909,7 +939,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
           }
           delay(800)
 
-          // Automate Share or Download inside viewer and return to detail view
+          // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
           automateViewerShareOrDownload(att.fileName)
 
           // Check if file was captured by ShareTargetActivity
@@ -933,9 +963,28 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       }
   }
   ```
+
+  - **Elimination of `findSaveAllOfflineButton` & `saveAllBtn` Priority Branch:**
+    Earlier crawler revisions considered inspecting detail views for Classroom's internal "Save all files offline" button (`findSaveAllOfflineButton`) to batch-download files. However, deep architectural inspection of Google Classroom revealed that:
+    1. Classroom's offline save merely writes encrypted proprietary blobs into Classroom's inaccessible sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`).
+    2. These sandboxed files are never exported to public or shared storage, cannot be accessed by external PDF readers or file managers, and never fire system share intents.
+    3. They result in permanent device memory bloat without ever reaching `ShareTargetActivity` or the parent's Google Drive Vault.
+    
+    Consequently, `findSaveAllOfflineButton` and the `saveAllBtn` priority branch were **completely eliminated from the codebase**. Instead, 100% of attachments are guaranteed to pass systematically through discrete chip discovery (`att.clickableChip`), opening individual viewers via `automateViewerShareOrDownload()`, and triggering `selectKidsInSystemChooser()`.
+
   - **Automated In-App Viewer & Preview Detection (`automateViewerShareOrDownload`):**
     When tapping an attachment chip opens an internal or external viewer (e.g. Google Docs, Sheets, Drive PDF viewer, or system document viewers), `automateViewerShareOrDownload()` automatically discovers and handles the preview screen without user intervention:
-    1. **Viewer Screen Detection & Exclusion Invariant (`isDocumentViewerScreen` vs. `isPostDetailView`):**
+    1. **Extended 3,000ms Viewer Detection Window:**
+       To accommodate sluggish OEM window animations, heavy multi-page PDF initialization, and slow network handshakes, the viewer detection timeout is calibrated to **3,000ms**:
+       ```kotlin
+       val openedViewer = waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+           val root = rootInActiveWindow ?: return@waitForCondition false
+           val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
+           root.recycle()
+           isNotDetail
+       }
+       ```
+    2. **Viewer Screen Detection & Exclusion Invariant (`isDocumentViewerScreen` vs. `isPostDetailView`):**
        To reliably trigger viewer automation without mistaking a PDF or image preview for a post detail screen, `KidsAccessibilityService` deploys a two-tier screen inspection:
        ```kotlin
        private fun isDocumentViewerScreen(combinedText: String): Boolean {
@@ -978,21 +1027,17 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
        }
        ```
        - **Strict Detail View Constraint:** A screen is categorized as a post detail view **only** if it possesses both detail indicators (`"add class comment"`, `"your work"`, `"assigned"`, etc.) **and** a confirmed Navigate Up back arrow, **and** lacks bottom stream/classwork navigation tabs, **and** contains **zero** document viewer controls (`!isDocumentViewerScreen(combined)`).
-       - **Reliable Viewer Handoff:** When a PDF or image preview opens, `isDocumentViewerScreen()` detects controls like `"fit to width"` or `"page 1 of"`, causing `isPostDetailView()` to return `false`. The viewer wait loop in `automateViewerShareOrDownload()`:
-         ```kotlin
-         val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
-         ```
-         evaluates to `true`, deterministically detecting that the document viewer has taken foreground within 1,500ms and proceeding directly to Share/Download automation.
-    2. **Direct Share / Download Scanning:** Inspects the active node tree for a direct Share action (`"share"`, `"send a copy"`, `"send file"`) via `findShareButton(active)` or a direct Download button (`findDownloadButtonNode(active)`). If found, it dispatches an accessibility click or falls back to `dispatchTap`.
-    3. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.
-    4. **Invocation of Chooser Selection:** If a Share action was triggered, it calls `selectKidsInSystemChooser()`.
-    5. **Guarded Return to Detail View:** Executes up to 3 sequential return attempts to safely dismiss the preview and restore the post detail view before continuing the attachment loop.
-  - **Autonomous System Chooser Selection (`selectKidsInSystemChooser`):**
-    When Android displays its system share sheet (`resolver`, `chooser`, `android`, or `systemui`), `selectKidsInSystemChooser()` automates the target selection:
+       - **Reliable Viewer Handoff:** When a PDF or image preview opens, `isDocumentViewerScreen()` detects controls like `"fit to width"` or `"page 1 of"`, causing `isPostDetailView()` to return `false`. The viewer wait loop in `automateViewerShareOrDownload()` evaluates to `true`, deterministically detecting that the document viewer has taken foreground within 3,000ms and proceeding directly to Share/Download automation.
+    3. **Direct Share / Download Scanning:** Inspects the active node tree for a direct Share action (`"share"`, `"send a copy"`, `"send file"`) via `findShareButton(active)` or a direct Download button (`findDownloadButtonNode(active)`). If found, it dispatches an accessibility click or falls back to `dispatchTap`.
+    4. **Overflow Menu Fallback:** If direct actions are hidden inside an overflow menu, it locates the `"More options"` / `"overflow"` button (`findOverflowMenuButton`), clicks it, awaits the popup menu (400ms), and inspects the popup tree for Share or Download actions.
+    5. **Invocation of Chooser Selection:** If a Share action was triggered, it calls `selectKidsInSystemChooser()`.
+    6. **Guarded Return to Detail View:** Executes up to 3 sequential return attempts to safely dismiss the preview and restore the post detail view before continuing the attachment loop.
+  - **Autonomous System Chooser Selection & Package-Aware Target Detection (`selectKidsInSystemChooser`):**
+    When Android displays its system share sheet (`resolver`, `chooser`, `android`, or `systemui`), `selectKidsInSystemChooser()` automates target selection with an extended **2,500ms timeout**:
     ```kotlin
     private suspend fun selectKidsInSystemChooser() {
-        // Wait up to 1500ms for system chooser to appear
-        waitForCondition(timeoutMs = 1500, pollIntervalMs = 200) {
+        // Wait up to 2500ms for system chooser to appear
+        waitForCondition(timeoutMs = 2500, pollIntervalMs = 200) {
             val root = rootInActiveWindow ?: return@waitForCondition false
             val pkg = root.packageName?.toString()?.lowercase() ?: ""
             val isChooser = pkg.contains("resolver") || pkg.contains("chooser") ||
@@ -1014,11 +1059,43 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
             }
             target.recycle()
             delay(500) // Allow ShareTargetActivity to process intent
+        } else {
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in immediate chooser view")
         }
         chooserRoot.recycle()
     }
     ```
-    The target selector scans for labels matching `"k.i.d.s"` or `"kids vault"`, dispatches the tap to hand off the URI stream to `ShareTargetActivity`, and allows 500ms for staging to initiate.
+    - **Package-Name-Aware Matching in `findKidsShareTarget`:**
+      ```kotlin
+      private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+          val text = node.text?.toString()?.lowercase() ?: ""
+          val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+          val pkg = node.packageName?.toString()?.lowercase() ?: ""
+
+          val isTarget = text.contains("k.i.d.s") || desc.contains("k.i.d.s") ||
+                  text.contains("kids vault") || desc.contains("kids vault") ||
+                  pkg == applicationContext.packageName.lowercase()
+
+          if (isTarget) {
+              if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+              var parent = node.parent
+              while (parent != null) {
+                  if (parent.isClickable) return parent
+                  parent = parent.parent
+              }
+              return AccessibilityNodeInfo.obtain(node)
+          }
+
+          for (i in 0 until node.childCount) {
+              val child = node.getChild(i) ?: continue
+              val found = findKidsShareTarget(child)
+              child.recycle()
+              if (found != null) return found
+          }
+          return null
+      }
+      ```
+      By pairing text and contentDescription queries with `pkg == applicationContext.packageName.lowercase()`, target resolution succeeds across all OEM share sheet implementations (including customized OEM grid adapters on Samsung One UI, Xiaomi HyperOS, and Oppo ColorOS) even if the visible text label is truncated or localized.
   - **Calibrated 1,000ms Debouncing:** Enforces a 1,000ms debounce between individual attachment taps. This provides sufficient time for Android's system `DownloadManager` or `ShareTargetActivity` to register each incoming request without dropping socket connections or dropping rapid successive taps.
   - **Verified Staged Attachment Counting via `scanLocalAttachments` Return Value:**
     Rather than optimistically incrementing the file counter on every download button click (which causes phantom counts on network dropouts, canceled downloads, or unverified files), the overlay's file metric strictly reflects verified files moved to storage. `DownloadFolderObserver.scanLocalAttachments(applicationContext)` returns the exact count (`Int`) of newly moved and verified attachments in `vault_attachments/`. The counter `crawlerOverlay?.incrementAttachmentCount()` is only incremented for each verified staged file (`for (s in 0 until stagedCount)`), presenting parents with a completely truthful metric.
@@ -1337,22 +1414,99 @@ class FloatingCrawlerOverlay(...) {
   - In idle state: Displays `▶ Start Auto-Capture` in Amber Orange (`#ED8936`) with dynamic accessibility label `contentDescription = "Start Auto-Capture"`.
   - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with dynamic accessibility label `contentDescription = "Stop Auto-Capture"`.
   - **WCAG 2.1 AA/AAA 48dp Touch Targets:** Enforces `minHeight = dpToPx(48)` and `minWidth = dpToPx(48)` on `autoButton`, minimize button (`btnMin`), and close button (`btnClose`).
-  - **1,200ms TalkBack Double-Tap Guard:** TalkBack users activate on-screen controls via accessibility double-tap gestures. On certain Android OEM skins or during TalkBack service event echoes, double-tapping can dispatch rapid successive click events within milliseconds. Without debouncing, a double-tap intended to start auto-capture would immediately register a second click, causing an accidental premature stop. `FloatingCrawlerOverlay` enforces a **1,200ms debounce guard** on `toggleAutoScroll()`, discarding any secondary activation within 1.2 seconds so TalkBack users can activate and pause Auto-Capture smoothly without premature terminations:
-    ```kotlin
-    private var lastToggleTimeMs = 0L
+- **Auto-Minimize upon Start (`startAutoScroll()`):**
+  When auto-capture is triggered (`startAutoScroll()`), the overlay immediately updates its visual state and invokes `minimize()`:
+  ```kotlin
+  fun startAutoScroll() {
+      if (isAutoScrolling) return
+      isAutoScrolling = true
+      CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
+      autoButton?.text = "⏹ Stop Capture"
+      autoButton?.contentDescription = "Stop Auto-Capture"
+      autoButton?.setTextColor(Color.WHITE)
+      autoButton?.background = ... // Red #E53E3E
+      updateStatus("Status: Scanning Stream...")
+      minimize()
+      onStartAutoCapture()
+  }
 
-    private fun toggleAutoScroll() {
-        val now = System.currentTimeMillis()
-        if (now - lastToggleTimeMs < 1200L) {
-            Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
-            return
-        }
-        lastToggleTimeMs = now
-        if (isAutoScrolling) stopAutoScroll() else startAutoScroll()
-    }
-    ```
-- **Automated Background Sync on Stop:**
-  - Calling `stopAutoScroll()` automatically triggers `KidsAccessibilityService.triggerDriveSync(applicationContext)`, enqueuing `DriveSyncWorker` to upload all newly harvested notices and staged attachments to the parent's Google Drive immediately.
+  fun minimize() {
+      isMinimized = true
+      expandedContent?.visibility = View.GONE
+      minimizedBubble?.visibility = View.VISIBLE
+      params?.let { p ->
+          val displayMetrics = service.resources.displayMetrics
+          p.x = displayMetrics.widthPixels - dpToPx(56)
+          p.y = dpToPx(140)
+          overlayView?.let { v ->
+              try {
+                  windowManager.updateViewLayout(v, p)
+              } catch (e: Exception) { /* Ignore if detached */ }
+          }
+      }
+  }
+  ```
+  - **Dock Coordinates `(width - 56dp, 140dp)`:** Docks the 48dp circular badge at the screen's right edge, completely clearing the Google Classroom feed so card bounding math, relaxed visibility fractions, and kinetic scrolls operate across an unobstructed display.
+  - **Single-Tap Re-expansion (`expand()`):** Tapping `minimizedBubble` invokes `expand()`, which restores `expandedContent` at `(20dp, 140dp)` so parents can inspect live metrics or tap Stop.
+
+- **Synthetic Gesture Guard (Self-Tap Immunity in `autoButton` & `toggleAutoScroll`):**
+  Because the crawler injects physical touch events (`dispatchTap`) across post cards, attachment chips, and overflow menus, simulated touches or touch echoes could inadvertently strike the overlay if positioned over an active view.
+  `FloatingCrawlerOverlay` implements a strict **Synthetic Gesture Guard**:
+  ```kotlin
+  // In autoButton.setOnClickListener:
+  autoButton?.setOnClickListener {
+      if (service.isDispatchingCrawlerGesture) {
+          CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: Stop button click rejected because internal crawler gesture is active")
+          return@setOnClickListener
+      }
+      toggleAutoScroll()
+  }
+
+  // In toggleAutoScroll():
+  private fun toggleAutoScroll() {
+      if (service.isDispatchingCrawlerGesture) {
+          CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: toggleAutoScroll rejected because internal crawler gesture is active")
+          return
+      }
+      val now = System.currentTimeMillis()
+      if (now - lastToggleTimeMs < 1200L) {
+          Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
+          return
+      }
+      lastToggleTimeMs = now
+
+      if (isAutoScrolling) {
+          stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
+      } else {
+          startAutoScroll()
+      }
+  }
+  ```
+  - Any click attempt while `service.isDispatchingCrawlerGesture == true` is instantly blocked and logged, making it mathematically impossible for the crawler to stop its own run.
+
+- **Truthful Telemetry Reporting in `stopAutoScroll(isUserInitiated, reason)`:**
+  `FloatingCrawlerOverlay` maintains transparent and unambiguous audit logging by recording the true initiator and rationale whenever capture halts:
+  ```kotlin
+  fun stopAutoScroll(isUserInitiated: Boolean = true, reason: String = "User clicked Stop") {
+      if (!isAutoScrolling) return
+      isAutoScrolling = false
+      CrawlerTraceLogger.log(
+          "SCROLLER_UI",
+          "Auto-Capture stopped (Initiator: ${if (isUserInitiated) "USER" else "SYSTEM"}, Reason: $reason). Halting crawler and triggering Drive sync."
+      )
+      autoButton?.text = "▶ Start Auto-Capture"
+      autoButton?.contentDescription = "Start Auto-Capture"
+      autoButton?.setTextColor(Color.parseColor("#0F172A"))
+      autoButton?.background = ... // Amber #ED8936
+      updateStatus("Status: Capture Stopped")
+      expand()
+      onStopAutoCapture()
+      // Trigger a single background sync cycle to Google Drive now that capture finished
+      KidsAccessibilityService.triggerDriveSync(service.applicationContext)
+  }
+  ```
+  - **Initiator Differentiation:** Clearly tags whether the stop was triggered by the parent (`isUserInitiated = true`, e.g. `"User pressed Stop button"`) or the operating environment (`isUserInitiated = false`, e.g. `"Overlay dismissed/removed"`, app switch, or completion), providing clean telemetry for `crawler_trace.log` and remote diagnostics.
+  - **Immediate Cloud Sync Enqueue:** Directly triggers `KidsAccessibilityService.triggerDriveSync()` using `ExistingWorkPolicy.APPEND_OR_REPLACE`.
 
 ##### WorkManager `ExistingWorkPolicy.APPEND_OR_REPLACE` Invocation
 

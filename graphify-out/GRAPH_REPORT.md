@@ -4,57 +4,47 @@
 - cluster-only mode — file stats not available
 
 ## Summary
-- 683 nodes · 1425 edges · 57 communities (35 shown, 22 thin omitted)
+- 682 nodes · 1427 edges · 47 communities (29 shown, 18 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 30 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `c44782f4`
+- Built from commit: `efd3087a`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- GoogleDriveClient
-- KidsAccessibilityService.kt
 - KidsAccessibilityService
+- NotificationParserTest.kt
 - NoticeDao
-- StreamManifest
-- FloatingCrawlerOverlay
-- DriveSyncWorker.kt
-- OnboardingWizardScreen.kt
-- ChildrenGridDashboard.kt
-- DriveVaultManager.kt
-- .log
-- GestureDescription
+- ChildProfile
+- GoogleDriveClient
+- GoogleDriveClient.kt
 - MLKitOcrParser.kt
 - ci_watch.py
+- StreamManifest
+- DriveSyncWorker.kt
+- ChildrenGridDashboard.kt
+- FloatingCrawlerOverlay
+- .log
+- OnboardingWizardScreen.kt
 - FloatingCrawlerOverlay.kt
-- K.I.D.S. Android Collector (PRD)
-- Models.kt
-- assertthat
-- GoogleDriveClient.kt
-- SafVaultManager
-- PrivacyFilterTest
-- PermissionHelper.kt
+- KidsNotificationListenerService.kt
+- OnboardingWizardScreen
+- GestureDescription
+- KidsAccessibilityService.kt
 - MainActivity.kt
-- NotificationParserTest.kt
-- Entities.kt
-- KotlinGraphifyEngine.kt
-- KnowledgeGraphBuilderTest.kt
-- WhatsAppChatExportParser
-- PermissionSetupDialog.kt
+- DriveVaultManager.kt
 - Type.kt
-- KotlinGraphifyEngine
-- .findPrimaryScrollableNode
+- Intent
 - dispatchers
-- ContentCategory
+- ShareTargetActivity.kt
+- .fallbackNativeScroll
+- DeduplicationEngine
 - WizardStep
-- ContentClassifierTest
-- KidsTheme.kt
-- DeduplicationHashTest.kt
-- ChildProfile
+- GestureResultCallback
+- log
 - gradlew
-- KidsApplication.kt
 - AccessibilityNodeInfo
 - java
 - Bundle
@@ -70,7 +60,7 @@
 - streammanifestitem
 
 ## God Nodes (most connected - your core abstractions)
-1. `KidsAccessibilityService` - 61 edges
+1. `KidsAccessibilityService` - 60 edges
 2. `FloatingCrawlerOverlay` - 39 edges
 3. `GoogleDriveClient` - 26 edges
 4. `ChildProfile` - 21 edges
@@ -96,160 +86,136 @@
 ## Import Cycles
 - None detected.
 
-## Communities (57 total, 22 thin omitted)
+## Communities (47 total, 18 thin omitted)
 
-### Community 0 - "GoogleDriveClient"
-Cohesion: 0.08
-Nodes (18): DriveVaultManager, Failure, Context, Result, ProvisionStep1Result, Success, UserConsentRequired, ChannelVaultFolders (+10 more)
-
-### Community 1 - "KidsAccessibilityService.kt"
-Cohesion: 0.05
-Nodes (42): AccessibilityEvent, accessibilitymanager, accessibilityserviceinfo, Activity, ContentClassifier, DeduplicationEngine, java, Bundle (+34 more)
-
-### Community 2 - "KidsAccessibilityService"
+### Community 0 - "KidsAccessibilityService"
 Cohesion: 0.11
-Nodes (4): ExtractedAttachmentDetail, KidsAccessibilityService, AccessibilityNodeInfo, UnvisitedCard
+Nodes (5): ExtractedAttachmentDetail, KidsAccessibilityService, AccessibilityNodeInfo, Context, UnvisitedCard
 
-### Community 3 - "NoticeDao"
+### Community 1 - "NotificationParserTest.kt"
+Cohesion: 0.05
+Nodes (21): PrivacyFilter, Bundle, StatusBarNotification, NotificationParser, ParsedNotification, ContentClassifierTest, DeduplicationHashTest, MultiChildAttributionTest (+13 more)
+
+### Community 2 - "NoticeDao"
 Cohesion: 0.06
 Nodes (12): AttachmentDao, ChildProfileDao, AttachmentEntity, NoticeEntity, NoticeDao, KidsDatabase, Context, ChildProfileEntity (+4 more)
 
-### Community 4 - "StreamManifest"
+### Community 3 - "ChildProfile"
+Cohesion: 0.07
+Nodes (32): GraphEdge, GraphNode, KnowledgeGraph, KotlinGraphifyEngine, Attachment, ChannelType, FILE_IMPORT, GOOGLE_CLASSROOM (+24 more)
+
+### Community 4 - "GoogleDriveClient"
+Cohesion: 0.11
+Nodes (12): DriveVaultManager, Failure, Context, Result, ProvisionStep1Result, Success, UserConsentRequired, ChannelVaultFolders (+4 more)
+
+### Community 5 - "GoogleDriveClient.kt"
+Cohesion: 0.06
+Nodes (26): AI-Native Storage (JSONL & Markdown), DriveQuotaInfo, ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest, async, bytearraycontent, bytearrayoutputstream (+18 more)
+
+### Community 6 - "MLKitOcrParser.kt"
+Cohesion: 0.12
+Nodes (19): Activity, Context, Result, SafVaultFolders, SafVaultManager, MLKitOcrParser, OcrExtractionResult, ShareTargetActivity (+11 more)
+
+### Community 7 - "ci_watch.py"
+Cohesion: 0.08
+Nodes (27): AttachmentEntity, ChildProfileEntity, NoticeEntity, NoticeFtsEntity, Converters, ChannelConfig, encodetostring, entity (+19 more)
+
+### Community 8 - "StreamManifest"
 Cohesion: 0.09
 Nodes (9): StreamItemStatus, ALREADY_SYNCED, COMPLETED, FAILED_SKIPPED, IN_PROGRESS, PENDING, StreamManifest, StreamManifestItem (+1 more)
 
-### Community 5 - "FloatingCrawlerOverlay"
-Cohesion: 0.15
-Nodes (3): FloatingCrawlerOverlay, View, WindowManager
+### Community 9 - "DriveSyncWorker.kt"
+Cohesion: 0.10
+Nodes (18): add, DriveSyncWorker, AttachmentEntity, NoticeEntity, Result, DeviceInfo, DiagnosticSnapshot, DriveDeepLogger (+10 more)
 
-### Community 6 - "DriveSyncWorker.kt"
-Cohesion: 0.11
-Nodes (17): add, DriveSyncWorker, AttachmentEntity, NoticeEntity, DeviceInfo, DiagnosticSnapshot, DriveDeepLogger, PipelineMetrics (+9 more)
+### Community 10 - "ChildrenGridDashboard.kt"
+Cohesion: 0.12
+Nodes (24): alignment, ProbeItem, DiagnosticFeedScreen(), LogLine, background, border, circleshape, clickable (+16 more)
 
-### Community 7 - "OnboardingWizardScreen.kt"
+### Community 12 - ".log"
+Cohesion: 0.16
+Nodes (7): CrawlerTraceLogger, Context, concurrentlinkedqueue, date, filewriter, locale, printwriter
+
+### Community 13 - "OnboardingWizardScreen.kt"
 Cohesion: 0.12
 Nodes (18): accountmanager, activityresultcontracts, getDefaultSchoolAppList(), Context, queryInstalledLauncherApps(), arrowback, backhandler, channelconfig (+10 more)
 
-### Community 8 - "ChildrenGridDashboard.kt"
-Cohesion: 0.16
-Nodes (17): alignment, ProbeItem, DiagnosticFeedScreen(), LogLine, background, circleshape, clickable, clip (+9 more)
+### Community 14 - "FloatingCrawlerOverlay.kt"
+Cohesion: 0.12
+Nodes (15): AccessibilityService, Button, gradientdrawable, gravity, handler, LinearLayout, looper, motionevent (+7 more)
 
-### Community 9 - "DriveVaultManager.kt"
-Cohesion: 0.15
-Nodes (15): CompletableDeferred, concurrentlinkedqueue, coroutinescope, date, filewriter, googleaccountcredential, gsonfactory, locale (+7 more)
-
-### Community 11 - "GestureDescription"
+### Community 15 - "KidsNotificationListenerService.kt"
 Cohesion: 0.19
+Nodes (8): ContentClassifier, MultiChildRouter, KidsNotificationListenerService, StatusBarNotification, firstornull, NoticeEntity, NotificationListenerService, supervisorjob
+
+### Community 16 - "OnboardingWizardScreen"
+Cohesion: 0.37
+Nodes (4): Context, PermissionHelper, PermissionSetupDialog(), OnboardingWizardScreen()
+
+### Community 17 - "GestureDescription"
+Cohesion: 0.21
 Nodes (5): GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureDescription, GestureResultCallback
 
-### Community 12 - "MLKitOcrParser.kt"
+### Community 18 - "KidsAccessibilityService.kt"
 Cohesion: 0.17
-Nodes (11): MLKitOcrParser, OcrExtractionResult, Bitmap, inputimage, parcelfiledescriptor, pdfrenderer, resume, resumewithexception (+3 more)
+Nodes (11): AccessibilityEvent, accessibilitymanager, accessibilityserviceinfo, AttachmentEntity, childprofile, delay, isactive, Job (+3 more)
 
-### Community 13 - "ci_watch.py"
-Cohesion: 0.21
-Nodes (14): os, re, diagnose_failure(), get_latest_run(), main(), monitor_workflow(), CI/CD Pipeline Monitor, Release Verifier & Graphify Guardian for K.I.D.S.…, Runs local Graphify AST extraction and community clustering. (+6 more)
-
-### Community 14 - "FloatingCrawlerOverlay.kt"
-Cohesion: 0.14
-Nodes (13): AccessibilityService, Button, gradientdrawable, gravity, handler, LinearLayout, looper, motionevent (+5 more)
-
-### Community 15 - "K.I.D.S. Android Collector (PRD)"
-Cohesion: 0.15
-Nodes (12): AI-Native Storage (JSONL & Markdown), Dual WhatsApp Catch-Up Engine, 5-Point Cloud Health Probe, Google Credential Manager API, inputstream, Memory Boundary Privacy Filter, pattern, K.I.D.S. Android Collector (PRD) (+4 more)
-
-### Community 16 - "Models.kt"
-Cohesion: 0.15
-Nodes (12): ChannelType, FILE_IMPORT, GOOGLE_CLASSROOM, SCHOOL_ERP, WHATSAPP, CloudHealthReport, SyncStatus, DROPPED (+4 more)
-
-### Community 17 - "assertthat"
-Cohesion: 0.23
-Nodes (5): MultiChildAttributionTest, assertthat, beforeeach, bytearrayinputstream, test
-
-### Community 18 - "GoogleDriveClient.kt"
+### Community 19 - "MainActivity.kt"
 Cohesion: 0.17
-Nodes (10): DriveQuotaInfo, async, bytearraycontent, bytearrayoutputstream, concurrenthashmap, Drive, filecontent, mutex (+2 more)
+Nodes (10): AppScreen, DASHBOARD, DIAGNOSTICS, WIZARD, lifecyclescope, notificationmanagercompat, remembersaveable, setcontent (+2 more)
 
-### Community 19 - "SafVaultManager"
-Cohesion: 0.44
-Nodes (6): Context, Result, SafVaultFolders, SafVaultManager, DocumentFile, Uri
-
-### Community 21 - "PermissionHelper.kt"
-Cohesion: 0.24
-Nodes (8): androidx, launchAccountPicker(), BootReceiver, Context, BroadcastReceiver, Intent, notificationmanagercompat, settings
-
-### Community 22 - "MainActivity.kt"
-Cohesion: 0.18
-Nodes (10): AppScreen, DASHBOARD, DIAGNOSTICS, WIZARD, childprofile, launch, lifecyclescope, remembersaveable (+2 more)
-
-### Community 23 - "NotificationParserTest.kt"
+### Community 20 - "DriveVaultManager.kt"
 Cohesion: 0.20
-Nodes (6): NotificationParserTest, Bundle, Context, every, mockk, runblocking
+Nodes (9): CompletableDeferred, coroutinescope, googleaccountcredential, gsonfactory, launch, nethttptransport, userrecoverableauthexception, userrecoverableauthioexception (+1 more)
 
-### Community 24 - "Entities.kt"
-Cohesion: 0.22
-Nodes (8): AttachmentEntity, ChildProfileEntity, NoticeEntity, NoticeFtsEntity, entity, fts4, index, primarykey
-
-### Community 25 - "KotlinGraphifyEngine.kt"
-Cohesion: 0.31
-Nodes (5): Converters, ChannelConfig, encodetostring, json, typeconverter
-
-### Community 26 - "KnowledgeGraphBuilderTest.kt"
-Cohesion: 0.33
-Nodes (3): Attachment, Notice, KnowledgeGraphBuilderTest
-
-### Community 27 - "WhatsAppChatExportParser"
-Cohesion: 0.25
-Nodes (3): ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest
-
-### Community 28 - "PermissionSetupDialog.kt"
-Cohesion: 0.22
-Nodes (7): border, dialog, lifecycle, lifecycleeventobserver, locallifecycleowner, modifier, roundedcornershape
-
-### Community 29 - "Type.kt"
+### Community 21 - "Type.kt"
 Cohesion: 0.22
 Nodes (8): font, fontfamily, fontweight, googlefont, r, sp, textstyle, typography
 
-### Community 30 - "KotlinGraphifyEngine"
+### Community 22 - "Intent"
 Cohesion: 0.36
-Nodes (4): GraphEdge, GraphNode, KnowledgeGraph, KotlinGraphifyEngine
+Nodes (6): androidx, launchAccountPicker(), BootReceiver, Context, BroadcastReceiver, Intent
 
-### Community 32 - "dispatchers"
+### Community 23 - "dispatchers"
+Cohesion: 0.25
+Nodes (7): Context, MainActivity, ComponentActivity, dispatchers, environment, KidsDatabase, withcontext
+
+### Community 24 - "ShareTargetActivity.kt"
+Cohesion: 0.25
+Nodes (7): constraints, existingworkpolicy, fileoutputstream, networktype, onetimeworkrequestbuilder, openablecolumns, workmanager
+
+### Community 26 - "DeduplicationEngine"
 Cohesion: 0.33
-Nodes (5): DownloadFolderObserver, Context, dispatchers, environment, withcontext
+Nodes (4): DownloadFolderObserver, DeduplicationEngine, java, ByteArray
 
-### Community 33 - "ContentCategory"
-Cohesion: 0.33
-Nodes (6): ContentCategory, ATTENDANCE, CIRCULAR, FEES, HOMEWORK, UNKNOWN
-
-### Community 34 - "WizardStep"
+### Community 27 - "WizardStep"
 Cohesion: 0.33
 Nodes (6): WizardStep, STEP_0_PERMISSIONS, STEP_1_VAULT, STEP_2_CLASSROOM, STEP_3_PORTALS, STEP_4_WHATSAPP
 
-### Community 36 - "KidsTheme.kt"
-Cohesion: 0.40
-Nodes (4): KidsTheme(), composable, lightcolorscheme, materialtheme
+### Community 28 - "GestureResultCallback"
+Cohesion: 0.50
+Nodes (3): GestureResultCallback, GestureDescription, GestureResultCallback
 
-### Community 38 - "ChildProfile"
-Cohesion: 0.83
-Nodes (3): ChildProfile, ChildCard(), ChildrenGridDashboard()
+### Community 29 - "log"
+Cohesion: 0.67
+Nodes (3): KidsApplication, Application, log
 
-### Community 39 - "gradlew"
+### Community 30 - "gradlew"
 Cohesion: 0.83
 Nodes (3): gradlew script, die(), warn()
 
 ## Knowledge Gaps
 - **36 isolated node(s):** `CloudHealthReport`, `AttachmentEntity`, `NoticeEntity`, `NoticeFtsEntity`, `DeviceInfo` (+31 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 206 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **22 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **18 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `GoogleDriveClient`, `KidsAccessibilityService.kt`, `FloatingCrawlerOverlay`, `OnboardingWizardScreen.kt`, `FloatingCrawlerOverlay.kt`?**
-  _High betweenness centrality (0.198) - this node is a cross-community bridge._
-- **Why does `ChildProfile` connect `ChildProfile` to `GoogleDriveClient`, `KidsAccessibilityService.kt`, `KidsAccessibilityService`, `ChildrenGridDashboard.kt`, `Models.kt`, `assertthat`, `KotlinGraphifyEngine.kt`, `KnowledgeGraphBuilderTest.kt`, `KotlinGraphifyEngine`?**
-  _High betweenness centrality (0.102) - this node is a cross-community bridge._
+- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `FloatingCrawlerOverlay`, `OnboardingWizardScreen.kt`, `FloatingCrawlerOverlay.kt`, `KidsNotificationListenerService.kt`, `KidsAccessibilityService.kt`, `DeduplicationEngine`?**
+  _High betweenness centrality (0.194) - this node is a cross-community bridge._
+- **Why does `ChildProfile` connect `ChildProfile` to `KidsAccessibilityService`, `NotificationParserTest.kt`, `ChildrenGridDashboard.kt`, `KidsNotificationListenerService.kt`, `OnboardingWizardScreen`?**
+  _High betweenness centrality (0.103) - this node is a cross-community bridge._
 - **Why does `KidsDatabase` connect `NoticeDao` to `KidsAccessibilityService`?**
   _High betweenness centrality (0.085) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `KidsAccessibilityService` (e.g. with `ContentClassifier` and `DeduplicationEngine`) actually correct?**

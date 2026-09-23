@@ -32,7 +32,7 @@ import android.widget.TextView
  * - Draggable anywhere on the screen & minimizable to a compact circle
  */
 class FloatingCrawlerOverlay(
-    private val service: AccessibilityService,
+    private val service: KidsAccessibilityService,
     private val onStartAutoCapture: () -> Unit,
     private val onStopAutoCapture: () -> Unit
 ) {
@@ -87,8 +87,8 @@ class FloatingCrawlerOverlay(
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
-                    x = 40
-                    y = 280
+                    x = dpToPx(20)
+                    y = dpToPx(140)
                 }
                 params = p
 
@@ -252,6 +252,10 @@ class FloatingCrawlerOverlay(
                     setPadding(dpToPx(16), dpToPx(6), dpToPx(16), dpToPx(6))
                     contentDescription = "Start Auto-Capture"
                     setOnClickListener {
+                        if (service.isDispatchingCrawlerGesture) {
+                            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: Stop button click rejected because internal crawler gesture is active")
+                            return@setOnClickListener
+                        }
                         toggleAutoScroll()
                     }
                 }
@@ -296,7 +300,7 @@ class FloatingCrawlerOverlay(
     fun dismissAndRemove() {
         handler.post {
             if (isAutoScrolling) {
-                stopAutoScroll()
+                stopAutoScroll(isUserInitiated = false, reason = "Overlay dismissed/removed")
             }
             overlayView?.let { view ->
                 try {
@@ -377,6 +381,7 @@ class FloatingCrawlerOverlay(
     private fun updateCountDisplay() {
         handler.post {
             counterTextView?.text = "$capturedCount Notices • $capturedAttachmentsCount Files"
+            minimizedBubble?.text = if (capturedCount > 0) "$capturedCount" else "K"
         }
     }
 
@@ -387,6 +392,10 @@ class FloatingCrawlerOverlay(
     private var lastToggleTimeMs = 0L
 
     private fun toggleAutoScroll() {
+        if (service.isDispatchingCrawlerGesture) {
+            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: toggleAutoScroll rejected because internal crawler gesture is active")
+            return
+        }
         val now = System.currentTimeMillis()
         if (now - lastToggleTimeMs < 1200L) {
             Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
@@ -395,7 +404,7 @@ class FloatingCrawlerOverlay(
         lastToggleTimeMs = now
 
         if (isAutoScrolling) {
-            stopAutoScroll()
+            stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
         } else {
             startAutoScroll()
         }
@@ -414,13 +423,17 @@ class FloatingCrawlerOverlay(
             setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
         }
         updateStatus("Status: Scanning Stream...")
+        minimize()
         onStartAutoCapture()
     }
 
-    fun stopAutoScroll() {
+    fun stopAutoScroll(isUserInitiated: Boolean = true, reason: String = "User clicked Stop") {
         if (!isAutoScrolling) return
         isAutoScrolling = false
-        CrawlerTraceLogger.log("SCROLLER_UI", "User stopped Auto-Capture. Halting crawler and triggering Drive sync.")
+        CrawlerTraceLogger.log(
+            "SCROLLER_UI",
+            "Auto-Capture stopped (Initiator: ${if (isUserInitiated) "USER" else "SYSTEM"}, Reason: $reason). Halting crawler and triggering Drive sync."
+        )
         autoButton?.text = "▶ Start Auto-Capture"
         autoButton?.contentDescription = "Start Auto-Capture"
         autoButton?.setTextColor(Color.parseColor("#0F172A"))
@@ -430,21 +443,45 @@ class FloatingCrawlerOverlay(
             setColor(Color.parseColor("#ED8936")) // Amber
         }
         updateStatus("Status: Capture Stopped")
+        expand()
         onStopAutoCapture()
         // Trigger a single background sync cycle to Google Drive now that capture finished
         KidsAccessibilityService.triggerDriveSync(service.applicationContext)
     }
 
-    private fun minimize() {
+    fun minimize() {
         isMinimized = true
         expandedContent?.visibility = View.GONE
         minimizedBubble?.visibility = View.VISIBLE
+        params?.let { p ->
+            val displayMetrics = service.resources.displayMetrics
+            p.x = displayMetrics.widthPixels - dpToPx(56)
+            p.y = dpToPx(140)
+            overlayView?.let { v ->
+                try {
+                    windowManager.updateViewLayout(v, p)
+                } catch (e: Exception) {
+                    // Ignore layout update errors if detached
+                }
+            }
+        }
     }
 
-    private fun expand() {
+    fun expand() {
         isMinimized = false
         minimizedBubble?.visibility = View.GONE
         expandedContent?.visibility = View.VISIBLE
+        params?.let { p ->
+            p.x = dpToPx(20)
+            p.y = dpToPx(140)
+            overlayView?.let { v ->
+                try {
+                    windowManager.updateViewLayout(v, p)
+                } catch (e: Exception) {
+                    // Ignore layout update errors if detached
+                }
+            }
+        }
     }
 
     fun performScroll(onComplete: () -> Unit) {

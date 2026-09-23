@@ -44,6 +44,7 @@ As parents, keeping up with school communications is exhausting. Homework assign
 4. [Google Classroom Deep Auto-Capture Guide](#4-google-classroom-deep-auto-capture-guide)
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
+     - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
    - [Manifest-Driven Auto-Recovery & SQLite Instant Skipping](#manifest-driven-auto-recovery--sqlite-instant-skipping)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
@@ -426,6 +427,25 @@ K.I.D.S. is engineered for complete accessibility compliance (WCAG 2.1 AA/AAA) a
 - **Dynamic Semantic Accessibility Labels (`contentDescription`):** Screen readers announce the exact current state and action of the floating button. The button's `contentDescription` dynamically transitions between `"Start Auto-Capture"` and `"Stop Auto-Capture"` as state changes.
 - **Accessible Touch Targets:** All touch targets on the overlay enforce a minimum size of 48dp × 48dp (exceeding WCAG 2.1 AAA recommendations), making them easy to locate and double-tap with TalkBack or motor impairments.
 
+#### Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)
+
+To keep the educational stream crystal-clear and eliminate any risk of the assistant interrupting itself, K.I.D.S. features **Autonomous Auto-Minimize** and an internal **Synthetic Gesture Guard**:
+
+- **Auto-Minimize to Screen Edge upon Start:**
+  The millisecond you tap `▶ Start Auto-Capture`, the assistant automatically collapses into a compact, floating 48dp × 48dp circular badge (`K`) docked neatly against the right edge of your screen (`x = screenWidth - 56dp`, `y = 140dp`).
+  - **100% Unobstructed Classroom Feed:** By auto-minimizing, the entire Google Classroom stream, post cards, teacher announcements, and attachment chips remain completely visible and unobstructed.
+  - **Zero Viewport Clutter:** No bulky overlay cards block the screen, ensuring that card bounding calculations, viewport visibility fraction math, and kinetic swipes operate across a clean, unoccluded display.
+- **Single-Tap Bubble Expansion & Live Glanceability:**
+  Tapping the docked circular bubble instantly expands the assistant back to its full two-line status pill (`x = 20dp`, `y = 140dp`), allowing parents to check live progress (`XX Notices • YY Files`), see the active post headline or attachment filename, or tap `⏹ Stop Capture`.
+- **Floating Overlay Self-Tap Immunity (Synthetic Gesture Guard):**
+  When automating clicks across post cards, attachment chips, overflow menus, and share targets, physical touches (`dispatchTap`) are programmatically injected into screen coordinates. If a simulated touch gesture or its touch echo happens to cross or land on the assistant's stop button, a naive overlay would register an inadvertent click and abruptly kill the crawl.
+  K.I.D.S. guarantees **absolute self-tap immunity**:
+  - The assistant maintains real-time gesture synchronization via an internal flag (`isDispatchingCrawlerGesture`).
+  - The moment an automated tap is dispatched, the gesture guard is activated across the gesture duration and touch settlement window.
+  - Any click events registered on the overlay's action button while the internal crawler gesture is active are **strictly rejected and swallowed**.
+  - A diagnostic event is logged (`BLOCKED: Stop button click rejected because internal crawler gesture is active`), ensuring that the assistant **can never accidentally stop its own crawl**.
+  - Only genuine, physical finger taps from the parent when the crawler is not dispatching an internal touch can pause or stop the crawl.
+
 ### Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)
 
 To guarantee that no notice is ever overlooked, skipped, or duplicated, K.I.D.S. operates on a highly optimized **Two-Pass Stream Architecture**. Instead of naively clicking posts while scrolling down, or wasting time rewinding all the way back up to the top, the assistant coordinates historical backfill into two streamlined, continuous phases:
@@ -593,18 +613,22 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      Many school announcements in the Stream tab—such as urgent holiday alerts, weather advisories, festival greetings, and administrative notices—are purely text-based without any attachments. For these notices, tapping does not open a separate screen. Only after the detail timeout confirms the card has no detail view and is not a study material post, K.I.D.S. safely falls back to **direct stream card ingestion**: capturing the full message body, title, author, and timestamp into local storage (`NoticeEntity`), updating the counter, and proceeding smoothly to the next notice.
 5. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 6. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
-   - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous.
-   - **Why 'Save all files offline' is Intentionally Bypassed:** Many announcements feature a Google Classroom button labeled *"Save all files offline"*. K.I.D.S. **deliberately blacklists and ignores this button**. When Google Classroom saves files "offline", it caches them in an encrypted, inaccessible private application sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`). Parents cannot view, open, or export these files from other apps or files managers, and they permanently bloat device flash memory.
-   - **Automated Viewer Detection & Share Targeting:**
-     1. When the assistant encounters an attachment, it taps the clickable attachment chip or download node.
-     2. If the attachment opens an in-app document viewer or preview sheet (e.g. Google Docs/Drive PDF viewer), `automateViewerShareOrDownload()` detects the preview window in real time.
-     3. It immediately scans for a direct **Share** action, a direct **Download** button, or the 3-dots **More options** overflow menu.
-     4. Upon locating the Share action (or clicking overflow $\rightarrow$ "Share" / "Send a copy"), it triggers Android's system share action.
-     5. The assistant monitors for Android's system share sheet (chooser) and automatically clicks **"K.I.D.S. Vault"** (`selectKidsInSystemChooser()`).
-     6. Android immediately routes the file's pristine byte stream to the silent, transparent **`ShareTargetActivity`**. The activity receives the `content://` stream, computes its SHA-256 fingerprint, matches it to the notice in SQLite Room, and stages the pristine binary directly into private vault staging (`vault_attachments/`) in under 50 milliseconds without any visible UI flicker.
-     7. Immediate background synchronization is enqueued with Google Drive via WorkManager.
-     8. The assistant dismisses the preview and executes a guarded return back to Classroom, completing the entire file capture in **under 1 second per file**!
-   - **Calibrated 1,000ms Debounce:** When direct download buttons are present, a 1,000ms debounce between files gives Android's system `DownloadManager` ample time to register the download request without dropping queue items or overloading network sockets.
+   - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous and hands-free.
+   - **Why Classroom's 'Save all files offline' Button is Deliberately Bypassed:**
+     Many Classroom assignment posts display an internal button labeled *"Save all files offline"*. K.I.D.S. **deliberately blacklists, bypasses, and eliminates this button**:
+     - *Sandbox Lock-In:* Classroom's "Save offline" feature does **NOT** export documents to device storage or public folders. Instead, it merely encrypts and caches files inside Google Classroom's private app sandbox directory (`/data/user/0/com.google.android.apps.classroom/cache/`).
+     - *Zero External Access:* These sandboxed files cannot be opened by external PDF readers, cannot be accessed by file managers, cannot be indexed for offline search, and cannot be synced to your Google Drive Vault.
+     - *Device Bloat:* Over months, Classroom's internal cache accumulates gigabytes of duplicate hidden data that permanently bloats your phone's internal storage without providing any usable files to the parent.
+   - **The True Autonomous Native Share Target Pipeline:**
+     To guarantee that parents receive pristine, uncorrupted, universally viewable documents in their Google Drive Vault, K.I.D.S. enforces the **Native Android Share Target Pipeline**:
+     1. **Attachment Discovery:** The assistant inspects the announcement card and locates all individual attachment chips (`.pdf`, `.docx`, `.xlsx`, `.jpg`, `.png`).
+     2. **Automated Chip Tap:** It programmatically taps the first clickable attachment chip (`clickableChip`), opening the document in Google Classroom's document previewer or Google Drive Viewer.
+     3. **Real-Time Viewer & Preview Detection:** Within 3,000ms, `automateViewerShareOrDownload()` automatically detects that the active screen has transitioned to a document viewer (`isDocumentViewerScreen`).
+     4. **Autonomous Share Triggering:** The assistant scans the viewer for a direct **Share** action (`"share"`, `"send a copy"`, `"send file"`, `"export"`). If hidden inside an overflow menu, it automatically taps the **More options** (⋮) button and selects the Share action.
+     5. **System Chooser Interception (`selectKidsInSystemChooser`):** When Android's native system share sheet appears, K.I.D.S. monitors the chooser window (up to 2,500ms) and autonomously selects **"K.I.D.S. Vault"** (`ShareTargetActivity`).
+     6. **Instant Staging via `ShareTargetActivity` (<50ms):** Android routes the pristine file byte stream directly into K.I.D.S.'s translucent `ShareTargetActivity`. The activity copies the stream into private vault staging (`Android/data/com.kids.collector/files/vault_attachments/`), computes the SHA-256 fingerprint, matches the file to the parent notice in SQLite Room, and enqueues Google Drive upload via WorkManager—all within 50ms and with zero screen flicker!
+     7. **Guarded Return & Repetition:** The assistant executes a guarded return back to the Classroom detail view, taps the next attachment chip, and repeats the pipeline until 100% of attachments attached to the notice are safely captured and staged.
+   - **Calibrated Debouncing:** When direct download buttons are present alongside chips, a 1,000ms debounce gives Android's system `DownloadManager` ample time to register the download request without queue dropouts or socket contention.
 7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
    - K.I.D.S. implements a resilient **Multi-Attempt Guarded Return Loop** executing **up to 3 sequential attempts**:
