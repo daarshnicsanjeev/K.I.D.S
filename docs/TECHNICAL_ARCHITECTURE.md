@@ -2174,7 +2174,13 @@ private fun handleAppExitEvent(foreignPackage: String) {
             }
         }
 
-        if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
+        // Only confirm exit if currentPackageName is genuinely a non-empty, non-school, non-transient package
+        // NEVER dismiss when currentPackageName is blank (momentary transition or null root) or transient!
+        val isGenuineNonSchoolApp = currentPackageName.isNotBlank() &&
+                !isAuthorizedSchoolApp(currentPackageName) &&
+                !isTransientOrSystemPackage(currentPackageName)
+
+        if (isGenuineNonSchoolApp) {
             CrawlerTraceLogger.log(
                 "DEEP_CRAWLER",
                 "Confirmed exit from school app to \"$foreignPackage\" (active: \"$currentPackageName\"). Auto-stopping capture, closing overlay, and triggering Drive sync."
@@ -2190,6 +2196,61 @@ private fun handleAppExitEvent(foreignPackage: String) {
 - **Multi-Window Stack Verification (`windows.any`):** Rather than relying solely on `rootInActiveWindow` (which can temporarily reference a floating volume bar, system toast, or permission popup), the engine checks all active windows via `windows.any`.
 - **Safe Native Node Recycling (`finally { windowRootNode?.recycle() }`):** Accessibility node infos allocated via `window.root` represent native Binder objects. By enclosing the inspection within a `try { ... } finally { windowRootNode?.recycle() }` block, K.I.D.S. prevents native Binder handle exhaustion and memory leaks during frequent window transitions.
 - **Autonomous Foreground Relaunch (`relaunchSchoolApp`):** If an active crawl was running when displaced, K.I.D.S. attempts autonomous foreground recovery via `packageManager.getLaunchIntentForPackage(...)` with `FLAG_ACTIVITY_REORDER_TO_FRONT`. Only if recovery fails after an additional settling delay is teardown executed.
+- **`isGenuineNonSchoolApp` Immunity Gate (Blank Redraw & Transient Protection):**
+  During intense Classroom scrolling, tab switching (Stream to Classwork), or opening attachments, Android's `WindowManager` frequently performs sub-second layout passes or view surface recreation. During these transient frames, `rootInActiveWindow` can momentarily return `null` or report a blank package string (`currentPackageName.isBlank()`). Additionally, system dialogs (soft keyboard, volume controls, file pickers) report non-school packages.
+  
+  The `isGenuineNonSchoolApp` boolean gate enforces a rigorous triple invariant:
+  1. `currentPackageName.isNotBlank()`: Strictly guards against dismissal during window redraws or null-root transitions.
+  2. `!isAuthorizedSchoolApp(currentPackageName)`: Confirms the active package is outside authorized school portals.
+  3. `!isTransientOrSystemPackage(currentPackageName)`: Confirms the active package is not a whitelisted OS dialog or system utility.
+  
+  The assistant overlay is **never dismissed** when `currentPackageName.isBlank()` or when interacting with transient/system packages. Overlay dismissal, crawler shutdown, and background Drive sync execute exclusively when a genuine third-party non-school application or device launcher is verified in the foreground.
+
+##### 6. Programmatic Control Hooks via BroadcastReceiver (ADB & Automated UI Testing)
+
+To enable headless test automation, continuous integration (CI) test execution, and non-touch ADB diagnostics, `KidsAccessibilityService` registers an internal `BroadcastReceiver` (`crawlerControlReceiver`):
+
+```kotlin
+private val crawlerControlReceiver = object : BroadcastReceiver() {
+    override fun onReceive(context: Context?, intent: Intent?) {
+        when (intent?.action) {
+            ACTION_START_CRAWL -> {
+                CrawlerTraceLogger.log("CONTROL", "Received ACTION_START_CRAWL via broadcast")
+                getOrCreateOverlay().startAutoScroll()
+            }
+            ACTION_STOP_CRAWL -> {
+                CrawlerTraceLogger.log("CONTROL", "Received ACTION_STOP_CRAWL via broadcast")
+                getOrCreateOverlay().stopAutoScroll(isUserInitiated = true, reason = "Broadcast command")
+            }
+            ACTION_SHOW_OVERLAY -> {
+                CrawlerTraceLogger.log("CONTROL", "Received ACTION_SHOW_OVERLAY via broadcast")
+                getOrCreateOverlay().show()
+            }
+        }
+    }
+}
+```
+
+- **Registered System Actions:**
+  - `ACTION_START_CRAWL` (`"com.kids.collector.ACTION_START_CRAWL"`): Programmatically triggers `getOrCreateOverlay().startAutoScroll()`, launching Pass 1 survey and Pass 2 reverse ingestion identically to a user tapping `▶ Start Auto-Capture`.
+  - `ACTION_STOP_CRAWL` (`"com.kids.collector.ACTION_STOP_CRAWL"`): Programmatically invokes `getOrCreateOverlay().stopAutoScroll(isUserInitiated = true, reason = "Broadcast command")`, applying immediate emergency stop priority and dispatching terminal Google Drive sync.
+  - `ACTION_SHOW_OVERLAY` (`"com.kids.collector.ACTION_SHOW_OVERLAY"`): Programmatically calls `getOrCreateOverlay().show()`, forcing the overlay to render on screen if an authorized school app is detected in foreground.
+- **Dynamic Intent Registration & API 33+ Export Safety:**
+  The receiver is registered during `onServiceConnected()` using `IntentFilter`:
+  ```kotlin
+  val controlFilter = IntentFilter().apply {
+      addAction(ACTION_START_CRAWL)
+      addAction(ACTION_STOP_CRAWL)
+      addAction(ACTION_SHOW_OVERLAY)
+  }
+  if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+      registerReceiver(crawlerControlReceiver, controlFilter, Context.RECEIVER_EXPORTED)
+  } else {
+      registerReceiver(crawlerControlReceiver, controlFilter)
+  }
+  ```
+  Specifying `Context.RECEIVER_EXPORTED` on Android 13+ (API 33+) guarantees that shell broadcasts from ADB (`adb shell am broadcast -a com.kids.collector.ACTION_START_CRAWL`) successfully cross the process boundary into the accessibility service. In `onDestroy()`, the receiver is unregistered via `unregisterReceiver(crawlerControlReceiver)` to ensure leak-free lifecycle teardown.
+- **Audit & Telemetry Logging:** Every broadcast invocation writes directly to `crawler_trace.log` under the `[CONTROL]` tag, providing full deterministic verification for automated test scripts and ADB diagnostic sessions.
 
 ---
 
@@ -2426,6 +2487,67 @@ class FloatingCrawlerOverlay(...) {
   - **Top Row:** Title (`K.I.D.S. Assistant`), real-time counter badge (`XX Notices • YY Files`), minimize (`—`), and close (`✕`).
   - **Status Row:** Live FSM state indicator (`statusTextView`).
   - **Detail Row:** Active post headline or attachment filename (`detailTextView`), auto-truncated with ellipsis.
+- **Dedicated Touch Zones & Drag Handle Architecture (`setupDragListener`):**
+  In floating overlay implementations, binding a generic drag listener to the root container often intercepts button touches, causes click delays, or generates gesture ambiguity between scrolling and tapping. `FloatingCrawlerOverlay` solves this by strictly isolating drag handles from interactive action buttons:
+  ```kotlin
+  // Drag listener attached specifically to headerRow and minimizedBubble, leaving action buttons freely clickable
+  setupDragListener(headerRow, root, p)
+  setupDragListener(minimizedBubble, root, p)
+  ```
+  - **Exclusive Drag Binding:** `setupDragListener` is bound **exclusively** to `headerRow` (the expanded title and status header) and `minimizedBubble` (the collapsed 48dp circular badge).
+  - **Uninhibited Native Touch Events:** The root button container, the Amber/Red action button (`toggleCaptureButton` / `autoButton`), and the minimize toggle (`btnMin`) remain completely untouched by drag listeners. They receive pristine native Android touch and click events directly without touch interception (`onInterceptTouchEvent`) or dragging interference.
+  - **Drag Motion vs. Click Release Delegation (`performClick`):**
+    The drag listener differentiates intentional dragging from accidental touches using a 10-pixel motion deadband:
+    ```kotlin
+    private fun setupDragListener(dragHandle: View, container: View, p: WindowManager.LayoutParams) {
+        var initialX = 0
+        var initialY = 0
+        var initialTouchX = 0f
+        var initialTouchY = 0f
+        var isClick = false
+
+        dragHandle.setOnTouchListener { _, event ->
+            when (event.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    initialX = p.x
+                    initialY = p.y
+                    initialTouchX = event.rawX
+                    initialTouchY = event.rawY
+                    isClick = true
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (event.rawX - initialTouchX).toInt()
+                    val dy = (event.rawY - initialTouchY).toInt()
+                    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+                        isClick = false
+                    }
+                    p.x = initialX + dx
+                    p.y = initialY + dy
+                    try {
+                        windowManager.updateViewLayout(container, p)
+                    } catch (e: Exception) {
+                        // ignore layout updates during destroy
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (isClick && isMinimized) {
+                        expand()
+                    } else if (isClick) {
+                        dragHandle.performClick()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+    ```
+    - When `ACTION_DOWN` occurs, `isClick = true` is set, and raw coordinate offsets are cached.
+    - During `ACTION_MOVE`, if displacement exceeds 10 pixels on either axis (`Math.abs(dx) > 10 || Math.abs(dy) > 10`), `isClick` is reset to `false` and `windowManager.updateViewLayout(container, p)` smoothly translates the overlay across the window manager.
+    - Upon `ACTION_UP`: If `isClick` remained `true` and the overlay is minimized, it calls `expand()`; if not minimized, it delegates directly to `dragHandle.performClick()`. This ensures click actions on drag handles (such as header controls or bubble tap-to-expand) are never swallowed by touch consumption.
+
 - **Single-Action Responsive Button with 1,200ms TalkBack Debounce:**
   - In idle state: Displays `▶ Start Auto-Capture` in Amber Orange (`#ED8936`) with dynamic accessibility label `contentDescription = "Start Auto-Capture"`.
   - In active state: Displays `⏹ Stop Capture` in Crimson Red (`#E53E3E`) with dynamic accessibility label `contentDescription = "Stop Auto-Capture"`.

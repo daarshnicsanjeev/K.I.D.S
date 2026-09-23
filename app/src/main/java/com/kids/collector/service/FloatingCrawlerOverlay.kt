@@ -261,8 +261,9 @@ class FloatingCrawlerOverlay(
                 expanded.addView(buttonRow)
                 root.addView(expanded)
 
-                // Drag listener to allow moving anywhere on screen
-                setupDragListener(root, p)
+                // Drag listener attached specifically to headerRow and minimizedBubble, leaving action buttons freely clickable
+                setupDragListener(headerRow, root, p)
+                setupDragListener(minimizedBubble, root, p)
 
                 overlayView = root
                 try {
@@ -783,14 +784,14 @@ class FloatingCrawlerOverlay(
         return null
     }
 
-    private fun setupDragListener(view: View, p: WindowManager.LayoutParams) {
+    private fun setupDragListener(dragHandle: View, container: View, p: WindowManager.LayoutParams) {
         var initialX = 0
         var initialY = 0
         var initialTouchX = 0f
         var initialTouchY = 0f
         var isClick = false
 
-        view.setOnTouchListener { _, event ->
+        dragHandle.setOnTouchListener { _, event ->
             when (event.action) {
                 MotionEvent.ACTION_DOWN -> {
                     initialX = p.x
@@ -809,7 +810,7 @@ class FloatingCrawlerOverlay(
                     p.x = initialX + dx
                     p.y = initialY + dy
                     try {
-                        windowManager.updateViewLayout(view, p)
+                        windowManager.updateViewLayout(container, p)
                     } catch (e: Exception) {
                         // ignore layout updates during destroy
                     }
@@ -818,6 +819,8 @@ class FloatingCrawlerOverlay(
                 MotionEvent.ACTION_UP -> {
                     if (isClick && isMinimized) {
                         expand()
+                    } else if (isClick) {
+                        dragHandle.performClick()
                     }
                     true
                 }

@@ -44,6 +44,7 @@ As parents, keeping up with school communications is exhausting. Homework assign
 4. [Google Classroom Deep Auto-Capture Guide](#4-google-classroom-deep-auto-capture-guide)
    - [Stream Tab vs. Classwork Tab](#stream-tab-vs-classwork-tab)
    - [The Floating K.I.D.S. Assistant Overlay & Live 2-Line Status Pill](#the-floating-kids-assistant-overlay--live-2-line-status-pill)
+     - [Dedicated Touch Zones & Repositioning Drag Handles](#dedicated-touch-zones--repositioning-drag-handles)
      - [Floating Assistant Reliability & Transient System Dialog Immunity](#floating-assistant-reliability--transient-system-dialog-immunity)
      - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
@@ -62,18 +63,19 @@ As parents, keeping up with school communications is exhausting. Homework assign
      - [Hands-Free Auto-Stop on App Exit](#hands-free-auto-stop-on-app-exit)
      - [Hands-Free Auto-Close on Stream Completion](#hands-free-auto-close-on-stream-completion)
    - [Manual Stop & Instant Coroutine Cancellation](#manual-stop--instant-coroutine-cancellation)
-5. [WhatsApp School Group Integration](#5-whatsapp-school-group-integration)
+ 5. [WhatsApp School Group Integration](#5-whatsapp-school-group-integration)
    - [Real-Time Group Capture](#real-time-group-capture)
    - [Manual Chat Export Fallback (.txt / .zip)](#manual-chat-export-fallback-txt--zip)
-6. [Accessing Your AI-Native Drive Vault](#6-accessing-your-ai-native-drive-vault)
+ 6. [Accessing Your AI-Native Drive Vault](#6-accessing-your-ai-native-drive-vault)
    - [Vault Folder Structure](#vault-folder-structure)
    - [Using `MASTER_DIGEST.md` & `FAMILY_DIGEST.md`](#using-master_digestmd--family_digestmd)
    - [Exploring the Interactive Knowledge Graph (`graph.html`)](#exploring-the-interactive-knowledge-graph-graphhtml)
    - [Connecting AI Agents (Google Gemini & MCP Servers)](#connecting-ai-agents-google-gemini--mcp-servers)
-7. [Troubleshooting & Diagnostic Logs](#7-troubleshooting--diagnostic-logs)
+ 7. [Troubleshooting & Diagnostic Logs](#7-troubleshooting--diagnostic-logs)
    - [Reading Diagnostic Logs & Telemetry Transparency](#reading-diagnostic-logs--telemetry-transparency)
    - [Xiaomi / MIUI / HyperOS Specific Setup](#xiaomi--miui--hyperos-specific-setup)
    - [Google Drive Authorization & SHA-1 Registration](#google-drive-authorization--sha-1-registration)
+   - [Programmatic Automation Hooks (ADB & Testing)](#programmatic-automation-hooks-adb--testing)
    - [Frequently Asked Questions (FAQ)](#frequently-asked-questions-faq)
 
 ---
@@ -409,6 +411,18 @@ When active, the action button dynamically changes to a prominent red stop butto
 +-------------------------------------------------------+
 ```
 
+#### Dedicated Touch Zones & Repositioning Drag Handles
+
+The floating assistant overlay is engineered with strictly segregated touch zones to provide effortless repositioning anywhere on your screen without interfering with button clicks:
+
+- **Designated Drag Handles:**
+  - **Expanded Header Bar (`headerRow`):** The top bar containing the "K.I.D.S. Assistant" title and notice counter acts as the designated drag handle when the overlay is expanded. Press and hold anywhere on the header to drag the assistant smoothly to any corner or edge of your display, keeping classroom post titles or school banners clearly visible.
+  - **Collapsed Circular Bubble (`minimizedBubble`):** When minimized into the compact 48dp amber **`K`** badge, the circular bubble itself serves as the drag handle. You can drag and dock it along any edge of your screen.
+  - **Precision Movement vs. Tap Delegation (`performClick`):** The drag handles track motion dynamically. Any movement under 10 pixels is recognized as an intentional tap (`performClick()`), ensuring that tapping the minimized bubble instantly expands the overlay, while intentional drag gestures update overlay coordinates smoothly (`windowManager.updateViewLayout`).
+- **Pristine Native Clicks for Action Controls:**
+  - The **Amber Start/Stop Auto-Capture button** (`toggleCaptureButton`) and **Minimize toggle** (`—`) are completely isolated from drag touch listeners.
+  - They receive pristine native click events directly without touch interception, swipe confusion, or delayed drag evaluation. Tapping `▶ Start Auto-Capture` or `⏹ Stop Capture` triggers immediately and cleanly.
+
 #### Floating Assistant Reliability & Transient System Dialog Immunity
 
 The K.I.D.S. Floating Assistant is engineered for rock-solid on-screen persistence and complete resilience against mobile operating system noise:
@@ -425,6 +439,13 @@ The K.I.D.S. Floating Assistant is engineered for rock-solid on-screen persisten
    In naive accessibility implementations, any appearance of these third-party package names falsely triggers an "app exit" event, causing floating overlays to abruptly disappear or flicker frantically.
    
    **The K.I.D.S. Guarantee:** K.I.D.S. features an exhaustive **transient package whitelist**. When any of these system dialogues or sync popups appear, K.I.D.S. classifies them as temporary, non-disruptive surfaces and **never dismisses or flickers the assistant overlay**. The overlay remains firmly anchored over Google Classroom, patiently waiting for the transient dialogue to resolve so capture can proceed smoothly.
+
+3. **Improved App Exit Protection (Momentary Screen Redraw & Blank Window Immunity):**
+   In Google Classroom, navigating between the Stream, Classwork, and People tabs, loading large historical notice batches, or opening multi-page attachments frequently causes the Android Window Manager to momentarily recycle or redraw window surfaces. During these sub-second redraws, the foreground package query may briefly report a blank string (`currentPackageName.isBlank()`) or return null window roots while view trees are swapping.
+   
+   In naive accessibility tools, any blank or unrecognized window state is misclassified as the user leaving the app, causing the assistant overlay to prematurely dismiss or flicker off-screen.
+   
+   **The K.I.D.S. Guarantee:** K.I.D.S. enforces a strict `isGenuineNonSchoolApp` exit gate. The overlay is **NEVER** dismissed when `currentPackageName.isBlank()` or when interacting with transient/system packages (keyboards, pickers, volume sliders). An app exit is confirmed **only** when the foreground package is verified to be a genuine, non-empty, non-school, third-party application or home launcher, guaranteeing that momentary Classroom screen redraws never accidentally close your assistant.
 
 #### Real-Time Status & Metrics Display
 The floating assistant features an informative **live 2-line status pill**:
@@ -829,7 +850,7 @@ The K.I.D.S. Auto-Capture engine is engineered with a **zero-click, hands-free p
 - **Leave Anytime Without Worry:** If you exit Google Classroom at any time—by swiping up to return to your **Home screen**, switching to another application via the **Recents app switcher**, or repeatedly pressing **Back** to leave Classroom—Auto-Capture **automatically stops immediately**.
 - **Instant Clean Screen (Zero Ghost Overlays):** The floating assistant pill immediately dismisses and removes itself completely from your screen. You will never experience lingering overlay bubbles, blocked touches, or "ghost" accessibility windows over your home screen or personal apps.
 - **Automated Cloud Sync on Exit:** Exiting Google Classroom instantly triggers an automated background synchronization cycle to your Google Drive Vault via AndroidX `WorkManager`. Every notice extracted and every attachment downloaded up to the exact moment you navigated away is reliably saved and uploaded.
-- **Intelligent Transient Shield:** You do not have to worry about brief, everyday system interruptions. When a software keyboard pops up, a system permission dialog appears, or you tap an attachment that opens in a document previewer (like Google Docs or Sheets), the assistant smoothly pauses without shutting down. The moment you return to Classroom, capture continues seamlessly.
+- **Intelligent Transient Shield & Redraw Protection:** You do not have to worry about brief, everyday system interruptions or sub-second screen redraws. When a software keyboard pops up, a system permission dialog appears, an attachment opens in a document previewer (like Google Docs or Sheets), or Google Classroom momentarily renders blank window roots while recycling views across tab navigation, the assistant smoothly holds position without shutting down. The overlay dismisses only upon confirmed exit to a genuine, non-school third-party application or home launcher.
 
 #### 5-Attempt Pagination Tolerance & Hands-Free Auto-Close
 - **5-Attempt Network Pagination Tolerance:** When the crawler reaches the bottom of the currently visible posts, Google Classroom often requires network round-trip time to load earlier announcements from Google's servers. If zero new notices are visible immediately after a scroll, K.I.D.S. does **not** prematurely assume the stream has ended. Instead, it enters an intelligent **5-attempt pagination retry loop**:
@@ -989,6 +1010,26 @@ If Step 1 of the wizard displays an authorization error (*"Additional consent re
 2. Package Name: `com.kids.collector.debug` (or `com.kids.collector`)
 3. Tap **Copy SHA-1** and open your [Google Cloud Console Credentials](https://console.cloud.google.com/apis/credentials).
 4. Add the Android OAuth client ID with your package name and SHA-1 fingerprint.
+
+### Programmatic Automation Hooks (ADB & Testing)
+
+For advanced diagnostics, continuous integration (CI) automation, and automated UI testing, K.I.D.S. exposes programmatic system broadcast hooks via `KidsAccessibilityService`. Developers and testers can control the crawler remotely via Android Debug Bridge (ADB) without needing manual touch interaction:
+
+- **`com.kids.collector.ACTION_START_CRAWL`**: Programmatically starts the Auto-Capture crawler. Equivalent to tapping `▶ Start Auto-Capture`.
+  ```bash
+  adb shell am broadcast -a com.kids.collector.ACTION_START_CRAWL
+  ```
+- **`com.kids.collector.ACTION_STOP_CRAWL`**: Programmatically halts active crawling with immediate execution priority. Equivalent to tapping `⏹ Stop Capture`.
+  ```bash
+  adb shell am broadcast -a com.kids.collector.ACTION_STOP_CRAWL
+  ```
+- **`com.kids.collector.ACTION_SHOW_OVERLAY`**: Forces the floating assistant overlay to display on screen if Google Classroom is open.
+  ```bash
+  adb shell am broadcast -a com.kids.collector.ACTION_SHOW_OVERLAY
+  ```
+
+> [!NOTE]
+> These broadcast hooks are dynamically registered with `RECEIVER_EXPORTED` on Android 13+ (API 33+) to allow secure shell-level triggers while keeping sensitive crawl data safely bounded inside device memory. All broadcast actions generate structured trace entries in `crawler_trace.log` under the `[CONTROL]` tag for complete test observability.
 
 ### Frequently Asked Questions (FAQ)
 

@@ -3,8 +3,10 @@ package com.kids.collector.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Path
 import android.graphics.Rect
 import android.util.Log
@@ -62,6 +64,10 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
         private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
         private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
+        const val ACTION_START_CRAWL = "com.kids.collector.ACTION_START_CRAWL"
+        const val ACTION_STOP_CRAWL = "com.kids.collector.ACTION_STOP_CRAWL"
+        const val ACTION_SHOW_OVERLAY = "com.kids.collector.ACTION_SHOW_OVERLAY"
+
         private val AUTHORIZED_SCHOOL_PACKAGES = setOf(
             "com.google.android.apps.classroom",
             "com.entab.campuscare",
@@ -126,9 +132,40 @@ class KidsAccessibilityService : AccessibilityService() {
         ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4"
     )
 
+    private val crawlerControlReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            when (intent?.action) {
+                ACTION_START_CRAWL -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_START_CRAWL via broadcast")
+                    getOrCreateOverlay().startAutoScroll()
+                }
+                ACTION_STOP_CRAWL -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_STOP_CRAWL via broadcast")
+                    getOrCreateOverlay().stopAutoScroll(isUserInitiated = true, reason = "Broadcast command")
+                }
+                ACTION_SHOW_OVERLAY -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_SHOW_OVERLAY via broadcast")
+                    getOrCreateOverlay().show()
+                }
+            }
+        }
+    }
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         Log.i(TAG, "KidsAccessibilityService connected")
+
+        val controlFilter = IntentFilter().apply {
+            addAction(ACTION_START_CRAWL)
+            addAction(ACTION_STOP_CRAWL)
+            addAction(ACTION_SHOW_OVERLAY)
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(crawlerControlReceiver, controlFilter, Context.RECEIVER_EXPORTED)
+        } else {
+            registerReceiver(crawlerControlReceiver, controlFilter)
+        }
+
         getOrCreateOverlay()
 
         serviceScope.launch {
@@ -246,7 +283,13 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
             }
 
-            if (crawlerOverlay?.isAutoScrollingActive() == true || crawlerOverlay?.isShowing() == true) {
+            // Only confirm exit if currentPackageName is genuinely a non-empty, non-school, non-transient package
+            // NEVER dismiss when currentPackageName is blank (momentary transition or null root) or transient!
+            val isGenuineNonSchoolApp = currentPackageName.isNotBlank() &&
+                    !isAuthorizedSchoolApp(currentPackageName) &&
+                    !isTransientOrSystemPackage(currentPackageName)
+
+            if (isGenuineNonSchoolApp) {
                 CrawlerTraceLogger.log(
                     "DEEP_CRAWLER",
                     "Confirmed exit from school app to \"$foreignPackage\" (active: \"$currentPackageName\"). Auto-stopping capture, closing overlay, and triggering Drive sync."
@@ -2698,6 +2741,11 @@ class KidsAccessibilityService : AccessibilityService() {
 
     override fun onDestroy() {
         super.onDestroy()
+        try {
+            unregisterReceiver(crawlerControlReceiver)
+        } catch (e: Exception) {
+            // ignore if not registered
+        }
         exitDebounceJob?.cancel()
         exitDebounceJob = null
         stopDeepCrawl()
