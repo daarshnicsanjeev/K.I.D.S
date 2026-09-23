@@ -782,7 +782,7 @@ class KidsAccessibilityService : AccessibilityService() {
                             "Seeking Notice...",
                             "#${nextItem.index}/$total: ${nextItem.title.take(30)}"
                         )
-                        stepScrollStream(forward = false)
+                        stepScrollStream(isScrollForward = false)
                     } else {
                         val fastForwarding = nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))
                         val statusTitle = if (fastForwarding) "Fast-Forwarding Synced Notices..." else "Navigating to Post..."
@@ -793,7 +793,7 @@ class KidsAccessibilityService : AccessibilityService() {
                             "Target #${nextItem.index} is ahead. Stepping forward (fastForwarding=$fastForwarding)..."
                         )
                         crawlerOverlay?.updateStatus(statusTitle, statusDetail)
-                        stepScrollStream(forward = true)
+                        stepScrollStream(isScrollForward = true)
                     }
                 } else {
                     delay(500)
@@ -968,7 +968,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
             // If not found in immediate viewport, scroll detail downward to reveal it
             if (targetChip == null) {
-                val container = findScrollableContainer(freshRoot)
+                val container = findScrollableNode(freshRoot)
                 if (container != null) {
                     container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                     container.recycle()
@@ -991,7 +991,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Targeting fresh attachment chip for \"$fileName\"")
 
                 // Bring to screen and focus with zero guessing!
-                targetChip.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                targetChip.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                 targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                 delay(200)
 
@@ -1588,7 +1588,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
                     if (isMatch) {
                         CrawlerTraceLogger.log("CARD_MATCH", "Matched target #${targetItem.index} via Fast-Path Native Search (\"$searchQuery\")")
-                        clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                        clickable.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                         clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                         clickable.getBoundsInScreen(rect)
                         val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
@@ -1652,7 +1652,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         )
 
                         val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-                        clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                        clickable.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                         clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                         val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
                         val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
