@@ -7910,6 +7910,18 @@
       "type": "external"
     },
     {
+      "id": "intentfilter",
+      "label": "intentfilter",
+      "_origin": "semantic",
+      "community": 4,
+      "community_name": "KidsAccessibilityService.kt",
+      "external": true,
+      "file_type": "concept",
+      "norm_label": "intentfilter",
+      "source_file": "",
+      "type": "external"
+    },
+    {
       "id": "isactive",
       "label": "isactive",
       "_origin": "semantic",
@@ -8544,17 +8556,6 @@
       "external": true,
       "file_type": "concept",
       "norm_label": "semantics",
-      "source_file": "",
-      "type": "external"
-    },
-    {
-      "id": "intentfilter",
-      "label": "intentfilter",
-      "community": 4,
-      "community_name": "KidsAccessibilityService.kt",
-      "external": true,
-      "file_type": "concept",
-      "norm_label": "intentfilter",
       "source_file": "",
       "type": "external"
     }
@@ -27799,5 +27800,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "7140975955b5f3063e7eddc2d37253e743d6232a"
+  "built_at_commit": "e26fa9278088a70d8893e7a7914e6f7dec61fc7c"
 }
