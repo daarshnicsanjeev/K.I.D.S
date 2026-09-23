@@ -773,26 +773,16 @@ class KidsAccessibilityService : AccessibilityService() {
                         continue
                     }
 
-                    // Only use micro-scroll if oscillation is detected; otherwise use full kinetic swipe so previous 600-800px cards are revealed!
-                    val useMicroScroll = isOscillating
-
                     if (!targetAhead) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Scrolling backward (micro=$useMicroScroll)..."
+                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Stepping backward..."
                         )
                         crawlerOverlay?.updateStatus(
-                            "Recovering Position...",
-                            "Seeking post #${nextItem.index}/$total"
+                            "Seeking Notice...",
+                            "#${nextItem.index}/$total: ${nextItem.title.take(30)}"
                         )
-                        var scrollDone = false
-                        if (useMicroScroll) {
-                            crawlerOverlay?.performMicroScroll(forward = false) { scrollDone = true }
-                        } else {
-                            crawlerOverlay?.performScrollBackward { scrollDone = true }
-                        }
-                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(450)
+                        stepScrollStream(forward = false)
                     } else {
                         val fastForwarding = nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))
                         val statusTitle = if (fastForwarding) "Fast-Forwarding Synced Notices..." else "Navigating to Post..."
@@ -800,17 +790,10 @@ class KidsAccessibilityService : AccessibilityService() {
 
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Target #${nextItem.index} is ahead. Scrolling forward (micro=$useMicroScroll, fastForwarding=$fastForwarding)..."
+                            "Target #${nextItem.index} is ahead. Stepping forward (fastForwarding=$fastForwarding)..."
                         )
                         crawlerOverlay?.updateStatus(statusTitle, statusDetail)
-                        var scrollDone = false
-                        if (useMicroScroll) {
-                            crawlerOverlay?.performMicroScroll(forward = true) { scrollDone = true }
-                        } else {
-                            crawlerOverlay?.performScroll { scrollDone = true }
-                        }
-                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(450)
+                        stepScrollStream(forward = true)
                     }
                 } else {
                     delay(500)
@@ -963,57 +946,85 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Autonomous Attachment Ingestion: Systematically tap each attachment chip,
-        // open the viewer, and trigger Share to "K.I.D.S. Vault"
-        for ((index, att) in allAttachments.withIndex()) {
-            val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
-            val existingAtt = db.attachmentDao().findByFileHash(fileHash)
-            if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
-                !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
+        val pendingTargetFileNames = allAttachments.map { it.fileName }
+        for (att in allAttachments) {
+            att.downloadNode?.recycle()
+            att.clickableChip?.recycle()
+        }
+
+        // Autonomous Attachment Ingestion: Systematically re-query fresh nodes for each attachment chip,
+        // bring onto screen using ACTION_SHOW_ON_SCREEN, open the viewer, and trigger Share to "K.I.D.S. Vault"
+        for ((index, fileName) in pendingTargetFileNames.withIndex()) {
+            val fileHash = "${noticeId}_${fileName}".hashCode().toString()
+            val existingAttachment = db.attachmentDao().findByFileHash(fileHash)
+            if (existingAttachment != null && existingAttachment.syncStatus == SyncStatus.SYNCED.name &&
+                !existingAttachment.driveFileId.isNullOrBlank() && !existingAttachment.driveFileId.startsWith("virtual_")) {
                 continue // Already physically downloaded and synced
             }
 
-            if (att.downloadNode != null && att.downloadNode.isClickable) {
-                crawlerOverlay?.updateStatus("Downloading (${index + 1}/${allAttachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-                val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val b = Rect()
-                    att.downloadNode.getBoundsInScreen(b)
-                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+            // Fresh window inspection: Locate the chip in the currently active detail window
+            val freshRoot = rootInActiveWindow ?: continue
+            var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
+
+            // If not found in immediate viewport, scroll detail downward to reveal it
+            if (targetChip == null) {
+                val container = findScrollableContainer(freshRoot)
+                if (container != null) {
+                    container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    container.recycle()
+                    delay(400)
+                } else {
+                    var scrollDone = false
+                    crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                    waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
                 }
-                delay(1000) // Calibrated debounce between downloads
-            } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-                crawlerOverlay?.updateStatus("Sharing (${index + 1}/${allAttachments.size})...", att.fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-                val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val b = Rect()
-                    att.clickableChip.getBoundsInScreen(b)
-                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                val scrolledRoot = rootInActiveWindow
+                if (scrolledRoot != null) {
+                    targetChip = findAttachmentChipByFileName(scrolledRoot, fileName)
+                    scrolledRoot.recycle()
                 }
+            }
+            freshRoot.recycle()
+
+            if (targetChip != null) {
+                crawlerOverlay?.updateStatus("Sharing (${index + 1}/${pendingTargetFileNames.size})...", fileName)
+                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Targeting fresh attachment chip for \"$fileName\"")
+
+                // Bring to screen and focus with zero guessing!
+                targetChip.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                delay(200)
+
+                val clicked = targetChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val chipBounds = Rect()
+                    targetChip.getBoundsInScreen(chipBounds)
+                    dispatchTap(chipBounds.centerX().toFloat(), chipBounds.centerY().toFloat())
+                }
+                targetChip.recycle()
                 delay(800)
 
                 // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
-                automateViewerShareOrDownload(att.fileName)
+                automateViewerShareOrDownload(fileName)
 
                 // Check if file was captured by ShareTargetActivity
                 val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
                 if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-                    if (capturedAttachmentNames.add(att.fileName)) {
+                    if (capturedAttachmentNames.add(fileName)) {
                         crawlerOverlay?.incrementAttachmentCount()
                     }
                 }
+                // Allow detail view UI tree to regenerate before querying next attachment
+                delay(600)
+            } else {
+                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Could not locate chip for \"$fileName\" in detail view")
             }
-
-            att.downloadNode?.recycle()
-            att.clickableChip?.recycle()
         }
 
         if (allAttachments.isNotEmpty()) {
             delay(1000) // Allow file staging to finalize
             val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-            for (s in 0 until stagedCount) {
+            repeat(stagedCount) {
                 crawlerOverlay?.incrementAttachmentCount()
             }
         }
@@ -1376,6 +1387,57 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
+    private suspend fun stepScrollStream(isScrollForward: Boolean) {
+        val root = rootInActiveWindow
+        var scrolledNatively = false
+        if (root != null) {
+            val container = findScrollableNode(root)
+            if (container != null) {
+                val action = if (isScrollForward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                scrolledNatively = container.performAction(action)
+                container.recycle()
+            }
+            root.recycle()
+        }
+        if (!scrolledNatively) {
+            // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
+            var scrollDone = false
+            crawlerOverlay?.performControlledDrag(isScrollForward) { scrollDone = true }
+            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+        } else {
+            delay(400)
+        }
+    }
+
+    private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
+        val cleanFileName = fileName.replace("...", "").trim()
+        val baseFileName = cleanFileName.substringBeforeLast('.')
+        val searchQueries = listOf(cleanFileName, baseFileName.take(20)).filter { it.length >= 4 }
+
+        for (searchQuery in searchQueries) {
+            val matchedNodes = rootNode.findAccessibilityNodeInfosByText(searchQuery)
+            for (matchNode in matchedNodes) {
+                val clickableAncestor = findClickableAncestor(matchNode)
+                val targetChipNode = when {
+                    clickableAncestor != null -> clickableAncestor
+                    matchNode.isClickable -> AccessibilityNodeInfo.obtain(matchNode)
+                    else -> null
+                }
+
+                if (targetChipNode != null) {
+                    for (nodeToRecycle in matchedNodes) {
+                        nodeToRecycle.recycle()
+                    }
+                    return targetChipNode
+                }
+            }
+            for (nodeToRecycle in matchedNodes) {
+                nodeToRecycle.recycle()
+            }
+        }
+        return null
+    }
+
     private suspend fun dispatchTap(x: Float, y: Float): Boolean {
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
@@ -1499,74 +1561,108 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun findCardForTarget(rootNode: AccessibilityNodeInfo, targetItem: StreamManifestItem): UnvisitedCard? {
-        val postCards = findPostCards(rootNode)
         val displayMetrics = resources.displayMetrics
         val minTop = 140
         val maxBottom = displayMetrics.heightPixels - 170
-
         val rect = Rect()
+
+        // Fast-path: Native Accessibility text search for target title (finds partially clipped and pre-fetched cards!)
+        val cleanTargetTitle = targetItem.title.trim()
+        val queryCandidate = cleanTargetTitle.substringAfter(":").trim().take(30)
+        val searchQuery = if (queryCandidate.length >= 6) queryCandidate else cleanTargetTitle.take(30)
+
+        if (searchQuery.length >= 6) {
+            val fastMatches = rootNode.findAccessibilityNodeInfosByText(searchQuery)
+            for (match in fastMatches) {
+                val clickable = findClickableAncestor(match)
+                if (clickable != null) {
+                    val cardItems = mutableListOf<String>()
+                    collectQuickText(clickable, cardItems)
+                    val combinedText = cardItems.joinToString(" ")
+                    val fingerprint = computeCardFingerprint(cardItems)
+
+                    val cleanCardTitle = cardItems.firstOrNull { it.trim().length > 3 }?.take(80) ?: targetItem.title
+                    val isMatch = fingerprint == targetItem.fingerprint ||
+                            cleanCardTitle.contains(searchQuery, ignoreCase = true) ||
+                            combinedText.contains(searchQuery, ignoreCase = true)
+
+                    if (isMatch) {
+                        CrawlerTraceLogger.log("CARD_MATCH", "Matched target #${targetItem.index} via Fast-Path Native Search (\"$searchQuery\")")
+                        clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                        clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                        clickable.getBoundsInScreen(rect)
+                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                        val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                        for (m in fastMatches) m.recycle()
+                        return UnvisitedCard(targetItem.title, combinedText, fingerprint, clickable, cardBounds)
+                    }
+                    clickable.recycle()
+                }
+            }
+            for (m in fastMatches) m.recycle()
+        }
+
+        val postCards = findPostCards(rootNode)
+        var matchedCard: UnvisitedCard? = null
+
         for (card in postCards) {
-            card.getBoundsInScreen(rect)
+            if (matchedCard == null) {
+                card.getBoundsInScreen(rect)
 
-            val cardItems = mutableListOf<String>()
-            collectQuickText(card, cardItems)
-            val combinedText = cardItems.joinToString(" ")
-            if (combinedText.length <= 20) {
-                card.recycle()
-                continue
-            }
+                val cardItems = mutableListOf<String>()
+                collectQuickText(card, cardItems)
+                val combinedText = cardItems.joinToString(" ")
+                val lowerCombined = combinedText.lowercase().trim()
 
-            val lowerCombined = combinedText.lowercase().trim()
-            // Standalone comment chip check (only drop if the node contains exclusively comments and nothing else)
-            if (lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35) {
-                card.recycle()
-                continue
-            }
+                val isStandaloneComment = lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35
+                if (combinedText.length > 20 && !isStandaloneComment) {
+                    val titleCandidate = cardItems.firstOrNull { item ->
+                        val lower = item.trim().lowercase()
+                        !excludedChrome.contains(lower) &&
+                                !excludedChrome.any { lower.startsWith(it) } &&
+                                !lower.startsWith("tab ") &&
+                                !lower.startsWith("signed in as") &&
+                                !lower.startsWith("tasks due") &&
+                                !lower.startsWith("class options for") &&
+                                !lower.contains("class comments") &&
+                                item.trim().length > 3
+                    }
+                    val title = titleCandidate?.take(80) ?: "Classroom Notice"
+                    val fingerprint = computeCardFingerprint(cardItems)
 
-            val titleCandidate = cardItems.firstOrNull { item ->
-                val lower = item.trim().lowercase()
-                !excludedChrome.contains(lower) &&
-                        !excludedChrome.any { lower.startsWith(it) } &&
-                        !lower.startsWith("tab ") &&
-                        !lower.startsWith("signed in as") &&
-                        !lower.startsWith("tasks due") &&
-                        !lower.startsWith("class options for") &&
-                        !lower.contains("class comments") &&
-                        item.trim().length > 3
-            }
-            val title = titleCandidate?.take(80) ?: "Classroom Notice"
-            val fingerprint = computeCardFingerprint(cardItems)
+                    // Resilient Multi-Factor Matching: Fingerprint -> Title -> Content Overlap
+                    val isFingerprintMatch = (fingerprint == targetItem.fingerprint)
+                    val cleanCardTitle = title.trim().lowercase()
+                    val targetLower = cleanTargetTitle.lowercase()
+                    val isTitleMatch = targetLower.isNotBlank() && (
+                            cleanCardTitle == targetLower ||
+                            (cleanCardTitle.length >= 15 && targetLower.startsWith(cleanCardTitle.take(25))) ||
+                            (targetLower.length >= 15 && cleanCardTitle.startsWith(targetLower.take(25)))
+                    )
+                    val isContentMatch = targetLower.length >= 20 && combinedText.contains(targetLower.take(25), ignoreCase = true)
 
-            // Resilient Multi-Factor Matching: Fingerprint -> Title -> Content Overlap
-            val isFingerprintMatch = (fingerprint == targetItem.fingerprint)
-            val cleanCardTitle = title.trim().lowercase()
-            val cleanTargetTitle = targetItem.title.trim().lowercase()
-            val isTitleMatch = cleanTargetTitle.isNotBlank() && (
-                    cleanCardTitle == cleanTargetTitle ||
-                    (cleanCardTitle.length >= 15 && cleanTargetTitle.startsWith(cleanCardTitle.take(25))) ||
-                    (cleanTargetTitle.length >= 15 && cleanCardTitle.startsWith(cleanTargetTitle.take(25)))
-            )
-            val isContentMatch = cleanTargetTitle.length >= 20 && combinedText.contains(cleanTargetTitle.take(25), ignoreCase = true)
+                    if (isFingerprintMatch || isTitleMatch || isContentMatch) {
+                        val matchReason = if (isFingerprintMatch) "Fingerprint ($fingerprint)"
+                        else if (isTitleMatch) "Title (\"${title.take(35)}\")"
+                        else "Content Overlap"
 
-            if (isFingerprintMatch || isTitleMatch || isContentMatch) {
-                val matchReason = if (isFingerprintMatch) "Fingerprint ($fingerprint)"
-                else if (isTitleMatch) "Title (\"${title.take(35)}\")"
-                else "Content Overlap"
+                        CrawlerTraceLogger.log(
+                            "CARD_MATCH",
+                            "Matched target #${targetItem.index} via $matchReason"
+                        )
 
-                CrawlerTraceLogger.log(
-                    "CARD_MATCH",
-                    "Matched target #${targetItem.index} via $matchReason"
-                )
-
-                val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
-                val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
-                card.recycle()
-                return UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
+                        val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
+                        clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+                        clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                        val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                        matchedCard = UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
+                    }
+                }
             }
             card.recycle()
         }
-        return null
+        return matchedCard
     }
 
     private fun findBestCandidateCardOnScreen(rootNode: AccessibilityNodeInfo?, targetItem: StreamManifestItem): UnvisitedCard? {
@@ -2459,9 +2555,17 @@ class KidsAccessibilityService : AccessibilityService() {
         var current: AccessibilityNodeInfo? = node
         while (current != null) {
             if (current.isClickable) {
-                return AccessibilityNodeInfo.obtain(current)
+                val clickableNode = AccessibilityNodeInfo.obtain(current)
+                if (current != node) {
+                    current.recycle()
+                }
+                return clickableNode
             }
-            current = current.parent
+            val parentNode = current.parent
+            if (current != node) {
+                current.recycle()
+            }
+            current = parentNode
         }
         return null
     }

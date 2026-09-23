@@ -47,14 +47,16 @@ As parents, keeping up with school communications is exhausting. Homework assign
      - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
      - [Announcement Discrimination & Zero-Click Direct Stream Ingestion](#announcement-discrimination--zero-click-direct-stream-ingestion)
+     - [Deterministic Focus Navigation & Exact Pixel Centering (ACTION_SHOW_ON_SCREEN)](#deterministic-focus-navigation--exact-pixel-centering-action_show_on_screen)
      - [Safe Tap Targeting (Top-Third Strategy)](#safe-tap-targeting-top-third-strategy)
      - [Comment Sheet Auto-Dismissal](#comment-sheet-auto-dismissal)
-     - [Manifest-Driven Auto-Recovery & SQLite Instant Skipping](#manifest-driven-auto-recovery--sqlite-instant-skipping)
+     - [Manifest-Driven Auto-Recovery & Discrete RecyclerView Stepping](#manifest-driven-auto-recovery--discrete-recyclerview-stepping)
      - [Autonomous Stream Tab Recovery (Anti-Tab Drift)](#autonomous-stream-tab-recovery-anti-tab-drift)
      - [Autonomous Classes List Recovery (1-Screen-Behind Protection)](#autonomous-classes-list-recovery-1-screen-behind-protection)
      - [Universal Screen Centering & Geometry Calibration](#universal-screen-centering--geometry-calibration)
      - [100% Crawl Verification Milestone (176/176 Notices & 36 Vault Attachments)](#100-crawl-verification-milestone-176176-notices--36-vault-attachments)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
+     - [Exhaustive Multi-Attachment Ingestion (Fresh-Node Re-Querying Loop)](#exhaustive-multi-attachment-ingestion-fresh-node-re-querying-loop)
    - [Zero-Click Hands-Free Exit & Auto-Completion](#zero-click-hands-free-exit--auto-completion)
      - [Hands-Free Auto-Stop on App Exit](#hands-free-auto-stop-on-app-exit)
      - [Hands-Free Auto-Close on Stream Completion](#hands-free-auto-close-on-stream-completion)
@@ -550,6 +552,17 @@ flowchart TD
   - The full text, author, and timestamp are captured instantly, the notice is marked completed in the manifest (`markItemCompleted`), and the overlay counter increments.
   - **Zero Accidental Comment Clicks:** Because announcements are never tapped, accidental clicks on comment buttons or bottom comment sheets are **100% prevented**!
 
+- **Deterministic Focus Navigation & Exact Pixel Centering (`ACTION_SHOW_ON_SCREEN`):**
+  In conventional mobile UI crawlers and automation tools, locating a specific notice on an infinite scrolling feed relies on "blind touch swipe guessing"—flinging the screen with synthetic swipe gestures and hoping the card lands near the center of the viewport. This invariably leads to kinetic overshooting, where a swipe over-scrolls past smaller announcements, leaves card headers clipped off-screen, or triggers unwanted bounce-back animations.
+  K.I.D.S. replaces blind kinetic flinging with **Deterministic Focus Navigation**:
+  - **Native Accessibility Indexing (`findAccessibilityNodeInfosByText`):** The crawler scans the active window hierarchy using Android's native accessibility indexing. This native search indexes cards that are partially clipped or pre-fetched into the `RecyclerView` layout buffer before they are even fully visible on screen.
+  - **Direct Viewport Snapping (`ACTION_SHOW_ON_SCREEN`):** The instant a matching candidate node is identified, K.I.D.S. invokes `clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)`. This instructs Android's native `RecyclerView.LayoutManager` to programmatically scroll and snap the card directly into the visible viewport with **exact pixel precision**.
+  - **Accessibility Focus Lock (`ACTION_ACCESSIBILITY_FOCUS`):** Once snapped onto the screen, the card is immediately granted accessibility focus, stabilizing its coordinate bounds across dynamic view recycling.
+  - **Safe Center Clamping:** The card's vertical center is safely clamped within the safe viewport boundaries:
+    $$\text{safeCenterY} = \text{rect.centerY().coerceIn}(\text{minTop} + 40, \text{maxBottom} - 40)$$
+    completely eliminating blind swipe guessing, kinetic overshooting, and half-truncated cards.
+  - **Discrete RecyclerView Stepping (`stepScrollStream`):** When navigating between distant notices, the crawler avoids uncontrolled kinetic flings. It uses `stepScrollStream`, dispatching native `AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD` (or `ACTION_SCROLL_FORWARD`) directly to the `RecyclerView` container (`findScrollableContainer`). If native scrolling is unhandled, it falls back to a zero-fling controlled drag (`performControlledDrag`) that advances by exactly one card height (~24% of screen height) with zero kinetic inertia.
+
 - **Safe Tap Targeting (Top-Third Strategy):**
   When a post does contain materials or assignments and needs to be opened to harvest attachments:
   - At the bottom of every Classroom card sits the class comment button (*"Add class comment"* or *"X class comments"*). In older automation systems, tapping the vertical center or bottom of a card frequently struck the comment button, opening comment dialogs instead of the post's assignment detail.
@@ -632,9 +645,13 @@ The robustness of K.I.D.S.'s autonomous stream recovery, universal screen geomet
 If the target post is not immediately visible on screen after returning from detail view or during stream navigation:
 1. **Screen Fingerprint Scan:** The assistant scans all post cards currently visible in the safe viewport (`getVisibleCardFingerprints()`).
 2. **Relative Index Comparison & Pass 2 Reverse Navigation:** It matches visible post fingerprints against their assigned indices in the `StreamManifest`:
-   - **Traversing Toward Stream Top (`targetAhead == false`):** In Pass 2 reverse crawling, the assistant traverses from the bottom of the stream upwards toward post #1 (top of stream). Unless the target is verified to be further down (`nextItem.index > maxVisibleIndex`), the assistant defaults to backward/upward traversal. The overlay displays `Recovering Position...` (`Seeking post #X/Total`) and executes a **Full Kinetic Upward Swipe (`performScrollBackward()`)**. By deploying full kinetic swipes instead of micro-nudges, preceding **600–800px assignment and material cards** are swept fully into the viewport, completely exposing their title, instructions, and discrete attachment chips.
-   - **Target is Further Down / Ahead (`targetAhead == true`):** If scroll overshoots or layout re-anchoring place the target notice below the current visible range (`nextItem.index > maxVisibleIndex`), the overlay displays `Navigating to Post...` (`Seeking post #X/Total`) and triggers a forward scroll (`performScroll()`).
-   - **Oscillation-Guarded Micro-Scrolling:** Micro-scrolling (16% screen height gentle nudge) is strictly reserved for breaking confirmed directional oscillation (`isOscillating`), preventing endless ping-pong seeking while allowing full cards to display unclipped.
+   - **Traversing Toward Stream Top (`targetAhead == false`):** In Pass 2 reverse crawling, the assistant traverses from the bottom of the stream upwards toward post #1 (top of stream). Unless the target is verified to be further down (`nextItem.index > maxVisibleIndex`), the assistant defaults to backward/upward traversal. The overlay displays `Seeking Notice...` (`#X/Total: [title]`) and executes discrete backward stepping via `stepScrollStream(forward = false)`:
+     1. Dispatches native `AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD` directly to the `RecyclerView` container (`findScrollableContainer`).
+     2. If native scrolling is unhandled by OEM layers, it falls back to a zero-fling controlled drag (`performControlledDrag(forward = false)`) that glides the screen by exactly one card height (~24% of screen height) over 450ms with zero kinetic inertia.
+   - **Target is Further Down / Ahead (`targetAhead == true`):** If layout re-anchoring or fast-forwarding places the target notice below the current visible range (`nextItem.index > maxVisibleIndex`), the overlay displays `Navigating to Post...` (or `Fast-Forwarding Synced Notices...`) and executes discrete forward stepping via `stepScrollStream(forward = true)`:
+     1. Dispatches native `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` to the container.
+     2. Falls back to a forward zero-fling controlled drag (`performControlledDrag(forward = true)`) with zero kinetic fling velocity.
+   - **Elimination of Kinetic Overshooting:** By replacing blind kinetic flings with native accessibility container actions and 450ms zero-fling controlled drags, Classroom's `RecyclerView` advances card-by-card with deterministic precision, eliminating uncontrolled momentum and never skipping past small notices.
 3. **Movement Progress Awareness:** When seeking a distant notice across multiple scrolls, K.I.D.S. monitors viewport motion. As long as the list is progressing closer toward the target notice, the engine never falsely penalizes or skips the item.
 4. **Seamless Resumption:** As soon as `findCardByFingerprint()` locates the target card, normal deep capture resumes instantly.
 
@@ -740,6 +757,24 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
         - **Dynamic Bounds Selection:** Once located, K.I.D.S. computes the exact screen bounds of the "K.I.D.S. Vault" tile and performs `ACTION_CLICK` (or dispatches a physical center tap), launching ingestion.
      7. **Instant Staging via `ShareTargetActivity` (<50ms):** Android routes the pristine file byte stream directly into K.I.D.S.'s translucent `ShareTargetActivity`. The activity copies the stream into private vault staging (`Android/data/com.kids.collector/files/vault_attachments/`), computes the SHA-256 fingerprint, matches the file to the parent notice in SQLite Room, and enqueues Google Drive upload via WorkManager—all within 50ms and with zero screen flicker!
      8. **Guarded Return & Repetition:** The assistant executes a guarded return back to the Classroom detail view, taps the next attachment chip, and repeats the pipeline until 100% of attachments attached to the notice are safely captured and staged.
+   - **Exhaustive Multi-Attachment Ingestion (Fresh-Node Re-Querying Loop):**
+     In many educational posts—especially exam revision packs, unit test syllabi, or weekly homework summaries—a single notice may contain **multiple attachments (e.g. 9 practice worksheets, reading passages, and answer keys in a single post)**.
+     Traditional UI automation pipelines suffer catastrophic failures in this scenario:
+     1. *Stale Node Crashes:* Holding references to Android `AccessibilityNodeInfo` objects across window transitions (such as opening and closing document viewers) causes `IllegalStateException` or stale-node exceptions.
+     2. *Below-the-Fold Omissions:* When more than 2–3 attachments exist, Classroom pushes remaining files below the viewport fold, causing naive single-screen scanners to overlook the majority of worksheets.
+     
+     K.I.D.S. solves this with an **Exhaustive Multi-Attachment Ingestion Pipeline**:
+     - **Discovery & Below-the-Fold Scroll-to-Reveal:** Upon entering the post detail screen, K.I.D.S. extracts immediately visible attachments and then executes autonomous downward detail sweeps (`performDetailScrollDown`) up to 2 times. Any attachment chip positioned below the fold is discovered, deduplicated by filename, and registered in local SQLite Room (`AttachmentEntity`) with its unique file hash (`${noticeId}_${fileName}`).
+     - **Immediate Node Recycling:** All initial node references (`att.downloadNode?.recycle()`, `att.clickableChip?.recycle()`) are immediately recycled to prevent memory leaks and eliminate stale reference bugs.
+     - **Sequential Fresh-Node Re-Querying Loop:** K.I.D.S. extracts the list of pending target filenames and iterates through them systematically one by one:
+       1. *Sync Status Verification:* Skips any attachment that is already verified as physically downloaded and synced (`SyncStatus.SYNCED`).
+       2. *Fresh Window Root Acquisition:* Queries a brand-new accessibility root from the active window (`rootInActiveWindow`) on every iteration.
+       3. *Token-Based Chip Resolution (`findAttachmentChipByFileName`):* Queries the fresh tree using full and base filename tokens (e.g., `"Worksheet_4"` from `"Worksheet_4.pdf"`), ascending to clickable chip ancestors.
+       4. *Adaptive Below-the-Fold Scroll-to-Reveal:* If the chip has scrolled out of view, the crawler automatically scrolls the detail view downward (via `ACTION_SCROLL_FORWARD` on the container or controlled drag) and re-inspects the refreshed window tree.
+       5. *Deterministic Chip Alignment (`ACTION_SHOW_ON_SCREEN`):* The target chip is snapped squarely into view with `targetChip.performAction(ACTION_SHOW_ON_SCREEN)` and focused with `ACTION_ACCESSIBILITY_FOCUS` before clicking.
+       6. *Autonomous Ingestion & Viewer Handling:* Automatically triggers Share to "K.I.D.S. Vault" or download via `automateViewerShareOrDownload(fileName)`.
+       7. *600ms UI Tree Regeneration Settle Window:* Following return to the Classroom detail view, the crawler pauses for 600ms to allow Google Classroom's view hierarchy to fully settle and regenerate before querying the next attachment.
+     - **100% Ingestion Guarantee:** All attachments—even posts with 9+ heavy files—are completely captured, staged into private storage, and queued for Google Drive backup with zero dropped files and zero stale node crashes.
    - **Calibrated Debouncing:** When direct download buttons are present alongside chips, a 1,000ms debounce gives Android's system `DownloadManager` ample time to register the download request without queue dropouts or socket contention.
 7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.

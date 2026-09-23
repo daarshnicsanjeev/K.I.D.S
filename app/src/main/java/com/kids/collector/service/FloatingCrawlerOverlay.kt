@@ -709,6 +709,55 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun performControlledDrag(isScrollForward: Boolean, onComplete: () -> Unit) {
+        handler.post {
+            performControlledDragGesture(isScrollForward, onComplete)
+        }
+    }
+
+    private fun performControlledDragGesture(isScrollForward: Boolean, onComplete: () -> Unit) {
+        val displayMetrics = service.resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
+
+        val startX = width * SWIPE_HORIZONTAL_CENTER_RATIO
+        // Move by exactly one card height (~24% of screen height) with zero fling
+        val (startY, endY) = if (isScrollForward) {
+            Pair(height * CONTROLLED_DRAG_FORWARD_START_Y_RATIO, height * CONTROLLED_DRAG_FORWARD_END_Y_RATIO)
+        } else {
+            Pair(height * CONTROLLED_DRAG_BACKWARD_START_Y_RATIO, height * CONTROLLED_DRAG_BACKWARD_END_Y_RATIO)
+        }
+
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching zero-fling controlled drag (${if (isScrollForward) "FORWARD" else "BACKWARD"}): ($startX, $startY) -> ($startX, $endY)"
+        )
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val stroke = GestureDescription.StrokeDescription(path, 0, CONTROLLED_DRAG_DURATION_MS)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Controlled drag COMPLETED")
+                onComplete()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Controlled drag CANCELLED")
+                onComplete()
+            }
+        }, null)
+
+        if (!dispatched) {
+            onComplete()
+        }
+    }
+
     private fun fallbackNativeScrollBackward() {
         try {
             val rootNode = service.rootInActiveWindow ?: return
@@ -796,5 +845,10 @@ class FloatingCrawlerOverlay(
         private const val DEFAULT_SWIPE_DURATION_MS = 400L
         private const val FAST_SWIPE_DURATION_MS = 350L
         private const val NUDGE_SWIPE_DURATION_MS = 220L
+        private const val CONTROLLED_DRAG_FORWARD_START_Y_RATIO = 0.60f
+        private const val CONTROLLED_DRAG_FORWARD_END_Y_RATIO = 0.36f
+        private const val CONTROLLED_DRAG_BACKWARD_START_Y_RATIO = 0.38f
+        private const val CONTROLLED_DRAG_BACKWARD_END_Y_RATIO = 0.62f
+        private const val CONTROLLED_DRAG_DURATION_MS = 450L
     }
 }

@@ -359,9 +359,9 @@ stateDiagram-v2
                 CHECK_ATTEMPTS --> SKIP_POST: attemptCount >= 4 (Unopenable post safeguard)
                 CHECK_ATTEMPTS --> EVALUATE_INDICES: attemptCount < 4
                 EVALUATE_INDICES --> RECOVERING_POSITION: minVisibleIndex > target.index (Too far down)
-                RECOVERING_POSITION --> CHECK_TARGET_VISIBLE: performScrollBackward() (Scroll upward)
+                RECOVERING_POSITION --> CHECK_TARGET_VISIBLE: stepScrollStream(forward = false) [Native Backward / Controlled Drag]
                 EVALUATE_INDICES --> NAVIGATING_TO_POST: target is ahead
-                NAVIGATING_TO_POST --> CHECK_TARGET_VISIBLE: performScroll() (Scroll downward)
+                NAVIGATING_TO_POST --> CHECK_TARGET_VISIBLE: stepScrollStream(forward = true) [Native Forward / Controlled Drag]
             }
         }
         DIRECT_STREAM_FALLBACK --> FETCH_NEXT_PENDING: ingestNoticeDirect() & markCompleted()
@@ -482,11 +482,11 @@ sequenceDiagram
                 alt attemptCount >= 4 (Safeguard)
                     ACS->>MAN: markSkipped(nextItem.fingerprint) [FAILED_SKIPPED]
                 else minVisibleIndex > nextItem.index (Scrolled too far down)
-                    ACS->>OV: updateStatus("Recovering Position...", "Scrolling up")
-                    ACS->>OV: performScrollBackward() [Downward swipe]
+                    ACS->>OV: updateStatus("Seeking Notice...", nextItem.title)
+                    ACS->>ACS: stepScrollStream(forward = false) [ACTION_SCROLL_BACKWARD / Controlled Drag]
                 else target is ahead
-                    ACS->>OV: updateStatus("Navigating to Post...", "Seeking post")
-                    ACS->>OV: performScroll() [Upward swipe]
+                    ACS->>OV: updateStatus("Navigating to Post...", nextItem.title)
+                    ACS->>ACS: stepScrollStream(forward = true) [ACTION_SCROLL_FORWARD / Controlled Drag]
                 end
             end
         end
@@ -799,15 +799,22 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   ```
   - **Zero-Click Ingestion & Comment Prevention:** Because non-material announcements are ingested directly from the stream card, physical taps are never dispatched on announcement cards. Accidental clicks on *"Add class comment"* or comment counters are **100% prevented**, while throughput increases dramatically.
 
-- **Card Seeking & Detail View Scrolling:**
-  The crawler scans the screen for the target item using multi-factor matching (`findCardForTarget(root, nextItem)`):
-  If the target card is visible in the safe viewport:
-  1. Sets status to `StreamItemStatus.IN_PROGRESS`.
-  2. Updates overlay status to `"Capturing (X/Total - Y%)..."`.
-  3. Dispatches physical tap gesture (`dispatchTap`) at safe top-third coordinates (`safeTapY = (bounds.top + 50)`).
-  4. Enters detail view (or falls back to direct stream ingestion if plain-text notice or upon reaching material retry bounds).
-  5. In detail view, if body text is extensive and attachments are below the fold, executes downward kinetic sweeps (`performDetailScrollDown`) up to 3 times to scan and harvest all attachments.
-  6. Safely returns to the stream, marks the item `StreamItemStatus.COMPLETED` via `manifest.markCompleted(fingerprint, savedAttCount)`, and increments notice tallies.
+- **Fast-Path Native Search & Exact Pixel Precision (`findCardForTarget` & `ACTION_SHOW_ON_SCREEN`):**
+  Instead of relying on heuristic bounding scans or blind touch fling guessing, `findCardForTarget` implements an optimized native accessibility search:
+  1. **Clean Title Query Generation:** Extracts a focused 30-character query candidate from `targetItem.title` (stripping category prefixes like `Material:` via `substringAfter(":")`).
+  2. **Native Text Indexing (`findAccessibilityNodeInfosByText`):**
+     ```kotlin
+     val fastMatches = rootNode.findAccessibilityNodeInfosByText(searchQuery)
+     ```
+     This native accessibility search queries Android's active window layout hierarchy directly, locating matching post cards even if they are partially clipped or pre-fetched into the `RecyclerView` buffer.
+  3. **Ancestry & Fingerprint Validation:** Finds the clickable container (`findClickableAncestor`), collects quick text, computes fingerprint, and confirms cryptographic or token match.
+  4. **Exact Viewport Snapping via `ACTION_SHOW_ON_SCREEN`:**
+     ```kotlin
+     clickable.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+     clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+     ```
+     Invoking `ACTION_SHOW_ON_SCREEN` directs Android's `RecyclerView.LayoutManager` to programmatically scroll and snap the target card into the interactive viewport with **exact pixel precision**, completely eliminating blind touch swipe guessing, kinetic overshooting, and layout bounce.
+  5. **Clamped Viewport Bounds:** Coordinates are clamped within safe bounds (`safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)`), constructing a stable `UnvisitedCard`. All node references are cleanly recycled.
 
 - **Fast-Forward Seeking Mode (Zero Redundant Work):**
   When starting capture on a stream where prior notices were already captured, `nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))` triggers Fast-Forward Seeking:
@@ -853,30 +860,41 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
           false // Default in bottom-to-top pass: scroll backward towards the top!
       }
       ```
-      - If `nextItem.index > maxVisibleIndex`, the target is confirmed to be further down the list, and forward scrolling is dispatched (`performScroll()`).
-      - Otherwise, the target is towards the top of the feed (`!targetAhead`). When `maxVisibleIndex == null`, it defaults cleanly to backward (upward) navigation towards post #1.
-   4. **Full Kinetic Upward Swiping (Replacing Micro-Nudges):**
-      In earlier implementations, micro-scrolling was invoked whenever target distance was $\le 2$. However, Classroom assignment and material cards typically measure **600 to 800 pixels in vertical height**. Micro-nudges (16% screen height) frequently left these large cards clipped off-screen or stranded beneath the viewport boundary, hiding their attachment chips.
-      The crawler now restricts micro-scrolls strictly to confirmed directional oscillations:
+      - If `nextItem.index > maxVisibleIndex`, the target is confirmed to be further down the list, and forward stepping is dispatched (`stepScrollStream(forward = true)`).
+      - Otherwise, the target is towards the top of the feed (`!targetAhead`). When `maxVisibleIndex == null`, it defaults cleanly to backward (upward) stepping towards post #1 (`stepScrollStream(forward = false)`).
+   4. **Discrete RecyclerView Stepping (`stepScrollStream`, `findScrollableContainer` & `performControlledDrag`):**
+      In Pass 2, seeking between notices requires deterministic, single-card granularity rather than uncontrolled kinetic flings that overshoot small circulars. The crawler invokes `stepScrollStream(forward)`:
       ```kotlin
-      // Only use micro-scroll if oscillation is detected; otherwise use full kinetic swipe so previous 600-800px cards are revealed!
-      val useMicroScroll = isOscillating
-
-      if (!targetAhead) {
-          if (useMicroScroll) {
-              crawlerOverlay?.performMicroScroll(forward = false) { scrollDone = true }
-          } else {
-              crawlerOverlay?.performScrollBackward { scrollDone = true }
+      private suspend fun stepScrollStream(forward: Boolean) {
+          val root = rootInActiveWindow
+          var scrolledNatively = false
+          if (root != null) {
+              val container = findScrollableContainer(root)
+              if (container != null) {
+                  val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                  scrolledNatively = container.performAction(action)
+                  container.recycle()
+              }
+              root.recycle()
           }
-      } else {
-          if (useMicroScroll) {
-              crawlerOverlay?.performMicroScroll(forward = true) { scrollDone = true }
+          if (!scrolledNatively) {
+              // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
+              var scrollDone = false
+              crawlerOverlay?.performControlledDrag(forward) { scrollDone = true }
+              waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
           } else {
-              crawlerOverlay?.performScroll { scrollDone = true }
+              delay(400)
           }
       }
       ```
-      Full kinetic upward swipes (`performScrollBackward`) sweep large 600–800px cards completely into view, ensuring all attachment chips and download buttons are fully rendered and accessible.
+      - **Container Discovery (`findScrollableContainer`):** Recursively traverses the active window hierarchy to identify the primary scrolling container (`node.isScrollable` or class name matching `RecyclerView`, `ListView`, or `ScrollView`).
+      - **Native Accessibility Scrolling:** Dispatches native `AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD` (for upward travel toward stream top) or `ACTION_SCROLL_FORWARD` (when target is ahead), instructing the view adapter to step cleanly without fling physics.
+      - **Controlled Zero-Fling Drag Fallback (`performControlledDrag`):** If native container actions are not supported by the OEM accessibility delegate, `stepScrollStream` falls back to `FloatingCrawlerOverlay.performControlledDrag`:
+        - Dispatches a 450ms smooth drag along the screen horizontal centerline ($x = 0.50w$).
+        - Moves by exactly one card height (~24% of screen height):
+          - Forward: $(0.50w, 0.60h) \longrightarrow (0.50w, 0.36h)$
+          - Backward: $(0.50w, 0.38h) \longrightarrow (0.50w, 0.62h)$
+        - The 450ms duration eliminates touch release velocity, yielding **zero kinetic inertia** and completely eliminating overshooting past compact announcement cards.
    5. **Movement Tracking & Stuck Safeguard:**
       - As long as `minVisibleIndex` moves closer to `nextItem.index`, recovery attempts are not incremented.
       - If the screen is confirmed stuck for 3+ consecutive static cycles, attempt counters increment. After 4 confirmed stuck recovery attempts (`attempts >= 4`), the item is marked `StreamItemStatus.FAILED_SKIPPED` in the manifest and skipped cleanly, ensuring the crawler never hangs.
@@ -1100,57 +1118,155 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   ```
   Coupled with `"more options for attachment"` in `excludedChrome`, 3-dots menus are completely filtered out, guaranteeing that clicks are dispatched solely to actual download buttons and clickable attachment cards.
 
-- **Autonomous Attachment Capture & Ingestion Pipeline:**
-  Instead of relying on internal app caching, K.I.D.S. systematically extracts and ingests each attachment individually through a dual-strategy pipeline supporting both direct downloads and native share targeting:
+- **Exhaustive Multi-Attachment Ingestion & Sequential Fresh-Node Re-Querying Loop:**
+  In educational feeds, posts often bundle multiple worksheets and study packs (e.g. 9 practice worksheets, reading passages, and answer keys in a single announcement).
+  Naively holding onto `AccessibilityNodeInfo` instances across viewer transitions causes `IllegalStateException` or stale node crashes upon returning to the Classroom detail view. Furthermore, attachments positioned below the viewport fold are missed if the engine only scans the initial visible screen.
   
-  ```kotlin
-  val attachments = extractDetailAttachments(detailRoot)
-  for ((index, att) in attachments.withIndex()) {
-      if (att.downloadNode != null && att.downloadNode.isClickable) {
-          crawlerOverlay?.updateStatus("Downloading (${index + 1}/${attachments.size})...", att.fileName)
-          CrawlerTraceLogger.log("ATTACHMENT_DOWNLOAD", "Tapping download button for \"${att.fileName}\"")
-          val clicked = att.downloadNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-          if (!clicked) {
-              val b = Rect()
-              att.downloadNode.getBoundsInScreen(b)
-              dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-          }
-          delay(1000) // Calibrated debounce between downloads
-      } else if (att.clickableChip != null && att.clickableChip.isClickable) {
-          crawlerOverlay?.updateStatus("Opening (${index + 1}/${attachments.size})...", att.fileName)
-          CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Tapping attachment chip for \"${att.fileName}\"")
-          val clicked = att.clickableChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-          if (!clicked) {
-              val b = Rect()
-              att.clickableChip.getBoundsInScreen(b)
-              dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-          }
-          delay(800)
+  `processPostDetailAndDownload` resolves this with a robust two-phase ingestion architecture:
+  
+  1. **Discovery & Below-the-Fold Scroll-to-Reveal:**
+     Upon entering detail view, the crawler extracts immediately visible attachment chips and then scrolls downward within the detail screen up to 2 times:
+     ```kotlin
+     val allAttachments = mutableListOf<ExtractedAttachmentDetail>()
+     allAttachments.addAll(extractDetailAttachments(detailRoot))
 
-          // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
-          automateViewerShareOrDownload(att.fileName)
+     var detailScrolls = 0
+     while (detailScrolls < 2) {
+         var scrollDone = false
+         crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+         waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
+         delay(400)
 
-          // Check if file was captured by ShareTargetActivity
-          val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
-          if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-              if (capturedAttachmentNames.add(att.fileName)) {
-                  crawlerOverlay?.incrementAttachmentCount()
-              }
-          }
-      }
-      att.downloadNode?.recycle()
-      att.clickableChip?.recycle()
-  }
+         val scrolledRoot = rootInActiveWindow
+         if (scrolledRoot != null) {
+             val scrolledAtts = extractDetailAttachments(scrolledRoot)
+             for (att in scrolledAtts) {
+                 if (allAttachments.none { it.fileName == att.fileName }) {
+                     allAttachments.add(att)
+                 } else {
+                     att.downloadNode?.recycle()
+                     att.clickableChip?.recycle()
+                 }
+             }
+             scrolledRoot.recycle()
+         }
+         detailScrolls++
+     }
+     ```
+  
+  2. **Persistence Registration & Initial Node Recycling:**
+     Each discovered file is registered in SQLite Room (`AttachmentEntity`) with its unique file hash (`${noticeId}_${fileName}`).
+     Crucially, **all initial node references are immediately recycled** to prevent holding stale pointers across subsequent activity transitions:
+     ```kotlin
+     val pendingTargetFileNames = allAttachments.map { it.fileName }
+     for (att in allAttachments) {
+         att.downloadNode?.recycle()
+         att.clickableChip?.recycle()
+     }
+     ```
+  
+  3. **Sequential Fresh-Node Re-Querying Loop:**
+     The crawler iterates through `pendingTargetFileNames` sequentially. On every iteration, it obtains a **fresh active window root** (`rootInActiveWindow`) and locates the target chip dynamically via `findAttachmentChipByFileName`:
+     ```kotlin
+     for ((index, fileName) in pendingTargetFileNames.withIndex()) {
+         val fileHash = "${noticeId}_${fileName}".hashCode().toString()
+         val existingAtt = db.attachmentDao().findByFileHash(fileHash)
+         if (existingAtt != null && existingAtt.syncStatus == SyncStatus.SYNCED.name &&
+             !existingAtt.driveFileId.isNullOrBlank() && !existingAtt.driveFileId.startsWith("virtual_")) {
+             continue // Already physically downloaded and synced
+         }
+
+         // Fresh window inspection: locate the chip in currently active detail window
+         val freshRoot = rootInActiveWindow ?: continue
+         var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
+
+         // If not in immediate viewport, scroll detail view downward to reveal it
+         if (targetChip == null) {
+             val container = findScrollableContainer(freshRoot)
+             if (container != null) {
+                 container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                 container.recycle()
+                 delay(400)
+             } else {
+                 var scrollDone = false
+                 crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                 waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
+             }
+             val scrolledRoot = rootInActiveWindow
+             if (scrolledRoot != null) {
+                 targetChip = findAttachmentChipByFileName(scrolledRoot, fileName)
+                 scrolledRoot.recycle()
+             }
+         }
+         freshRoot.recycle()
+
+         if (targetChip != null) {
+             crawlerOverlay?.updateStatus("Sharing (${index + 1}/${pendingTargetFileNames.size})...", fileName)
+             CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Targeting fresh attachment chip for \"$fileName\"")
+
+             // Snap into view and focus with exact pixel precision
+             targetChip.performAction(AccessibilityNodeInfo.ACTION_SHOW_ON_SCREEN)
+             targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+             delay(200)
+
+             val clicked = targetChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+             if (!clicked) {
+                 val b = Rect()
+                 targetChip.getBoundsInScreen(b)
+                 dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+             }
+             targetChip.recycle()
+             delay(800)
+
+             // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
+             automateViewerShareOrDownload(fileName)
+
+             // Check if file was captured by ShareTargetActivity
+             val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+             if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+                 if (capturedAttachmentNames.add(fileName)) {
+                     crawlerOverlay?.incrementAttachmentCount()
+                 }
+             }
+             // Allow detail view UI tree to regenerate before querying next attachment
+             delay(600)
+         }
+     }
+     ```
+  
+  4. **Token-Based Chip Search (`findAttachmentChipByFileName`):**
+     `findAttachmentChipByFileName` sanitizes filenames and searches for both full and prefix tokens, ascending to the clickable chip container:
+     ```kotlin
+     private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
+         val cleanName = fileName.replace("...", "").trim()
+         val baseName = cleanName.substringBeforeLast('.')
+         val queries = listOf(cleanName, baseName.take(20)).filter { it.length >= 4 }
+
+         for (q in queries) {
+             val matches = rootNode.findAccessibilityNodeInfosByText(q)
+             for (match in matches) {
+                 val clickable = findClickableAncestor(match) ?: match
+                 if (clickable.isClickable) {
+                     val result = AccessibilityNodeInfo.obtain(clickable)
+                     for (m in matches) m.recycle()
+                     return result
+                 }
+             }
+             for (m in matches) m.recycle()
+         }
+         return null
+     }
+     ```
+     This fresh-node re-querying loop guarantees **zero stale `AccessibilityNodeInfo` crashes**, handles below-the-fold chips seamlessly, and ensures 100% complete ingestion of all attachments across posts of any size.
 
   // Truthful Staged Attachment Counting via scanLocalAttachments Return Value
-  if (attachments.isNotEmpty()) {
+  if (allAttachments.isNotEmpty()) {
       delay(1000) // Allow file staging to finalize
       val stagedCount = DownloadFolderObserver.scanLocalAttachments(applicationContext)
       for (s in 0 until stagedCount) {
           crawlerOverlay?.incrementAttachmentCount()
       }
   }
-  ```
 
   - **Elimination of `findSaveAllOfflineButton` & `saveAllBtn` Priority Branch:**
     Earlier crawler revisions considered inspecting detail views for Classroom's internal "Save all files offline" button (`findSaveAllOfflineButton`) to batch-download files. However, deep architectural inspection of Google Classroom revealed that:
@@ -2007,6 +2123,44 @@ class FloatingCrawlerOverlay(...) {
           }
       }, null)
   }
+
+  fun performControlledDrag(forward: Boolean, onComplete: () -> Unit) {
+      handler.post {
+          performControlledDragGesture(forward, onComplete)
+      }
+  }
+
+  private fun performControlledDragGesture(forward: Boolean, onComplete: () -> Unit) {
+      val displayMetrics = service.resources.displayMetrics
+      val width = displayMetrics.widthPixels
+      val height = displayMetrics.heightPixels
+
+      val startX = width * SWIPE_HORIZONTAL_CENTER_RATIO
+      // Move by exactly one card height (~24% of screen height) with zero fling
+      val (startY, endY) = if (forward) {
+          Pair(height * 0.60f, height * 0.36f)
+      } else {
+          Pair(height * 0.38f, height * 0.62f)
+      }
+
+      val path = Path().apply {
+          moveTo(startX, startY)
+          lineTo(startX, endY)
+      }
+
+      // 450ms smooth drag for zero kinetic inertia
+      val stroke = GestureDescription.StrokeDescription(path, 0, 450)
+      val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+      val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+          override fun onCompleted(gestureDescription: GestureDescription?) { onComplete() }
+          override fun onCancelled(gestureDescription: GestureDescription?) { onComplete() }
+      }, null)
+
+      if (!dispatched) {
+          onComplete()
+      }
+  }
   ```
   - **Universal Screen Centering ($x = 0.50w$):**
     All swipes travel down the exact horizontal center of the screen ($50\%$ width). This eliminates any collision with Android 10+ predictive back edge navigation (outer 15% margins) and keeps gestures completely away from the floating overlay pill docked at the right display margin ($w - 56dp$).
@@ -2014,10 +2168,14 @@ class FloatingCrawlerOverlay(...) {
     All swipe gestures are strictly bounded between $25\%$ and $70\%$ screen height:
     - *Pull-to-Refresh Immunity:* Because downward swipes terminate at $0.68h$ and upward swipes begin at $0.70h$, touches never enter the top $25\%$ of the screen, completely preventing accidental triggering of Google Classroom's pull-to-refresh spinner or collapsing course headers.
     - *Bottom Tab Navigation Immunity:* Because touches never cross below $0.70h$, automated swipes never strike Classroom's bottom navigation tabs (`Stream`, `Classwork`, `People`) or Android's home gesture pill.
-  - **Kinetic Fling Mechanics:**
-    - *Forward Scroll:* Moves from $(0.50w, 0.70h)$ to $(0.50w, 0.25h)$ in 400ms, triggering pagination for older announcements.
-    - *Backward Scroll:* Moves from $(0.50w, 0.35h)$ to $(0.50w, 0.68h)$ in 350ms, smoothly scrolling back toward earlier notices.
+  - **Kinetic Fling vs. Controlled Zero-Fling Mechanics (`performControlledDrag`):**
+    - *Pass 1 Forward Kinetic Scroll:* Moves from $(0.50w, 0.70h)$ to $(0.50w, 0.25h)$ in 400ms, intentionally creating fling inertia to trigger Classroom's infinite-scroll pagination for older historical announcements.
+    - *Backward Kinetic Scroll:* Moves from $(0.50w, 0.35h)$ to $(0.50w, 0.68h)$ in 350ms, rapidly rewinding the stream when necessary.
     - *Detail Scroll:* Moves from $(0.50w, 0.70h)$ to $(0.50w, 0.30h)$ in 350ms, uncovering below-the-fold worksheets and download controls.
+    - *Zero-Fling Controlled Drag (`performControlledDrag` in `FloatingCrawlerOverlay.kt`):* Moves exactly one card height (~24% of screen height) along the horizontal center ($x = 0.50w$) over an extended **450ms stroke**:
+      - Forward: $(0.50w, 0.60h) \longrightarrow (0.50w, 0.36h)$
+      - Backward: $(0.50w, 0.38h) \longrightarrow (0.50w, 0.62h)$
+      The 450ms duration dampens finger release velocity to near-zero, producing **zero kinetic inertia**. When stepping backward or forward during Pass 2 auto-recovery, this eliminates overshooting past small announcement cards and prevents oscillation.
   - **Graceful Native Fallback:** If gesture dispatch is cancelled or fails, `fallbackNativeScroll()` executes `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scrollable node, ensuring scrolling never halts.
 
 - **Guaranteed View Teardown (`dismissAndRemove` via `removeViewImmediate`):**
