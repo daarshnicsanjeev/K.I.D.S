@@ -716,10 +716,17 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   - **40% to 50% Reduction in Total Swipes & Halved Crawl Duration:** Ingesting bottom-to-top cuts total physical swipes by 40–50%, significantly conserves device battery, minimizes screen refresh wear, and reduces overall crawl time by half.
   - **Sequential Bottom-to-Top Processing:** The loop calls `val nextItem = manifest.getNextPendingItemReverse()`. If `nextItem == null`, all manifest notices have been processed, and the crawler terminates cleanly.
 
-- **Pass 2 Anti-Loop Guard (`lastTargetIndex`, `consecutiveTargetAttempts > 2`):**
-  To mathematically ensure the crawler never hangs or loops endlessly on a stubborn or unclickable card, Pass 2 evaluates an upfront loop guard at the beginning of each iteration:
+- **Pass 2 Anti-Loop Guard & Stream-Gating Invariant:**
+  To mathematically ensure the crawler never hangs or loops endlessly on a stubborn or unclickable card, Pass 2 evaluates an upfront loop guard at the beginning of each iteration.
+  
+  **The Stream-Gating Invariant:**
+  A critical failure mode in UI automation occurs when a crawler burns through attempt limits while the device is temporarily displaced away from the target screen (e.g. into the Classes list or a document viewer). In K.I.D.S., **attempt counters and force-completions are evaluated ONLY when verified to be on the active stream (`isStreamOrClassworkView(root)`)**:
+  - If displaced to the Classes list (`isClassesListScreen(root)`), the crawler invokes `recoverToStreamFromClassesList()` and recycles the node without touching `consecutiveTargetAttempts`.
+  - If trapped in a comments dialog or unclosed detail view (`!isStreamOrClassworkView(root)`), the crawler executes `performReturnToStream(root)` and continues without incrementing attempts.
+  - Only after confirmed presence on the stream feed does the Loop Guard track target stability:
   ```kotlin
   // Loop Guard: Prevent any single target from looping indefinitely
+  // Evaluated ONLY when verified to be on the active stream!
   if (nextItem.index == lastTargetIndex) {
       consecutiveTargetAttempts++
   } else {
@@ -727,7 +734,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       consecutiveTargetAttempts = 1
   }
 
-  if (consecutiveTargetAttempts > 2) {
+  if (consecutiveTargetAttempts > 3) {
       CrawlerTraceLogger.log(
           "LOOP_GUARD",
           "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
@@ -742,7 +749,7 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       continue
   }
   ```
-  - **Loop Invariant:** If the reverse traversal queries the same item index for more than 2 consecutive cycles (`consecutiveTargetAttempts > 2`), the loop guard automatically triggers direct stream ingestion (`ingestNoticeDirect`), force-marks completion in the manifest using both ordinal index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint (`manifest.markCompleted(nextItem.fingerprint)`), adds the hash to `visitedPostFingerprints`, resets `consecutiveTargetAttempts = 0`, and advances to the next notice.
+  - **Loop Invariant:** When verified on the stream feed, if the reverse traversal queries the same item index without progression beyond the limit (`consecutiveTargetAttempts > 3`), the loop guard automatically triggers direct stream ingestion (`ingestNoticeDirect`), force-marks completion in the manifest using both ordinal index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint (`manifest.markCompleted(nextItem.fingerprint)`), adds the hash to `visitedPostFingerprints`, resets `consecutiveTargetAttempts = 0`, and advances cleanly to the next notice. Temporary screen displacements can never starve or falsely force-complete stream notices!
 
 - **Announcement Discrimination (`!cardIsMaterial`) & Zero-Click Direct Stream Ingestion:**
   In Google Classroom, feed items possess two fundamentally distinct UI structural behaviors:
@@ -1276,19 +1283,23 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
        }
        ```
 
-    2. **Target Node Discovery (`findKidsShareTarget`):**
-       Inspects accessibility node text, content description, and package identity:
+    2. **Target Node Discovery & Floating Overlay Exclusion (`findKidsShareTarget`):**
+       Inspects accessibility node text and content descriptions while strictly filtering out K.I.D.S.'s own package (`com.kids.collector`). This prevents the scanner from mistakenly targeting K.I.D.S.'s own on-screen floating overlay pill (`FloatingCrawlerOverlay`):
        ```kotlin
        private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+           val pkg = node.packageName?.toString()?.lowercase() ?: ""
+           // CRITICAL: Reject our own app's nodes to prevent tapping FloatingCrawlerOverlay!
+           if (pkg == applicationContext.packageName.lowercase()) {
+               return null
+           }
+
            val text = node.text?.toString()
            val desc = node.contentDescription?.toString()
-           val pkg = node.packageName?.toString()?.lowercase() ?: ""
 
-           val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc) ||
-                   (pkg == applicationContext.packageName.lowercase() && !node.className.toString().contains("RecyclerView"))
+           val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc)
 
            if (isTarget) {
-               // Walk up to find the clickable app tile or container
+               // Walk up to find the clickable app tile or container in the share sheet
                var current: AccessibilityNodeInfo? = node
                while (current != null) {
                    if (current.isClickable) {
@@ -1314,20 +1325,28 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
        }
        ```
 
-    3. **Multi-Window Scanning (`findKidsShareTargetInAllWindows`):**
-       In modern Android and custom OEM distributions, the share chooser or bottom sheet is frequently rendered in an auxiliary window layer (`AccessibilityWindowInfo`) rather than `rootInActiveWindow`. `findKidsShareTargetInAllWindows()` aggregates roots from all accessibility windows, scans each hierarchy, and recycles all node references in a `finally` block to prevent accessibility memory leaks:
+    3. **Multi-Window Scanning with Overlay Window Filtering (`findKidsShareTargetInAllWindows`):**
+       In modern Android and custom OEM distributions, the share chooser or bottom sheet is frequently rendered in an auxiliary window layer (`AccessibilityWindowInfo`) rather than `rootInActiveWindow`. `findKidsShareTargetInAllWindows()` aggregates roots from all accessibility windows, explicitly excludes windows owned by `com.kids.collector`, scans each remaining hierarchy, and recycles all node references in a `finally` block to prevent accessibility memory leaks:
        ```kotlin
        private fun findKidsShareTargetInAllWindows(): AccessibilityNodeInfo? {
            val allRoots = mutableListOf<AccessibilityNodeInfo>()
+           val myPkg = applicationContext.packageName.lowercase()
            try {
                // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
                val currentWindows = windows
                for (w in currentWindows) {
-                   w.root?.let { allRoots.add(it) }
+                   val r = w.root ?: continue
+                   val pkg = r.packageName?.toString()?.lowercase() ?: ""
+                   if (pkg == myPkg) {
+                       r.recycle()
+                       continue
+                   }
+                   allRoots.add(r)
                }
-               // 2. Also inspect active window if not already present
+               // 2. Also inspect active window if not our own app
                rootInActiveWindow?.let { active ->
-                   if (allRoots.none { it == active }) {
+                   val activePkg = active.packageName?.toString()?.lowercase() ?: ""
+                   if (activePkg != myPkg && allRoots.none { it == active }) {
                        allRoots.add(active)
                    } else {
                        active.recycle()
@@ -1458,6 +1477,10 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
 - **Three-Tier Fallback Navigation (`performReturnToStream`):**
   ```kotlin
   private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
+      if (isStreamOrClassworkView(root)) {
+          CrawlerTraceLogger.log("DEEP_CRAWLER", "Already on Stream/Classwork view. Skipping return action.")
+          return
+      }
       val navUp = findNavigateUpButton(root)
       if (navUp != null) {
           CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
@@ -1474,9 +1497,109 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       }
   }
   ```
-  1. **Tier 1 (Navigate Up Accessibility Click):** Locates the top toolbar navigation button matching `"navigate up"` or `"back"` and calls `ACTION_CLICK`.
-  2. **Tier 2 (Physical Touch Tap Fallback):** If `ACTION_CLICK` returns false or fails to trigger navigation, dispatches a physical touch tap `dispatchTap(b.centerX(), b.centerY())` directly at the button's screen coordinates.
-  3. **Tier 3 (System Global Back Fallback):** If no toolbar navigation node is discovered in the active window hierarchy, executes Android's system-level `performGlobalAction(GLOBAL_ACTION_BACK)`.
+  1. **Tier 0 (Stream Check Guard):** Evaluates `isStreamOrClassworkView(root)`. If bottom navigation tabs confirm the device is already on the stream feed, navigation actions are skipped immediately to prevent accidental displacement.
+  2. **Tier 1 (Navigate Up Accessibility Click):** Locates the top toolbar navigation button matching `"navigate up"` or `"back"` and calls `ACTION_CLICK`.
+  3. **Tier 2 (Physical Touch Tap Fallback):** If `ACTION_CLICK` returns false or fails to trigger navigation, dispatches a physical touch tap `dispatchTap(b.centerX(), b.centerY())` directly at the button's screen coordinates.
+  4. **Tier 3 (System Global Back Fallback):** If no toolbar navigation node is discovered in the active window hierarchy, executes Android's system-level `performGlobalAction(GLOBAL_ACTION_BACK)`.
+
+- **Autonomous Classes List Detection & 1-Screen-Behind Recovery Engine:**
+  If an extra back gesture or viewer dismissal causes Google Classroom to navigate **1 screen behind the stream** to the main Classes/Courses list, the crawler autonomously recovers:
+  
+  1. **Classes List Detection (`isClassesListScreen`):**
+     Distinguishes the root Classroom classes screen from the stream or detail view:
+     ```kotlin
+     private fun isClassesListScreen(root: AccessibilityNodeInfo): Boolean {
+         if (isStreamOrClassworkView(root) || isPostDetailView(root)) return false
+         val textList = mutableListOf<String>()
+         collectQuickText(root, textList)
+         val combined = textList.joinToString(" ").lowercase()
+         return combined.contains("class options for") ||
+                 (combined.contains("google classroom") && !combined.contains("tab 1 of")) ||
+                 (combined.contains("classes") && (combined.contains("grade") || combined.contains("enrolled") || combined.contains("teaching") || combined.contains("joined")))
+     }
+     ```
+  
+  2. **Active Course Title Locking (`extractCourseTitle`):**
+     During initial stream reconnaissance, locks the enrolled course name directly from the stream header banner:
+     ```kotlin
+     private fun extractCourseTitle(rootNode: AccessibilityNodeInfo): String? {
+         val scrollable = findScrollableNode(rootNode) ?: rootNode
+         for (i in 0 until scrollable.childCount) {
+             val child = scrollable.getChild(i) ?: continue
+             val textList = mutableListOf<String>()
+             collectQuickText(child, textList)
+             val combined = textList.joinToString(" ").trim()
+             val lower = combined.lowercase()
+             // Course header banner contains the class name/year (e.g. "Grade 3B CAIE 2026-27")
+             if (combined.length in 4..60 &&
+                 !hasPostDateOrTimestamp(lower) &&
+                 !lower.contains("new material") &&
+                 !lower.contains("new assignment") &&
+                 !lower.contains("class comment") &&
+                 !excludedChrome.contains(lower)
+             ) {
+                 if (lower.contains("grade") || lower.contains("class") || lower.contains("caie") || lower.contains("section") || lower.contains("202")) {
+                     child.recycle()
+                     if (scrollable != rootNode) scrollable.recycle()
+                     return combined
+                 }
+             }
+             child.recycle()
+         }
+         if (scrollable != rootNode) scrollable.recycle()
+         return null
+     }
+     ```
+  
+  3. **Target Course Selection & Stream Re-Entry (`findCourseCardInClassesList` & `recoverToStreamFromClassesList`):**
+     Identifies course card containers by locating `"class options for"` action nodes and resolving their clickable parents. Performs 3-tier matching:
+     - *Priority 1:* Exact or prefix match against locked `activeCourseTitle`.
+     - *Priority 2:* Substring match against the child profile's registered grade (`activeCourseGrade`).
+     - *Priority 3:* Fallback to the first enrolled course card.
+     ```kotlin
+     private suspend fun recoverToStreamFromClassesList(
+         root: AccessibilityNodeInfo,
+         targetCourseTitle: String?,
+         targetGrade: String?
+     ): Boolean {
+         CrawlerTraceLogger.log(
+             "STREAM_RECOVERY",
+             "Displaced 1 screen behind stream to Classes List. Seeking target class card ('${targetCourseTitle ?: targetGrade ?: "Primary Class"}')..."
+         )
+         crawlerOverlay?.updateStatus("Recovering Stream...", targetCourseTitle ?: "Re-entering class...")
+
+         val card = findCourseCardInClassesList(root, targetCourseTitle, targetGrade)
+         if (card != null) {
+             val rect = Rect()
+             card.getBoundsInScreen(rect)
+             CrawlerTraceLogger.log(
+                 "STREAM_RECOVERY",
+                 "Found target class card at $rect. Clicking to re-enter stream..."
+             )
+             val clicked = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+             if (!clicked) {
+                 dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+             }
+             card.recycle()
+             delay(1200) // Allow class stream to load
+             return true
+         }
+         return false
+     }
+     ```
+
+- **Stream Immunity to Comments Check (`isCommentsOnlyScreen`):**
+  Stream announcements display `"0 class comments"` or `"Add class comment"`. To mathematically prevent false classification of the stream feed as a comments dialog:
+  ```kotlin
+  // Never flag the main Stream or Classwork view as comments only!
+  val hasBottomTabs = (lower.contains("stream") && lower.contains("classwork")) ||
+          lower.contains("tab 1 of 3") ||
+          lower.contains("tab 2 of 3") ||
+          lower.contains("people")
+  if (hasBottomTabs) return false
+  ```
+  If bottom navigation tabs are present, `isCommentsOnlyScreen` immediately returns `false`, preventing false back actions while resting on the stream feed.
+
 - **Post-Return Verification & Settling:**
   - Calls `waitForCondition(timeoutMs = 2000, pollIntervalMs = 200)` checking `isStreamOrClassworkView(active)` to verify that bottom tabs are visible.
   - Applies a **600ms stabilization delay** post-return, giving the Android `RecyclerView` time to rebind views and settle scroll physics before resuming the scan.

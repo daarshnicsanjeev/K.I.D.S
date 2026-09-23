@@ -181,6 +181,10 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun runDeepCrawlLoop() {
         val manifest = StreamManifest()
         val surveyStartTime = System.currentTimeMillis()
+        val db = KidsDatabase.getInstance(applicationContext)
+        val child = db.childProfileDao().getAllChildren().firstOrNull()?.firstOrNull()
+        val activeCourseGrade = child?.grade
+        var activeCourseTitle: String? = null
 
         // =========================================================================
         // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
@@ -217,6 +221,22 @@ class KidsAccessibilityService : AccessibilityService() {
                 root.recycle()
                 delay(600)
                 continue
+            }
+
+            // AUTO-RECOVERY: If displaced 1 screen behind stream to Classes List, re-enter course stream!
+            if (isClassesListScreen(root)) {
+                recoverToStreamFromClassesList(root, activeCourseTitle, activeCourseGrade)
+                root.recycle()
+                delay(1200)
+                continue
+            }
+
+            // Lock active course title from stream header
+            if (activeCourseTitle == null && isStreamOrClassworkView(root)) {
+                activeCourseTitle = extractCourseTitle(root)
+                if (activeCourseTitle != null) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Locked active course title from stream: \"$activeCourseTitle\"")
+                }
             }
 
             // Survey all visible cards on current screen
@@ -292,8 +312,6 @@ class KidsAccessibilityService : AccessibilityService() {
         // =========================================================================
         crawlerOverlay?.updateStatus("Status: Capturing Notices...", "Ingesting from bottom upwards ($total notices)")
         CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 2: Manifest-driven reverse deep ingestion (Bottom-to-Top)...")
-
-        val db = KidsDatabase.getInstance(applicationContext)
         var lastRecoveryMinIndex: Int? = null
         var consecutiveStaticRecoveryCount = 0
         var lastTargetIndex = -1
@@ -305,29 +323,6 @@ class KidsAccessibilityService : AccessibilityService() {
             if (nextItem == null) {
                 CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
                 break
-            }
-
-            // Loop Guard: Prevent any single target from looping indefinitely
-            if (nextItem.index == lastTargetIndex) {
-                consecutiveTargetAttempts++
-            } else {
-                lastTargetIndex = nextItem.index
-                consecutiveTargetAttempts = 1
-            }
-
-            if (consecutiveTargetAttempts > 2) {
-                CrawlerTraceLogger.log(
-                    "LOOP_GUARD",
-                    "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
-                )
-                ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
-                manifest.markItemCompleted(nextItem.index)
-                manifest.markCompleted(nextItem.fingerprint)
-                visitedPostFingerprints.add(nextItem.fingerprint)
-                crawlerOverlay?.incrementNoticeCount()
-                consecutiveTargetAttempts = 0
-                delay(300)
-                continue
             }
 
             val root = rootInActiveWindow
@@ -356,12 +351,63 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            // Check if trapped in comments dialog or unclosed detail view on start/resume
-            if (isCommentsOnlyScreen(root) || (isPostDetailView(root) && !isStreamOrClassworkView(root))) {
-                CrawlerTraceLogger.log("CRAWLER_RECOVERY", "Active window is comments dialog or unclosed detail view. Returning to stream...")
+            // AUTO-RECOVERY: If displaced 1 screen behind stream to Classes List, autonomously re-enter the course stream!
+            if (isClassesListScreen(root)) {
+                recoverToStreamFromClassesList(root, activeCourseTitle, activeCourseGrade)
+                root.recycle()
+                delay(1200)
+                continue
+            }
+
+            // AUTO-RECOVERY: If trapped in comments dialog or unclosed detail view, return to stream
+            // Strictly check !isStreamOrClassworkView(root) so stream announcements are never misclassified!
+            if (!isStreamOrClassworkView(root)) {
+                if (isCommentsOnlyScreen(root) || isPostDetailView(root)) {
+                    CrawlerTraceLogger.log("CRAWLER_RECOVERY", "Active window is comments dialog or unclosed detail view. Returning to stream...")
+                    performReturnToStream(root)
+                    root.recycle()
+                    delay(700)
+                    continue
+                }
+
+                // If not on stream and not comments/detail/classes, perform guarded return to stream
+                CrawlerTraceLogger.log("STREAM_RECOVERY", "Active window is not stream view ($currentPkg). Returning to stream...")
                 performReturnToStream(root)
                 root.recycle()
                 delay(700)
+                continue
+            }
+
+            // Locked active course title from stream view
+            if (activeCourseTitle == null) {
+                activeCourseTitle = extractCourseTitle(root)
+                if (activeCourseTitle != null) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Locked active course title from stream: \"$activeCourseTitle\"")
+                }
+            }
+
+            // Loop Guard: Prevent any single target from looping indefinitely
+            // Evaluated ONLY when verified to be on the active stream!
+            if (nextItem.index == lastTargetIndex) {
+                consecutiveTargetAttempts++
+            } else {
+                lastTargetIndex = nextItem.index
+                consecutiveTargetAttempts = 1
+            }
+
+            if (consecutiveTargetAttempts > 3) {
+                CrawlerTraceLogger.log(
+                    "LOOP_GUARD",
+                    "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
+                )
+                ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                manifest.markItemCompleted(nextItem.index)
+                manifest.markCompleted(nextItem.fingerprint)
+                visitedPostFingerprints.add(nextItem.fingerprint)
+                crawlerOverlay?.incrementNoticeCount()
+                consecutiveTargetAttempts = 0
+                delay(300)
+                root.recycle()
                 continue
             }
 
@@ -1097,15 +1143,19 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val pkg = node.packageName?.toString()?.lowercase() ?: ""
+        // CRITICAL: Reject our own app's nodes to prevent tapping FloatingCrawlerOverlay!
+        if (pkg == applicationContext.packageName.lowercase()) {
+            return null
+        }
+
         val text = node.text?.toString()
         val desc = node.contentDescription?.toString()
-        val pkg = node.packageName?.toString()?.lowercase() ?: ""
 
-        val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc) ||
-                (pkg == applicationContext.packageName.lowercase() && !node.className.toString().contains("RecyclerView"))
+        val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc)
 
         if (isTarget) {
-            // Walk up to find the clickable app tile or container
+            // Walk up to find the clickable app tile or container in the share sheet
             var current: AccessibilityNodeInfo? = node
             while (current != null) {
                 if (current.isClickable) {
@@ -1132,15 +1182,23 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun findKidsShareTargetInAllWindows(): AccessibilityNodeInfo? {
         val allRoots = mutableListOf<AccessibilityNodeInfo>()
+        val myPkg = applicationContext.packageName.lowercase()
         try {
             // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
             val currentWindows = windows
             for (w in currentWindows) {
-                w.root?.let { allRoots.add(it) }
+                val r = w.root ?: continue
+                val pkg = r.packageName?.toString()?.lowercase() ?: ""
+                if (pkg == myPkg) {
+                    r.recycle()
+                    continue
+                }
+                allRoots.add(r)
             }
-            // 2. Also inspect active window if not already present
+            // 2. Also inspect active window if not our own app
             rootInActiveWindow?.let { active ->
-                if (allRoots.none { it == active }) {
+                val activePkg = active.packageName?.toString()?.lowercase() ?: ""
+                if (activePkg != myPkg && allRoots.none { it == active }) {
                     allRoots.add(active)
                 } else {
                     active.recycle()
@@ -1211,6 +1269,10 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
+        if (isStreamOrClassworkView(root)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Already on Stream/Classwork view. Skipping return action.")
+            return
+        }
         val navUp = findNavigateUpButton(root)
         if (navUp != null) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
@@ -1753,6 +1815,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isCommentsOnlyScreen(combinedText: String): Boolean {
         val lower = combinedText.lowercase()
+        // Never flag the main Stream or Classwork view as comments only!
+        val hasBottomTabs = (lower.contains("stream") && lower.contains("classwork")) ||
+                lower.contains("tab 1 of 3") ||
+                lower.contains("tab 2 of 3") ||
+                lower.contains("people")
+        if (hasBottomTabs) return false
+
         val hasCommentHeader = lower.contains("class comment") ||
                 lower.contains("add class comment") ||
                 lower.contains("no class comments") ||
@@ -1771,6 +1840,151 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("for your reference") ||
                 lower.contains("points")
         return hasCommentHeader && !hasPostDetailFeatures
+    }
+
+    private fun isClassesListScreen(root: AccessibilityNodeInfo): Boolean {
+        if (isStreamOrClassworkView(root) || isPostDetailView(root)) return false
+        val textList = mutableListOf<String>()
+        collectQuickText(root, textList)
+        val combined = textList.joinToString(" ").lowercase()
+        return combined.contains("class options for") ||
+                (combined.contains("google classroom") && !combined.contains("tab 1 of")) ||
+                (combined.contains("classes") && (combined.contains("grade") || combined.contains("enrolled") || combined.contains("teaching") || combined.contains("joined")))
+    }
+
+    private fun extractCourseTitle(rootNode: AccessibilityNodeInfo): String? {
+        val scrollable = findScrollableNode(rootNode) ?: rootNode
+        for (i in 0 until scrollable.childCount) {
+            val child = scrollable.getChild(i) ?: continue
+            val textList = mutableListOf<String>()
+            collectQuickText(child, textList)
+            val combined = textList.joinToString(" ").trim()
+            val lower = combined.lowercase()
+            // Course header banner contains the class name/year (e.g. "Grade 3B CAIE 2026-27")
+            if (combined.length in 4..60 &&
+                !hasPostDateOrTimestamp(lower) &&
+                !lower.contains("new material") &&
+                !lower.contains("new assignment") &&
+                !lower.contains("class comment") &&
+                !excludedChrome.contains(lower)
+            ) {
+                if (lower.contains("grade") || lower.contains("class") || lower.contains("caie") || lower.contains("section") || lower.contains("202")) {
+                    child.recycle()
+                    if (scrollable != rootNode) scrollable.recycle()
+                    return combined
+                }
+            }
+            child.recycle()
+        }
+        if (scrollable != rootNode) scrollable.recycle()
+        return null
+    }
+
+    private fun collectCourseCardNodes(
+        node: AccessibilityNodeInfo,
+        outList: MutableList<AccessibilityNodeInfo>
+    ) {
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        if (desc.startsWith("class options for") || desc.contains("class options")) {
+            // Find clickable card container (parent of the options button)
+            var current: AccessibilityNodeInfo? = node
+            var depth = 0
+            while (current != null && depth < 4) {
+                if (current.isClickable) {
+                    if (outList.none { it == current }) {
+                        outList.add(AccessibilityNodeInfo.obtain(current))
+                    }
+                    break
+                }
+                val parentNode = current.parent
+                if (current != node) current.recycle()
+                current = parentNode
+                depth++
+            }
+            if (current != null && current != node) current.recycle()
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectCourseCardNodes(child, outList)
+            child.recycle()
+        }
+    }
+
+    private fun findCourseCardInClassesList(
+        rootNode: AccessibilityNodeInfo,
+        targetCourseTitle: String?,
+        targetGrade: String?
+    ): AccessibilityNodeInfo? {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectCourseCardNodes(rootNode, candidates)
+
+        if (candidates.isEmpty()) return null
+
+        // 1. Exact or prefix match against targetCourseTitle
+        if (!targetCourseTitle.isNullOrBlank()) {
+            val cleanTarget = targetCourseTitle.trim().lowercase()
+            val matched = candidates.firstOrNull { card ->
+                val textList = mutableListOf<String>()
+                collectQuickText(card, textList)
+                val combined = textList.joinToString(" ").lowercase()
+                combined.contains(cleanTarget) || (cleanTarget.length >= 6 && combined.contains(cleanTarget.take(10)))
+            }
+            if (matched != null) {
+                candidates.filter { it != matched }.forEach { it.recycle() }
+                return matched
+            }
+        }
+
+        // 2. Match against child's grade (e.g. "Grade 3")
+        if (!targetGrade.isNullOrBlank()) {
+            val cleanGrade = targetGrade.trim().lowercase()
+            val matched = candidates.firstOrNull { card ->
+                val textList = mutableListOf<String>()
+                collectQuickText(card, textList)
+                val combined = textList.joinToString(" ").lowercase()
+                combined.contains(cleanGrade)
+            }
+            if (matched != null) {
+                candidates.filter { it != matched }.forEach { it.recycle() }
+                return matched
+            }
+        }
+
+        // 3. Fallback: Return the first course card found
+        val first = candidates.first()
+        candidates.drop(1).forEach { it.recycle() }
+        return first
+    }
+
+    private suspend fun recoverToStreamFromClassesList(
+        root: AccessibilityNodeInfo,
+        targetCourseTitle: String?,
+        targetGrade: String?
+    ): Boolean {
+        CrawlerTraceLogger.log(
+            "STREAM_RECOVERY",
+            "Displaced 1 screen behind stream to Classes List. Seeking target class card ('${targetCourseTitle ?: targetGrade ?: "Primary Class"}')..."
+        )
+        crawlerOverlay?.updateStatus("Recovering Stream...", targetCourseTitle ?: "Re-entering class...")
+
+        val card = findCourseCardInClassesList(root, targetCourseTitle, targetGrade)
+        if (card != null) {
+            val rect = Rect()
+            card.getBoundsInScreen(rect)
+            CrawlerTraceLogger.log(
+                "STREAM_RECOVERY",
+                "Found target class card at $rect. Clicking to re-enter stream..."
+            )
+            val clicked = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
+            card.recycle()
+            delay(1200) // Allow class stream to load
+            return true
+        }
+        return false
     }
 
     private fun isCommentsOnlyScreen(rootNode: AccessibilityNodeInfo): Boolean {

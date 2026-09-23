@@ -547,10 +547,11 @@ flowchart TD
   - K.I.D.S. implements **Safe Tap Targeting**: taps are dispatched strictly to the **top third of the card** (`safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)`), landing squarely on the title and header area.
   - In addition, the accessibility engine actively inspects candidate clickable nodes: any node containing the word `"comment"` in its accessibility text or content description is strictly disqualified from receiving clicks.
 
-- **Comment Sheet Auto-Dismissal:**
-  If a class comments dialog or bottom sheet ever appears on screen—whether because a parent had it open prior to starting Auto-Capture, or due to an OEM touch glitch:
-  - K.I.D.S. immediately evaluates the screen with `isCommentsOnlyScreen()`. It recognizes that the window displays comment controls (*"Add class comment"*, *"Class comments"*) without assignment features (*"Your work"*, *"Assigned"*, *"Attachments"*).
-  - Rather than mistaking comments for a post detail view or getting stuck, K.I.D.S. flags it instantly, logs `"Comments dialog detected instead of post detail"`, dispatches an automatic Back action (`performReturnToStream`), dismisses the comment sheet, and returns cleanly to the stream.
+- **Comment Sheet Auto-Dismissal & Stream Immunity:**
+  - **Stream Immunity to Comments Check:** In Google Classroom, stream announcements and circulars natively display prompts like `"0 class comments"` or `"Add class comment"` directly on the feed. K.I.D.S. enforces strict structural stream immunity: if bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`) are detected on screen, the view is recognized as the main stream feed and is **strictly immune** from comment dialog classification (`isCommentsOnlyScreen` immediately returns `false`). The crawler never dispatches false back actions while resting on the stream feed.
+  - **Comment Dialog Dismissal:** If a class comments dialog or bottom sheet ever appears on screen—whether because a parent had it open prior to starting Auto-Capture, or due to an OEM touch glitch:
+    - K.I.D.S. evaluates the screen with `isCommentsOnlyScreen()`. It recognizes that the window displays comment controls (*"Add class comment"*, *"Class comments"*) without assignment features (*"Your work"*, *"Assigned"*, *"Attachments"*).
+    - Rather than mistaking comments for a post detail view or getting stuck, K.I.D.S. flags it instantly, logs `"Comments dialog detected instead of post detail"`, dispatches an automatic Back action (`performReturnToStream`), dismisses the comment sheet, and returns cleanly to the stream.
 
 - **Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit):**
   A classic hazard in mobile UI automation is an item that refuses to open due to an OEM animation glitch or network hiccup, causing the crawler to retry indefinitely. K.I.D.S. implements a mathematical **Anti-Loop Guard**:
@@ -575,6 +576,17 @@ When tapping an attachment chip, Android or Google Classroom may open the docume
 ### Manifest-Driven Auto-Recovery & SQLite Instant Skipping
 
 One of the greatest challenges in automating school apps is visual instability: items can shift when comments render, network pagination can jump, or system notifications can nudge the scroll position. K.I.D.S. solves this with a **Manifest-Driven Auto-Recovery Engine**:
+
+#### Autonomous Stream Recovery & 1-Screen-Behind Protection
+During automated backfill, dismissing a full-screen PDF preview or encountering an unexpected OEM gesture can occasionally cause Google Classroom to back out **1 screen behind the stream** into the main **Classes / Courses List**:
+- **Automatic Classes List Detection:** K.I.D.S. continuously monitors the active window. If the stream disappears and the Classes list appears (identified by indicators such as `"Class options for"`, `"Google Classroom"`, or enrolled class cards), the assistant immediately flags the displaced state (`isClassesListScreen`).
+- **Course Title Locking:** During the initial stream survey, K.I.D.S. automatically locks the exact course title (e.g., `"Grade 3B CAIE 2026-27"`) directly from the stream header banner via `extractCourseTitle`.
+- **Zero-Touch Autonomous Re-Entry:** When displaced to the Classes list, K.I.D.S. does not freeze or abort. Instead, `recoverToStreamFromClassesList` automatically searches the enrolled courses list:
+  1. Searches for a card matching the locked course title.
+  2. If truncated or altered, matches against the child's configured grade level (e.g., `"Grade 3"`).
+  3. Falls back gracefully to the first enrolled course card.
+  It automatically clicks the card (or dispatches a physical center tap), restoring the active course stream within 1,200ms without requiring any parent intervention!
+- **Loop Guard Invariant (Stream Gating):** In Pass 2, attempt counters and loop-guard force-completions are **strictly gated**: they are evaluated **ONLY** when verified to be on the active stream (`isStreamOrClassworkView`). If displaced to the Classes list or a viewer, K.I.D.S. prioritizes navigation recovery instead of burning through attempt limits.
 
 #### 1. Autonomous Position Displacement Recovery
 If the target post is not immediately visible on screen after returning from detail view or during stream navigation:
@@ -676,9 +688,10 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
         - **"Send file...", "Send a copy", or "Share":** Standard export options in Google Classroom, Google Drive Viewer, and Google Docs.
         - **"Open with...":** Common alternative in standalone PDF viewers, image viewers, and OEM document viewers.
         Because K.I.D.S. Vault registers intent filters for both **`ACTION_SEND` / `ACTION_SEND_MULTIPLE`** and **`ACTION_VIEW`** (`*/*`), K.I.D.S. seamlessly receives and stages attachments from **any** viewer menu option. If actions are concealed in an overflow menu, K.I.D.S. automatically taps the **More options** (⋮) button and triggers the action.
-     5. **Dynamic Share Target Discovery (Zero Hardcoded Positions):**
+     5. **Dynamic Share Target Discovery (Zero Hardcoded Positions) & Floating Overlay Exclusion:**
         When Android's native system share sheet appears, OEM skins (such as Xiaomi HyperOS/MIUI, Samsung One UI, OnePlus OxygenOS, and Oppo ColorOS) arrange app icons dynamically based on recent usage, device context, and OEM-specific direct share carousels. Target positions are **never hardcoded**.
         - K.I.D.S. scans across all active accessibility windows and system dialog layers via `findKidsShareTargetInAllWindows()`.
+        - **Floating Overlay Exclusion:** Accessibility windows and nodes belonging to K.I.D.S.'s own package (`com.kids.collector`) are strictly filtered out before checking candidate labels. This prevents the scanner from mistakenly matching the floating assistant overlay on screen, ensuring that only the genuine "K.I.D.S. Vault" share tile inside the system sharesheet is targeted.
         - It normalizes app labels via `isKidsVaultLabel()`, stripping punctuation, whitespace, and underscores to reliably match `"K.I.D.S. Vault"`, `"Kids Vault"`, or package identifiers across any OEM skin.
      6. **Sharesheet Scroll-to-Find Fallback:**
         If "K.I.D.S. Vault" is not visible among the immediate top 4 apps in the sharesheet grid, K.I.D.S. does not abort. Instead, it executes an autonomous **Scroll-to-Find Fallback**:
