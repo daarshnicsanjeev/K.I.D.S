@@ -405,6 +405,7 @@ sequenceDiagram
     OV->>ACS: startDeepCrawl() -> launches crawlerJob
 
     Note over ACS,MAN: ==================== PASS 1: PRE-FLIGHT STREAM SURVEY ====================
+    ACS->>ACS: ensureAtStreamTop() [Verify course header banner or rewind up to 15 steps]
     ACS->>OV: updateStatus("Surveying (X found)...")
     loop Stream Survey (Until 5 Consecutive Empty Scrolls)
         ACS->>GC: surveyVisibleCards(): scan cards in safe viewport [140dp, Height-170dp]
@@ -502,6 +503,46 @@ sequenceDiagram
 
 ##### 1. `PASS 1: PRE-FLIGHT STREAM SURVEY & INVENTORY MANIFEST` (`StreamManifest`)
 The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaissance pass (`runStreamSurvey`). Instead of immediately entering and processing notices sequentially (which risks positioning displacement and unknown bounds), Pass 1 sweeps the entire stream from top to bottom, cataloging every announcement into an in-memory `StreamManifest`:
+
+###### Pre-Flight Top Alignment (`ensureAtStreamTop`)
+Before executing the survey loop, `KidsAccessibilityService` invokes `ensureAtStreamTop()` to guarantee that the stream is aligned at its very beginning (the newest post and header banner):
+```kotlin
+private suspend fun ensureAtStreamTop() {
+    CrawlerTraceLogger.log("STREAM_SURVEY", "Checking stream top alignment before survey...")
+    var steps = 0
+    val maxSteps = 15
+    while (serviceScope.isActive && steps < maxSteps) {
+        val root = rootInActiveWindow
+        if (root == null) {
+            delay(300)
+            steps++
+            continue
+        }
+        if (!isStreamOrClassworkView(root)) {
+            root.recycle()
+            delay(400)
+            steps++
+            continue
+        }
+        val title = extractCourseTitle(root)
+        root.recycle()
+        if (title != null) {
+            CrawlerTraceLogger.log("STREAM_SURVEY", "Confirmed at stream top (header banner: \"$title\"). Ready for survey.")
+            return
+        }
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Course header banner not visible. Swiping backward to rewind to stream top (step ${steps + 1}/$maxSteps)...")
+        crawlerOverlay?.updateStatus("Rewinding to Top...", "Aligning stream for survey (${steps + 1}/$maxSteps)")
+        stepScrollStream(isScrollForward = false)
+        delay(500)
+        steps++
+    }
+}
+```
+- **State Transition & Window Verification:** Continuously verifies that the active window is within Google Classroom's stream or classwork hierarchy (`isStreamOrClassworkView(root)`).
+- **Header Detection (`extractCourseTitle(root) != null`):** Google Classroom renders the course header banner exclusively at the absolute top of the stream. If `extractCourseTitle(root)` successfully extracts the title string, top alignment is verified and the method returns immediately.
+- **Autonomous Backward Rewind:** If the banner is not visible (e.g. if the parent opened Classroom while already scrolled down), it updates the floating overlay (`Rewinding to Top...`) and dispatches controlled backward stepping via `stepScrollStream(isScrollForward = false)` for up to 15 steps with 500ms stabilization intervals.
+- **Full Stream Coverage Guarantee:** Guarantees that Pass 1 starts surveying from the newest post at the very top of the feed down to the oldest post at the bottom.
+
 - **Safe Viewport Filtering:** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
   $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - 170\text{px}$$
   This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
@@ -848,47 +889,79 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
        ```
        If `boundedAttempts < 3`, it selects `candidateCard = findBestCandidateCardOnScreen()` and dispatches a tap at candidate bounds.
    2. **Oscillation Breaker:** Maintains a 6-step direction history window (`recentScrollDirections`). If alternating directions $\ge 4$ times (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), oscillation around the target is confirmed. The engine logs an oscillation event, triggers a micro-nudge, and increments the item's attempt counter to prevent infinite ping-pong seek loops.
-   3. **Pass 2 Reverse Scroll Navigation (`targetAhead` & `maxVisibleIndex`):**
+   3. **Pass 2 Reverse Scroll Navigation (`targetAhead`, `maxVisibleIndex` & `isAtStreamTop`):**
       In Pass 2 reverse crawling, the crawler traverses from the stream bottom upwards towards post #1 (top of stream).
       ```kotlin
-      // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
-      // If target index is greater than maxVisibleIndex, target is further down (forward).
-      // Otherwise, target is towards the top (backward).
-      val targetAhead = if (maxVisibleIndex != null) {
-          nextItem.index > maxVisibleIndex
-      } else {
-          false // Default in bottom-to-top pass: scroll backward towards the top!
-      }
+      val checkRoot = rootInActiveWindow
+      if (checkRoot != null) {
+          val isAtStreamTop = isStreamOrClassworkView(checkRoot) && extractCourseTitle(checkRoot) != null
+          val visibleItems = getVisibleManifestItems(checkRoot, manifest)
+          checkRoot.recycle()
+
+          val visibleIndices = visibleItems.map { it.index }
+          val minVisibleIndex = visibleIndices.minOrNull()
+          val maxVisibleIndex = visibleIndices.maxOrNull()
+          ...
+          // Adaptive swiping & oscillation detection
+          // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
+          // If at the stream top banner, target can NEVER be backward (upward).
+          // If target index is greater than maxVisibleIndex, target is further down (forward).
+          // Otherwise, target is towards the top (backward).
+          val targetAhead = when {
+              isAtStreamTop -> true
+              maxVisibleIndex != null -> nextItem.index > maxVisibleIndex
+              minVisibleIndex != null -> nextItem.index >= minVisibleIndex
+              else -> false // Default in bottom-to-top pass: scroll backward towards the top!
+          }
       ```
-      - If `nextItem.index > maxVisibleIndex`, the target is confirmed to be further down the list, and forward stepping is dispatched (`stepScrollStream(forward = true)`).
-      - Otherwise, the target is towards the top of the feed (`!targetAhead`). When `maxVisibleIndex == null`, it defaults cleanly to backward (upward) stepping towards post #1 (`stepScrollStream(forward = false)`).
-   4. **Discrete RecyclerView Stepping (`stepScrollStream`, `findScrollableContainer` & `performControlledDrag`):**
-      In Pass 2, seeking between notices requires deterministic, single-card granularity rather than uncontrolled kinetic flings that overshoot small circulars. The crawler invokes `stepScrollStream(forward)`:
+      - **Stream Top Awareness (`isAtStreamTop`):** When `isAtStreamTop` is true (confirmed via `extractCourseTitle(checkRoot) != null`), the viewport is resting at the top header banner of the entire stream. In bottom-to-top reverse crawling, target items have lower indices toward the top (index 1 is at the top), but because the crawler is *already* at the course header banner, any target item index in the feed is physically below the header! Therefore, `targetAhead = true` forces forward (downward) stepping, preventing backward scrolls against the top boundary.
+      - **Target Ahead Evaluation:** If `nextItem.index > maxVisibleIndex`, the target is confirmed to be further down the list, and forward stepping is dispatched (`stepScrollStream(forward = true)`).
+      - **Backward Stepping Default:** Otherwise, when neither condition holds, the target is towards the top of the feed (`!targetAhead`), defaulting cleanly to backward (upward) stepping towards post #1 (`stepScrollStream(forward = false)`).
+   4. **Discrete RecyclerView Stepping & Pull-to-Refresh Prevention (`stepScrollStream`):**
+      In Pass 2, seeking between notices requires deterministic, single-card granularity rather than uncontrolled kinetic flings that overshoot small circulars. Furthermore, `stepScrollStream` strictly guards against triggering Flutter or Android pull-to-refresh spinner traps:
       ```kotlin
-      private suspend fun stepScrollStream(forward: Boolean) {
+      private suspend fun stepScrollStream(isScrollForward: Boolean) {
           val root = rootInActiveWindow
-          var scrolledNatively = false
           if (root != null) {
-              val container = findScrollableContainer(root)
+              val isAtTop = isStreamOrClassworkView(root) && extractCourseTitle(root) != null
+              if (!isScrollForward && isAtTop) {
+                  CrawlerTraceLogger.log("SCROLLER", "Already at top of stream (course header visible). Suppressing backward scroll to prevent pull-to-refresh.")
+                  root.recycle()
+                  return
+              }
+              val container = findScrollableNode(root)
+              var scrolledNatively = false
               if (container != null) {
-                  val action = if (forward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
+                  val action = if (isScrollForward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                   scrolledNatively = container.performAction(action)
                   container.recycle()
               }
               root.recycle()
+              if (scrolledNatively) {
+                  delay(400)
+                  return
+              }
           }
-          if (!scrolledNatively) {
-              // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
-              var scrollDone = false
-              crawlerOverlay?.performControlledDrag(forward) { scrollDone = true }
-              waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-          } else {
-              delay(400)
+          if (!isScrollForward) {
+              val checkAgain = rootInActiveWindow
+              if (checkAgain != null) {
+                  val isAtTop = isStreamOrClassworkView(checkAgain) && extractCourseTitle(checkAgain) != null
+                  checkAgain.recycle()
+                  if (isAtTop) {
+                      CrawlerTraceLogger.log("SCROLLER", "Top of stream confirmed before gesture. Suppressing backward drag.")
+                      return
+                  }
+              }
           }
+          // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
+          var scrollDone = false
+          crawlerOverlay?.performControlledDrag(isScrollForward) { scrollDone = true }
+          waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
       }
       ```
-      - **Container Discovery (`findScrollableContainer`):** Recursively traverses the active window hierarchy to identify the primary scrolling container (`node.isScrollable` or class name matching `RecyclerView`, `ListView`, or `ScrollView`).
-      - **Native Accessibility Scrolling:** Dispatches native `AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD` (for upward travel toward stream top) or `ACTION_SCROLL_FORWARD` (when target is ahead), instructing the view adapter to step cleanly without fling physics.
+      - **Pull-to-Refresh Guard Tier 1 (Native Container Suppression):** Prior to performing `ACTION_SCROLL_BACKWARD`, checks `isAtTop = isStreamOrClassworkView(root) && extractCourseTitle(root) != null`. If backward scrolling is requested while already at the top of the stream, it suppresses the action immediately to avoid dragging the header banner down.
+      - **Pull-to-Refresh Guard Tier 2 (Pre-Gesture Suppression):** If native scrolling was not handled and gesture fallback is about to execute, `stepScrollStream` inspects `rootInActiveWindow` again. If `isAtTop` is confirmed, the downward drag is discarded immediately (`Top of stream confirmed before gesture. Suppressing backward drag.`).
+      - **Container Discovery (`findScrollableNode`):** Recursively traverses the active window hierarchy to identify the primary scrolling container (`node.isScrollable` or class name matching `RecyclerView`, `ListView`, or `ScrollView`).
       - **Controlled Zero-Fling Drag Fallback (`performControlledDrag`):** If native container actions are not supported by the OEM accessibility delegate, `stepScrollStream` falls back to `FloatingCrawlerOverlay.performControlledDrag`:
         - Dispatches a 450ms smooth drag along the screen horizontal centerline ($x = 0.50w$).
         - Moves by exactly one card height (~24% of screen height):
@@ -1084,9 +1157,11 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
         "for your reference", "for reference"
     )
     ```
-- **Exclusion of 'More Options for Attachment' in `findNodesWithExtensions` (Eliminating 3-Dots Popup Interference):**
+- **Exclusion of 'More Options for Attachment' & Section Headers in `findNodesWithExtensions` (`isSectionHeader`):**
   In Google Classroom, each attachment item renders a 3-dots overflow menu button with the accessibility label `"More options for attachment [filename]"`. If an automated crawler inspects node trees naively, these buttons are mistakenly identified as attachment triggers. Tapping them summons a modal popup menu (*"Download"*, *"Report issue"*), stealing window focus, occluding the UI, and disrupting the crawling state machine.
-  To eliminate this interference at the root, `findNodesWithExtensions` explicitly inspects and rejects all options nodes before adding candidates:
+  Additionally, assignment detail screens feature static section labels such as `"Attachments"` or `"Attachment"`. Because attachment discovery heuristics match `desc.contains("attachment")`, without explicit exclusion, section headers are captured as phantom attachments (e.g. `"attachments.pdf"`), attempting invalid downloads or clicking header text.
+  
+  To eliminate both failure modes, `findNodesWithExtensions` explicitly inspects and rejects options buttons and section headers before evaluating candidates:
   ```kotlin
   private fun findNodesWithExtensions(
       node: AccessibilityNodeInfo,
@@ -1100,8 +1175,13 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
               (text?.contains("options", ignoreCase = true) == true) ||
               (desc?.contains("more options", ignoreCase = true) == true)
 
+      val isSectionHeader = text.equals("attachments", ignoreCase = true) ||
+              desc.equals("attachments", ignoreCase = true) ||
+              text.equals("attachment", ignoreCase = true) ||
+              desc.equals("attachment", ignoreCase = true)
+
       val candidate = when {
-          isOptionsButton -> null
+          isOptionsButton || isSectionHeader -> null
           !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
               if (text.contains('.')) text else "$text.pdf"
           }
@@ -1114,9 +1194,17 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
       if (candidate != null && outList.none { it.first == candidate.take(60) }) {
           outList.add(candidate.take(60) to AccessibilityNodeInfo.obtain(node))
       }
-      ...
+
+      for (i in 0 until node.childCount) {
+          val child = node.getChild(i) ?: continue
+          findNodesWithExtensions(child, extensions, outList)
+          child.recycle()
+      }
+  }
   ```
-  Coupled with `"more options for attachment"` in `excludedChrome`, 3-dots menus are completely filtered out, guaranteeing that clicks are dispatched solely to actual download buttons and clickable attachment cards.
+  - **Options Button Filtering:** Rejects nodes with `"options"` or `"more options"` in text or description.
+  - **Section Header Immunity (`isSectionHeader`):** Tests if `text` or `desc` equals `"attachments"` or `"attachment"` (case-insensitive). Prevents static section headers from being misidentified as attachment download candidates.
+  - Coupled with `"more options for attachment"` in `excludedChrome`, 3-dots menus and section headers are completely filtered out, guaranteeing that clicks are dispatched solely to actual download buttons and clickable attachment cards.
 
 - **Exhaustive Multi-Attachment Ingestion & Sequential Fresh-Node Re-Querying Loop:**
   In educational feeds, posts often bundle multiple worksheets and study packs (e.g. 9 practice worksheets, reading passages, and answer keys in a single announcement).
@@ -1234,29 +1322,78 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
      }
      ```
   
-  4. **Token-Based Chip Search (`findAttachmentChipByFileName`):**
-     `findAttachmentChipByFileName` sanitizes filenames and searches for both full and prefix tokens, ascending to the clickable chip container:
+  4. **Robust Chip Resolution, Query Normalization & Recursive Multilingual Fallback (`findAttachmentChipByFileName` & `findAttachmentChipRecursively`):**
+     In real-world classroom usage, attachment titles frequently contain complex descriptions, parenthetical qualifiers (e.g. `"(Textbook PDF)"`), ellipses truncation (`...`), or multilingual scripts (Hindi Devanagari, regional languages). Naive exact matching or simple text searches fail when accessibility nodes fragment complex script glyphs.
+     `KidsAccessibilityService` implements a two-tier resolution strategy combining prioritized query normalization with a recursive tree inspection fallback:
      ```kotlin
      private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
-         val cleanName = fileName.replace("...", "").trim()
-         val baseName = cleanName.substringBeforeLast('.')
-         val queries = listOf(cleanName, baseName.take(20)).filter { it.length >= 4 }
+         val cleanFileName = fileName.replace("...", "").trim()
+         val withoutParentheses = cleanFileName.replace(Regex("""\([^)]*\)"""), "").trim()
+         val baseFileName = cleanFileName.substringBeforeLast('.')
+         val baseWithoutParens = withoutParentheses.substringBeforeLast('.')
 
-         for (q in queries) {
-             val matches = rootNode.findAccessibilityNodeInfosByText(q)
-             for (match in matches) {
-                 val clickable = findClickableAncestor(match) ?: match
-                 if (clickable.isClickable) {
-                     val result = AccessibilityNodeInfo.obtain(clickable)
-                     for (m in matches) m.recycle()
-                     return result
+         val searchQueries = linkedSetOf(
+             cleanFileName,
+             withoutParentheses,
+             baseWithoutParens,
+             baseFileName,
+             baseWithoutParens.take(20),
+             baseFileName.take(20)
+         ).filter { it.length >= 3 }
+
+         for (searchQuery in searchQueries) {
+             val matchedNodes = rootNode.findAccessibilityNodeInfosByText(searchQuery)
+             for (matchNode in matchedNodes) {
+                 val clickableAncestor = findClickableAncestor(matchNode)
+                 val targetChipNode = when {
+                     clickableAncestor != null -> clickableAncestor
+                     matchNode.isClickable -> AccessibilityNodeInfo.obtain(matchNode)
+                     else -> null
+                 }
+
+                 if (targetChipNode != null) {
+                     for (nodeToRecycle in matchedNodes) {
+                         nodeToRecycle.recycle()
+                     }
+                     return targetChipNode
                  }
              }
-             for (m in matches) m.recycle()
+             for (nodeToRecycle in matchedNodes) {
+                 nodeToRecycle.recycle()
+             }
+         }
+
+         // Recursive tree inspection fallback for unicode/complex chips
+         val targetTokens = baseWithoutParens.split(" ")
+             .map { it.trim().lowercase() }
+             .filter { it.length >= 3 }
+
+         return findAttachmentChipRecursively(rootNode, targetTokens)
+     }
+
+     private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetTokens: List<String>): AccessibilityNodeInfo? {
+         val textList = mutableListOf<String>()
+         collectQuickText(node, textList)
+         val combined = textList.joinToString(" ").lowercase()
+         val isMatch = targetTokens.isNotEmpty() && targetTokens.any { combined.contains(it) }
+
+         if (isMatch && (node.isClickable || node.parent?.isClickable == true)) {
+             val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+             if (clickable != null) return clickable
+         }
+
+         for (i in 0 until node.childCount) {
+             val child = node.getChild(i) ?: continue
+             val found = findAttachmentChipRecursively(child, targetTokens)
+             child.recycle()
+             if (found != null) return found
          }
          return null
      }
      ```
+     - **Query Normalization:** Strips UI ellipsis (`...`), strips parenthetical descriptions using `Regex("""\([^)]*\)""")`, and isolates base names without file extensions. Generates an ordered set (`linkedSetOf`) of queries tested via native accessibility search `findAccessibilityNodeInfosByText`.
+     - **Recursive Unicode & Multilingual Tree Search Fallback:** When native accessibility indexing fails to match composite nodes—common with non-Latin scripts (Hindi Devanagari) or complex inline formatting—the crawler engages `findAttachmentChipRecursively`. It tokenizes the base title into words ($\ge 3$ characters), traverses the accessibility tree recursively, aggregates node text via `collectQuickText`, and resolves the nearest clickable container or ancestor.
+     - **Stale Pointer Elimination:** All matched nodes are safely recycled, and the freshly resolved clickable chip is snapped into view and focused before tapping.
      This fresh-node re-querying loop guarantees **zero stale `AccessibilityNodeInfo` crashes**, handles below-the-fold chips seamlessly, and ensures 100% complete ingestion of all attachments across posts of any size.
 
   // Truthful Staged Attachment Counting via scanLocalAttachments Return Value

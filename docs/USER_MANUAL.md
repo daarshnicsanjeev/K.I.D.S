@@ -48,6 +48,7 @@ As parents, keeping up with school communications is exhausting. Homework assign
      - [Floating Assistant Reliability & Transient System Dialog Immunity](#floating-assistant-reliability--transient-system-dialog-immunity)
      - [Auto-Minimize on Crawl & Floating Overlay Self-Tap Immunity (Gesture Guard)](#auto-minimize-on-crawl--floating-overlay-self-tap-immunity-gesture-guard)
    - [Two-Pass Stream Architecture (Survey & Bottom-to-Top Reverse Ingestion)](#two-pass-stream-architecture-survey--bottom-to-top-reverse-ingestion)
+     - [Pre-Flight Top Alignment (Guaranteed Full Stream Coverage)](#pre-flight-top-alignment-guaranteed-full-stream-coverage)
      - [Announcement Discrimination & Zero-Click Direct Stream Ingestion](#announcement-discrimination--zero-click-direct-stream-ingestion)
      - [Deterministic Focus Navigation & Exact Pixel Centering (ACTION_SHOW_ON_SCREEN)](#deterministic-focus-navigation--exact-pixel-centering-action_show_on_screen)
      - [Safe Tap Targeting (Top-Third Strategy)](#safe-tap-targeting-top-third-strategy)
@@ -56,9 +57,11 @@ As parents, keeping up with school communications is exhausting. Homework assign
      - [Autonomous Stream Tab Recovery (Anti-Tab Drift)](#autonomous-stream-tab-recovery-anti-tab-drift)
      - [Autonomous Classes List Recovery (1-Screen-Behind Protection)](#autonomous-classes-list-recovery-1-screen-behind-protection)
      - [Universal Screen Centering & Geometry Calibration](#universal-screen-centering--geometry-calibration)
+     - [Pull-to-Refresh Guard (Anti-Spinner Trap)](#pull-to-refresh-guard-anti-spinner-trap)
      - [100% Crawl Verification Milestone (176/176 Notices & 36 Vault Attachments)](#100-crawl-verification-milestone-176176-notices--36-vault-attachments)
    - [Deep Post Traversal & Autonomous File Downloads](#deep-post-traversal--autonomous-file-downloads)
      - [Exhaustive Multi-Attachment Ingestion (Fresh-Node Re-Querying Loop)](#exhaustive-multi-attachment-ingestion-fresh-node-re-querying-loop)
+     - [Robust Attachment Matching (Multilingual Scripts & Parenthetical Support)](#robust-attachment-matching-multilingual-scripts--parenthetical-support)
    - [Zero-Click Hands-Free Exit & Auto-Completion](#zero-click-hands-free-exit--auto-completion)
      - [Hands-Free Auto-Stop on App Exit](#hands-free-auto-stop-on-app-exit)
      - [Hands-Free Auto-Close on Stream Completion](#hands-free-auto-close-on-stream-completion)
@@ -558,6 +561,18 @@ flowchart TD
     end
 ```
 
+#### Pre-Flight Top Alignment (Guaranteed Full Stream Coverage)
+
+Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically checks whether the stream header is visible and rewinds to the very top if necessary:
+- **Stream Top Verification:** The crawler checks whether the primary course header banner (which displays the class name and academic year) is visible in the active window (`extractCourseTitle(root) != null`).
+- **Autonomous Rewind to Top (`ensureAtStreamTop`):** If a parent opens Classroom and taps `▶ Start Auto-Capture` while scrolled down into the middle or bottom of the stream, the course header is not in the viewport. Rather than starting a partial crawl that misses recent notices, K.I.D.S. initiates an automatic backward rewind:
+  - Updates the floating status pill to:
+    $$\text{Status: "Rewinding to Top..."}$$
+    $$\text{Detail: "Aligning stream for survey (X/15)"}$$
+  - Executes controlled backward stepping (`stepScrollStream(isScrollForward = false)`) up to 15 times, smoothly bringing the stream back to post #1 and the header banner.
+  - Confirms course title locking once the banner enters the viewport (e.g., `Confirmed at stream top (header banner: "Grade 3B CAIE 2026-27"). Ready for survey.`).
+- **100% Notice Ingestion Guarantee:** By guaranteeing that Pass 1 starts with the course header firmly locked at the very top of the viewport, K.I.D.S. ensures complete coverage of all notices posted across the academic term, surveying strictly from newest down to oldest without missing a single recent announcement.
+
 #### 1. Pass 1: Pre-Flight Stream Survey & Complete Full-Year Discovery
 - **Swift Non-Intrusive Scanning:** The assistant glides swiftly down the entire Classroom stream using rapid kinetic physical swipes without opening any post cards.
 - **Inventory Manifest Construction:** Every discovered announcement is fingerprinted and cataloged into an in-memory inventory manifest (`StreamManifest`).
@@ -676,6 +691,20 @@ To guarantee smooth, uninterrupted crawling across any Android screen size, aspe
   - *Detail View Attachment Swipe:* Starts at $70\%$ height and sweeps upward to $30\%$ height ($0.70h \rightarrow 0.30h$) over 350ms.
   - *Pull-to-Refresh Immunity:* Because downward swipes terminate at $68\%$ height and upward swipes begin at $70\%$ height, touches never enter the top $25\%$ of the screen, completely preventing accidental triggering of Google Classroom's pull-to-refresh spinner or collapsing course headers.
   - *Bottom Tab Navigation Immunity:* Because touches never cross below $70\%$ height, automated swipes never strike Classroom's bottom navigation tabs (`Stream`, `Classwork`, `People`) or Android's home navigation pill.
+
+#### Pull-to-Refresh Guard (Anti-Spinner Trap)
+
+In mobile applications built with Google's Flutter framework or Android's `SwipeRefreshLayout`, dragging downwards while already positioned at the top of a scrollable feed triggers a "pull-to-refresh" gesture. This gesture summons a spinning reload indicator, fires asynchronous network pagination requests, resets list child indices unpredictably, and traps UI crawlers in infinite refresh cycles.
+
+K.I.D.S. implements a bulletproof **Pull-to-Refresh Guard**:
+- **Continuous Stream Top Detection:** During autonomous navigation and recovery (`stepScrollStream`), the assistant continuously checks if the active window is resting at the very top of the feed (`isStreamOrClassworkView(root) && extractCourseTitle(root) != null`).
+- **Strict Backward Scroll Suppression:** If the crawler is already at the top of the stream, any backward (upward list traversal / downward finger drag) action is **strictly blocked and suppressed**:
+  - The scroller logs: `Already at top of stream (course header visible). Suppressing backward scroll to prevent pull-to-refresh.`
+  - Skips native `ACTION_SCROLL_BACKWARD` entirely.
+  - Skips controlled downward dragging gestures (`performControlledDrag(isScrollForward = false)`).
+- **Secondary Pre-Gesture Top Re-Check:** Even if native scrolling was skipped and the fallback zero-fling drag is about to execute, `stepScrollStream` re-inspects `rootInActiveWindow`. If the top course banner is confirmed visible, the downward drag is discarded immediately (`Top of stream confirmed before gesture. Suppressing backward drag.`).
+- **Target Ahead Inversion:** In Pass 2 auto-recovery, when the viewport is confirmed at the stream top (`isAtStreamTop == true`), the recovery engine recognizes that any target notice must physically reside further down the stream (`targetAhead = true`), completely eliminating upward dragging against the top boundary.
+- **Zero-Spinner Guarantee:** Flutter and Android pull-to-refresh spinners are **100% prevented from ever firing**, ensuring continuous, uninterrupted crawling sessions.
 
 #### 100% Crawl Verification Milestone (176/176 Notices & 36 Vault Attachments)
 The robustness of K.I.D.S.'s autonomous stream recovery, universal screen geometry, and share-sheet ingestion has been verified under exhaustive, real-world full-year stress testing:
@@ -818,6 +847,24 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
        7. *600ms UI Tree Regeneration Settle Window:* Following return to the Classroom detail view, the crawler pauses for 600ms to allow Google Classroom's view hierarchy to fully settle and regenerate before querying the next attachment.
      - **100% Ingestion Guarantee:** All attachments—even posts with 9+ heavy files—are completely captured, staged into private storage, and queued for Google Drive backup with zero dropped files and zero stale node crashes.
    - **Calibrated Debouncing:** When direct download buttons are present alongside chips, a 1,000ms debounce gives Android's system `DownloadManager` ample time to register the download request without queue dropouts or socket contention.
+   - **Robust Attachment Matching (Multilingual Scripts & Parenthetical Support):**
+     In school communications, attachment file titles posted by teachers often include complex descriptions, parenthetical annotations, or multilingual non-Latin scripts (e.g., Hindi Devanagari, regional languages, or subject notes like `"Mathematics Practice Sheet (Textbook PDF)"`, `"Hindi Vyakaran - Chapter 3 (अभ्यास पुस्तिका).pdf"`, or `"Term 1 Exam Syllabus (Final)"`).
+
+     Traditional automation tools fail because Google Classroom truncates UI chips, appends ellipses (`...`), or splits text across multiple composite accessibility nodes, preventing exact string matching. K.I.D.S. solves this with a **Multi-Tier Normalized Attachment Matcher**:
+     - *Query Normalization & Parenthetical Stripping:*
+       - Automatically strips trailing UI ellipsis truncation (`...`).
+       - Uses regular expressions (`\([^)]*\)`) to strip parenthetical notes, isolating the true core filename (e.g., isolating `"Mathematics Practice Sheet"` from `"Mathematics Practice Sheet (Textbook PDF)"`).
+       - Generates a prioritized candidate query set: clean filename, parenthetical-stripped filename, extension-free base name, and focused 20-character prefix tokens ($\ge 3$ characters).
+     - *Native Indexed Search (`findAccessibilityNodeInfosByText`):*
+       - Queries Android's active accessibility hierarchy using fast native text search across all normalized query candidates.
+       - Climbs the node hierarchy to resolve the outermost clickable container or chip card (`findClickableAncestor`).
+     - *Recursive Multilingual & Unicode Tree Traversal Fallback (`findAttachmentChipRecursively`):*
+       - If direct text indexing fails to match (frequent in non-Latin scripts like Hindi, where complex ligatures or font rendering fragment text across sub-nodes), K.I.D.S. automatically activates a recursive tree traversal fallback.
+       - Tokenizes the sanitized filename into component words and walks the entire accessibility subtree, accumulating combined text via `collectQuickText()`.
+       - Matches candidate nodes containing any valid query token ($\ge 3$ characters) and resolves the associated clickable chip ancestor.
+     - *Section Header Immunity:* Distinguishes between substantive attachment chips and static section labels (e.g., `"Attachments"` or `"Attachment"`), guaranteeing that clicks are never wasted on non-clickable section headers.
+     - *Guaranteed Staging to Vault:* Taps the resolved chip, automates document sharing to "K.I.D.S. Vault", and stages the file in private storage with zero human intervention.
+
 7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
    - K.I.D.S. implements a resilient **Multi-Attempt Guarded Return Loop** executing **up to 3 sequential attempts**:

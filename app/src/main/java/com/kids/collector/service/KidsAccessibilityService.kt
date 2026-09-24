@@ -74,6 +74,7 @@ class KidsAccessibilityService : AccessibilityService() {
             "com.toddleapp",
             "com.edunext.student"
         )
+        private val ATTACHMENT_HEADER_REGEX = Regex("""^attachments?(\s*[\(:\d].*)?$""", RegexOption.IGNORE_CASE)
 
         fun triggerDriveSync(context: Context) {
             val constraints = Constraints.Builder()
@@ -328,6 +329,37 @@ class KidsAccessibilityService : AccessibilityService() {
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
     }
 
+    private suspend fun ensureAtStreamTop() {
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Checking stream top alignment before survey...")
+        var steps = 0
+        val maxSteps = 15
+        while (serviceScope.isActive && steps < maxSteps) {
+            val root = rootInActiveWindow
+            if (root == null) {
+                delay(300)
+                steps++
+                continue
+            }
+            if (!isStreamOrClassworkView(root)) {
+                root.recycle()
+                delay(400)
+                steps++
+                continue
+            }
+            val title = extractCourseTitle(root)
+            root.recycle()
+            if (title != null) {
+                CrawlerTraceLogger.log("STREAM_SURVEY", "Confirmed at stream top (header banner: \"$title\"). Ready for survey.")
+                return
+            }
+            CrawlerTraceLogger.log("STREAM_SURVEY", "Course header banner not visible. Swiping backward to rewind to stream top (step ${steps + 1}/$maxSteps)...")
+            crawlerOverlay?.updateStatus("Rewinding to Top...", "Aligning stream for survey (${steps + 1}/$maxSteps)")
+            stepScrollStream(isScrollForward = false)
+            delay(500)
+            steps++
+        }
+    }
+
     private suspend fun runDeepCrawlLoop() {
         val manifest = StreamManifest()
         val surveyStartTime = System.currentTimeMillis()
@@ -339,6 +371,7 @@ class KidsAccessibilityService : AccessibilityService() {
         // =========================================================================
         // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
         // =========================================================================
+        ensureAtStreamTop()
         crawlerOverlay?.updateStatus("Status: Surveying Stream...", "Indexing stream notices...")
         CrawlerTraceLogger.log("STREAM_SURVEY", "Beginning Pass 1: Pre-flight stream survey...")
 
@@ -788,6 +821,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 // =====================================================================
                 val checkRoot = rootInActiveWindow
                 if (checkRoot != null) {
+                    val isAtStreamTop = isStreamOrClassworkView(checkRoot) && extractCourseTitle(checkRoot) != null
                     val visibleItems = getVisibleManifestItems(checkRoot, manifest)
                     checkRoot.recycle()
 
@@ -817,7 +851,14 @@ class KidsAccessibilityService : AccessibilityService() {
                             continue
                         }
 
-                        val candidateCard = findBestCandidateCardOnScreen(rootInActiveWindow, nextItem)
+                        val recoveryRoot = rootInActiveWindow
+                        val candidateCard = recoveryRoot?.let { rRoot ->
+                            try {
+                                findBestCandidateCardOnScreen(rRoot, nextItem)
+                            } finally {
+                                rRoot.recycle()
+                            }
+                        }
                         if (candidateCard != null) {
                             val displayMetrics = resources.displayMetrics
                             val minTop = 140
@@ -835,12 +876,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
                     // Adaptive swiping & oscillation detection
                     // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
+                    // If at the stream top banner, target can NEVER be backward (upward).
                     // If target index is greater than maxVisibleIndex, target is further down (forward).
                     // Otherwise, target is towards the top (backward).
-                    val targetAhead = if (maxVisibleIndex != null) {
-                        nextItem.index > maxVisibleIndex
-                    } else {
-                        false // Default in bottom-to-top pass: scroll backward towards the top!
+                    val targetAhead = when {
+                        isAtStreamTop -> true
+                        maxVisibleIndex != null && nextItem.index > maxVisibleIndex -> true
+                        else -> false // Default in bottom-to-top pass: scroll backward towards the top!
                     }
                     val distance = if (minVisibleIndex != null) Math.abs(nextItem.index - minVisibleIndex) else 5
 
@@ -1504,30 +1546,57 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private suspend fun stepScrollStream(isScrollForward: Boolean) {
         val root = rootInActiveWindow
-        var scrolledNatively = false
         if (root != null) {
+            val isAtTop = isStreamOrClassworkView(root) && extractCourseTitle(root) != null
+            if (!isScrollForward && isAtTop) {
+                CrawlerTraceLogger.log("SCROLLER", "Already at top of stream (course header visible). Suppressing backward scroll to prevent pull-to-refresh.")
+                root.recycle()
+                return
+            }
             val container = findScrollableNode(root)
+            var scrolledNatively = false
             if (container != null) {
                 val action = if (isScrollForward) AccessibilityNodeInfo.ACTION_SCROLL_FORWARD else AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD
                 scrolledNatively = container.performAction(action)
                 container.recycle()
             }
             root.recycle()
+            if (scrolledNatively) {
+                delay(400)
+                return
+            }
         }
-        if (!scrolledNatively) {
-            // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
-            var scrollDone = false
-            crawlerOverlay?.performControlledDrag(isScrollForward) { scrollDone = true }
-            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-        } else {
-            delay(400)
+        if (!isScrollForward) {
+            val checkAgain = rootInActiveWindow
+            if (checkAgain != null) {
+                val isAtTop = isStreamOrClassworkView(checkAgain) && extractCourseTitle(checkAgain) != null
+                checkAgain.recycle()
+                if (isAtTop) {
+                    CrawlerTraceLogger.log("SCROLLER", "Top of stream confirmed before gesture. Suppressing backward drag.")
+                    return
+                }
+            }
         }
+        // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
+        var scrollDone = false
+        crawlerOverlay?.performControlledDrag(isScrollForward) { scrollDone = true }
+        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
     }
 
     private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
         val cleanFileName = fileName.replace("...", "").trim()
+        val withoutParentheses = cleanFileName.replace(Regex("""\([^)]*\)"""), "").trim()
         val baseFileName = cleanFileName.substringBeforeLast('.')
-        val searchQueries = listOf(cleanFileName, baseFileName.take(20)).filter { it.length >= 4 }
+        val baseWithoutParens = withoutParentheses.substringBeforeLast('.')
+
+        val searchQueries = linkedSetOf(
+            cleanFileName,
+            withoutParentheses,
+            baseWithoutParens,
+            baseFileName,
+            baseWithoutParens.take(20),
+            baseFileName.take(20)
+        ).filter { it.length >= 3 }
 
         for (searchQuery in searchQueries) {
             val matchedNodes = rootNode.findAccessibilityNodeInfosByText(searchQuery)
@@ -1549,6 +1618,33 @@ class KidsAccessibilityService : AccessibilityService() {
             for (nodeToRecycle in matchedNodes) {
                 nodeToRecycle.recycle()
             }
+        }
+
+        // Recursive tree inspection fallback for unicode/complex chips
+        val targetTokens = baseWithoutParens.split(Regex("""[\s\p{Punct}]+"""))
+            .map { it.trim().lowercase() }
+            .filter { it.length >= 3 }
+            .toSet()
+
+        return findAttachmentChipRecursively(rootNode, targetTokens)
+    }
+
+    private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetTokens: Set<String>): AccessibilityNodeInfo? {
+        val textList = mutableListOf<String>()
+        collectQuickText(node, textList)
+        val combined = textList.joinToString(" ").lowercase()
+        val isMatch = targetTokens.isNotEmpty() && targetTokens.any { combined.contains(it) }
+
+        if (isMatch) {
+            val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            if (clickable != null) return clickable
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findAttachmentChipRecursively(child, targetTokens)
+            child.recycle()
+            if (found != null) return found
         }
         return null
     }
@@ -2054,8 +2150,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 (text?.contains("options", ignoreCase = true) == true) ||
                 (desc?.contains("more options", ignoreCase = true) == true)
 
+        val isSectionHeader = (text != null && ATTACHMENT_HEADER_REGEX.matches(text)) ||
+                (desc != null && ATTACHMENT_HEADER_REGEX.matches(desc))
+
         val candidate = when {
-            isOptionsButton -> null
+            isOptionsButton || isSectionHeader -> null
             !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
                 if (text.contains('.')) text else "$text.pdf"
             }
