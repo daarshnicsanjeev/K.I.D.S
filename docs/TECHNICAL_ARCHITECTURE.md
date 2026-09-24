@@ -1359,44 +1359,50 @@ private suspend fun ensureAtStreamTop() {
          val freshRoot = rootInActiveWindow ?: continue
          var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
 
-         // If not in immediate viewport, scroll detail view downward to reveal it
+         // Multi-Swipe Bidirectional Search: Search downward (up to 3 swipes) with settling delay
          if (targetChip == null) {
-             val container = findScrollableNode(freshRoot)
-             if (container != null) {
-                 container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                 container.recycle()
-                 delay(400)
-             } else {
-                 var scrollDone = false
-                 crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                 waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
-             }
-             val scrolledDownRoot = rootInActiveWindow
-             if (scrolledDownRoot != null) {
-                 targetChip = findAttachmentChipByFileName(scrolledDownRoot, fileName)
-                 scrolledDownRoot.recycle()
+             for (downAttempt in 1..3) {
+                 val currentRoot = rootInActiveWindow ?: break
+                 val container = findScrollableNode(currentRoot)
+                 if (container != null) {
+                     container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                     container.recycle()
+                     delay(450)
+                 } else {
+                     var scrollDone = false
+                     crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                     waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+                     delay(400) // Essential settling delay for RecyclerView item binding
+                 }
+                 currentRoot.recycle()
+
+                 val afterScrollRoot = rootInActiveWindow ?: break
+                 targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
+                 afterScrollRoot.recycle()
+                 if (targetChip != null) break
              }
 
-             // Bidirectional Rewind: If still not found, rewind upward towards top of detail view
+             // Bidirectional Rewind: If still not found after scrolling down, rewind back upward (up to 3 swipes)
              if (targetChip == null) {
-                 val rewindRoot = rootInActiveWindow
-                 if (rewindRoot != null) {
-                     val rewindContainer = findScrollableNode(rewindRoot)
-                     if (rewindContainer != null) {
-                         rewindContainer.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                         rewindContainer.recycle()
-                         delay(400)
+                 for (upAttempt in 1..3) {
+                     val currentRoot = rootInActiveWindow ?: break
+                     val container = findScrollableNode(currentRoot)
+                     if (container != null) {
+                         container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                         container.recycle()
+                         delay(450)
                      } else {
                          var rewindDone = false
                          crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                         waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { rewindDone }
+                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+                         delay(400)
                      }
-                     rewindRoot.recycle()
-                     val scrolledUpRoot = rootInActiveWindow
-                     if (scrolledUpRoot != null) {
-                         targetChip = findAttachmentChipByFileName(scrolledUpRoot, fileName)
-                         scrolledUpRoot.recycle()
-                     }
+                     currentRoot.recycle()
+
+                     val afterRewindRoot = rootInActiveWindow ?: break
+                     targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
+                     afterRewindRoot.recycle()
+                     if (targetChip != null) break
                  }
              }
          }

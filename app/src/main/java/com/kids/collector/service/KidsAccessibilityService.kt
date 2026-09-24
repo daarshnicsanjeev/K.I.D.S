@@ -672,6 +672,27 @@ class KidsAccessibilityService : AccessibilityService() {
                     continue
                 }
 
+                // If this material post is already fully captured and ALL its attachments are physically verified in Drive, skip detail view!
+                if (isNoticeFullyCapturedInDb(title)) {
+                    CrawlerTraceLogger.log(
+                        "STREAM_SURVEY",
+                        "Notice #${targetItem.index} (\"$title\") already has all attachments synced to Drive. Skipping detail view."
+                    )
+                    manifest.markItemCompleted(targetItem.index)
+                    manifest.markCompleted(fingerprint)
+                    manifest.markCompleted(targetItem.fingerprint)
+                    visitedPostFingerprints.add(fingerprint)
+                    visitedPostFingerprints.add(targetItem.fingerprint)
+                    crawlerOverlay?.incrementNoticeCount()
+                    crawlerOverlay?.updateStatus(
+                        "Captured (${targetItem.index}/$total - ${manifest.progressPercent}%)...",
+                        title
+                    )
+                    clickableNode.recycle()
+                    delay(200)
+                    continue
+                }
+
                 val displayMetrics = resources.displayMetrics
                 val minTop = 140
                 val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
@@ -1135,44 +1156,50 @@ class KidsAccessibilityService : AccessibilityService() {
             val freshRoot = rootInActiveWindow ?: continue
             var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
 
-            // If not found in immediate viewport, search downward, and if needed rewind upward
+            // If not found in immediate viewport, search downward (up to 3 swipes), and if needed rewind upward
             if (targetChip == null) {
-                val container = findScrollableNode(freshRoot)
-                if (container != null) {
-                    container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                    container.recycle()
-                    delay(400)
-                } else {
-                    var scrollDone = false
-                    crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                    waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
-                }
-                val scrolledDownRoot = rootInActiveWindow
-                if (scrolledDownRoot != null) {
-                    targetChip = findAttachmentChipByFileName(scrolledDownRoot, fileName)
-                    scrolledDownRoot.recycle()
+                for (downAttempt in 1..3) {
+                    val currentRoot = rootInActiveWindow ?: break
+                    val container = findScrollableNode(currentRoot)
+                    if (container != null) {
+                        container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                        container.recycle()
+                        delay(450)
+                    } else {
+                        var scrollDone = false
+                        crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+                        delay(400) // Essential settling delay for RecyclerView item binding
+                    }
+                    currentRoot.recycle()
+
+                    val afterScrollRoot = rootInActiveWindow ?: break
+                    targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
+                    afterScrollRoot.recycle()
+                    if (targetChip != null) break
                 }
 
-                // If still not found, rewind upward towards top of detail view
+                // If still not found after scrolling down, rewind back upward (up to 3 swipes)
                 if (targetChip == null) {
-                    val rewindRoot = rootInActiveWindow
-                    if (rewindRoot != null) {
-                        val rewindContainer = findScrollableNode(rewindRoot)
-                        if (rewindContainer != null) {
-                            rewindContainer.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                            rewindContainer.recycle()
-                            delay(400)
+                    for (upAttempt in 1..3) {
+                        val currentRoot = rootInActiveWindow ?: break
+                        val container = findScrollableNode(currentRoot)
+                        if (container != null) {
+                            container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                            container.recycle()
+                            delay(450)
                         } else {
                             var rewindDone = false
                             crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                            waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { rewindDone }
+                            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+                            delay(400)
                         }
-                        rewindRoot.recycle()
-                        val scrolledUpRoot = rootInActiveWindow
-                        if (scrolledUpRoot != null) {
-                            targetChip = findAttachmentChipByFileName(scrolledUpRoot, fileName)
-                            scrolledUpRoot.recycle()
-                        }
+                        currentRoot.recycle()
+
+                        val afterRewindRoot = rootInActiveWindow ?: break
+                        targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
+                        afterRewindRoot.recycle()
+                        if (targetChip != null) break
                     }
                 }
             }
@@ -1220,7 +1247,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 crawlerOverlay?.incrementAttachmentCount()
             }
         }
-        return allAttachments.size
+        return capturedAttachmentNames.size
     }
 
     /**
@@ -1229,8 +1256,12 @@ class KidsAccessibilityService : AccessibilityService() {
      * and returns back to Classroom detail view.
      */
     private suspend fun automateViewerShareOrDownload(fileName: String) {
-        // Wait up to 3000ms for viewer or preview to open
-        val openedViewer = waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+        // Dynamically scale timeout: PowerPoint (.pptx), images (.jpg/.png), and heavy documents require extra conversion time
+        val isHeavyDocument = fileName.contains(Regex("""\.(pptx|docx|xlsx|jpg|png|zip)""", RegexOption.IGNORE_CASE))
+        val viewerTimeoutMs = if (isHeavyDocument) 7000L else 5500L
+
+        // Wait up to viewerTimeoutMs for viewer or preview to open
+        val openedViewer = waitForCondition(timeoutMs = viewerTimeoutMs, pollIntervalMs = 200) {
             val root = rootInActiveWindow ?: return@waitForCondition false
             val isNotDetail = !isPostDetailView(root) && !isStreamOrClassworkView(root)
             root.recycle()
@@ -1238,7 +1269,7 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         if (!openedViewer) {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No external/internal viewer opened for \"$fileName\"")
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No external/internal viewer opened for \"$fileName\" within ${viewerTimeoutMs}ms")
             return
         }
 
@@ -1504,8 +1535,8 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun selectKidsInSystemChooser() {
         var target: AccessibilityNodeInfo? = null
 
-        // Wait up to 3000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
-        waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+        // Wait up to 3500ms for system chooser to appear and locate K.I.D.S. Vault dynamically
+        waitForCondition(timeoutMs = 3500, pollIntervalMs = 200) {
             target = findKidsShareTargetInAllWindows()
             target != null
         }
@@ -1532,6 +1563,13 @@ class KidsAccessibilityService : AccessibilityService() {
             // Attempt 3: Vertical scroll down the expanded app list to find K.I.D.S. Vault
             if (target == null) {
                 dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.35f, 400)
+                delay(600)
+                target = findKidsShareTargetInAllWindows()
+            }
+
+            // Attempt 4: Additional deeper vertical scroll down the expanded app list
+            if (target == null) {
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
                 delay(600)
                 target = findKidsShareTargetInAllWindows()
             }
@@ -2071,7 +2109,14 @@ class KidsAccessibilityService : AccessibilityService() {
         } ?: return false
 
         val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
-        if (atts.isNotEmpty()) return true
+        if (atts.isNotEmpty()) {
+            // Must verify that EVERY registered attachment is physically synced and verified in Drive
+            return atts.all { attachment ->
+                attachment.syncStatus == SyncStatus.SYNCED.name &&
+                        !attachment.driveFileId.isNullOrBlank() &&
+                        !attachment.driveFileId.startsWith("virtual_")
+            }
+        }
 
         val isLikelyMaterial = title.contains("material", true) ||
                 title.contains("worksheet", true) ||
@@ -2083,6 +2128,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
         val postCards = findPostCards(rootNode)
         var addedCount = 0
+        val db = KidsDatabase.getInstance(applicationContext)
 
         for (card in postCards) {
             val cardItems = mutableListOf<String>()
@@ -2114,7 +2160,8 @@ class KidsAccessibilityService : AccessibilityService() {
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
             val fingerprint = computeCardFingerprint(cardItems)
 
-            val isAlreadyCaptured = visitedPostFingerprints.contains(fingerprint) && isNoticeFullyCapturedInDb(title)
+            val existingNotice = db.noticeDao().findByHash(fingerprint)
+            val isAlreadyCaptured = (visitedPostFingerprints.contains(fingerprint) || existingNotice != null) && isNoticeFullyCapturedInDb(title)
             val added = manifest.addItem(fingerprint, title, combinedText, isAlreadyCaptured)
             if (added) {
                 addedCount++
