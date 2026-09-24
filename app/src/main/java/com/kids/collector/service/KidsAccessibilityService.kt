@@ -1156,50 +1156,81 @@ class KidsAccessibilityService : AccessibilityService() {
             val freshRoot = rootInActiveWindow ?: continue
             var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
 
-            // If not found in immediate viewport, search downward (up to 3 swipes), and if needed rewind upward
+            // Dynamic Boundary-Aware Detail Search:
+            // Replaces arbitrary hardcoded swipe counts with physical boundary detection.
+            // Scrolls dynamically until target chip is found or container reaches the physical limit!
             if (targetChip == null) {
-                for (downAttempt in 1..3) {
+                // Phase 1: Downward boundary-aware search
+                var previousBottomFingerprint = ""
+                while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                     val currentRoot = rootInActiveWindow ?: break
+                    val currentFingerprint = computeViewportContentFingerprint(currentRoot)
                     val container = findScrollableNode(currentRoot)
-                    if (container != null) {
-                        container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+
+                    val canScrollMore = if (container != null) {
+                        val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                         container.recycle()
                         delay(450)
+                        scrolled
                     } else {
                         var scrollDone = false
                         crawlerOverlay?.performDetailScrollDown { scrollDone = true }
                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
                         delay(400) // Essential settling delay for RecyclerView item binding
+                        true
                     }
                     currentRoot.recycle()
 
                     val afterScrollRoot = rootInActiveWindow ?: break
+                    val newFingerprint = computeViewportContentFingerprint(afterScrollRoot)
                     targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
                     afterScrollRoot.recycle()
-                    if (targetChip != null) break
+
+                    // Dynamic Bottom Boundary Detection:
+                    // If container reported cannot scroll forward, or viewport contents remained completely static
+                    val hasHitBottomBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
+                    previousBottomFingerprint = currentFingerprint
+
+                    if (targetChip != null || hasHitBottomBoundary) {
+                        break
+                    }
                 }
 
-                // If still not found after scrolling down, rewind back upward (up to 3 swipes)
+                // Phase 2: If chip wasn't below, dynamically rewind upward until chip is found or physical top reached
                 if (targetChip == null) {
-                    for (upAttempt in 1..3) {
+                    var previousTopFingerprint = ""
+                    while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                         val currentRoot = rootInActiveWindow ?: break
+                        val currentFingerprint = computeViewportContentFingerprint(currentRoot)
                         val container = findScrollableNode(currentRoot)
-                        if (container != null) {
-                            container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+
+                        val canScrollMore = if (container != null) {
+                            val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
                             container.recycle()
                             delay(450)
+                            scrolled
                         } else {
                             var rewindDone = false
                             crawlerOverlay?.performDetailScrollUp { rewindDone = true }
                             waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
                             delay(400)
+                            true
                         }
                         currentRoot.recycle()
 
                         val afterRewindRoot = rootInActiveWindow ?: break
+                        val newFingerprint = computeViewportContentFingerprint(afterRewindRoot)
                         targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
                         afterRewindRoot.recycle()
-                        if (targetChip != null) break
+
+                        // Dynamic Top Boundary Detection:
+                        // If container reported cannot scroll backward, or viewport contents remained completely static
+                        val hasHitTopBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
+                        previousTopFingerprint = currentFingerprint
+
+                        if (targetChip != null || hasHitTopBoundary) {
+                            break
+                        }
                     }
                 }
             }
@@ -1541,37 +1572,39 @@ class KidsAccessibilityService : AccessibilityService() {
             target != null
         }
 
-        // If not found in immediate view, scroll the sharesheet horizontally or vertically to reveal it
+        // If not found in immediate view, scroll the sharesheet horizontally, then dynamically vertically until found or boundary reached
         if (target == null) {
             CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
             val displayMetrics = resources.displayMetrics
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            // Attempt 1: Horizontal swipe across apps row (from 85% width to 15% width at 75% height)
+            // Step 1: Horizontal swipe across direct share / apps row
             dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.75f, screenWidth * 0.15f, screenHeight * 0.75f, 300)
             delay(500)
             target = findKidsShareTargetInAllWindows()
 
-            // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet to full screen
-            if (target == null) {
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
-                delay(600)
-                target = findKidsShareTargetInAllWindows()
-            }
+            // Step 2: Dynamic vertical scroll through expanded apps until found or bottom boundary reached
+            var previousChooserFingerprint = ""
+            while (target == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                val activeChooser = rootInActiveWindow ?: break
+                val currentChooserFingerprint = computeViewportContentFingerprint(activeChooser)
+                activeChooser.recycle()
 
-            // Attempt 3: Vertical scroll down the expanded app list to find K.I.D.S. Vault
-            if (target == null) {
                 dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.35f, 400)
                 delay(600)
                 target = findKidsShareTargetInAllWindows()
-            }
+                if (target != null) break
 
-            // Attempt 4: Additional deeper vertical scroll down the expanded app list
-            if (target == null) {
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
-                delay(600)
-                target = findKidsShareTargetInAllWindows()
+                val afterSwipeRoot = rootInActiveWindow ?: break
+                val newChooserFingerprint = computeViewportContentFingerprint(afterSwipeRoot)
+                afterSwipeRoot.recycle()
+
+                // Boundary Detection: If content stopped moving, we reached the end of the chooser
+                if (newChooserFingerprint == currentChooserFingerprint || newChooserFingerprint == previousChooserFingerprint) {
+                    break
+                }
+                previousChooserFingerprint = currentChooserFingerprint
             }
         }
 
@@ -2947,6 +2980,12 @@ class KidsAccessibilityService : AccessibilityService() {
             collectQuickText(child, outList)
             child.recycle()
         }
+    }
+
+    private fun computeViewportContentFingerprint(rootNode: AccessibilityNodeInfo): String {
+        val texts = mutableListOf<String>()
+        collectQuickText(rootNode, texts)
+        return texts.joinToString("||").hashCode().toString()
     }
 
     private fun collectAllText(node: AccessibilityNodeInfo, outList: MutableList<String>) {
