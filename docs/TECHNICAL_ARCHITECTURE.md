@@ -1120,8 +1120,11 @@ private suspend fun ensureAtStreamTop() {
   - **Echo Settlement Delay:** The flag is set to `true` prior to building and dispatching the gesture, kept active during gesture callbacks, and held for an additional 150ms delay post-gesture to completely absorb and neutralize synthetic touch echoes and Android input queue propagation.
   - **Direct Consumer:** `FloatingCrawlerOverlay` reads this property directly in touch event and click handlers, rejecting simulated taps that fall on assistant controls.
 
-- **Extended 2,500ms Detail View Window with Top-Tap Retry:**
-  Rather than freezing or failing on slow OEM window animations, `KidsAccessibilityService` uses a multi-stage 2,500ms window:
+- **Direct Title Node Targeting & Extended 2,500ms Detail View Window with Retry:**
+  Rather than blindly guessing coordinates or risking collisions with the bottom "Add class comment" row, `KidsAccessibilityService` actively resolves the exact coordinates of the notice title node via `findTitleNodeInCard(clickableNode, title)`.
+  - **Title Node Resolution:** The crawler searches the card's accessibility node hierarchy for the announcement headline text using `findAccessibilityNodeInfosByText` and child tree traversal, filtering out any nodes containing `"comment"`.
+  - **Exact Tap Coordinates (`safeTapX, safeTapY`):** If the title node is found, its center coordinates (`titleRect.centerX()`, `titleRect.centerY()`) are clamped safely within the card bounds. If unresolved, it falls back to the top third (`bounds.top + 50`) clamped away from edges.
+  - **Two-Stage Detail Transition:**
   ```kotlin
   // Stage 1: Initial 1200ms wait
   var enteredDetail = waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) {
@@ -1131,13 +1134,13 @@ private suspend fun ensureAtStreamTop() {
       isDetail
   }
 
-  // Stage 2: Physical top-tap retry and 1500ms secondary wait
+  // Stage 2: Physical title-targeted tap retry and 1500ms secondary wait
   if (!enteredDetail) {
       CrawlerTraceLogger.log(
           "DEEP_CRAWLER",
-          "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
+          "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical tap at ($safeTapX, $safeTapY)"
       )
-      dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
+      dispatchTap(safeTapX, safeTapY)
       enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
           val active = rootInActiveWindow ?: return@waitForCondition false
           val isDetail = isPostDetailView(active)
@@ -1358,7 +1361,7 @@ private suspend fun ensureAtStreamTop() {
 
          // If not in immediate viewport, scroll detail view downward to reveal it
          if (targetChip == null) {
-             val container = findScrollableContainer(freshRoot)
+             val container = findScrollableNode(freshRoot)
              if (container != null) {
                  container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
                  container.recycle()
@@ -1368,10 +1371,33 @@ private suspend fun ensureAtStreamTop() {
                  crawlerOverlay?.performDetailScrollDown { scrollDone = true }
                  waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
              }
-             val scrolledRoot = rootInActiveWindow
-             if (scrolledRoot != null) {
-                 targetChip = findAttachmentChipByFileName(scrolledRoot, fileName)
-                 scrolledRoot.recycle()
+             val scrolledDownRoot = rootInActiveWindow
+             if (scrolledDownRoot != null) {
+                 targetChip = findAttachmentChipByFileName(scrolledDownRoot, fileName)
+                 scrolledDownRoot.recycle()
+             }
+
+             // Bidirectional Rewind: If still not found, rewind upward towards top of detail view
+             if (targetChip == null) {
+                 val rewindRoot = rootInActiveWindow
+                 if (rewindRoot != null) {
+                     val rewindContainer = findScrollableNode(rewindRoot)
+                     if (rewindContainer != null) {
+                         rewindContainer.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                         rewindContainer.recycle()
+                         delay(400)
+                     } else {
+                         var rewindDone = false
+                         crawlerOverlay?.performDetailScrollUp { rewindDone = true }
+                         waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { rewindDone }
+                     }
+                     rewindRoot.recycle()
+                     val scrolledUpRoot = rootInActiveWindow
+                     if (scrolledUpRoot != null) {
+                         targetChip = findAttachmentChipByFileName(scrolledUpRoot, fileName)
+                         scrolledUpRoot.recycle()
+                     }
+                 }
              }
          }
          freshRoot.recycle()
@@ -2207,13 +2233,24 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
      if (isTransient) {
          CrawlerTraceLogger.log("VIEWER_RECOVERY", "Active window in Pass 2 is viewer or system component ($currentPkg). Returning to Classroom...")
          crawlerOverlay?.updateStatus("Processing File...", currentPkg)
+         consecutiveTransientCount++
+         if (consecutiveTransientCount >= 3) {
+             CrawlerTraceLogger.log("VIEWER_RECOVERY", "Persistent transient window detected ($consecutiveTransientCount cycles). Re-launching school app...")
+             relaunchSchoolApp()
+             consecutiveTransientCount = 0
+             root.recycle()
+             delay(1500)
+             continue
+         }
          performReturnToStream(root)
          root.recycle()
          delay(600)
          continue
      }
+     consecutiveTransientCount = 0
      ```
-   - **Viewer Recovery Block:** When Classroom opens an attachment in Google Drive Viewer, system PDF previewer, or share sheet, `isTransient == true`. Rather than freezing execution with `Status: Paused (External App)`, K.I.D.S. recognizes this as part of the file-capture workflow: it displays `Processing File...`, invokes `performReturnToStream(root)` (clicking Navigate Up or system `GLOBAL_ACTION_BACK`), and smoothly recovers back to Google Classroom with a 600ms settling delay.
+   - **Viewer Recovery & SystemUI Deadlock Self-Healing:** When Classroom opens an attachment in Google Drive Viewer, system PDF previewer, or share sheet, `isTransient == true`. Rather than freezing execution with `Status: Paused (External App)`, K.I.D.S. recognizes this as part of the file-capture workflow: it displays `Processing File...`, invokes `performReturnToStream(root)` (clicking Navigate Up or system `GLOBAL_ACTION_BACK`), and smoothly recovers back to Google Classroom with a 600ms settling delay.
+   - **Persistent SystemUI Self-Healing (`relaunchSchoolApp`):** If a system component (such as lock screen, notification shade, or ambient display `com.android.systemui`) persists for $\ge 3$ consecutive cycles, sending `GLOBAL_ACTION_BACK` can cause an infinite loop. K.I.D.S. detects this deadlock state and proactively executes `relaunchSchoolApp()`, immediately bringing Google Classroom back to the foreground and resetting the counter.
    - **Genuine External App Confinement:** If a genuinely foreign, non-whitelisted app or launcher takes the foreground (`!isClassroom && !isTransient`), the crawler safely pauses execution, updates the overlay to `Status: Paused (External App)`, and delays 1,000ms without clicking or scrolling, strictly preventing unintended interactions.
 
 4. **Immediate Coroutine Job Cancellation on Stop:**

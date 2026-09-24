@@ -577,6 +577,12 @@ class FloatingCrawlerOverlay(
         }
     }
 
+    fun performDetailScrollUp(onComplete: () -> Unit) {
+        handler.post {
+            performDetailScrollUpGesture(onComplete)
+        }
+    }
+
     private fun performDetailScrollDownGesture(onComplete: () -> Unit) {
         val displayMetrics = service.resources.displayMetrics
         val width = displayMetrics.widthPixels
@@ -615,6 +621,48 @@ class FloatingCrawlerOverlay(
 
         if (!dispatched) {
             fallbackNativeScroll()
+            onComplete()
+        }
+    }
+
+    private fun performDetailScrollUpGesture(onComplete: () -> Unit) {
+        val displayMetrics = service.resources.displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
+
+        // Detail View swipe down to scroll upward: from 35% height to 68% height
+        val startX = width * 0.50f
+        val startY = height * 0.35f
+        val endY = height * 0.68f
+
+        CrawlerTraceLogger.log(
+            "SCROLLER_SWIPE",
+            "Dispatching detail scroll upward: ($startX, $startY) -> ($startX, $endY), screen=${width}x${height}"
+        )
+
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(startX, endY)
+        }
+
+        val stroke = GestureDescription.StrokeDescription(path, 0, 350)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+
+        val dispatched = service.dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Detail scroll upward COMPLETED")
+                onComplete()
+            }
+
+            override fun onCancelled(gestureDescription: GestureDescription?) {
+                CrawlerTraceLogger.log("SCROLLER_SWIPE_RESULT", "Detail scroll upward CANCELLED")
+                fallbackNativeScrollBackward()
+                onComplete()
+            }
+        }, null)
+
+        if (!dispatched) {
+            fallbackNativeScrollBackward()
             onComplete()
         }
     }

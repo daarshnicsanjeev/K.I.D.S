@@ -509,6 +509,7 @@ class KidsAccessibilityService : AccessibilityService() {
         var consecutiveStaticRecoveryCount = 0
         var lastTargetIndex = -1
         var consecutiveTargetAttempts = 0
+        var consecutiveTransientCount = 0
         val recentScrollDirections = ArrayDeque<Boolean>(6) // true = forward, false = backward
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
@@ -536,13 +537,23 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             if (isTransient) {
-                CrawlerTraceLogger.log("VIEWER_RECOVERY", "Active window in Pass 2 is viewer or system component ($currentPkg). Returning to Classroom...")
+                consecutiveTransientCount++
+                CrawlerTraceLogger.log("VIEWER_RECOVERY", "Active window in Pass 2 is viewer or system component ($currentPkg, count=$consecutiveTransientCount). Returning to Classroom...")
                 crawlerOverlay?.updateStatus("Processing File...", currentPkg)
+                if (consecutiveTransientCount >= 3) {
+                    CrawlerTraceLogger.log("VIEWER_RECOVERY", "Persistent system component ($currentPkg). Relaunching school app to regain stream focus.")
+                    relaunchSchoolApp()
+                    consecutiveTransientCount = 0
+                    root.recycle()
+                    delay(1200)
+                    continue
+                }
                 performReturnToStream(root)
                 root.recycle()
                 delay(600)
                 continue
             }
+            consecutiveTransientCount = 0
 
             // AUTO-RECOVERY: If displaced to People or Classwork tab, re-select Stream tab!
             if (isPeopleOrClassworkTabActive(root)) {
@@ -681,9 +692,20 @@ class KidsAccessibilityService : AccessibilityService() {
                     title
                 )
 
-                // Dispatch physical tap safely: target the top third of the card (bounds.top + 50)
+                // Dispatch physical tap safely: target the title node itself, or top safe third of the card
                 // NEVER tap the bottom where comments or "Add class comment" are located!
-                val safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
+                val titleNode = findTitleNodeInCard(clickableNode, title)
+                val (safeTapX, safeTapY) = if (titleNode != null) {
+                    val titleRect = Rect()
+                    titleNode.getBoundsInScreen(titleRect)
+                    titleNode.recycle()
+                    val tapX = titleRect.centerX().toFloat().coerceIn(bounds.left.toFloat() + 20f, bounds.right.toFloat() - 20f)
+                    val tapY = titleRect.centerY().toFloat().coerceIn(minTop + 20f, maxBottom - 20f)
+                    Pair(tapX, tapY)
+                } else {
+                    val safeY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20).toFloat()
+                    Pair(bounds.centerX().toFloat(), safeY)
+                }
 
                 val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""
                 val nodeText = clickableNode.text?.toString()?.lowercase() ?: ""
@@ -696,7 +718,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     false
                 }
                 if (!clicked) {
-                    dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
+                    dispatchTap(safeTapX, safeTapY)
                 }
                 clickableNode.recycle()
 
@@ -711,9 +733,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!enteredDetail) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Detail transition pending after 1200ms for #${targetItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
+                        "Detail transition pending after 1200ms for #${targetItem.index}. Retrying physical tap at ($safeTapX, $safeTapY)"
                     )
-                    dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
+                    dispatchTap(safeTapX, safeTapY)
                     enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
                         val active = rootInActiveWindow ?: return@waitForCondition false
                         val isDetail = isPostDetailView(active)
@@ -1113,7 +1135,7 @@ class KidsAccessibilityService : AccessibilityService() {
             val freshRoot = rootInActiveWindow ?: continue
             var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
 
-            // If not found in immediate viewport, scroll detail downward to reveal it
+            // If not found in immediate viewport, search downward, and if needed rewind upward
             if (targetChip == null) {
                 val container = findScrollableNode(freshRoot)
                 if (container != null) {
@@ -1125,10 +1147,33 @@ class KidsAccessibilityService : AccessibilityService() {
                     crawlerOverlay?.performDetailScrollDown { scrollDone = true }
                     waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
                 }
-                val scrolledRoot = rootInActiveWindow
-                if (scrolledRoot != null) {
-                    targetChip = findAttachmentChipByFileName(scrolledRoot, fileName)
-                    scrolledRoot.recycle()
+                val scrolledDownRoot = rootInActiveWindow
+                if (scrolledDownRoot != null) {
+                    targetChip = findAttachmentChipByFileName(scrolledDownRoot, fileName)
+                    scrolledDownRoot.recycle()
+                }
+
+                // If still not found, rewind upward towards top of detail view
+                if (targetChip == null) {
+                    val rewindRoot = rootInActiveWindow
+                    if (rewindRoot != null) {
+                        val rewindContainer = findScrollableNode(rewindRoot)
+                        if (rewindContainer != null) {
+                            rewindContainer.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                            rewindContainer.recycle()
+                            delay(400)
+                        } else {
+                            var rewindDone = false
+                            crawlerOverlay?.performDetailScrollUp { rewindDone = true }
+                            waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { rewindDone }
+                        }
+                        rewindRoot.recycle()
+                        val scrolledUpRoot = rootInActiveWindow
+                        if (scrolledUpRoot != null) {
+                            targetChip = findAttachmentChipByFileName(scrolledUpRoot, fileName)
+                            scrolledUpRoot.recycle()
+                        }
+                    }
                 }
             }
             freshRoot.recycle()
@@ -1367,7 +1412,12 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun isKidsVaultLabel(raw: String?): Boolean {
         if (raw.isNullOrBlank()) return false
         val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "")
-        return clean.contains("kidsvault") || clean == "kids" || clean.startsWith("kids")
+        return clean.contains("kidsvault") ||
+                clean == "kids" ||
+                clean.startsWith("kids") ||
+                clean.contains("kidscollector") ||
+                clean.contains("kidscollect") ||
+                clean.contains("collector")
     }
 
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -2639,6 +2689,35 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             input.recycle()
         }
+    }
+
+    private fun findTitleNodeInCard(cardNode: AccessibilityNodeInfo, targetTitle: String): AccessibilityNodeInfo? {
+        val queryCandidate = targetTitle.substringAfter(":").trim().take(30)
+        val searchQuery = if (queryCandidate.length >= 6) queryCandidate else targetTitle.trim().take(30)
+        if (searchQuery.length >= 4) {
+            val matches = cardNode.findAccessibilityNodeInfosByText(searchQuery)
+            for (m in matches) {
+                val text = m.text?.toString()?.lowercase() ?: ""
+                val desc = m.contentDescription?.toString()?.lowercase() ?: ""
+                if (!text.contains("comment") && !desc.contains("comment")) {
+                    for (other in matches) {
+                        if (other != m) other.recycle()
+                    }
+                    return m
+                }
+                m.recycle()
+            }
+        }
+        for (i in 0 until cardNode.childCount) {
+            val child = cardNode.getChild(i) ?: continue
+            val text = child.text?.toString()?.lowercase() ?: ""
+            val desc = child.contentDescription?.toString()?.lowercase() ?: ""
+            if (!text.contains("comment") && !desc.contains("comment") && (text.length > 5 || desc.length > 5)) {
+                return child
+            }
+            child.recycle()
+        }
+        return null
     }
 
     private fun findInputNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
