@@ -2090,16 +2090,38 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun isPeopleOrClassworkTabActive(rootNode: AccessibilityNodeInfo): Boolean {
-        val textList = mutableListOf<String>()
-        collectQuickText(rootNode, textList)
-        val combined = textList.joinToString(" ").lowercase()
-        val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
-                combined.contains("tab 1 of 3") ||
-                combined.contains("tab 2 of 3") ||
-                combined.contains("tab 3 of 3") ||
-                combined.contains("people")
-        if (!hasBottomTabs) return false
-        return combined.contains("teachers") || combined.contains("classmates")
+        val streamTabNode = findStreamTabButton(rootNode)
+        if (streamTabNode != null) {
+            val isStreamSelected = streamTabNode.isSelected
+            streamTabNode.recycle()
+            if (isStreamSelected) {
+                // Stream tab is explicitly selected - we are NOT displaced!
+                return false
+            }
+        }
+        return isDisplacedBottomTabSelected(rootNode)
+    }
+
+    private fun isDisplacedBottomTabSelected(node: AccessibilityNodeInfo): Boolean {
+        val nodeText = node.text?.toString()?.lowercase().orEmpty()
+        val nodeContentDescription = node.contentDescription?.toString()?.lowercase().orEmpty()
+        val isAlternateTabCandidate = (nodeContentDescription.contains("classwork") ||
+                nodeContentDescription.contains("tab 2 of") ||
+                nodeContentDescription.contains("people") ||
+                nodeContentDescription.contains("tab 3 of") ||
+                nodeText == "classwork" || nodeText == "people")
+
+        if (isAlternateTabCandidate && node.isSelected) {
+            return true
+        }
+
+        for (childIndex in 0 until node.childCount) {
+            val child = node.getChild(childIndex) ?: continue
+            val isChildTabSelected = isDisplacedBottomTabSelected(child)
+            child.recycle()
+            if (isChildTabSelected) return true
+        }
+        return false
     }
 
     private fun findStreamTabButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -2133,9 +2155,14 @@ class KidsAccessibilityService : AccessibilityService() {
         if (streamTabButtonNode != null) {
             CrawlerTraceLogger.log("STREAM_RECOVERY", "Found Stream tab button. Clicking to restore Stream view...")
             val clicked = streamTabButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val bounds = Rect()
+            streamTabButtonNode.getBoundsInScreen(bounds)
             streamTabButtonNode.recycle()
+            if (!clicked && bounds.width() > 0) {
+                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+            }
             delay(1000)
-            return clicked
+            return true
         }
         val displayMetrics = resources.displayMetrics
         val tapX = displayMetrics.widthPixels * STREAM_TAB_FALLBACK_HORIZONTAL_RATIO

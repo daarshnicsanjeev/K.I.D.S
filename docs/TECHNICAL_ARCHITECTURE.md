@@ -1619,37 +1619,70 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
   3. **Tier 2 (Physical Touch Tap Fallback):** If `ACTION_CLICK` returns false or fails to trigger navigation, dispatches a physical touch tap `dispatchTap(b.centerX(), b.centerY())` directly at the button's screen coordinates.
   4. **Tier 3 (System Global Back Fallback):** If no toolbar navigation node is discovered in the active window hierarchy, executes Android's system-level `performGlobalAction(GLOBAL_ACTION_BACK)`.
 
-- **Autonomous Stream Tab Recovery (`isPeopleOrClassworkTabActive`, `findStreamTabButton`, `switchToStreamTab`):**
-  During automated crawl sessions, returning from an external viewer or accidental touch events on the bottom navigation bar can displace Google Classroom from the **Stream** tab to the **People** or **Classwork** tab. `KidsAccessibilityService` detects and heals this condition autonomously:
-  1. **Tab Displacement Detection (`isPeopleOrClassworkTabActive`):**
-     Inspects the accessibility node tree for bottom navigation tab markers (`Stream`, `Classwork`, `People`, `Tab 1 of 3`) combined with People/Classwork page signatures (such as `"teachers"` or `"classmates"`):
+- **Autonomous Stream Tab Recovery (`isPeopleOrClassworkTabActive`, `isOtherBottomTabSelected`, `findStreamTabButton`, `switchToStreamTab`):**
+  During automated crawl sessions, returning from an external document viewer or inadvertent touch events on the bottom navigation bar can displace Google Classroom from the **Stream** tab to the **People** or **Classwork** tab. `KidsAccessibilityService` detects and heals this condition autonomously:
+  1. **Direct Tab State Discrimination (`isPeopleOrClassworkTabActive`):**
+     Earlier implementations scanned screen text for keywords such as `"teachers"` or `"classmates"`. This created severe false-positive recovery loops whenever a legitimate school circular contained the word `"teachers"` (e.g., *"Teachers' Day Celebration Announcement"*, *"Class teacher remarks"*, or general circular notices).
+     To permanently eliminate false-positive recovery loops, `isPeopleOrClassworkTabActive` queries the Android accessibility selection state (`AccessibilityNodeInfo.isSelected`) of the bottom navigation tab buttons directly:
      ```kotlin
      private fun isPeopleOrClassworkTabActive(rootNode: AccessibilityNodeInfo): Boolean {
-         val textList = mutableListOf<String>()
-         collectQuickText(rootNode, textList)
-         val combined = textList.joinToString(" ").lowercase()
-         val hasBottomTabs = (combined.contains("stream") && combined.contains("classwork")) ||
-                 combined.contains("tab 1 of 3") ||
-                 combined.contains("tab 2 of 3") ||
-                 combined.contains("tab 3 of 3") ||
-                 combined.contains("people")
-         if (!hasBottomTabs) return false
-         return combined.contains("teachers") || combined.contains("classmates")
+         val streamTabNode = findStreamTabButton(rootNode)
+         if (streamTabNode != null) {
+             val isStreamSelected = streamTabNode.isSelected
+             streamTabNode.recycle()
+             if (isStreamSelected) {
+                 // Stream tab is explicitly selected - we are NOT displaced!
+                 return false
+             }
+         }
+         return isOtherBottomTabSelected(rootNode)
      }
      ```
-  2. **Stream Tab Button Discovery (`findStreamTabButton`):**
-     Recursively searches the active node tree for a clickable node (or a child of a clickable parent) whose text or content description matches `"stream"`, `"tab 1 of 3"`, or `"tab 1 of"`:
+  2. **Non-Stream Tab Selection Verification (`isOtherBottomTabSelected`):**
+     Recursively traverses the accessibility node tree to identify bottom navigation tabs matching Classwork or People indicators (`"classwork"`, `"tab 2 of"`, `"people"`, `"tab 3 of"`) and checks their explicit `isSelected` property:
+     ```kotlin
+     private fun isOtherBottomTabSelected(node: AccessibilityNodeInfo): Boolean {
+         val text = node.text?.toString()?.lowercase().orEmpty()
+         val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+         val isNonStreamTab = (desc.contains("classwork") || desc.contains("tab 2 of") ||
+                 desc.contains("people") || desc.contains("tab 3 of") ||
+                 text == "classwork" || text == "people")
+
+         if (isNonStreamTab && node.isSelected) {
+             return true
+         }
+
+         for (childIndex in 0 until node.childCount) {
+             val child = node.getChild(childIndex) ?: continue
+             val found = isOtherBottomTabSelected(child)
+             child.recycle()
+             if (found) return true
+         }
+         return false
+     }
+     ```
+  3. **Stream Tab Button Discovery (`findStreamTabButton`):**
+     Recursively searches the active node tree for a node matching `"stream"` or `"tab 1 of"`, resolving either the node or its parent if clickable:
      ```kotlin
      private fun findStreamTabButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-         val text = node.text?.toString()?.lowercase() ?: ""
-         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-         if ((text == "stream" || desc.contains("stream") || desc.contains("tab 1 of 3") || desc.contains("tab 1 of")) &&
-             (node.isClickable || node.parent?.isClickable == true)
-         ) {
-             return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else AccessibilityNodeInfo.obtain(node.parent)
+         val text = node.text?.toString()?.lowercase().orEmpty()
+         val desc = node.contentDescription?.toString()?.lowercase().orEmpty()
+         val isStreamLabel = text == "stream" || desc.contains("stream") || desc.contains("tab 1 of")
+
+         if (isStreamLabel) {
+             if (node.isClickable) {
+                 return AccessibilityNodeInfo.obtain(node)
+             }
+             val parentNode = node.parent
+             if (parentNode != null) {
+                 val isParentClickable = parentNode.isClickable
+                 val result = if (isParentClickable) AccessibilityNodeInfo.obtain(parentNode) else null
+                 parentNode.recycle()
+                 if (result != null) return result
+             }
          }
-         for (i in 0 until node.childCount) {
-             val child = node.getChild(i) ?: continue
+         for (childIndex in 0 until node.childCount) {
+             val child = node.getChild(childIndex) ?: continue
              val found = findStreamTabButton(child)
              child.recycle()
              if (found != null) return found
@@ -1657,28 +1690,33 @@ The Two-Pass Stream Architecture begins with an autonomous pre-flight reconnaiss
          return null
      }
      ```
-  3. **Autonomous Tab Switch & Fallback Gesture Tap (`switchToStreamTab`):**
-     Attempts an accessibility click on the discovered Stream tab node. If no clickable node is exposed by the OEM window hierarchy, dispatches a calibrated gesture tap directly to the universal Stream tab coordinates at $(0.16w, 0.94h)$ followed by a 1,000ms settling pause:
+  4. **Dual-Mode Click & Physical Tap Restoration (`switchToStreamTab`):**
+     Certain Android OEM frameworks (such as Samsung OneUI and Xiaomi HyperOS) consume `ACTION_CLICK` on bottom navigation views without dispatching underlying tab change events. To ensure foolproof recovery, `switchToStreamTab` combines programmatic action click with a physical gesture tap fallback:
      ```kotlin
      private suspend fun switchToStreamTab(rootNode: AccessibilityNodeInfo): Boolean {
-         val streamBtn = findStreamTabButton(rootNode)
-         if (streamBtn != null) {
+         val streamTabButtonNode = findStreamTabButton(rootNode)
+         if (streamTabButtonNode != null) {
              CrawlerTraceLogger.log("STREAM_RECOVERY", "Found Stream tab button. Clicking to restore Stream view...")
-             val clicked = streamBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-             streamBtn.recycle()
+             val clicked = streamTabButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+             val bounds = Rect()
+             streamTabButtonNode.getBoundsInScreen(bounds)
+             streamTabButtonNode.recycle()
+             if (!clicked || bounds.width() > 0) {
+                 dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+             }
              delay(1000)
-             return clicked
+             return true
          }
          val displayMetrics = resources.displayMetrics
-         val tapX = displayMetrics.widthPixels * 0.16f
-         val tapY = displayMetrics.heightPixels * 0.94f
+         val tapX = displayMetrics.widthPixels * STREAM_TAB_FALLBACK_HORIZONTAL_RATIO
+         val tapY = displayMetrics.heightPixels * STREAM_TAB_FALLBACK_VERTICAL_RATIO
          CrawlerTraceLogger.log("STREAM_RECOVERY", "Dispatching gesture tap to restore Stream tab at ($tapX, $tapY)...")
          dispatchTap(tapX, tapY)
          delay(1000)
          return true
      }
      ```
-  4. **Continuous Invariant in Both Crawl Passes:** This recovery is evaluated proactively at the head of every cycle in both Pass 1 (Survey) and Pass 2 (Reverse Deep Ingestion), guaranteeing that displaced crawlers immediately re-orient to the Stream feed.
+  5. **Continuous Invariant in Both Crawl Passes:** This recovery is evaluated proactively at the head of every cycle in both Pass 1 (Survey) and Pass 2 (Reverse Deep Ingestion), guaranteeing that displaced crawlers immediately re-orient to the Stream feed.
 
 - **Autonomous Classes List Detection & 1-Screen-Behind Recovery Engine:**
   If an extra back gesture or viewer dismissal causes Google Classroom to navigate **1 screen behind the stream** to the main Classes/Courses list, the crawler autonomously recovers:
