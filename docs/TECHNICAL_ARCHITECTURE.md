@@ -318,17 +318,22 @@ stateDiagram-v2
     PASS_1_5_REWIND --> PASS_2_DEEP_INGESTION: Stream re-anchored at top notice
 
     state PASS_2_DEEP_INGESTION {
-        [*] --> FETCH_NEXT_PENDING: getNextPendingItemReverse()
+        [*] --> OPPORTUNISTIC_CHECK: findAnyPendingCardOnScreen(root, manifest)
+        OPPORTUNISTIC_CHECK --> DISCRIMINATE_CARD: VisiblePendingCard != null
+        OPPORTUNISTIC_CHECK --> FETCH_NEXT_PENDING: VisiblePendingCard == null
         FETCH_NEXT_PENDING --> ALL_FINISHED: nextItem == null
-        FETCH_NEXT_PENDING --> CHECK_LOOP_GUARD: Pending notice retrieved
+        FETCH_NEXT_PENDING --> CHECK_TARGET_VISIBLE: nextItem != null
         
-        CHECK_LOOP_GUARD --> FORCE_ADVANCE: consecutiveTargetAttempts > 2
-        FORCE_ADVANCE --> FETCH_NEXT_PENDING: ingestNoticeDirect() & markItemCompleted()
-        CHECK_LOOP_GUARD --> CHECK_TARGET_VISIBLE: consecutiveTargetAttempts <= 2
-
         CHECK_TARGET_VISIBLE --> DISCRIMINATE_CARD: findCardForTarget() != null
+        CHECK_TARGET_VISIBLE --> AUTO_RECOVERY: findCardForTarget() == null (Displaced)
+        AUTO_RECOVERY --> CHECK_TARGET_VISIBLE: stepScrollStream() (Oscillation & Static tracking)
+        AUTO_RECOVERY --> FETCH_NEXT_PENDING: static attempts >= 4 (markSkipped & advance)
+
         DISCRIMINATE_CARD --> STREAM_INGEST: !cardIsMaterial (Announcement: Zero-Click Direct Ingestion)
-        DISCRIMINATE_CARD --> OPENING_POST: cardIsMaterial (Material/Assignment: Top-Third Tap bounds.top + 50)
+        DISCRIMINATE_CARD --> CHECK_BOTTOM_MARGIN: cardIsMaterial
+        CHECK_BOTTOM_MARGIN --> NUDGE_FORWARD: bounds.top > maxBottom - 100
+        NUDGE_FORWARD --> CHECK_BOTTOM_MARGIN: stepScrollStream(forward = true)
+        CHECK_BOTTOM_MARGIN --> OPENING_POST: bounds.top <= maxBottom - 100 (Safe Top-Third Tap)
         
         OPENING_POST --> COMMENTS_DISMISSAL: isCommentsOnlyScreen == true (Accidental Comment Sheet)
         COMMENTS_DISMISSAL --> OPENING_POST: performReturnToStream() & Retry
@@ -408,7 +413,7 @@ sequenceDiagram
     ACS->>ACS: ensureAtStreamTop() [Verify course header banner or rewind up to 15 steps]
     ACS->>OV: updateStatus("Surveying (X found)...")
     loop Stream Survey (Until 5 Consecutive Empty Scrolls)
-        ACS->>GC: surveyVisibleCards(): scan cards in safe viewport [140dp, Height-170dp]
+        ACS->>GC: surveyVisibleCards(): scan cards in safe viewport [140px, Height - 320px]
         GC-->>ACS: Discovered cards with title, text, and SHA-256 fingerprint
         ACS->>DB: Check if fingerprint already in Room DB / visitedPostFingerprints
         alt Already in DB
@@ -438,26 +443,32 @@ sequenceDiagram
         end
 
         Note over ACS,MAN: ==================== PASS 2: MANIFEST-DRIVEN INGESTION ====================
-        loop Reverse Deep Ingestion Loop (Until getNextPendingItemReverse() == null)
-            ACS->>MAN: getNextPendingItemReverse()
-            MAN-->>ACS: nextItem (index, title, fingerprint)
-            alt consecutiveTargetAttempts > 2 (Loop Guard)
-                ACS->>ACS: ingestNoticeDirect() & force mark completed
-                ACS->>MAN: markItemCompleted(nextItem.index)
-            else Normal Progression
-                ACS->>GC: findCardForTarget(nextItem)
-                alt Card Visible on Screen
-                    alt Announcement / Circular (!cardIsMaterial)
-                        ACS->>ACS: ingestNoticeDirect(): Zero-Click stream card ingestion
-                        ACS->>MAN: markItemCompleted(nextItem.index)
-                        ACS->>OV: incrementNoticeCount()
-                    else Material / Assignment (cardIsMaterial)
-                        ACS->>OV: updateStatus("Capturing (X/Total - Y%)...", title)
-                        ACS->>GC: dispatchTap(centerX, safeTapY) [Top-third bounds.top + 50]
-                        alt Comments Sheet Detected (isCommentsOnlyScreen)
-                            ACS->>GC: performReturnToStream() (Dismiss comments sheet)
-                        else Detail View Opened (<=1200ms + Top-Tap Retry)
-                            ACS->>OV: updateStatus("Reading Detail (X/Total)...")
+        loop Reverse Deep Ingestion Loop (Until manifest.isAllFinished())
+            ACS->>GC: findAnyPendingCardOnScreen(root, manifest)
+            alt Visible Pending Notice Found (Opportunistic Ingestion)
+                GC-->>ACS: targetItem = visiblePendingCard.item
+            else No Visible Pending Notice
+                ACS->>MAN: getNextPendingItemReverse()
+                MAN-->>ACS: targetItem = nextItem
+                ACS->>GC: findCardForTarget(targetItem)
+                opt Card Not on Screen
+                    ACS->>ACS: stepScrollStream() with Viewport Static & Oscillation Tracking
+                end
+            end
+            alt Announcement / Circular (!cardIsMaterial)
+                ACS->>ACS: ingestNoticeDirect(): Zero-Click stream card ingestion
+                ACS->>MAN: markItemCompleted(targetItem.index)
+                ACS->>OV: incrementNoticeCount()
+            else Material / Assignment (cardIsMaterial)
+                opt Partially Clipped Card (bounds.top > maxBottom - 100)
+                    ACS->>GC: stepScrollStream(forward = true) [Nudge forward into full view]
+                end
+                ACS->>OV: updateStatus("Capturing (X/Total - Y%)...", title)
+                ACS->>GC: dispatchTap(centerX, safeTapY) [Top-third bounds.top + 50, bounded by 320px bottom margin]
+                alt Comments Sheet Detected (isCommentsOnlyScreen)
+                    ACS->>GC: performReturnToStream() (Dismiss comments sheet)
+                else Detail View Opened (<=1200ms + Top-Tap Retry)
+                    ACS->>OV: updateStatus("Reading Detail (X/Total)...")
                             ACS->>GC: Clear focus on comment EditText
                             ACS->>GC: Extract full announcement text & author
                             opt Attachments Present
@@ -543,9 +554,9 @@ private suspend fun ensureAtStreamTop() {
 - **Autonomous Backward Rewind:** If the banner is not visible (e.g. if the parent opened Classroom while already scrolled down), it updates the floating overlay (`Rewinding to Top...`) and dispatches controlled backward stepping via `stepScrollStream(isScrollForward = false)` for up to 15 steps with 500ms stabilization intervals.
 - **Full Stream Coverage Guarantee:** Guarantees that Pass 1 starts surveying from the newest post at the very top of the feed down to the oldest post at the bottom.
 
-- **Safe Viewport Filtering:** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
-  $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - 170\text{px}$$
-  This deliberately ignores the top action bar, classroom course header, and bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`).
+- **Safe Viewport Filtering (`BOTTOM_NAV_BAR_MARGIN_PX = 320`):** Prevents false triggers by skipping nodes outside the interactive feed. Bounding rectangles are restricted to:
+  $$\text{minTop} = 140\text{px} \quad\text{and}\quad \text{maxBottom} = \text{displayMetrics.heightPixels} - \text{BOTTOM\_NAV\_BAR\_MARGIN\_PX} \quad (320\text{px})$$
+  This deliberately ignores the top action bar, classroom course header, Google Classroom's bottom navigation tabs (`Stream`, `Classwork`, `People`, `Tab 1 of 3`), and Android's system navigation pill.
 - **Relaxed Card Viewport Visibility Calculation:**
   In Google Classroom's Stream, post cards frequently sit partially clipped at the bottom or top edge of the display as the list scrolls. Prematurely discarding partially occluded cards causes missed announcements. `surveyVisibleCards()` and `findCardByFingerprint()` apply a relaxed viewport visibility formula:
   ```kotlin
@@ -757,40 +768,105 @@ private suspend fun ensureAtStreamTop() {
   - **40% to 50% Reduction in Total Swipes & Halved Crawl Duration:** Ingesting bottom-to-top cuts total physical swipes by 40–50%, significantly conserves device battery, minimizes screen refresh wear, and reduces overall crawl time by half.
   - **Sequential Bottom-to-Top Processing:** The loop calls `val nextItem = manifest.getNextPendingItemReverse()`. If `nextItem == null`, all manifest notices have been processed, and the crawler terminates cleanly.
 
-- **Pass 2 Anti-Loop Guard & Stream-Gating Invariant:**
-  To mathematically ensure the crawler never hangs or loops endlessly on a stubborn or unclickable card, Pass 2 evaluates an upfront loop guard at the beginning of each iteration.
-  
-  **The Stream-Gating Invariant:**
-  A critical failure mode in UI automation occurs when a crawler burns through attempt limits while the device is temporarily displaced away from the target screen (e.g. into the Classes list or a document viewer). In K.I.D.S., **attempt counters and force-completions are evaluated ONLY when verified to be on the active stream (`isStreamOrClassworkView(root)`)**:
-  - If displaced to the Classes list (`isClassesListScreen(root)`), the crawler invokes `recoverToStreamFromClassesList()` and recycles the node without touching `consecutiveTargetAttempts`.
-  - If trapped in a comments dialog or unclosed detail view (`!isStreamOrClassworkView(root)`), the crawler executes `performReturnToStream(root)` and continues without incrementing attempts.
-  - Only after confirmed presence on the stream feed does the Loop Guard track target stability:
+- **Opportunistic Ingestion Architecture (`VisiblePendingCard` & `findAnyPendingCardOnScreen`):**
+  In Google Classroom, multiple announcement and assignment cards frequently reside simultaneously within the visible screen area. A rigid sequential crawler that strictly chases cards in numerical order risks repeatedly scrolling past perfectly visible unvisited cards, causing unnecessary kinetic jitter and wasted battery.
+  `KidsAccessibilityService` introduces **Opportunistic Ingestion**:
   ```kotlin
-  // Loop Guard: Prevent any single target from looping indefinitely
-  // Evaluated ONLY when verified to be on the active stream!
-  if (nextItem.index == lastTargetIndex) {
-      consecutiveTargetAttempts++
-  } else {
-      lastTargetIndex = nextItem.index
-      consecutiveTargetAttempts = 1
-  }
+  private data class VisiblePendingCard(
+      val card: UnvisitedCard,
+      val item: StreamManifestItem
+  )
 
-  if (consecutiveTargetAttempts > 3) {
+  private fun findAnyPendingCardOnScreen(
+      rootNode: AccessibilityNodeInfo,
+      manifest: StreamManifest
+  ): VisiblePendingCard? {
+      val displayMetrics = resources.displayMetrics
+      val minTop = 140
+      val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+      val rect = Rect()
+
+      val postCards = findPostCards(rootNode)
+      for (card in postCards) {
+          val cardItems = mutableListOf<String>()
+          collectQuickText(card, cardItems)
+          val combinedText = cardItems.joinToString(" ")
+          val lowerCombined = combinedText.lowercase().trim()
+
+          val isStandaloneComment = lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35
+          if (combinedText.length > 20 && !isStandaloneComment) {
+              val titleCandidate = cardItems.firstOrNull { item ->
+                  val lower = item.trim().lowercase()
+                  !excludedChrome.contains(lower) &&
+                          !excludedChrome.any { lower.startsWith(it) } &&
+                          !lower.startsWith("tab ") &&
+                          !lower.startsWith("signed in as") &&
+                          !lower.startsWith("tasks due") &&
+                          !lower.startsWith("class options for") &&
+                          !lower.contains("class comments") &&
+                          item.trim().length > 3
+              }
+              val title = titleCandidate?.take(80) ?: "Classroom Notice"
+              val fingerprint = computeCardFingerprint(cardItems)
+
+              val matchedItem = manifest.findMatchingItem(fingerprint, title, combinedText)
+              if (matchedItem != null && matchedItem.status == StreamItemStatus.PENDING) {
+                  card.getBoundsInScreen(rect)
+                  // Check if card is comfortably inside safe tap zone and not overlapping bottom bar
+                  if (rect.top in minTop..(maxBottom - 100)) {
+                      val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                      val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                      for (other in postCards) {
+                          if (other != card) other.recycle()
+                      }
+                      return VisiblePendingCard(
+                          UnvisitedCard(matchedItem.title, combinedText, fingerprint, card, cardBounds),
+                          matchedItem
+                      )
+                  }
+              }
+          }
+          card.recycle()
+      }
+      return null
+  }
+  ```
+  - **Prioritized Viewport Capture:** At the start of every ingestion iteration, the crawler evaluates `findAnyPendingCardOnScreen(root, manifest)`. If any pending card is comfortably positioned within the safe tap zone (`rect.top in minTop..(maxBottom - 100)`), the crawler prioritizes it:
+    ```kotlin
+    val visiblePendingCard = findAnyPendingCardOnScreen(root, manifest)
+    val targetItem = visiblePendingCard?.item ?: nextItem
+    val unvisitedCard = visiblePendingCard?.card ?: findCardForTarget(root, targetItem)
+    ```
+    This intercepts the traversal loop to harvest whatever pending notices are already visible on screen, eliminating redundant scrolling and accelerating full-year Day 0 backfills.
+
+- **Removal of Premature 3-Attempt Navigation Loop Guard in Favor of Viewport Static Oscillation Detection:**
+  In early crawler iterations, an upfront loop guard attempted to detect stuck iterations by counting successive attempts targeting the same item index (`nextItem.index == lastTargetIndex`).
+  - **The Flaw of the Premature 3-Attempt Counter:** On large school streams spanning dozens or hundreds of items, traversing between non-adjacent notices during Pass 2 bottom-to-top crawling requires multiple discrete scrolls (`stepScrollStream`). Because the crawler had not yet reached the distant target post, `nextItem.index == lastTargetIndex` evaluated to true across consecutive scroll iterations, prematurely tripping the 3-attempt limit after only 3 swipes and force-marking notices completed/skipped without actually visiting them!
+  - **The Solution — Viewport Static Oscillation Architecture:** The premature 3-attempt navigation loop guard was eliminated. Navigation stability is now managed through:
+    1. **Direction History Window (`recentScrollDirections`):** Maintains a 6-step history of scroll directions (`Boolean`). If directions alternate $\ge 4$ times consecutively (`recentScrollDirections.zipWithNext().all { (a, b) -> a != b }`), directional ping-pong oscillation is detected, triggering micro-nudges.
+    2. **Viewport Static Tracking (`minVisibleIndex == lastRecoveryMinIndex`):** The crawler compares the lowest visible manifest index between cycles. Only if the screen remains completely motionless for 3 consecutive recovery cycles (`consecutiveStaticRecoveryCount >= 3`) does it escalate attempts.
+    3. **Fail-Safe Fallback (4 Static Cycles):** If immobility persists for 4 recovery attempts (`attempts >= 4`), the notice is safely marked skipped (`manifest.markSkipped(nextItem.fingerprint)`), guaranteeing infinite retry loops are impossible without prematurely starving navigation.
+    4. **Isolated Detail Transition Bounds:** Detail view entry has its own independent 2-attempt limit: if physical tapping fails to open detail view after 2 attempts, K.I.D.S. ingests the announcement text directly from the stream card (`ingestNoticeDirect`) and marks completion.
+
+- **Bottom Navigation Bar Protection & Safe Card Tap Clamping (`BOTTOM_NAV_BAR_MARGIN_PX = 320`):**
+  Modern Android devices feature tall aspect ratios (19.5:9, 20:9, 21:9) with system navigation bars, while Google Classroom fixes persistent bottom tabs (`Stream`, `Classwork`, `People`).
+  `KidsAccessibilityService` standardizes a dedicated 320px bottom exclusion margin:
+  ```kotlin
+  private const val BOTTOM_NAV_BAR_MARGIN_PX = 320
+  val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+
+  // Guard against tapping cards that are cut off at the bottom near the bottom navigation bar
+  if (bounds.top > maxBottom - 100) {
       CrawlerTraceLogger.log(
-          "LOOP_GUARD",
-          "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
+          "DEEP_CRAWLER",
+          "Card #${targetItem.index} partially cut off at bottom (top=${bounds.top}, maxBottom=$maxBottom). Nudging forward into full view..."
       )
-      ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
-      manifest.markItemCompleted(nextItem.index)
-      manifest.markCompleted(nextItem.fingerprint)
-      visitedPostFingerprints.add(nextItem.fingerprint)
-      crawlerOverlay?.incrementNoticeCount()
-      consecutiveTargetAttempts = 0
-      delay(300)
+      stepScrollStream(isScrollForward = true)
+      clickableNode.recycle()
       continue
   }
   ```
-  - **Loop Invariant:** When verified on the stream feed, if the reverse traversal queries the same item index without progression beyond the limit (`consecutiveTargetAttempts > 3`), the loop guard automatically triggers direct stream ingestion (`ingestNoticeDirect`), force-marks completion in the manifest using both ordinal index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint (`manifest.markCompleted(nextItem.fingerprint)`), adds the hash to `visitedPostFingerprints`, resets `consecutiveTargetAttempts = 0`, and advances cleanly to the next notice. Temporary screen displacements can never starve or falsely force-complete stream notices!
+  If a card's top edge is within 100px of `maxBottom`, tapping risks colliding with Classroom's bottom navigation tabs or the class comment button. K.I.D.S. automatically nudges the stream forward (`stepScrollStream(isScrollForward = true)`) to bring the card into clear, safe tap view.
 
 - **Announcement Discrimination (`!cardIsMaterial`) & Zero-Click Direct Stream Ingestion:**
   In Google Classroom, feed items possess two fundamentally distinct UI structural behaviors:
@@ -799,13 +875,13 @@ private suspend fun ensureAtStreamTop() {
   
   K.I.D.S. discriminates between announcements and materials prior to dispatching touch events:
   ```kotlin
-  val isMaterialOrAssignment = nextItem.title.contains("material", ignoreCase = true) ||
-          nextItem.title.contains("assignment", ignoreCase = true) ||
-          nextItem.title.contains("question", ignoreCase = true) ||
-          nextItem.title.contains("quiz", ignoreCase = true) ||
-          nextItem.previewText.contains("new material", ignoreCase = true) ||
-          nextItem.previewText.contains("new assignment", ignoreCase = true) ||
-          nextItem.previewText.contains("new question", ignoreCase = true)
+  val isMaterialOrAssignment = targetItem.title.contains("material", ignoreCase = true) ||
+          targetItem.title.contains("assignment", ignoreCase = true) ||
+          targetItem.title.contains("question", ignoreCase = true) ||
+          targetItem.title.contains("quiz", ignoreCase = true) ||
+          targetItem.previewText.contains("new material", ignoreCase = true) ||
+          targetItem.previewText.contains("new assignment", ignoreCase = true) ||
+          targetItem.previewText.contains("new question", ignoreCase = true)
 
   val cardIsMaterial = isMaterialOrAssignment ||
           title.contains("material", ignoreCase = true) ||
@@ -820,17 +896,17 @@ private suspend fun ensureAtStreamTop() {
       // The announcement body is directly on the stream card. Tapping the card either does nothing or opens comments.
       CrawlerTraceLogger.log(
           "STREAM_SURVEY",
-          "Notice #${nextItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
+          "Notice #${targetItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
       )
       ingestNoticeDirect(title, fullText, fingerprint)
-      manifest.markItemCompleted(nextItem.index)
+      manifest.markItemCompleted(targetItem.index)
       manifest.markCompleted(fingerprint)
-      manifest.markCompleted(nextItem.fingerprint)
+      manifest.markCompleted(targetItem.fingerprint)
       visitedPostFingerprints.add(fingerprint)
-      visitedPostFingerprints.add(nextItem.fingerprint)
+      visitedPostFingerprints.add(targetItem.fingerprint)
       crawlerOverlay?.incrementNoticeCount()
       crawlerOverlay?.updateStatus(
-          "Captured (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+          "Captured (${targetItem.index}/$total - ${manifest.progressPercent}%)...",
           title
       )
       clickableNode.recycle()
@@ -979,7 +1055,19 @@ private suspend fun ensureAtStreamTop() {
   ```kotlin
   val displayMetrics = resources.displayMetrics
   val minTop = 140
-  val maxBottom = displayMetrics.heightPixels - 170
+  val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+
+  // Guard against tapping cards that are cut off at the bottom near the bottom navigation bar
+  if (bounds.top > maxBottom - 100) {
+      CrawlerTraceLogger.log(
+          "DEEP_CRAWLER",
+          "Card #${targetItem.index} partially cut off at bottom (top=${bounds.top}, maxBottom=$maxBottom). Nudging forward into full view..."
+      )
+      stepScrollStream(isScrollForward = true)
+      clickableNode.recycle()
+      continue
+  }
+
   val safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
 
   val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""

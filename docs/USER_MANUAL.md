@@ -526,14 +526,20 @@ flowchart TD
 
     subgraph P2["Pass 2: Reverse Deep Ingestion (Bottom-to-Top)"]
         I1 -->|Pending > 0| K1["Direct Transition at Stream Bottom<br/>(ZERO Rewind Pass Needed!)"]
-        K1 --> N1["Fetch Target from StreamManifest<br/>(manifest.getNextPendingItemReverse())"]
-        N1 --> LG{"Pass 2 Loop Guard<br/>(consecutiveTargetAttempts > 2?)"}
-        LG -->|Yes (Limit Exceeded)| S3["Guaranteed Progression Fallback:<br/>ingestNoticeDirect() & manifest.markItemCompleted()"]
-        LG -->|No| O1{"Target Notice Visible on Screen?<br/>(findCardForTarget)"}
-        O1 -->|Yes| AD{"Announcement Discrimination<br/>(!cardIsMaterial?)"}
+        K1 --> OP{"Opportunistic Check:<br/>Any Pending Card on Screen?<br/>(findAnyPendingCardOnScreen)"}
+        OP -->|Yes (Visible Pending Found)| AD{"Announcement Discrimination<br/>(!cardIsMaterial?)"}
+        OP -->|No| N1["Fetch Target from StreamManifest<br/>(manifest.getNextPendingItemReverse())"]
+        N1 --> O1{"Target Reached on Screen?<br/>(findCardForTarget)"}
+        O1 -->|No: Seek Screen| NAV["Adaptive Swiping & Seek<br/>(Oscillation & Static Recovery)"]
+        NAV -->|Static >= 4 Attempts| S3["Guaranteed Progression Fallback:<br/>ingestNoticeDirect() & manifest.markSkipped()"]
+        NAV -->|Card Reached| AD
+        O1 -->|Yes| AD
         AD -->|Announcement / Circular| AN1["Zero-Click Direct Stream Ingestion<br/>(No click, comment buttons prevented)"]
         AN1 --> T1["Mark Status: COMPLETED in Manifest<br/>Increment Notice & File Counters"]
-        AD -->|Material / Assignment| P1["Overlay: 'Capturing (X/Total - Y%)...'<br/>Safe Top-Third Tap (bounds.top + 50)"]
+        AD -->|Material / Assignment| BN{"Bottom Tab Guard:<br/>bounds.top > maxBottom - 100?"}
+        BN -->|Yes (Partially Clipped)| NUDGE["Forward Nudge Card into View<br/>(stepScrollStream forward)"]
+        NUDGE --> BN
+        BN -->|No (Safe Viewport)| P1["Overlay: 'Capturing (X/Total - Y%)...'<br/>Safe Top-Third Tap (bounds.top + 50)"]
         P1 --> Q1{"Detail Transition Success?<br/>(1200ms + Top-Tap Retry)"}
         Q1 -->|Comments Sheet Detected| CD["Auto-Dismiss Comment Sheet<br/>(performReturnToStream & Return)"]
         CD --> S1{"Attempts < 2?"}
@@ -544,7 +550,7 @@ flowchart TD
         R1 --> T1
         S3 --> T1
         T1 --> U1{"All Items Finished?<br/>(manifest.isAllFinished())"}
-        U1 -->|No| N1
+        U1 -->|No| OP
         U1 -->|Yes| V1["Overlay: '✓ Backfill Complete!'<br/>2.5s Dwell & Automatic Google Drive Sync"]
     end
 
@@ -606,6 +612,23 @@ Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically c
   - The full text, author, and timestamp are captured instantly, the notice is marked completed in the manifest (`markItemCompleted`), and the overlay counter increments.
   - **Zero Accidental Comment Clicks:** Because announcements are never tapped, accidental clicks on comment buttons or bottom comment sheets are **100% prevented**!
 
+- **Opportunistic Ingestion (Zero-Waste Viewport Capture):**
+  In typical classroom feeds, multiple notice cards frequently fit within the active screen viewport simultaneously. Traditional automation engines follow rigid numerical sequences—if an engine slightly overshoots a card or is seeking item #14, it naively scrolls right past item #15 or #16 even when they are fully rendered on screen!
+  K.I.D.S. implements **Opportunistic Ingestion (`findAnyPendingCardOnScreen`)**:
+  - At every iteration, before executing any scroll or seeking motion, K.I.D.S. inspects all post cards currently visible on screen.
+  - If *any* visible card matches an unvisited pending item in the `StreamManifest` and rests safely within the unclipped viewport (`rect.top in minTop..(maxBottom - 100)`), K.I.D.S. immediately pivots and captures that notice on the spot!
+  - **Zero Wasted Scrolls:** Eliminates unnecessary backward and forward scroll cycles.
+  - **Accelerated Day 0 Backfill:** Captures clusters of visible announcements in a single stationary view, slashing overall backfill duration across large historical feeds.
+
+- **Bottom Tab Protection & 320px Bottom Margin (`BOTTOM_NAV_BAR_MARGIN_PX = 320`):**
+  Modern smartphones feature tall aspect ratios (19.5:9, 20:9, 21:9) and edge-to-edge navigation gestures, while Google Classroom fixes a persistent bottom navigation bar (`Stream`, `Classwork`, `People`) across the lower portion of the screen.
+  To guarantee physical taps and accessibility gestures never collide with Classroom's bottom navigation tabs or Android's home pill, K.I.D.S. enforces comprehensive **Bottom Tab Protection**:
+  - **Calibrated 320px Bottom Margin:** Viewport boundaries strictly cap interactive search and tapping at:
+    $$\text{maxBottom} = \text{displayMetrics.heightPixels} - 320\text{px}$$
+    Completely insulating the lower 320 pixels of modern displays from touch injection.
+  - **Safe Card Tap Clamping & Forward Nudging (`bounds.top > maxBottom - 100`):** If an unvisited notice card appears partially clipped at the bottom of the feed such that its top edge sits within 100px of `maxBottom`, tapping it risks hitting Classroom's bottom tabs or the card's comment section. K.I.D.S. automatically detects this condition, logs `"Card partially cut off at bottom. Nudging forward into full view..."`, and dispatches a gentle forward nudge (`stepScrollStream(isScrollForward = true)`) to bring the card into full, unclipped view before attempting any tap.
+  - **Zero Tab Drift Guarantee:** 100% guarantees automated clicks never inadvertently switch Classroom tabs to `Classwork` or `People`.
+
 - **Deterministic Focus Navigation & Exact Pixel Centering (`ACTION_SHOW_ON_SCREEN`):**
   In conventional mobile UI crawlers and automation tools, locating a specific notice on an infinite scrolling feed relies on "blind touch swipe guessing"—flinging the screen with synthetic swipe gestures and hoping the card lands near the center of the viewport. This invariably leads to kinetic overshooting, where a swipe over-scrolls past smaller announcements, leaves card headers clipped off-screen, or triggers unwanted bounce-back animations.
   K.I.D.S. replaces blind kinetic flinging with **Deterministic Focus Navigation**:
@@ -629,16 +652,11 @@ Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically c
     - K.I.D.S. evaluates the screen with `isCommentsOnlyScreen()`. It recognizes that the window displays comment controls (*"Add class comment"*, *"Class comments"*) without assignment features (*"Your work"*, *"Assigned"*, *"Attachments"*).
     - Rather than mistaking comments for a post detail view or getting stuck, K.I.D.S. flags it instantly, logs `"Comments dialog detected instead of post detail"`, dispatches an automatic Back action (`performReturnToStream`), dismisses the comment sheet, and returns cleanly to the stream.
 
-- **Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit):**
-  A classic hazard in mobile UI automation is an item that refuses to open due to an OEM animation glitch or network hiccup, causing the crawler to retry indefinitely. K.I.D.S. implements a mathematical **Anti-Loop Guard**:
-  - The crawler monitors `lastTargetIndex` and tracks `consecutiveTargetAttempts`.
-  - Every notice has a **strict 2-attempt limit**.
-  - If a notice card cannot transition to detail view after 2 consecutive attempts (`consecutiveTargetAttempts > 2`):
-    - The Loop Guard activates automatically.
-    - K.I.D.S. logs `LOOP_GUARD: Target reached attempts without progress. Force-marking completed and advancing.`
-    - Directly ingests the notice title and preview text from the stream card into SQLite Room (`ingestNoticeDirect`).
-    - Force-marks the notice as completed in the manifest by its exact target index (`manifest.markItemCompleted(nextItem.index)`) and fingerprint.
-    - Adds the fingerprint to `visitedPostFingerprints`, increments the notice count, resets the attempt counter, and advances immediately to the next pending item.
+- **Adaptive Navigation & Viewport Static Safeguard:**
+  Rather than prematurely abandoning distant notices during multi-scroll navigation journeys, K.I.D.S. pairs adaptive seeking with robust **Viewport Static & Oscillation Tracking**:
+  - **Directional Oscillation Detection:** Tracks a 6-step scroll direction history. If the crawler begins alternating directions $\ge 4$ times around a boundary, oscillation is flagged, a micro-nudge is triggered, and attempt counters increment.
+  - **Viewport Static Safeguard:** The crawler monitors `minVisibleIndex` across recovery attempts. If the feed remains completely static for 3 consecutive recovery cycles (`consecutiveStaticRecoveryCount >= 3`), attempt counters escalate. If genuine physical immobility persists for 4 attempts (`attempts >= 4`), K.I.D.S. marks the notice skipped/completed, prevents endless stalls, and moves on cleanly.
+  - **Detail Transition Fallback (Strict 2-Attempt Bound):** Once a card is on screen, if tapping fails to enter detail view after 2 attempts (`attempts >= 2`), K.I.D.S. falls back to direct stream card ingestion (`ingestNoticeDirect`), marks completion in SQLite Room, and advances.
   - **Mathematical Guarantee:** Infinite loops and frozen crawler sessions are **mathematically impossible**.
 - **Autonomous Detail View Downward Scrolling for Big Announcements:** When an announcement contains extensive paragraphs of text, Google Classroom pushes attachments and download buttons below the fold. K.I.D.S. resiliently identifies the detail screen and scrolls downward within the detail view (up to 3 gentle sweeps), scanning for and capturing all below-the-fold worksheets and download controls before returning to the stream.
 
@@ -690,7 +708,7 @@ To guarantee smooth, uninterrupted crawling across any Android screen size, aspe
   - *Backward Scroll Swipe (Upward List Rewind):* Starts at $35\%$ height and sweeps downward to $68\%$ height ($0.35h \rightarrow 0.68h$) over 350ms.
   - *Detail View Attachment Swipe:* Starts at $70\%$ height and sweeps upward to $30\%$ height ($0.70h \rightarrow 0.30h$) over 350ms.
   - *Pull-to-Refresh Immunity:* Because downward swipes terminate at $68\%$ height and upward swipes begin at $70\%$ height, touches never enter the top $25\%$ of the screen, completely preventing accidental triggering of Google Classroom's pull-to-refresh spinner or collapsing course headers.
-  - *Bottom Tab Navigation Immunity:* Because touches never cross below $70\%$ height, automated swipes never strike Classroom's bottom navigation tabs (`Stream`, `Classwork`, `People`) or Android's home navigation pill.
+  - *Bottom Tab Navigation Immunity & 320px Margin (`BOTTOM_NAV_BAR_MARGIN_PX = 320`):* Because touches never cross below $70\%$ height, automated swipes never strike Classroom's bottom navigation tabs (`Stream`, `Classwork`, `People`) or Android's home navigation pill. In addition, the interactive card tapping viewport enforces an explicit 320px bottom exclusion margin (`maxBottom = displayMetrics.heightPixels - 320`). If a target card's top edge is within 100px of `maxBottom` (`bounds.top > maxBottom - 100`), the assistant automatically nudges the card forward into full view before tapping, guaranteeing that physical taps never collide with bottom navigation tabs.
 
 #### Pull-to-Refresh Guard (Anti-Spinner Trap)
 
@@ -797,7 +815,7 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
    - **Comment Sheet Auto-Dismissal:** If a class comments dialog or bottom sheet opens accidentally after a tap, K.I.D.S. immediately evaluates `isCommentsOnlyScreen(activeAfter)`, logs `"Comments dialog detected instead of post detail. Dismissing comments dialog..."`, and dismisses it via `performReturnToStream(activeAfter)` to return safely to the stream.
    - **Material Retry Bounds & Guaranteed Progression:**
      Notice cards containing educational materials, worksheets, and study guides (`material`, `worksheet`, `notes`, `answer key`, `answerkey`) are prioritized for detail view entry so all attachments can be downloaded. If after **2 attempts** the post card still fails to open a detail view (for example, inline posts or non-expandable material stubs), K.I.D.S. activates **guaranteed progression**: it captures the full title, body, and preview directly from the stream card via `ingestNoticeDirect()`, marks the item completed (`manifest.markItemCompleted(nextItem.index)` and `manifest.markCompleted(fingerprint)`), records it in `visitedPostFingerprints`, and advances cleanly to the next notice.
-   - **Pass 2 Anti-Loop Guard (Strict 2-Attempt Limit):** At the top of Pass 2, `consecutiveTargetAttempts > 2` acts as a fail-safe mathematical loop breaker. If any target item stalls or repeats for more than 2 attempts, K.I.D.S. force-marks it completed (`manifest.markItemCompleted(nextItem.index)`), ingests stream text, and moves forward. Infinite retry loops are mathematically impossible.
+   - **Oscillation & Static Recovery Safeguards:** Feed navigation is governed by Viewport Static Tracking and Oscillation Detection. If the list view remains motionless across 3 consecutive cycles or oscillates around a post, attempts escalate; after 4 stuck attempts, K.I.D.S. force-marks the item skipped/completed and advances cleanly. During feed traversal, the crawler has full runway to reach distant cards without premature counter aborts. Infinite loops are mathematically impossible.
 5. **Keyboard Dismissal & Full Text Harvesting:** When a detail view opens, if the Android soft keyboard opens automatically over the "Add class comment" input box, the assistant immediately clears input focus to prevent view occlusion. It extracts the full announcement body, author, and timestamp.
 6. **Autonomous Attachment Ingestion via Native Share Target ("Share to K.I.D.S. Vault"):**
    - **Zero Clicks & Zero Manual File Opening:** Parents never have to open files, hunt for download folders, or manually share anything. The entire ingestion pipeline is 100% autonomous and hands-free.

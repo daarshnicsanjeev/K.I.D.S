@@ -64,6 +64,7 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val SAFE_CARD_TAP_HORIZONTAL_RATIO = 0.35f
         private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
         private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
+        private const val BOTTOM_NAV_BAR_MARGIN_PX = 320
         const val ACTION_START_CRAWL = "com.kids.collector.ACTION_START_CRAWL"
         const val ACTION_STOP_CRAWL = "com.kids.collector.ACTION_STOP_CRAWL"
         const val ACTION_SHOW_OVERLAY = "com.kids.collector.ACTION_SHOW_OVERLAY"
@@ -603,42 +604,19 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // Loop Guard: Prevent any single target from looping indefinitely
-            // Evaluated ONLY when verified to be on the active stream!
-            if (nextItem.index == lastTargetIndex) {
-                consecutiveTargetAttempts++
-            } else {
-                lastTargetIndex = nextItem.index
-                consecutiveTargetAttempts = 1
-            }
-
-            if (consecutiveTargetAttempts > 3) {
-                CrawlerTraceLogger.log(
-                    "LOOP_GUARD",
-                    "Target #${nextItem.index} (\"${nextItem.title}\") reached $consecutiveTargetAttempts attempts without progress. Force-marking completed and advancing."
-                )
-                ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
-                manifest.markItemCompleted(nextItem.index)
-                manifest.markCompleted(nextItem.fingerprint)
-                visitedPostFingerprints.add(nextItem.fingerprint)
-                crawlerOverlay?.incrementNoticeCount()
-                consecutiveTargetAttempts = 0
-                delay(300)
-                root.recycle()
-                continue
-            }
-
-            // Look for target card on screen using Resilient Multi-Factor Matching
-            val unvisitedCard = findCardForTarget(root, nextItem)
+            // Look for target card on screen: first check opportunistic visible pending, then targetItem
+            val visiblePendingCard = findAnyPendingCardOnScreen(root, manifest)
+            val targetItem = visiblePendingCard?.item ?: nextItem
+            val unvisitedCard = visiblePendingCard?.card ?: findCardForTarget(root, targetItem)
             root.recycle()
 
-            val isMaterialOrAssignment = nextItem.title.contains("material", ignoreCase = true) ||
-                    nextItem.title.contains("assignment", ignoreCase = true) ||
-                    nextItem.title.contains("question", ignoreCase = true) ||
-                    nextItem.title.contains("quiz", ignoreCase = true) ||
-                    nextItem.previewText.contains("new material", ignoreCase = true) ||
-                    nextItem.previewText.contains("new assignment", ignoreCase = true) ||
-                    nextItem.previewText.contains("new question", ignoreCase = true)
+            val isMaterialOrAssignment = targetItem.title.contains("material", ignoreCase = true) ||
+                    targetItem.title.contains("assignment", ignoreCase = true) ||
+                    targetItem.title.contains("question", ignoreCase = true) ||
+                    targetItem.title.contains("quiz", ignoreCase = true) ||
+                    targetItem.previewText.contains("new material", ignoreCase = true) ||
+                    targetItem.previewText.contains("new assignment", ignoreCase = true) ||
+                    targetItem.previewText.contains("new question", ignoreCase = true)
 
             if (unvisitedCard != null) {
                 // Target card found! Reset recovery tracking
@@ -665,17 +643,17 @@ class KidsAccessibilityService : AccessibilityService() {
                     // The announcement body is directly on the stream card. Tapping the card either does nothing or opens comments.
                     CrawlerTraceLogger.log(
                         "STREAM_SURVEY",
-                        "Notice #${nextItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
+                        "Notice #${targetItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
                     )
                     ingestNoticeDirect(title, fullText, fingerprint)
-                    manifest.markItemCompleted(nextItem.index)
+                    manifest.markItemCompleted(targetItem.index)
                     manifest.markCompleted(fingerprint)
-                    manifest.markCompleted(nextItem.fingerprint)
+                    manifest.markCompleted(targetItem.fingerprint)
                     visitedPostFingerprints.add(fingerprint)
-                    visitedPostFingerprints.add(nextItem.fingerprint)
+                    visitedPostFingerprints.add(targetItem.fingerprint)
                     crawlerOverlay?.incrementNoticeCount()
                     crawlerOverlay?.updateStatus(
-                        "Captured (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+                        "Captured (${targetItem.index}/$total - ${manifest.progressPercent}%)...",
                         title
                     )
                     clickableNode.recycle()
@@ -683,16 +661,28 @@ class KidsAccessibilityService : AccessibilityService() {
                     continue
                 }
 
+                val displayMetrics = resources.displayMetrics
+                val minTop = 140
+                val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+
+                // Guard against tapping cards that are cut off at the bottom near the bottom navigation bar
+                if (bounds.top > maxBottom - 100) {
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Card #${targetItem.index} partially cut off at bottom (top=${bounds.top}, maxBottom=$maxBottom). Nudging forward into full view..."
+                    )
+                    stepScrollStream(isScrollForward = true)
+                    clickableNode.recycle()
+                    continue
+                }
+
                 crawlerOverlay?.updateStatus(
-                    "Capturing (${nextItem.index}/$total - ${manifest.progressPercent}%)...",
+                    "Capturing (${targetItem.index}/$total - ${manifest.progressPercent}%)...",
                     title
                 )
 
                 // Dispatch physical tap safely: target the top third of the card (bounds.top + 50)
                 // NEVER tap the bottom where comments or "Add class comment" are located!
-                val displayMetrics = resources.displayMetrics
-                val minTop = 140
-                val maxBottom = displayMetrics.heightPixels - 170
                 val safeTapY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
 
                 val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""
@@ -721,7 +711,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!enteredDetail) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Detail transition pending after 1200ms for #${nextItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
+                        "Detail transition pending after 1200ms for #${targetItem.index}. Retrying physical tap at top of card (${bounds.centerX()}, $safeTapY)"
                     )
                     dispatchTap(bounds.centerX().toFloat(), safeTapY.toFloat())
                     enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
@@ -732,7 +722,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
                 }
                 val openLatency = System.currentTimeMillis() - openStart
-                CrawlerTraceLogger.logPostOpen(nextItem.index, total, title, openLatency, enteredDetail)
+                CrawlerTraceLogger.logPostOpen(targetItem.index, total, title, openLatency, enteredDetail)
 
                 if (!enteredDetail) {
                     // Check if comments dialog opened by accident and dismiss it
@@ -751,7 +741,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     if (attempts < 2) {
                         CrawlerTraceLogger.log(
                             "DEEP_CRAWLER",
-                            "Notice #${nextItem.index} (\"$title\") did not open detail view. Retrying (Attempt $attempts/2)..."
+                            "Notice #${targetItem.index} (\"$title\") did not open detail view. Retrying (Attempt $attempts/2)..."
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
                     } else {
@@ -760,11 +750,11 @@ class KidsAccessibilityService : AccessibilityService() {
                             "Card did not open detail view (Attempts: $attempts). Ingesting directly from stream: \"$title\""
                         )
                         ingestNoticeDirect(title, fullText, fingerprint)
-                        manifest.markItemCompleted(nextItem.index)
+                        manifest.markItemCompleted(targetItem.index)
                         manifest.markCompleted(fingerprint)
-                        manifest.markCompleted(nextItem.fingerprint)
+                        manifest.markCompleted(targetItem.fingerprint)
                         visitedPostFingerprints.add(fingerprint)
-                        visitedPostFingerprints.add(nextItem.fingerprint)
+                        visitedPostFingerprints.add(targetItem.fingerprint)
                         crawlerOverlay?.incrementNoticeCount()
                     }
                     delay(300)
@@ -772,7 +762,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
 
                 // In detail view: Extract details and download attachments
-                crawlerOverlay?.updateStatus("Reading Detail (${nextItem.index}/$total)...", title)
+                crawlerOverlay?.updateStatus("Reading Detail (${targetItem.index}/$total)...", title)
                 val detailRoot = rootInActiveWindow
                 var savedAttCount = 0
                 if (detailRoot != null) {
@@ -807,13 +797,13 @@ class KidsAccessibilityService : AccessibilityService() {
                     isStream
                 }
 
-                manifest.markItemCompleted(nextItem.index, savedAttCount)
+                manifest.markItemCompleted(targetItem.index, savedAttCount)
                 manifest.markCompleted(fingerprint, savedAttCount)
-                manifest.markCompleted(nextItem.fingerprint, savedAttCount)
+                manifest.markCompleted(targetItem.fingerprint, savedAttCount)
                 visitedPostFingerprints.add(fingerprint)
-                visitedPostFingerprints.add(nextItem.fingerprint)
+                visitedPostFingerprints.add(targetItem.fingerprint)
                 crawlerOverlay?.incrementNoticeCount()
-                CrawlerTraceLogger.logPostCompleted(nextItem.index, total, title, savedAttCount)
+                CrawlerTraceLogger.logPostCompleted(targetItem.index, total, title, savedAttCount)
                 delay(500)
             } else {
                 // =====================================================================
@@ -862,7 +852,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         if (candidateCard != null) {
                             val displayMetrics = resources.displayMetrics
                             val minTop = 140
-                            val maxBottom = displayMetrics.heightPixels - 170
+                            val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
                             val candSafeTapY = (candidateCard.bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
                             val clicked = candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                             if (!clicked) {
@@ -1709,11 +1699,70 @@ class KidsAccessibilityService : AccessibilityService() {
         val bounds: Rect
     )
 
+    private data class VisiblePendingCard(
+        val card: UnvisitedCard,
+        val item: StreamManifestItem
+    )
+
+    private fun findAnyPendingCardOnScreen(
+        rootNode: AccessibilityNodeInfo,
+        manifest: StreamManifest
+    ): VisiblePendingCard? {
+        val displayMetrics = resources.displayMetrics
+        val minTop = 140
+        val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+        val rect = Rect()
+
+        val postCards = findPostCards(rootNode)
+        for (card in postCards) {
+            val cardItems = mutableListOf<String>()
+            collectQuickText(card, cardItems)
+            val combinedText = cardItems.joinToString(" ")
+            val lowerCombined = combinedText.lowercase().trim()
+
+            val isStandaloneComment = lowerCombined.matches(Regex("""^(?:\d+\s+)?class\s+comments?.*""")) && combinedText.length < 35
+            if (combinedText.length > 20 && !isStandaloneComment) {
+                val titleCandidate = cardItems.firstOrNull { item ->
+                    val lower = item.trim().lowercase()
+                    !excludedChrome.contains(lower) &&
+                            !excludedChrome.any { lower.startsWith(it) } &&
+                            !lower.startsWith("tab ") &&
+                            !lower.startsWith("signed in as") &&
+                            !lower.startsWith("tasks due") &&
+                            !lower.startsWith("class options for") &&
+                            !lower.contains("class comments") &&
+                            item.trim().length > 3
+                }
+                val title = titleCandidate?.take(80) ?: "Classroom Notice"
+                val fingerprint = computeCardFingerprint(cardItems)
+
+                val matchedItem = manifest.findMatchingItem(fingerprint, title, combinedText)
+                if (matchedItem != null && matchedItem.status == StreamItemStatus.PENDING) {
+                    card.getBoundsInScreen(rect)
+                    // Check if card is comfortably inside safe tap zone and not overlapping bottom bar
+                    if (rect.top in minTop..(maxBottom - 100)) {
+                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                        val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
+                        for (other in postCards) {
+                            if (other != card) other.recycle()
+                        }
+                        return VisiblePendingCard(
+                            UnvisitedCard(matchedItem.title, combinedText, fingerprint, card, cardBounds),
+                            matchedItem
+                        )
+                    }
+                }
+            }
+            card.recycle()
+        }
+        return null
+    }
+
     private fun findNextUnvisitedPost(rootNode: AccessibilityNodeInfo): UnvisitedCard? {
         val postCards = findPostCards(rootNode)
         val displayMetrics = resources.displayMetrics
         val minTop = 140
-        val maxBottom = displayMetrics.heightPixels - 170
+        val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
         val rect = Rect()
         for (card in postCards) {
@@ -1774,7 +1823,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findCardForTarget(rootNode: AccessibilityNodeInfo, targetItem: StreamManifestItem): UnvisitedCard? {
         val displayMetrics = resources.displayMetrics
         val minTop = 140
-        val maxBottom = displayMetrics.heightPixels - 170
+        val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
         val rect = Rect()
 
         // Fast-path: Native Accessibility text search for target title (finds partially clipped and pre-fetched cards!)
@@ -1883,7 +1932,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val displayMetrics = resources.displayMetrics
         val minTop = 140
-        val maxBottom = displayMetrics.heightPixels - 170
+        val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
         var bestCard: UnvisitedCard? = null
         var bestScore = -1f
