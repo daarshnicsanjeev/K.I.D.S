@@ -1767,36 +1767,54 @@ private suspend fun ensureAtStreamTop() {
 
     4. **Autonomous Chooser Selection & Scroll-to-Find Fallback (`selectKidsInSystemChooser`):**
        Waits up to 3,000ms for the sharesheet to display and resolves the target. If "K.I.D.S. Vault" is not visible in the initial top app row, it initiates a two-stage scroll-to-find recovery:
-       - **Stage 1 (Horizontal Swipe across Apps Row):** Dispatches `dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)` to scroll laterally through the horizontal app carousel, followed by a 400ms settling pause and rescan.
-       - **Stage 2 (Vertical Drag to Expand Bottom Sheet):** If still not found, dispatches `dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)` to vertically drag up and expand the bottom sheet into a multi-row grid.
+       - **Stage 1 (Horizontal Swipe across Apps Row):** Dispatches `dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)` across the apps row at the bottom of the sharesheet, followed by a settling pause.
+       - **Stage 2 (Vertical Drag to Expand Bottom Sheet):** Dispatches `dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)` to drag upward and expand the bottom sheet into a multi-row grid.
+       - **Multi-Window Chooser Fingerprinting & Boundary Detection:** Rather than inspecting only `rootInActiveWindow` (which can track the background app), `computeChooserContentFingerprint()` gathers content across all non-collector accessibility windows. Boundary exit strictly requires 2 consecutive identical samples, preventing false 1-swipe premature exits.
        - **Dynamic Bounds Tap:** When the target is located, its on-screen bounding rectangle (`Rect`) is computed. The engine attempts `ACTION_CLICK`, and if unhandled by the OEM view, dispatches `dispatchTap(bounds.centerX(), bounds.centerY())`:
        ```kotlin
        private suspend fun selectKidsInSystemChooser() {
            var target: AccessibilityNodeInfo? = null
 
-           // Wait up to 3000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
-           waitForCondition(timeoutMs = 3000, pollIntervalMs = 200) {
+           // Wait up to 3500ms for system chooser to appear and locate K.I.D.S. Vault dynamically
+           waitForCondition(timeoutMs = 3500, pollIntervalMs = 200) {
                target = findKidsShareTargetInAllWindows()
                target != null
            }
 
-           // If not found in immediate view, scroll the sharesheet horizontally or vertically to reveal it
+           // If not found in immediate view, scroll the sharesheet horizontally, then dynamically vertically until found or boundary reached
            if (target == null) {
                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
                val displayMetrics = resources.displayMetrics
-               val w = displayMetrics.widthPixels
-               val h = displayMetrics.heightPixels
+               val screenWidth = displayMetrics.widthPixels
+               val screenHeight = displayMetrics.heightPixels
 
-               // Attempt 1: Horizontal swipe across apps row (from 80% width to 20% width at 75% height)
-               dispatchSwipe(w * 0.80f, h * 0.75f, w * 0.20f, h * 0.75f, 300)
-               delay(400)
+               // Step 1: Horizontal swipe across apps row (bottom 15-20% of screen)
+               dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)
+               delay(500)
                target = findKidsShareTargetInAllWindows()
 
-               // Attempt 2: If still not found, try a vertical swipe up to expand bottom sheet
-               if (target == null) {
-                   dispatchSwipe(w * 0.50f, h * 0.75f, w * 0.50f, h * 0.40f, 350)
-                   delay(400)
+               // Step 2: Dynamic vertical scroll to expand and traverse chooser apps
+               var previousChooserFingerprint = ""
+               var unchangedFingerprintCount = 0
+               while (target == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                   val currentChooserFingerprint = computeChooserContentFingerprint()
+
+                   // Drag upward from 75% to 30% height to expand bottom sheet and reveal app grid
+                   dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
+                   delay(600)
                    target = findKidsShareTargetInAllWindows()
+                   if (target != null) break
+
+                   val newChooserFingerprint = computeChooserContentFingerprint()
+
+                   // Boundary Detection: Require 2 consecutive unchanged samples before concluding end of chooser
+                   if (newChooserFingerprint == currentChooserFingerprint || newChooserFingerprint == previousChooserFingerprint) {
+                       unchangedFingerprintCount++
+                       if (unchangedFingerprintCount >= 2) break
+                   } else {
+                       unchangedFingerprintCount = 0
+                   }
+                   previousChooserFingerprint = currentChooserFingerprint
                }
            }
 
@@ -1814,10 +1832,13 @@ private suspend fun ensureAtStreamTop() {
                target!!.recycle()
                delay(800) // Allow ShareTargetActivity to process intent and stage file
            } else {
-               CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling.")
+               CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling. Dismissing share sheet.")
+               performGlobalAction(GLOBAL_ACTION_BACK)
+               delay(800)
            }
        }
        ```
+
 
     5. **Calibrated Gesture Dispatch (`dispatchSwipe`):**
        To perform horizontal sharesheet carousels and vertical expansion gestures, `KidsAccessibilityService` utilizes `dispatchSwipe`:

@@ -1264,8 +1264,14 @@ class KidsAccessibilityService : AccessibilityService() {
                         crawlerOverlay?.incrementAttachmentCount()
                     }
                 }
-                // Allow detail view UI tree to regenerate before querying next attachment
-                delay(600)
+                // Ensure detail view UI tree is firmly restored before querying next attachment
+                waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
+                    val checkRoot = rootInActiveWindow ?: return@waitForCondition false
+                    val isDetail = isPostDetailView(checkRoot)
+                    checkRoot.recycle()
+                    isDetail
+                }
+                delay(400)
             } else {
                 CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Could not locate chip for \"$fileName\" in detail view")
             }
@@ -1392,15 +1398,24 @@ class KidsAccessibilityService : AccessibilityService() {
             selectKidsInSystemChooser()
         }
 
-        // Step C: Guarded return to detail view (up to 3 attempts)
+        // Step C: Guarded return to detail view
         delay(600)
         var returnAttempts = 0
-        while (returnAttempts < 3) {
-            val cur = rootInActiveWindow ?: break
+        while (returnAttempts < 4) {
+            val cur = rootInActiveWindow
+            if (cur == null) {
+                delay(300)
+                returnAttempts++
+                continue
+            }
             if (isPostDetailView(cur) || isStreamOrClassworkView(cur)) {
                 cur.recycle()
                 break
             }
+            CrawlerTraceLogger.log(
+                "ATTACHMENT_SHARE",
+                "Closing document viewer to return to post detail view (attempt ${returnAttempts + 1})..."
+            )
             performReturnToStream(cur)
             cur.recycle()
             delay(1000)
@@ -1563,6 +1578,29 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun computeChooserContentFingerprint(): String {
+        val textList = mutableListOf<String>()
+        val collectorPkg = applicationContext.packageName.lowercase()
+        try {
+            for (window in windows) {
+                val windowRoot = window.root ?: continue
+                val pkg = windowRoot.packageName?.toString()?.lowercase().orEmpty()
+                if (pkg != collectorPkg) {
+                    collectQuickText(windowRoot, textList)
+                }
+                windowRoot.recycle()
+            }
+            rootInActiveWindow?.let { activeRoot ->
+                val pkg = activeRoot.packageName?.toString()?.lowercase().orEmpty()
+                if (pkg != collectorPkg) {
+                    collectQuickText(activeRoot, textList)
+                }
+                activeRoot.recycle()
+            }
+        } catch (_: Exception) {}
+        return textList.joinToString("|").hashCode().toString()
+    }
+
     private suspend fun selectKidsInSystemChooser() {
         var target: AccessibilityNodeInfo? = null
 
@@ -1579,30 +1617,33 @@ class KidsAccessibilityService : AccessibilityService() {
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            // Step 1: Horizontal swipe across direct share / apps row
-            dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.75f, screenWidth * 0.15f, screenHeight * 0.75f, 300)
+            // Step 1: Horizontal swipe across apps row (bottom 15-20% of screen)
+            dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)
             delay(500)
             target = findKidsShareTargetInAllWindows()
 
-            // Step 2: Dynamic vertical scroll through expanded apps until found or bottom boundary reached
+            // Step 2: Dynamic vertical scroll to expand and traverse chooser apps
             var previousChooserFingerprint = ""
+            var unchangedFingerprintCount = 0
             while (target == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-                val activeChooser = rootInActiveWindow ?: break
-                val currentChooserFingerprint = computeViewportContentFingerprint(activeChooser)
-                activeChooser.recycle()
+                val currentChooserFingerprint = computeChooserContentFingerprint()
 
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.35f, 400)
+                // Drag upward from 75% to 30% height to expand bottom sheet and reveal app grid
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
                 delay(600)
                 target = findKidsShareTargetInAllWindows()
                 if (target != null) break
 
-                val afterSwipeRoot = rootInActiveWindow ?: break
-                val newChooserFingerprint = computeViewportContentFingerprint(afterSwipeRoot)
-                afterSwipeRoot.recycle()
+                val newChooserFingerprint = computeChooserContentFingerprint()
 
-                // Boundary Detection: If content stopped moving, we reached the end of the chooser
+                // Boundary Detection: Require 2 consecutive unchanged samples before concluding end of chooser
                 if (newChooserFingerprint == currentChooserFingerprint || newChooserFingerprint == previousChooserFingerprint) {
-                    break
+                    unchangedFingerprintCount++
+                    if (unchangedFingerprintCount >= 2) {
+                        break
+                    }
+                } else {
+                    unchangedFingerprintCount = 0
                 }
                 previousChooserFingerprint = currentChooserFingerprint
             }
@@ -2137,8 +2178,21 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private suspend fun isNoticeFullyCapturedInDb(title: String): Boolean {
         val db = KidsDatabase.getInstance(applicationContext)
-        val notice = db.noticeDao().getAllNoticesDirect().firstOrNull {
-            it.title.equals(title, ignoreCase = true) || (title.length >= 20 && it.title.startsWith(title.take(25), ignoreCase = true))
+        val cleanTitle = title.trim()
+        val notice = db.noticeDao().getAllNoticesDirect().firstOrNull { existing ->
+            val existingTitle = existing.title.trim()
+            if (existingTitle.equals(cleanTitle, ignoreCase = true)) {
+                return@firstOrNull true
+            }
+            // If the card title was truncated with ellipsis, match by prefix only if non-truncated part is substantial (>=45 chars)
+            val isTruncated = cleanTitle.endsWith("...") || cleanTitle.endsWith("…")
+            if (isTruncated) {
+                val cleanPrefix = cleanTitle.removeSuffix("...").removeSuffix("…").trim()
+                if (cleanPrefix.length >= 45 && existingTitle.startsWith(cleanPrefix, ignoreCase = true)) {
+                    return@firstOrNull true
+                }
+            }
+            false
         } ?: return false
 
         val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
@@ -2151,11 +2205,18 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        val isLikelyMaterial = title.contains("material", true) ||
-                title.contains("worksheet", true) ||
-                title.contains("notes", true) ||
-                title.contains("answer key", true)
-        return !isLikelyMaterial && notice.body.length > 120
+        val isLikelyMaterial = cleanTitle.contains("material", true) ||
+                cleanTitle.contains("worksheet", true) ||
+                cleanTitle.contains("notes", true) ||
+                cleanTitle.contains("answer key", true) ||
+                cleanTitle.contains("assignment", true)
+
+        // If it is a material or worksheet post but has 0 attachments registered, never assume it is fully captured
+        if (isLikelyMaterial) {
+            return false
+        }
+
+        return notice.body.length > 120
     }
 
     private suspend fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
@@ -2470,7 +2531,10 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower.contains("fit to screen") ||
                 lower.contains("zoom in") ||
                 lower.contains("send a copy") ||
-                lower.contains("send file")
+                lower.contains("send file") ||
+                lower.contains("open with") ||
+                lower.contains("drive shortcut") ||
+                lower.contains("save to drive")
     }
 
     private fun isCommentsOnlyScreen(combinedText: String): Boolean {
@@ -2720,12 +2784,13 @@ class KidsAccessibilityService : AccessibilityService() {
                 combined.contains("points") ||
                 combined.contains("new material") ||
                 combined.contains("new assignment") ||
-                combined.contains("new question")
+                combined.contains("new question") ||
+                combined.contains("class comment") ||
+                combined.contains("add class comment")
 
-        // Resilient check: In substantive posts, attachments or instructions are displayed.
-        // If bottom tabs are absent and back arrow is present, substantive body text (>30 chars)
-        // confirms we are inside the detail view.
-        return hasDetailIndicators || combined.length > 30
+        // A Post Detail screen in Google Classroom strictly requires at least one structural post detail indicator.
+        // Document preview screens displaying PDF contents (without post indicators) must never be identified as post detail.
+        return hasDetailIndicators
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {
