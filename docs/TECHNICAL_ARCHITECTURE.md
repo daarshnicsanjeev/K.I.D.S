@@ -1463,10 +1463,65 @@ private suspend fun ensureAtStreamTop() {
      }
      ```
   
-  4. **Robust Chip Resolution, Query Normalization & Recursive Multilingual Fallback (`findAttachmentChipByFileName` & `findAttachmentChipRecursively`):**
-     In real-world classroom usage, attachment titles frequently contain complex descriptions, parenthetical qualifiers (e.g. `"(Textbook PDF)"`), ellipses truncation (`...`), or multilingual scripts (Hindi Devanagari, regional languages). Naive exact matching or simple text searches fail when accessibility nodes fragment complex script glyphs.
-     `KidsAccessibilityService` implements a two-tier resolution strategy combining prioritized query normalization with a recursive tree inspection fallback:
+  4. **Robust Chip Resolution, Precise Token & Numeric Concordance (`matchesAttachmentChipText`, `findAttachmentChipByFileName` & `findAttachmentChipRecursively`):**
+     In real-world educational workflows (especially Mathematics and Science), posts frequently contain multiple worksheet attachments that share common title prefixes or keywords (e.g. `Class 2 - Subtraction Level 1.pdf`, `Class 2 - Subtraction Level 2.pdf`, `Place Value Level 1.pdf`, `Place Value Level 1 answer key.pdf`). Naive single-token matching results in false-positive collisions where the crawler repeatedly clicks and downloads duplicates of the first visible chip.
+     `KidsAccessibilityService` deploys a multi-dimensional matching engine combining strict numeric concordance, polar antonym differentiation, answer-key separation, and metric scrubbing:
      ```kotlin
+     fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
+         val cleanTarget = targetFileName.replace("...", "").trim()
+         val targetBase = cleanTarget.substringBeforeLast('.').lowercase()
+
+         // Scrub file size metrics, page counts, and timestamps from accessibility tree candidate text
+         val candidateCleaned = candidateText
+             .replace(Regex("""\b\d+(\.\d+)?\s*(kb|mb|gb|b|bytes?|pages?|words?|items?|attachments?)\b""", RegexOption.IGNORE_CASE), "")
+             .replace(Regex("""\b\d{1,2}:\d{2}(\s*[ap]m)?\b""", RegexOption.IGNORE_CASE), "")
+             .lowercase()
+
+         val wordRegex = Regex("""[a-z]{3,}""")
+         val targetWords = wordRegex.findAll(targetBase).map { it.value }.toSet()
+         val candidateWords = wordRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+         val numRegex = Regex("""\b\d+\b""")
+         val targetNums = numRegex.findAll(targetBase).map { it.value }.toSet()
+         val candidateNums = numRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+         val romanRegex = Regex("""\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b""")
+         val targetRoman = romanRegex.findAll(targetBase).map { it.value }.toSet()
+         val candidateRoman = romanRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+         // 1. Strict numeric concordance: numeric identifiers MUST match bidirectionally
+         if (targetNums.isNotEmpty() && !targetNums.all { candidateNums.contains(it) }) return false
+         if (candidateNums.isNotEmpty() && targetNums.isNotEmpty() && !candidateNums.all { targetNums.contains(it) }) return false
+
+         // 2. Roman numerals concordance (Level I vs Level II)
+         if (targetRoman.isNotEmpty() && !targetRoman.all { candidateRoman.contains(it) }) return false
+         if (candidateRoman.isNotEmpty() && targetRoman.isNotEmpty() && !candidateRoman.all { targetRoman.contains(it) }) return false
+
+         // 3. Polar antonym checks (prevent Addition matching Subtraction, Multiplication vs Division)
+         if ("addition" in targetWords && "subtraction" in candidateWords) return false
+         if ("subtraction" in targetWords && "addition" in candidateWords) return false
+         if ("multiplying" in targetWords && "dividing" in candidateWords) return false
+         if ("dividing" in targetWords && "multiplying" in candidateWords) return false
+         if ("multiplication" in targetWords && "division" in candidateWords) return false
+         if ("division" in targetWords && "multiplication" in candidateWords) return false
+
+         // 4. Answer key / solution distinction
+         val isTargetAnswerKey = "answer" in targetWords || targetBase.contains("answerkey") || targetBase.contains("solution")
+         val isCandidateAnswerKey = "answer" in candidateWords || candidateCleaned.contains("answerkey") || candidateCleaned.contains("solution")
+         if (isTargetAnswerKey != isCandidateAnswerKey) return false
+
+         // 5. Exact substring containment
+         val targetTrimmed = targetBase.trim()
+         val candTrimmed = candidateCleaned.trim()
+         if (targetTrimmed.isNotBlank() && (candTrimmed.contains(targetTrimmed) || targetTrimmed.contains(candTrimmed))) return true
+
+         // 6. Majority token overlap (>= 70% of meaningful words)
+         if (targetWords.isEmpty()) return false
+         val matchedWords = targetWords.intersect(candidateWords)
+         val minRequired = (targetWords.size * 0.70).toInt().coerceAtLeast(1)
+         return matchedWords.size >= minRequired
+     }
+
      private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
          val cleanFileName = fileName.replace("...", "").trim()
          val withoutParentheses = cleanFileName.replace(Regex("""\([^)]*\)"""), "").trim()
@@ -1477,26 +1532,28 @@ private suspend fun ensureAtStreamTop() {
              cleanFileName,
              withoutParentheses,
              baseWithoutParens,
-             baseFileName,
-             baseWithoutParens.take(20),
-             baseFileName.take(20)
+             baseFileName
          ).filter { it.length >= 3 }
 
          for (searchQuery in searchQueries) {
              val matchedNodes = rootNode.findAccessibilityNodeInfosByText(searchQuery)
              for (matchNode in matchedNodes) {
-                 val clickableAncestor = findClickableAncestor(matchNode)
-                 val targetChipNode = when {
-                     clickableAncestor != null -> clickableAncestor
+                 val clickableNode = when {
                      matchNode.isClickable -> AccessibilityNodeInfo.obtain(matchNode)
-                     else -> null
+                     else -> findClickableAncestor(matchNode)
                  }
 
-                 if (targetChipNode != null) {
-                     for (nodeToRecycle in matchedNodes) {
-                         nodeToRecycle.recycle()
+                 if (clickableNode != null) {
+                     val texts = mutableListOf<String>()
+                     collectQuickText(clickableNode, texts)
+                     val combinedText = texts.joinToString(" ")
+                     if (matchesAttachmentChipText(fileName, combinedText)) {
+                         for (nodeToRecycle in matchedNodes) {
+                             nodeToRecycle.recycle()
+                         }
+                         return clickableNode
                      }
-                     return targetChipNode
+                     clickableNode.recycle()
                  }
              }
              for (nodeToRecycle in matchedNodes) {
@@ -1504,38 +1561,36 @@ private suspend fun ensureAtStreamTop() {
              }
          }
 
-         // Recursive tree inspection fallback for unicode/complex chips
-         val targetTokens = baseWithoutParens.split(" ")
-             .map { it.trim().lowercase() }
-             .filter { it.length >= 3 }
-
-         return findAttachmentChipRecursively(rootNode, targetTokens)
+         // Recursive tree inspection fallback with strict numeric and token matching
+         return findAttachmentChipRecursively(rootNode, fileName)
      }
 
-     private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetTokens: List<String>): AccessibilityNodeInfo? {
-         val textList = mutableListOf<String>()
-         collectQuickText(node, textList)
-         val combined = textList.joinToString(" ").lowercase()
-         val isMatch = targetTokens.isNotEmpty() && targetTokens.any { combined.contains(it) }
+     private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetFileName: String): AccessibilityNodeInfo? {
+         val nodeText = node.text?.toString()?.trim() ?: ""
+         val nodeDesc = node.contentDescription?.toString()?.trim() ?: ""
+         val immediateText = "$nodeText $nodeDesc".trim()
 
-         if (isMatch && (node.isClickable || node.parent?.isClickable == true)) {
+         if (immediateText.length >= 3 && matchesAttachmentChipText(targetFileName, immediateText)) {
              val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
-             if (clickable != null) return clickable
+             if (clickable != null) {
+                 return clickable
+             }
          }
 
          for (i in 0 until node.childCount) {
              val child = node.getChild(i) ?: continue
-             val found = findAttachmentChipRecursively(child, targetTokens)
+             val found = findAttachmentChipRecursively(child, targetFileName)
              child.recycle()
              if (found != null) return found
          }
          return null
      }
      ```
-     - **Query Normalization:** Strips UI ellipsis (`...`), strips parenthetical descriptions using `Regex("""\([^)]*\)""")`, and isolates base names without file extensions. Generates an ordered set (`linkedSetOf`) of queries tested via native accessibility search `findAccessibilityNodeInfosByText`.
-     - **Recursive Unicode & Multilingual Tree Search Fallback:** When native accessibility indexing fails to match composite nodes—common with non-Latin scripts (Hindi Devanagari) or complex inline formatting—the crawler engages `findAttachmentChipRecursively`. It tokenizes the base title into words ($\ge 3$ characters), traverses the accessibility tree recursively, aggregates node text via `collectQuickText`, and resolves the nearest clickable container or ancestor.
-     - **Stale Pointer Elimination:** All matched nodes are safely recycled, and the freshly resolved clickable chip is snapped into view and focused before tapping.
-     This fresh-node re-querying loop guarantees **zero stale `AccessibilityNodeInfo` crashes**, handles below-the-fold chips seamlessly, and ensures 100% complete ingestion of all attachments across posts of any size.
+     - **Metric Scrubbing:** UI text frequently embeds dynamic file sizes (`"2.4 MB"`), page counters (`"1 page"`), or upload timestamps (`"10:30 AM"`). Metric scrubbing strips these ephemeral values before numeric extraction, guaranteeing that file sizes like `2.4 MB` do not pollute the set of worksheet identifiers.
+     - **Bidirectional Numeric Verification:** If the target worksheet is `Level 2`, candidate nodes with `Level 1` are categorically rejected.
+     - **Polar Antonym Disambiguation:** Arithmetic operation opposites (`addition` vs. `subtraction`, `multiplication` vs. `division`) are strictly disjoint.
+     - **Verified Container Matching in `findAttachmentChipByFileName`:** When native `findAccessibilityNodeInfosByText` returns matches, `KidsAccessibilityService` explicitly extracts candidate text from the resolved clickable container and verifies it against `matchesAttachmentChipText(fileName, candidateText)` before tapping, preventing false-positive prefix matching.
+     - **Leaf-Node Recursive Search:** If native queries fail due to complex Android text fragmentation, `findAttachmentChipRecursively` traverses leaf nodes, evaluating immediate text to guarantee that high-level parent scroll containers are never falsely clicked.
 
   // Truthful Staged Attachment Counting via scanLocalAttachments Return Value
   if (allAttachments.isNotEmpty()) {
@@ -2464,6 +2519,75 @@ private fun isTransientOrSystemPackage(packageName: String): Boolean {
   - **System File Selectors & Resolvers:** `documentsui`, `intentresolver`, `chooser`.
   - **In-App Document Previewers:** Google Docs/Drive viewers, Adobe Reader, WPS Office, Microsoft Office, Files by Google, Samsung My Files.
 - **Guarantee:** Any event originating from these packages returns immediately in `onAccessibilityEvent`, maintaining the overlay firmly on screen without flicker.
+
+##### 4b. Autonomous System ANR Recovery & Watcher (`handleSystemAnrDialogIfPresent` & `checkAndDismissSystemAnr`)
+During intensive, multi-hour crawl sessions across hundreds of notices and attachments, Google Classroom's internal PDF render cache and view recycling can experience memory pressure, occasionally triggering the Android OS Application Not Responding (ANR) modal dialog (`"Classroom isn't responding"`). If left unhandled, the system dialog blocks all UI interactions, and tapping "OK" force-terminates Classroom.
+
+`KidsAccessibilityService` deploys an active ANR recovery sentinel:
+```kotlin
+private fun handleSystemAnrDialogIfPresent(node: AccessibilityNodeInfo?): Boolean {
+    if (node == null) return false
+    try {
+        val texts = mutableListOf<String>()
+        collectQuickText(node, texts)
+        val combined = texts.joinToString(" ").lowercase()
+        val isAnr = (combined.contains("isn't responding") ||
+                combined.contains("not responding") ||
+                combined.contains("stopped responding") ||
+                combined.contains("has stopped")) &&
+                (combined.contains("wait") || combined.contains("close app") || combined.contains("ok"))
+
+        if (isAnr) {
+            CrawlerTraceLogger.log("ANR_RECOVERY", "System ANR dialog detected: \"${combined.take(80)}\"")
+            val waitNodes = node.findAccessibilityNodeInfosByText("Wait")
+            var waitButton: AccessibilityNodeInfo? = null
+            for (waitCandidate in waitNodes) {
+                val clickable = if (waitCandidate.isClickable) AccessibilityNodeInfo.obtain(waitCandidate) else findClickableAncestor(waitCandidate)
+                if (clickable != null) {
+                    waitButton = clickable
+                    break
+                }
+            }
+            for (waitCandidate in waitNodes) {
+                waitCandidate.recycle()
+            }
+            // ID fallback: android:id/aerr_wait
+            if (waitButton == null) {
+                val byId = node.findAccessibilityNodeInfosByViewId("android:id/aerr_wait")
+                for (waitCandidate in byId) {
+                    val clickable = if (waitCandidate.isClickable) AccessibilityNodeInfo.obtain(waitCandidate) else findClickableAncestor(waitCandidate)
+                    if (clickable != null) {
+                        waitButton = clickable
+                        break
+                    }
+                }
+                for (waitCandidate in byId) {
+                    waitCandidate.recycle()
+                }
+            }
+            if (waitButton != null) {
+                CrawlerTraceLogger.log("ANR_RECOVERY", "Autonomous ANR resolution: Clicking 'Wait' button to allow app to recover")
+                val clicked = waitButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val bounds = Rect()
+                    waitButton.getBoundsInScreen(bounds)
+                    serviceScope.launch {
+                        dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                    }
+                }
+                waitButton.recycle()
+                return true
+            }
+        }
+    } catch (e: Exception) {
+        Log.w(TAG, "Error checking ANR dialog: ${e.message}")
+    }
+    return false
+}
+```
+- **Autonomous "Wait" Dispatch:** Detects the system ANR dialog (`packageName == "android"` or text `"isn't responding"`) and automatically dispatches a click or physical center tap on `"Wait"`. This grants Classroom the additional execution cycles required to finish background I/O or garbage collection.
+- **Continuous Watcher in `waitForCondition`:** Every UI poll in `waitForCondition` invokes `checkAndDismissSystemAnr()`, proactively dismissing ANRs even while waiting for document viewers or scrolls to settle.
+- **Inter-Post & Post-Return Pacing Delays:** Enforces `POST_RETURN_PACING_DELAY_MILLIS` (500ms) upon returning from post details and `INTER_POST_SETTLING_DELAY_MILLIS` (600ms) between cards. These controlled breathing pauses allow Classroom's `RecyclerView` to recycle heavy document views and let Android's runtime run garbage collection on large bitmaps before the next post is opened.
 
 ##### 5. Window Hierarchy Verification & Safe Native Node Recycling in `handleAppExitEvent`
 When a non-school, non-transient window transition is detected, `handleAppExitEvent` runs a debounced multi-window verification loop to confirm whether the school app is still present anywhere in the Android window stack:

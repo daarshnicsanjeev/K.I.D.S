@@ -57,6 +57,75 @@ class KidsAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "KidsAccessibility"
+        private const val POST_RETURN_PACING_DELAY_MILLIS = 500L
+        private const val INTER_POST_SETTLING_DELAY_MILLIS = 600L
+        private const val ANR_RESOLUTION_WAIT_DELAY_MILLIS = 1_000L
+
+        fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
+            val cleanTarget = targetFileName.replace("...", "").trim()
+            val targetBase = cleanTarget.substringBeforeLast('.').lowercase()
+
+            val candidateCleaned = candidateText
+                .replace(Regex("""\b\d+(\.\d+)?\s*(kb|mb|gb|b|bytes?|pages?|words?|items?|attachments?)\b""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\b\d{1,2}:\d{2}(\s*[ap]m)?\b""", RegexOption.IGNORE_CASE), "")
+                .lowercase()
+
+            val wordRegex = Regex("""[a-z]{3,}""")
+            val targetWords = wordRegex.findAll(targetBase).map { it.value }.toSet()
+            val candidateWords = wordRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+            val numRegex = Regex("""\b\d+\b""")
+            val targetNums = numRegex.findAll(targetBase).map { it.value }.toSet()
+            val candidateNums = numRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+            val romanRegex = Regex("""\b(i|ii|iii|iv|v|vi|vii|viii|ix|x)\b""")
+            val targetRoman = romanRegex.findAll(targetBase).map { it.value }.toSet()
+            val candidateRoman = romanRegex.findAll(candidateCleaned).map { it.value }.toSet()
+
+            // Strict numeric concordance
+            if (targetNums.isNotEmpty() && !targetNums.all { candidateNums.contains(it) }) {
+                return false
+            }
+            if (candidateNums.isNotEmpty() && targetNums.isNotEmpty() && !candidateNums.all { targetNums.contains(it) }) {
+                return false
+            }
+
+            // Roman numerals concordance
+            if (targetRoman.isNotEmpty() && !targetRoman.all { candidateRoman.contains(it) }) {
+                return false
+            }
+            if (candidateRoman.isNotEmpty() && targetRoman.isNotEmpty() && !candidateRoman.all { targetRoman.contains(it) }) {
+                return false
+            }
+
+            // Polar antonym checks
+            if ("addition" in targetWords && "subtraction" in candidateWords) return false
+            if ("subtraction" in targetWords && "addition" in candidateWords) return false
+            if ("multiplying" in targetWords && "dividing" in candidateWords) return false
+            if ("dividing" in targetWords && "multiplying" in candidateWords) return false
+            if ("multiplication" in targetWords && "division" in candidateWords) return false
+            if ("division" in targetWords && "multiplication" in candidateWords) return false
+
+            // Answer key / solution distinction
+            val isTargetAnswerKey = "answer" in targetWords || targetBase.contains("answerkey") || targetBase.contains("solution")
+            val isCandidateAnswerKey = "answer" in candidateWords || candidateCleaned.contains("answerkey") || candidateCleaned.contains("solution")
+            if (isTargetAnswerKey != isCandidateAnswerKey) {
+                return false
+            }
+
+            // Exact substring containment
+            val targetTrimmed = targetBase.trim()
+            val candTrimmed = candidateCleaned.trim()
+            if (targetTrimmed.isNotBlank() && (candTrimmed.contains(targetTrimmed) || targetTrimmed.contains(candTrimmed))) {
+                return true
+            }
+
+            // Majority token overlap (>= 70% of meaningful words)
+            if (targetWords.isEmpty()) return false
+            val matchedWords = targetWords.intersect(candidateWords)
+            val minRequired = (targetWords.size * 0.70).toInt().coerceAtLeast(1)
+            return matchedWords.size >= minRequired
+        }
         private const val APP_EXIT_DEBOUNCE_MILLIS = 3_000L
         private const val APP_RELAUNCH_RECOVERY_DELAY_MILLIS = 2_000L
         private const val MIN_COURSE_CARD_WIDTH_PX = 300
@@ -193,6 +262,23 @@ class KidsAccessibilityService : AccessibilityService() {
             return
         }
 
+        // 0b. Detect and auto-resolve system ANR ("App isn't responding") dialogs
+        if (packageName == "android" || packageName.startsWith("android.")) {
+            val sourceNode = event.source
+            if (sourceNode != null) {
+                val isHandled = handleSystemAnrDialogIfPresent(sourceNode)
+                sourceNode.recycle()
+                if (isHandled) return
+            } else {
+                val activeNode = rootInActiveWindow
+                if (activeNode != null) {
+                    val isHandled = handleSystemAnrDialogIfPresent(activeNode)
+                    activeNode.recycle()
+                    if (isHandled) return
+                }
+            }
+        }
+
         // 1. If in an authorized school app, maintain/restore active session
         if (isAuthorizedSchoolApp(packageName)) {
             exitDebounceJob?.cancel()
@@ -231,12 +317,106 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
+    private fun handleSystemAnrDialogIfPresent(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        try {
+            val texts = mutableListOf<String>()
+            collectQuickText(node, texts)
+            val combined = texts.joinToString(" ").lowercase()
+            val isAnr = (combined.contains("isn't responding") ||
+                    combined.contains("not responding") ||
+                    combined.contains("stopped responding") ||
+                    combined.contains("has stopped")) &&
+                    (combined.contains("wait") || combined.contains("close app") || combined.contains("ok"))
+
+            if (isAnr) {
+                CrawlerTraceLogger.log("ANR_RECOVERY", "System ANR dialog detected: \"${combined.take(80)}\"")
+                // Search for "Wait" button
+                val waitNodes = node.findAccessibilityNodeInfosByText("Wait")
+                var waitButton: AccessibilityNodeInfo? = null
+                for (waitCandidate in waitNodes) {
+                    val clickable = if (waitCandidate.isClickable) AccessibilityNodeInfo.obtain(waitCandidate) else findClickableAncestor(waitCandidate)
+                    if (clickable != null) {
+                        waitButton = clickable
+                        break
+                    }
+                }
+                for (waitCandidate in waitNodes) {
+                    waitCandidate.recycle()
+                }
+
+                if (waitButton == null) {
+                    val byId = node.findAccessibilityNodeInfosByViewId("android:id/aerr_wait")
+                    for (waitCandidate in byId) {
+                        val clickable = if (waitCandidate.isClickable) AccessibilityNodeInfo.obtain(waitCandidate) else findClickableAncestor(waitCandidate)
+                        if (clickable != null) {
+                            waitButton = clickable
+                            break
+                        }
+                    }
+                    for (waitCandidate in byId) {
+                        waitCandidate.recycle()
+                    }
+                }
+
+                if (waitButton != null) {
+                    CrawlerTraceLogger.log("ANR_RECOVERY", "Autonomous ANR resolution: Clicking 'Wait' button to allow app to recover")
+                    val clicked = waitButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val bounds = Rect()
+                        waitButton.getBoundsInScreen(bounds)
+                        serviceScope.launch {
+                            dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                        }
+                    }
+                    waitButton.recycle()
+                    return true
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Error checking ANR dialog: ${e.message}")
+        }
+        return false
+    }
+
+    private fun checkAndDismissSystemAnr(): Boolean {
+        var isDismissed = false
+        try {
+            val activeRoot = rootInActiveWindow
+            if (activeRoot != null) {
+                if (handleSystemAnrDialogIfPresent(activeRoot)) {
+                    isDismissed = true
+                }
+                activeRoot.recycle()
+            }
+            if (!isDismissed) {
+                for (window in windows) {
+                    val windowRoot = window.root ?: continue
+                    if (handleSystemAnrDialogIfPresent(windowRoot)) {
+                        isDismissed = true
+                        windowRoot.recycle()
+                        break
+                    }
+                    windowRoot.recycle()
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore window inspection issues
+        }
+        return isDismissed
+    }
+
     private fun handleAppExitEvent(foreignPackage: String) {
         if (exitDebounceJob?.isActive == true) return
 
         exitDebounceJob = serviceScope.launch {
             // Immediate graceful halt if user explicitly pressed Home or switched to Home Launcher
             if (isHomeScreenOrLauncher(foreignPackage)) {
+                if (checkAndDismissSystemAnr()) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Dismissed system ANR before home exit check. Relaunching school app...")
+                    relaunchSchoolApp()
+                    return@launch
+                }
                 CrawlerTraceLogger.log("DEEP_CRAWLER", "User navigated to Home/Launcher. Halting crawler and dismissing overlay.")
                 stopDeepCrawl()
                 crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
@@ -847,7 +1027,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 visitedPostFingerprints.add(targetItem.fingerprint)
                 crawlerOverlay?.incrementNoticeCount()
                 CrawlerTraceLogger.logPostCompleted(targetItem.index, total, title, savedAttCount)
-                delay(500)
+                delay(INTER_POST_SETTLING_DELAY_MILLIS)
             } else {
                 // =====================================================================
                 // AUTO-RECOVERY: Target card is not on screen! Determine displacement
@@ -1694,6 +1874,7 @@ class KidsAccessibilityService : AccessibilityService() {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
             performGlobalAction(GLOBAL_ACTION_BACK)
         }
+        delay(POST_RETURN_PACING_DELAY_MILLIS)
     }
 
     private suspend fun stepScrollStream(isScrollForward: Boolean) {
@@ -1745,26 +1926,28 @@ class KidsAccessibilityService : AccessibilityService() {
             cleanFileName,
             withoutParentheses,
             baseWithoutParens,
-            baseFileName,
-            baseWithoutParens.take(20),
-            baseFileName.take(20)
+            baseFileName
         ).filter { it.length >= 3 }
 
         for (searchQuery in searchQueries) {
             val matchedNodes = rootNode.findAccessibilityNodeInfosByText(searchQuery)
             for (matchNode in matchedNodes) {
-                val clickableAncestor = findClickableAncestor(matchNode)
-                val targetChipNode = when {
-                    clickableAncestor != null -> clickableAncestor
+                val clickableNode = when {
                     matchNode.isClickable -> AccessibilityNodeInfo.obtain(matchNode)
-                    else -> null
+                    else -> findClickableAncestor(matchNode)
                 }
 
-                if (targetChipNode != null) {
-                    for (nodeToRecycle in matchedNodes) {
-                        nodeToRecycle.recycle()
+                if (clickableNode != null) {
+                    val texts = mutableListOf<String>()
+                    collectQuickText(clickableNode, texts)
+                    val combinedText = texts.joinToString(" ")
+                    if (matchesAttachmentChipText(fileName, combinedText)) {
+                        for (nodeToRecycle in matchedNodes) {
+                            nodeToRecycle.recycle()
+                        }
+                        return clickableNode
                     }
-                    return targetChipNode
+                    clickableNode.recycle()
                 }
             }
             for (nodeToRecycle in matchedNodes) {
@@ -1772,29 +1955,25 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Recursive tree inspection fallback for unicode/complex chips
-        val targetTokens = baseWithoutParens.split(Regex("""[\s\p{Punct}]+"""))
-            .map { it.trim().lowercase() }
-            .filter { it.length >= 3 }
-            .toSet()
-
-        return findAttachmentChipRecursively(rootNode, targetTokens)
+        // Recursive tree inspection fallback with strict numeric and token matching
+        return findAttachmentChipRecursively(rootNode, fileName)
     }
 
-    private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetTokens: Set<String>): AccessibilityNodeInfo? {
-        val textList = mutableListOf<String>()
-        collectQuickText(node, textList)
-        val combined = textList.joinToString(" ").lowercase()
-        val isMatch = targetTokens.isNotEmpty() && targetTokens.any { combined.contains(it) }
+    private fun findAttachmentChipRecursively(node: AccessibilityNodeInfo, targetFileName: String): AccessibilityNodeInfo? {
+        val nodeText = node.text?.toString()?.trim() ?: ""
+        val nodeDesc = node.contentDescription?.toString()?.trim() ?: ""
+        val immediateText = "$nodeText $nodeDesc".trim()
 
-        if (isMatch) {
+        if (immediateText.length >= 3 && matchesAttachmentChipText(targetFileName, immediateText)) {
             val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
-            if (clickable != null) return clickable
+            if (clickable != null) {
+                return clickable
+            }
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findAttachmentChipRecursively(child, targetTokens)
+            val found = findAttachmentChipRecursively(child, targetFileName)
             child.recycle()
             if (found != null) return found
         }
@@ -2891,6 +3070,7 @@ class KidsAccessibilityService : AccessibilityService() {
         while (System.currentTimeMillis() - start < timeoutMs) {
             if (!serviceScope.isActive) return false
             if (condition()) return true
+            checkAndDismissSystemAnr()
             delay(pollIntervalMs)
         }
         return false
