@@ -77,4 +77,31 @@ class AttachmentChipMatcherTest {
         )
         assertThat(matches).isFalse()
     }
+
+    @Test
+    fun `matches combined topic with both addition and subtraction`() {
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = "Chapter 8 - Addition and Subtraction.pdf",
+            candidateText = "Chapter 8 - Addition and Subtraction"
+        )
+        assertThat(matches).isTrue()
+    }
+
+    @Test
+    fun `matches combined topic with trailing metadata and file size`() {
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = "Chapter 8 - Addition and Subtraction.pdf",
+            candidateText = "Chapter 8 - Addition and Subtraction 1.2 MB 2 pages"
+        )
+        assertThat(matches).isTrue()
+    }
+
+    @Test
+    fun `still rejects polar antonym if target only has one operation`() {
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = "Chapter 8 - Addition.pdf",
+            candidateText = "Chapter 8 - Subtraction"
+        )
+        assertThat(matches).isFalse()
+    }
 }

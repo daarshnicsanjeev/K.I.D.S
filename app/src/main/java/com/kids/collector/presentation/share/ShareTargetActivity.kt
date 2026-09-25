@@ -119,45 +119,76 @@ class ShareTargetActivity : Activity() {
                 if (stagedFile.exists() && stagedFile.length() > 0L) {
                     val fileHash = deduplicationEngine.computeFileHash(stagedFile)
                     val db = KidsDatabase.getInstance(appContext)
-                    val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+                    val activeNoticeId = com.kids.collector.service.KidsAccessibilityService.activeTargetNoticeId
+                    val activeFileName = com.kids.collector.service.KidsAccessibilityService.activeTargetAttachmentFileName
 
-                    // Match against pending attachment entities by normalized filename or prefix
-                    val targetBaseName = safeFileName.substringBeforeLast('.').lowercase()
-                    val targetExtension = safeFileName.substringAfterLast('.', "").lowercase()
-                    val normalizedTargetBaseName = normalizeForMatching(targetBaseName)
+                    var matchingAttachment: com.kids.collector.data.db.AttachmentEntity? = null
 
-                    // Prioritize attachment entities that currently lack a local file
-                    val unlinkedAttachments = allAttachments.filter { it.localUri.isBlank() }
-                    val candidatePool = if (unlinkedAttachments.isNotEmpty()) unlinkedAttachments else allAttachments
+                    if (!activeNoticeId.isNullOrBlank()) {
+                        val noticeAttachments = db.attachmentDao().getAttachmentsForNotice(activeNoticeId)
+                        if (noticeAttachments.isNotEmpty()) {
+                            // 1. Try matching against active target attachment filename if known
+                            if (!activeFileName.isNullOrBlank()) {
+                                val cleanActive = activeFileName.replace("...", "").trim().lowercase()
+                                matchingAttachment = noticeAttachments.firstOrNull { att ->
+                                    val cleanAtt = att.fileName.replace("...", "").trim().lowercase()
+                                    cleanAtt == cleanActive || cleanAtt.contains(cleanActive) || cleanActive.contains(cleanAtt)
+                                }
+                            }
+                            // 2. If no name match, link to first unlinked attachment belonging to this active notice
+                            if (matchingAttachment == null) {
+                                matchingAttachment = noticeAttachments.firstOrNull { it.localUri.isBlank() }
+                            }
+                            if (matchingAttachment != null) {
+                                CrawlerTraceLogger.log(
+                                    "SHARE_INGEST",
+                                    "Deterministically matched shared file \"$safeFileName\" to active notice $activeNoticeId attachment \"${matchingAttachment.fileName}\""
+                                )
+                            }
+                        }
+                    }
 
-                    val matchingAttachment = candidatePool.firstOrNull { attachmentEntity ->
-                        val cleanExpected = attachmentEntity.fileName.replace("...", "").trim().lowercase()
-                        val expectedBaseName = cleanExpected.substringBeforeLast('.')
-                        val expectedExtension = cleanExpected.substringAfterLast('.', "")
-                        val normalizedExpectedBaseName = normalizeForMatching(expectedBaseName)
+                    if (matchingAttachment == null) {
+                        val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
 
-                        val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
-                        if (!isExtensionCompatible) return@firstOrNull false
+                        // Match against pending attachment entities by normalized filename or prefix
+                        val targetBaseName = safeFileName.substringBeforeLast('.').lowercase()
+                        val targetExtension = safeFileName.substringAfterLast('.', "").lowercase()
+                        val normalizedTargetBaseName = normalizeForMatching(targetBaseName)
 
-                        // 1. Direct or normalized match
-                        if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@firstOrNull true
+                        // Prioritize attachment entities that currently lack a local file
+                        val unlinkedAttachments = allAttachments.filter { it.localUri.isBlank() }
+                        val candidatePool = if (unlinkedAttachments.isNotEmpty()) unlinkedAttachments else allAttachments
 
-                        // 2. Substantial prefix match
-                        if (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
-                        if (normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+                        matchingAttachment = candidatePool.firstOrNull { attachmentEntity ->
+                            val cleanExpected = attachmentEntity.fileName.replace("...", "").trim().lowercase()
+                            val expectedBaseName = cleanExpected.substringBeforeLast('.')
+                            val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                            val normalizedExpectedBaseName = normalizeForMatching(expectedBaseName)
 
-                        // 3. Substring containment
-                        if (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedTargetBaseName.contains(normalizedExpectedBaseName)) return@firstOrNull true
-                        if (normalizedTargetBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedTargetBaseName)) return@firstOrNull true
+                            val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
+                            if (!isExtensionCompatible) return@firstOrNull false
 
-                        false
-                    } ?: if (unlinkedAttachments.size == 1) {
-                        // Fallback: Exactly 1 attachment is awaiting a local file with compatible extension
-                        val singleAttachment = unlinkedAttachments.first()
-                        val cleanExpected = singleAttachment.fileName.replace("...", "").trim().lowercase()
-                        val expectedExtension = cleanExpected.substringAfterLast('.', "")
-                        if (expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension) singleAttachment else null
-                    } else null
+                            // 1. Direct or normalized match
+                            if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@firstOrNull true
+
+                            // 2. Substantial prefix match
+                            if (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+                            if (normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+
+                            // 3. Substring containment
+                            if (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedTargetBaseName.contains(normalizedExpectedBaseName)) return@firstOrNull true
+                            if (normalizedTargetBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedTargetBaseName)) return@firstOrNull true
+
+                            false
+                        } ?: if (unlinkedAttachments.size == 1) {
+                            // Fallback: Exactly 1 attachment is awaiting a local file with compatible extension
+                            val singleAttachment = unlinkedAttachments.first()
+                            val cleanExpected = singleAttachment.fileName.replace("...", "").trim().lowercase()
+                            val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                            if (expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension) singleAttachment else null
+                        } else null
+                    }
 
                     if (matchingAttachment != null) {
                         db.attachmentDao().updateLocalFile(

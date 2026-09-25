@@ -98,13 +98,13 @@ class KidsAccessibilityService : AccessibilityService() {
                 return false
             }
 
-            // Polar antonym checks
-            if ("addition" in targetWords && "subtraction" in candidateWords) return false
-            if ("subtraction" in targetWords && "addition" in candidateWords) return false
-            if ("multiplying" in targetWords && "dividing" in candidateWords) return false
-            if ("dividing" in targetWords && "multiplying" in candidateWords) return false
-            if ("multiplication" in targetWords && "division" in candidateWords) return false
-            if ("division" in targetWords && "multiplication" in candidateWords) return false
+            // Polar antonym checks (only exclude if the antonym is NOT part of the target title)
+            if ("addition" in targetWords && "subtraction" !in targetWords && "subtraction" in candidateWords) return false
+            if ("subtraction" in targetWords && "addition" !in targetWords && "addition" in candidateWords) return false
+            if ("multiplying" in targetWords && "dividing" !in targetWords && "dividing" in candidateWords) return false
+            if ("dividing" in targetWords && "multiplying" !in targetWords && "multiplying" in candidateWords) return false
+            if ("multiplication" in targetWords && "division" !in targetWords && "division" in candidateWords) return false
+            if ("division" in targetWords && "multiplication" !in targetWords && "multiplication" in candidateWords) return false
 
             // Answer key / solution distinction
             val isTargetAnswerKey = "answer" in targetWords || targetBase.contains("answerkey") || targetBase.contains("solution")
@@ -173,6 +173,9 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             return false
         }
+
+        @Volatile var activeTargetNoticeId: String? = null
+        @Volatile var activeTargetAttachmentFileName: String? = null
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -1420,38 +1423,46 @@ class KidsAccessibilityService : AccessibilityService() {
                 crawlerOverlay?.updateStatus("Sharing (${index + 1}/${pendingTargetFileNames.size})...", fileName)
                 CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Targeting fresh attachment chip for \"$fileName\"")
 
-                // Bring to screen and focus with zero guessing!
-                targetChip.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
-                targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-                delay(200)
+                activeTargetNoticeId = noticeId
+                activeTargetAttachmentFileName = fileName
 
-                val clicked = targetChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val chipBounds = Rect()
-                    targetChip.getBoundsInScreen(chipBounds)
-                    dispatchTap(chipBounds.centerX().toFloat(), chipBounds.centerY().toFloat())
-                }
-                targetChip.recycle()
-                delay(800)
+                try {
+                    // Bring to screen and focus with zero guessing!
+                    targetChip.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
+                    targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+                    delay(200)
 
-                // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
-                automateViewerShareOrDownload(fileName)
-
-                // Check if file was captured by ShareTargetActivity
-                val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
-                if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-                    if (capturedAttachmentNames.add(fileName)) {
-                        crawlerOverlay?.incrementAttachmentCount()
+                    val clicked = targetChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val chipBounds = Rect()
+                        targetChip.getBoundsInScreen(chipBounds)
+                        dispatchTap(chipBounds.centerX().toFloat(), chipBounds.centerY().toFloat())
                     }
+                    targetChip.recycle()
+                    delay(800)
+
+                    // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
+                    automateViewerShareOrDownload(fileName)
+
+                    // Check if file was captured by ShareTargetActivity
+                    val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+                    if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
+                        if (capturedAttachmentNames.add(fileName)) {
+                            crawlerOverlay?.incrementAttachmentCount()
+                        }
+                    }
+                    // Ensure detail view UI tree is firmly restored before querying next attachment
+                    waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
+                        val checkRoot = rootInActiveWindow ?: return@waitForCondition false
+                        val isDetail = isPostDetailView(checkRoot)
+                        checkRoot.recycle()
+                        isDetail
+                    }
+                    delay(400)
+                } finally {
+                    activeTargetNoticeId = null
+                    activeTargetAttachmentFileName = null
                 }
-                // Ensure detail view UI tree is firmly restored before querying next attachment
-                waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
-                    val checkRoot = rootInActiveWindow ?: return@waitForCondition false
-                    val isDetail = isPostDetailView(checkRoot)
-                    checkRoot.recycle()
-                    isDetail
-                }
-                delay(400)
             } else {
                 CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Could not locate chip for \"$fileName\" in detail view")
             }
@@ -1808,8 +1819,8 @@ class KidsAccessibilityService : AccessibilityService() {
             while (target == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                 val currentChooserFingerprint = computeChooserContentFingerprint()
 
-                // Drag upward from 75% to 30% height to expand bottom sheet and reveal app grid
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.30f, 400)
+                // Drag upward from 80% to 20% height to expand bottom sheet and reveal app grid
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.20f, 450)
                 delay(600)
                 target = findKidsShareTargetInAllWindows()
                 if (target != null) break

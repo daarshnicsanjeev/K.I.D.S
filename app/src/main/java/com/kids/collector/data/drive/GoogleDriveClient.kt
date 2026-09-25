@@ -247,10 +247,11 @@ class GoogleDriveClient(
     suspend fun uploadAttachment(
         parentFolderId: String,
         file: java.io.File,
-        mimeType: String
+        mimeType: String,
+        customName: String? = null
     ): String = withContext(Dispatchers.IO) {
         val fileMetadata = File().apply {
-            name = file.name
+            name = customName?.takeIf { it.isNotBlank() } ?: file.name
             parents = listOf(parentFolderId)
         }
         val mediaContent = FileContent(mimeType, file)

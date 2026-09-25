@@ -133,7 +133,8 @@ class DriveSyncWorker(
                         val uploadedAttId = driveClient.uploadAttachment(
                             parentFolderId = targetFolderId,
                             file = localFile,
-                            mimeType = att.mimeType
+                            mimeType = att.mimeType,
+                            customName = att.fileName
                         )
 
                         db.attachmentDao().updateSyncStatus(

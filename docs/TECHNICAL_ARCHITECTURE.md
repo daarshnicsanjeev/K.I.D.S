@@ -3299,7 +3299,7 @@ Once the binary stream is staged to disk:
        return input.lowercase().replace(Regex("[^a-z0-9]"), "")
    }
    ```
-   The stager queries existing attachment entities from SQLite Room (`db.attachmentDao().getAllAttachmentsDirect()`), prioritizing unlinked attachments (`localUri.isBlank()`), and matches using a 4-tier evaluation:
+   - **Tier 0 (Active Crawler Targeting Bridge):** When `ShareTargetActivity` receives a share intent triggered autonomously during crawling, it checks `KidsAccessibilityService.activeTargetNoticeId` and `activeTargetAttachmentFileName`. If present, it queries attachments for that specific notice (`getAttachmentsForNotice(activeNoticeId)`) and links directly to the target attachment or the first unlinked entity belonging to that notice. This achieves deterministic 1:1 attribution even when internal document viewers assign arbitrary cache names (e.g., `Sheet_1_ans.jpg.png`).
    - **Tier 1 (Direct or Normalized Match):** `expBase == targetBaseName || normExpBase == normTargetBase` (reconciles `"Doc1_Bones_and_Muscles"` vs `"Doc1 Bones and Muscles"`).
    - **Tier 2 (Substantial Prefix Anchor):** For strings with $\ge 6$ alphanumeric characters, checks `normExpBase.startsWith(normTargetBase.take(12))` or `normTargetBase.startsWith(normExpBase.take(12))`.
    - **Tier 3 (Substring Containment):** For strings with $\ge 8$ characters, checks `normTargetBase.contains(normExpBase)` or `normExpBase.contains(normTargetBase)`.
