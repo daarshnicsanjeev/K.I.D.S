@@ -203,7 +203,16 @@ class KidsAccessibilityService : AccessibilityService() {
     )
 
     private val attachmentExts = listOf(
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".jpg", ".jpeg", ".png", ".mp4"
+        // Documents & Books
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".csv", ".epub",
+        // Audio
+        ".mp3", ".m4a", ".wav", ".aac", ".ogg", ".wma", ".flac",
+        // Video
+        ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
+        // Images
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",
+        // Archives
+        ".zip", ".rar", ".7z"
     )
 
     private val crawlerControlReceiver = object : BroadcastReceiver() {
@@ -1303,11 +1312,19 @@ class KidsAccessibilityService : AccessibilityService() {
                 val attEntity = AttachmentEntity(
                     attachmentId = UUID.randomUUID().toString(),
                     noticeId = noticeId,
-                    fileName = att.fileName.take(60),
+                    fileName = att.fileName.take(200),
                     localUri = "",
-                    mimeType = if (att.fileName.contains(".pdf", true)) "application/pdf"
-                    else if (att.fileName.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) "image/jpeg"
-                    else "application/octet-stream",
+                    mimeType = when {
+                        att.fileName.contains(".pdf", true) -> "application/pdf"
+                        att.fileName.matches(Regex(".*\\.(jpg|jpeg|png|gif|webp|bmp|svg)$", RegexOption.IGNORE_CASE)) -> "image/jpeg"
+                        att.fileName.matches(Regex(".*\\.(mp3|m4a|wav|aac|ogg|wma|flac)$", RegexOption.IGNORE_CASE)) -> "audio/mpeg"
+                        att.fileName.matches(Regex(".*\\.(mp4|mov|avi|mkv|webm|3gp)$", RegexOption.IGNORE_CASE)) -> "video/mp4"
+                        att.fileName.matches(Regex(".*\\.(docx?|rtf|txt|epub)$", RegexOption.IGNORE_CASE)) -> "application/msword"
+                        att.fileName.matches(Regex(".*\\.(xlsx?|csv)$", RegexOption.IGNORE_CASE)) -> "application/vnd.ms-excel"
+                        att.fileName.matches(Regex(".*\\.(pptx?)$", RegexOption.IGNORE_CASE)) -> "application/vnd.ms-powerpoint"
+                        att.fileName.matches(Regex(".*\\.(zip|rar|7z)$", RegexOption.IGNORE_CASE)) -> "application/zip"
+                        else -> "application/octet-stream"
+                    },
                     sizeBytes = 0L,
                     fileHash = fileHash,
                     ocrText = null,
@@ -1484,9 +1501,9 @@ class KidsAccessibilityService : AccessibilityService() {
      * and returns back to Classroom detail view.
      */
     private suspend fun automateViewerShareOrDownload(fileName: String) {
-        // Dynamically scale timeout: PowerPoint (.pptx), images (.jpg/.png), and heavy documents require extra conversion time
-        val isHeavyDocument = fileName.contains(Regex("""\.(pptx|docx|xlsx|jpg|png|zip)""", RegexOption.IGNORE_CASE))
-        val viewerTimeoutMs = if (isHeavyDocument) 7000L else 5500L
+        // Dynamically scale timeout: PowerPoint, images, audio, video, and heavy documents require extra conversion time
+        val isHeavyDocument = fileName.contains(Regex("""\.(pptx|ppt|docx|doc|xlsx|xls|jpg|png|zip|rar|7z|mp3|m4a|wav|mp4|mov)""", RegexOption.IGNORE_CASE))
+        val viewerTimeoutMs = if (isHeavyDocument) 7500L else 5500L
 
         // Wait up to viewerTimeoutMs for viewer or preview to open
         val openedViewer = waitForCondition(timeoutMs = viewerTimeoutMs, pollIntervalMs = 200) {
@@ -1808,35 +1825,44 @@ class KidsAccessibilityService : AccessibilityService() {
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            // Step 1: Horizontal swipe across apps row (bottom 15-20% of screen)
-            dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)
-            delay(500)
+            // Step 1: Drag upward from 80% to 20% height to expand bottom sheet and reveal app grid
+            dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.20f, 450)
+            delay(750)
             target = findKidsShareTargetInAllWindows()
 
-            // Step 2: Dynamic vertical scroll to expand and traverse chooser apps
+            // Step 2: Dynamic vertical scroll to traverse chooser apps grid
             var previousChooserFingerprint = ""
             var unchangedFingerprintCount = 0
-            while (target == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+            var scrollAttempts = 0
+            while (target == null && scrollAttempts < 5 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                scrollAttempts++
                 val currentChooserFingerprint = computeChooserContentFingerprint()
 
-                // Drag upward from 80% to 20% height to expand bottom sheet and reveal app grid
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.20f, 450)
-                delay(600)
+                // Drag upward to scroll through the expanded app grid
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.25f, 450)
+                delay(750)
                 target = findKidsShareTargetInAllWindows()
                 if (target != null) break
 
                 val newChooserFingerprint = computeChooserContentFingerprint()
 
-                // Boundary Detection: Require 2 consecutive unchanged samples before concluding end of chooser
+                // Boundary Detection: Require at least 3 attempts and 3 consecutive unchanged samples before concluding end of chooser
                 if (newChooserFingerprint == currentChooserFingerprint || newChooserFingerprint == previousChooserFingerprint) {
                     unchangedFingerprintCount++
-                    if (unchangedFingerprintCount >= 2) {
+                    if (unchangedFingerprintCount >= 3 && scrollAttempts >= 3) {
                         break
                     }
                 } else {
                     unchangedFingerprintCount = 0
                 }
                 previousChooserFingerprint = currentChooserFingerprint
+            }
+
+            // Step 3: Horizontal swipe fallback across apps row if still not found
+            if (target == null) {
+                dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)
+                delay(600)
+                target = findKidsShareTargetInAllWindows()
             }
         }
 
@@ -2594,8 +2620,8 @@ class KidsAccessibilityService : AccessibilityService() {
             else -> null
         }
 
-        if (candidate != null && outList.none { it.first == candidate.take(60) }) {
-            outList.add(candidate.take(60) to AccessibilityNodeInfo.obtain(node))
+        if (candidate != null && outList.none { it.first == candidate.take(200) }) {
+            outList.add(candidate.take(200) to AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {

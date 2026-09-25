@@ -104,4 +104,22 @@ class AttachmentChipMatcherTest {
         )
         assertThat(matches).isFalse()
     }
+
+    @Test
+    fun `matches audio mp3 attachment chip filename`() {
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = "Listening Audio 1 - Joey.mp3",
+            candidateText = "Listening Audio 1 - Joey.mp3 3.5 MB"
+        )
+        assertThat(matches).isTrue()
+    }
+
+    @Test
+    fun `matches long filename containing answer key`() {
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = "Read & write larger numbers,Know place value and Count on and back Notebook - Answer Key.pdf",
+            candidateText = "Read & write larger numbers,Know place value and Count on and back Notebook - Answer Key.pdf 1.8 MB"
+        )
+        assertThat(matches).isTrue()
+    }
 }
