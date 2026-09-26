@@ -91,21 +91,24 @@ class MLKitOcrParser(private val context: Context) {
 
             for (i in 0 until pageCount) {
                 val page = renderer.openPage(i)
-                // Render at readable standard DPI (~150-200 DPI scale)
-                val width = page.width * 2
-                val height = page.height * 2
-                val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-
-                page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-
-                val pageText = extractTextFromBitmap(bitmap)
-                bitmap.recycle() // Critical: Immediately free bitmap memory
-                page.close()
-
-                if (pageText.isNotBlank()) {
-                    sb.appendLine("[--- Page ${i + 1} of $pageCount ---]")
-                    sb.appendLine(pageText)
-                    sb.appendLine()
+                try {
+                    // Render at readable standard DPI (~150-200 DPI scale)
+                    val width = page.width * 2
+                    val height = page.height * 2
+                    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+                    try {
+                        page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                        val pageText = extractTextFromBitmap(bitmap)
+                        if (pageText.isNotBlank()) {
+                            sb.appendLine("[--- Page ${i + 1} of $pageCount ---]")
+                            sb.appendLine(pageText)
+                            sb.appendLine()
+                        }
+                    } finally {
+                        bitmap.recycle() // Critical: Immediately free bitmap memory
+                    }
+                } finally {
+                    page.close()
                 }
             }
         } catch (e: Exception) {

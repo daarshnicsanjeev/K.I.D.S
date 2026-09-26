@@ -110,7 +110,8 @@ class GoogleDriveClient(
         folderMutex.withLock {
             folderCache[cacheKey]?.let { return@withLock it }
 
-            var query = "name = '$cleanName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+            val escapedName = escapeDriveQueryValue(cleanName)
+            var query = "name = '$escapedName' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
             if (parentFolderId != null) {
                 query += " and '$parentFolderId' in parents"
             }
@@ -353,7 +354,8 @@ class GoogleDriveClient(
         val cacheKey = "$parentFolderId/$name"
         fileIdCache[cacheKey]?.let { return it }
 
-        val query = "name = '$name' and '$parentFolderId' in parents and trashed = false"
+        val escapedName = escapeDriveQueryValue(name)
+        val query = "name = '$escapedName' and '$parentFolderId' in parents and trashed = false"
         val list = driveService.files().list().setQ(query).setOrderBy("modifiedTime desc").setFields("files(id)").execute()
         val foundId = list.files?.firstOrNull()?.id
         if (foundId != null) {
@@ -399,5 +401,8 @@ class GoogleDriveClient(
             folderCache.clear()
             fileIdCache.clear()
         }
+
+        private fun escapeDriveQueryValue(value: String): String =
+            value.replace("\\", "\\\\").replace("'", "\\'")
     }
 }
