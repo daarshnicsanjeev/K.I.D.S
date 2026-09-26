@@ -62,15 +62,17 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val ANR_RESOLUTION_WAIT_DELAY_MILLIS = 1_000L
 
         fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
-            val cleanTarget = targetFileName.replace("...", "").trim()
+            val normalizedTarget = java.text.Normalizer.normalize(targetFileName, java.text.Normalizer.Form.NFC)
+            val cleanTarget = normalizedTarget.replace("...", "").trim()
             val targetBase = cleanTarget.substringBeforeLast('.').lowercase()
 
-            val candidateCleaned = candidateText
+            val normalizedCandidate = java.text.Normalizer.normalize(candidateText, java.text.Normalizer.Form.NFC)
+            val candidateCleaned = normalizedCandidate
                 .replace(Regex("""\b\d+(\.\d+)?\s*(kb|mb|gb|b|bytes?|pages?|words?|items?|attachments?)\b""", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("""\b\d{1,2}:\d{2}(\s*[ap]m)?\b""", RegexOption.IGNORE_CASE), "")
                 .lowercase()
 
-            val wordRegex = Regex("""[a-z]{3,}""")
+            val wordRegex = Regex("""[\p{L}]{2,}""")
             val targetWords = wordRegex.findAll(targetBase).map { it.value }.toSet()
             val candidateWords = wordRegex.findAll(candidateCleaned).map { it.value }.toSet()
 
@@ -270,7 +272,12 @@ class KidsAccessibilityService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: return
 
         // 0. Drop our own app events so we never self-trigger or interfere with our own overlay
-        if (packageName == applicationContext.packageName) {
+        if (packageName == applicationContext.packageName || packageName == "${applicationContext.packageName}.debug") {
+            // Watchdog guard: If crawler is actively executing and focus drifted back to K.I.D.S., restore Google Classroom immediately!
+            if (crawlerOverlay?.isAutoScrollingActive() == true && crawlerJob?.isActive == true) {
+                CrawlerTraceLogger.log("FOCUS_GUARD", "Focus drifted to K.I.D.S. app during active crawl. Restoring Google Classroom to foreground.")
+                relaunchSchoolApp()
+            }
             return
         }
 
@@ -1352,6 +1359,14 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue // Already physically downloaded and synced
             }
 
+            if (index > 0) {
+                // Viewport reset: Rewind to top of detail view before querying subsequent attachments
+                var rewindDone = false
+                crawlerOverlay?.performDetailScrollUp { rewindDone = true }
+                waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+                delay(400)
+            }
+
             // Fresh window inspection: Locate the chip in the currently active detail window
             val freshRoot = rootInActiveWindow ?: continue
             var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
@@ -1632,13 +1647,56 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun findShareButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        // Pass 1: Prioritize explicit file copy / export / download actions over generic collaborator "Share"
+        val explicitCopyAction = findExplicitCopyOrDownloadButton(node)
+        if (explicitCopyAction != null) return explicitCopyAction
+
+        // Pass 2: Fall back to generic "Share" button
+        return findGenericShareButton(node)
+    }
+
+    private fun findExplicitCopyOrDownloadButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = node.contentDescription?.toString()?.lowercase() ?: ""
         val text = node.text?.toString()?.lowercase() ?: ""
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
 
-        val isShare = (desc == "share" || desc.contains("share") || desc.contains("send a copy") || desc.contains("send file") || desc.contains("export")) ||
-                (text == "share" || text.contains("send a copy") || text.contains("send file") || text.contains("export")) ||
-                viewId.contains("share") || viewId.contains("export")
+        val isExplicitCopy = desc.contains("send a copy") || desc.contains("send copy") ||
+                desc.contains("send file") || desc.contains("send a file") ||
+                desc.contains("export") || desc.contains("download") ||
+                text.contains("send a copy") || text.contains("send copy") ||
+                text.contains("send file") || text.contains("send a file") ||
+                text.contains("export") || text.contains("download") ||
+                viewId.contains("send_copy") || viewId.contains("download")
+
+        if (isExplicitCopy) {
+            if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
+            var parent = node.parent
+            while (parent != null) {
+                if (parent.isClickable) return parent
+                parent = parent.parent
+            }
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findExplicitCopyOrDownloadButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findGenericShareButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val viewId = node.viewIdResourceName?.lowercase() ?: ""
+
+        val isShare = (desc == "share" || desc.contains("share") || text == "share" || text.contains("share") || viewId.contains("share")) &&
+                !desc.contains("add people") && !text.contains("add people")
 
         if (isShare) {
             if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
@@ -1652,7 +1710,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findShareButton(child)
+            val found = findGenericShareButton(child)
             if (found != null) {
                 child.recycle()
                 return found
@@ -1811,6 +1869,21 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private suspend fun selectKidsInSystemChooser() {
         var target: AccessibilityNodeInfo? = null
+
+        // Check if Google Drive's collaborator invite screen ("Add people") appeared instead of the system chooser
+        val activeRoot = rootInActiveWindow
+        if (activeRoot != null) {
+            val texts = mutableListOf<String>()
+            collectQuickText(activeRoot, texts)
+            activeRoot.recycle()
+            val combined = texts.joinToString(" ").lowercase()
+            if (combined.contains("add people") || combined.contains("share with people") || combined.contains("enter names or email")) {
+                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Google Drive collaborator screen detected instead of system share sheet. Pressing Back.")
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                delay(600)
+                return
+            }
+        }
 
         // Wait up to 3500ms for system chooser to appear and locate K.I.D.S. Vault dynamically
         waitForCondition(timeoutMs = 3500, pollIntervalMs = 200) {

@@ -58,7 +58,7 @@ class ShareTargetActivity : Activity() {
                     if (uri != null) {
                         processIncomingUris(listOf(uri))
                     } else {
-                        finish()
+                        finishAndRemoveTask()
                     }
                 }
                 Intent.ACTION_SEND_MULTIPLE -> {
@@ -66,14 +66,14 @@ class ShareTargetActivity : Activity() {
                     if (!uris.isNullOrEmpty()) {
                         processIncomingUris(uris)
                     } else {
-                        finish()
+                        finishAndRemoveTask()
                     }
                 }
-                else -> finish()
+                else -> finishAndRemoveTask()
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error handling incoming share intent: ${e.message}", e)
-            finish()
+            finishAndRemoveTask()
         }
     }
 
@@ -88,7 +88,7 @@ class ShareTargetActivity : Activity() {
                 }
             } finally {
                 withContext(Dispatchers.Main) {
-                    finish()
+                    finishAndRemoveTask()
                 }
             }
         }

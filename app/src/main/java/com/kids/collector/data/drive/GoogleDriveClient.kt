@@ -81,22 +81,20 @@ class GoogleDriveClient(
 
         val childFolderId = getOrCreateFolder(cleanChildName, yearFolderId)
 
-        // Resolve sibling child folders concurrently for maximum speed
-        val attachmentsDeferred = async { getOrCreateFolder("attachments", childFolderId) }
+        // Resolve system folders (logs, knowledge graph)
         val systemDeferred = async {
             val systemFolderId = getOrCreateFolder("_system", childFolderId)
             val logsFolderId = getOrCreateFolder("logs", systemFolderId)
             Pair(systemFolderId, logsFolderId)
         }
 
-        val attachmentsFolderId = attachmentsDeferred.await()
         val (systemFolderId, logsFolderId) = systemDeferred.await()
 
         ChildVaultFolders(
             rootKidsFolderId = rootKidsFolderId,
             yearFolderId = yearFolderId,
             childFolderId = childFolderId,
-            attachmentsFolderId = attachmentsFolderId,
+            attachmentsFolderId = childFolderId, // Eliminated child-level attachments folder
             systemFolderId = systemFolderId,
             logsFolderId = logsFolderId
         )

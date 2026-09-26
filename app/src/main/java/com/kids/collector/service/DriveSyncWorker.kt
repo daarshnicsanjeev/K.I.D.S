@@ -85,11 +85,36 @@ class DriveSyncWorker(
             } catch (_: Exception) {
             }
 
-            // 1. Provision Classroom channel vault if needed
-            var classroomVault: com.kids.collector.data.drive.ChannelVaultFolders? = null
-            val hasClassroomNotices = pendingNotices.any { it.sourceApp.contains("classroom", ignoreCase = true) }
-            if (hasClassroomNotices) {
-                classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+            // 1. Guaranteed Google Classroom channel vault provisioning
+            val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+
+            // Autonomous self-healing: Purge stray child-level "attachments" folder if present from legacy runs
+            try {
+                val strayChildAttachments = driveService.files().list()
+                    .setQ("'${vault.childFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name = 'attachments' and trashed = false")
+                    .setFields("files(id, name)")
+                    .execute()
+                for (stray in strayChildAttachments.files.orEmpty()) {
+                    try {
+                        val filesInside = driveService.files().list()
+                            .setQ("'${stray.id}' in parents and trashed = false")
+                            .setFields("files(id, name)")
+                            .execute()
+                        for (f in filesInside.files.orEmpty()) {
+                            driveService.files().update(f.id, null)
+                                .setAddParents(classroomVault.attachmentsFolderId)
+                                .setRemoveParents(stray.id)
+                                .setFields("id, parents")
+                                .execute()
+                            Log.i(TAG, "Relocated stray attachment '${f.name}' to Google Classroom/attachments/")
+                        }
+                        driveService.files().delete(stray.id).execute()
+                        Log.i(TAG, "Purged legacy child-level attachments folder from Google Drive: ${stray.name}")
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Could not purge child-level attachments folder: ${e.message}")
+                    }
+                }
+            } catch (_: Exception) {
             }
 
             // 2. Scan local storage and upload pending attachments FIRST so driveFileIds exist
@@ -107,7 +132,7 @@ class DriveSyncWorker(
 
                 for (att in refreshedPendingAttachments) {
                     val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
-                    val targetFolderId = classroomVault?.attachmentsFolderId ?: vault.attachmentsFolderId
+                    val targetFolderId = classroomVault.attachmentsFolderId
 
                     if (localFile != null && localFile.exists()) {
                         if (att.ocrText.isNullOrBlank()) {

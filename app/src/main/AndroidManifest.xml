@@ -63,6 +63,9 @@
             android:exported="true"
             android:theme="@android:style/Theme.Translucent.NoTitleBar"
             android:launchMode="singleInstance"
+            android:taskAffinity=""
+            android:excludeFromRecents="true"
+            android:noHistory="true"
             android:label="K.I.D.S. Vault">
             <intent-filter>
                 <action android:name="android.intent.action.SEND" />

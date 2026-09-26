@@ -135,7 +135,7 @@ object DriveVaultManager {
         val rootId = prefs.getString("${prefix}rootKidsFolderId", null) ?: return null
         val yearId = prefs.getString("${prefix}yearFolderId", null) ?: return null
         val childId = prefs.getString("${prefix}childFolderId", null) ?: return null
-        val attachmentsFolderId = prefs.getString("${prefix}attachmentsFolderId", null) ?: return null
+        val attachmentsFolderId = prefs.getString("${prefix}attachmentsFolderId", null) ?: childId
         val systemFolderId = prefs.getString("${prefix}systemFolderId", null) ?: return null
         val logsFolderId = prefs.getString("${prefix}logsFolderId", null) ?: return null
         return ChildVaultFolders(rootId, yearId, childId, attachmentsFolderId, systemFolderId, logsFolderId)

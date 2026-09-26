@@ -984,16 +984,13 @@ My Drive/
     └── 2026-2027/
         ├── FAMILY_DIGEST.md                     <-- High-level overview of all children
         └── Aarav/
-            ├── notices.jsonl                    <-- AI-native streaming notice records
+            ├── notices.jsonl                    <-- AI-native master streaming notice records
             ├── MASTER_DIGEST.md                 <-- Complete categorized Markdown briefing
             ├── graph.html                       <-- Interactive visual knowledge graph
-            ├── attachments/                     <-- Downloaded circular PDFs & worksheets
-            │   ├── Annual_Sports_Day_Circular.pdf
-            │   └── Math_Worksheet_Ch4.pdf
             ├── Google Classroom/                <-- Dedicated channel subfolder
-            │   ├── notices.jsonl
-            │   ├── CLASSROOM_DIGEST.md
-            │   └── attachments/
+            │   ├── notices.jsonl                <-- Channel-specific notice index
+            │   ├── CLASSROOM_DIGEST.md          <-- Channel-specific Markdown digest
+            │   └── attachments/                 <-- ALL downloaded Classroom attachments & worksheets
             └── _system/
                 ├── knowledge_graph.json         <-- GraphRAG schema index
                 └── logs/

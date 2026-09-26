@@ -122,4 +122,27 @@ class AttachmentChipMatcherTest {
         )
         assertThat(matches).isTrue()
     }
+
+    @Test
+    fun `matches hindi filename across composed and decomposed unicode forms`() {
+        // NFD vs NFC (nukta representation differences)
+        val targetWithComposedNukta = "Grade 3 गुड़िया बोली (Textbook PDF).pdf"
+        val candidateWithDecomposedNukta = "Grade 3 गुड़िया बोली (Textbook PDF).pdf 2.4 MB"
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = targetWithComposedNukta,
+            candidateText = candidateWithDecomposedNukta
+        )
+        assertThat(matches).isTrue()
+    }
+
+    @Test
+    fun `matches hindi notes with plural diacritic differences`() {
+        val targetWithNukta = "Grade 3 तीन गुड़ियाँ Notebook Notes.pdf"
+        val candidateWithCombiningNukta = "Grade 3 तीन गुड़ियाँ Notebook Notes.pdf 1.5 MB"
+        val matches = KidsAccessibilityService.matchesAttachmentChipText(
+            targetFileName = targetWithNukta,
+            candidateText = candidateWithCombiningNukta
+        )
+        assertThat(matches).isTrue()
+    }
 }

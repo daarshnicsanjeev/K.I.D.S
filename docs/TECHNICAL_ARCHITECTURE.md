@@ -4276,16 +4276,13 @@ My Drive/
     └── {AcademicYear}/                           [yearFolderId, e.g. 2026-2027]
         ├── FAMILY_DIGEST.md                      # Cross-child academic summary
         └── {ChildName}/                          [childFolderId, e.g. Aarav]
-            ├── notices.jsonl                     # Line-delimited JSON notice stream
+            ├── notices.jsonl                     # Line-delimited JSON notice stream (Master)
             ├── MASTER_DIGEST.md                  # Complete per-child Markdown digest
             ├── graph.html                        # Standalone interactive D3 graph
-            ├── attachments/                      [attachmentsFolderId]
-            │   ├── Annual_Sports_Day_Notice.pdf  # Uploaded circular PDF
-            │   └── Math_Worksheet_Unit4.pdf      # Uploaded worksheet
             ├── Google Classroom/                 [channelFolderId]
             │   ├── notices.jsonl                 # Channel-specific notice stream
             │   ├── CLASSROOM_DIGEST.md           # Channel-specific digest
-            │   └── attachments/                  # Channel-specific attachments
+            │   └── attachments/                  # Dedicated repository for ALL Classroom attachments (.pdf, .mp3, .pptx)
             └── _system/                          [systemFolderId]
                 ├── knowledge_graph.json          # GraphRAG ontology representation
                 └── logs/                         [logsFolderId]
