@@ -1359,68 +1359,54 @@ private suspend fun ensureAtStreamTop() {
          val freshRoot = rootInActiveWindow ?: continue
          var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
 
-         // Dynamic Boundary-Aware Detail Search (Zero Hardcoded Swipe Limits)
+         // Dynamic Boundary-Aware Detail Search with Physical Touch Gestures (Up to 6 Sweeps)
          if (targetChip == null) {
-             // Phase 1: Downward search until chip found or physical bottom boundary reached
+             // Phase 1: Downward physical touch gesture sweeps to reveal chips below the fold
              var previousBottomFingerprint = ""
-             while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+             var scrollCount = 0
+             while (targetChip == null && scrollCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                  val currentRoot = rootInActiveWindow ?: break
                  val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                 val container = findScrollableNode(currentRoot)
-
-                 val canScrollMore = if (container != null) {
-                     val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                     container.recycle()
-                     delay(450)
-                     scrolled
-                 } else {
-                     var scrollDone = false
-                     crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                     waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                     delay(400) // Settling delay for RecyclerView item binding
-                     true
-                 }
                  currentRoot.recycle()
+
+                 scrollCount++
+                 var scrollDone = false
+                 crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                 waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+                 delay(500) // Essential settling delay for RecyclerView item binding
 
                  val afterScrollRoot = rootInActiveWindow ?: break
                  val newFingerprint = computeViewportContentFingerprint(afterScrollRoot)
                  targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
                  afterScrollRoot.recycle()
 
-                 val hasHitBottomBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
+                 val hasHitBottomBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
                  previousBottomFingerprint = currentFingerprint
 
                  if (targetChip != null || hasHitBottomBoundary) break
              }
 
-             // Phase 2: If chip was not below, dynamically rewind upward until chip found or physical top boundary reached
+             // Phase 2: If chip was not below, rewind upward using physical gestures (up to 6 sweeps)
              if (targetChip == null) {
                  var previousTopFingerprint = ""
-                 while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                 var rewindCount = 0
+                 while (targetChip == null && rewindCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                      val currentRoot = rootInActiveWindow ?: break
                      val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                     val container = findScrollableNode(currentRoot)
-
-                     val canScrollMore = if (container != null) {
-                         val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                         container.recycle()
-                         delay(450)
-                         scrolled
-                     } else {
-                         var rewindDone = false
-                         crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                         waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-                         delay(400)
-                         true
-                     }
                      currentRoot.recycle()
+
+                     rewindCount++
+                     var rewindDone = false
+                     crawlerOverlay?.performDetailScrollUp { rewindDone = true }
+                     waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+                     delay(500)
 
                      val afterRewindRoot = rootInActiveWindow ?: break
                      val newFingerprint = computeViewportContentFingerprint(afterRewindRoot)
                      targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
                      afterRewindRoot.recycle()
 
-                     val hasHitTopBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
+                     val hasHitTopBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
                      previousTopFingerprint = currentFingerprint
 
                      if (targetChip != null || hasHitTopBoundary) break
