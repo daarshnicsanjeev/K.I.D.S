@@ -166,6 +166,23 @@ class StreamManifest {
         return _items.isNotEmpty() && _items.none { it.status == StreamItemStatus.PENDING || it.status == StreamItemStatus.IN_PROGRESS }
     }
 
+    fun resetItemsForRecovery(titlesToRecover: Set<String>): Int {
+        var resetCount = 0
+        for (item in _items) {
+            val itemTitle = item.title.trim().lowercase()
+            val matches = titlesToRecover.any { title ->
+                val clean = title.trim().lowercase()
+                clean == itemTitle || itemTitle.startsWith(clean.take(25)) || clean.startsWith(itemTitle.take(25))
+            }
+            if (matches) {
+                item.status = StreamItemStatus.PENDING
+                item.attemptCount = 0
+                resetCount++
+            }
+        }
+        return resetCount
+    }
+
     fun clear() {
         _items.clear()
         startItemTitle = null

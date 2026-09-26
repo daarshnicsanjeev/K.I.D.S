@@ -705,11 +705,53 @@ class KidsAccessibilityService : AccessibilityService() {
         var lastTargetIndex = -1
         var consecutiveTargetAttempts = 0
         var consecutiveTransientCount = 0
-        val recentScrollDirections = ArrayDeque<Boolean>(6) // true = forward, false = backward
+        var recoveryPassCount = 0
+        val maxRecoveryPasses = 4
+        val recentScrollDirections = ArrayDeque<Boolean>(6)
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val nextItem = manifest.getNextPendingItemReverse()
             if (nextItem == null) {
+                // Auto-Recovery Invariant: A cycle is NOT complete if any attachments are pending download/sync!
+                delay(1200)
+                com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
+
+                val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+                val pendingAttachments = allAttachments.filter { att ->
+                    att.localUri.isBlank() &&
+                    (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
+                    att.driveFileId?.startsWith("restricted_") != true
+                }
+
+                if (pendingAttachments.isNotEmpty() && recoveryPassCount < maxRecoveryPasses) {
+                    recoveryPassCount++
+                    val pendingNoticeIds = pendingAttachments.map { it.noticeId }.toSet()
+                    val allNotices = db.noticeDao().getAllNoticesDirect()
+                    val pendingNotices = allNotices.filter { pendingNoticeIds.contains(it.noticeId) }
+                    val pendingTitles = pendingNotices.map { it.title }.toSet()
+
+                    CrawlerTraceLogger.log(
+                        "AUTO_RECOVERY",
+                        "Cycle INCOMPLETE: ${pendingAttachments.size} attachments across ${pendingTitles.size} notices remain pending download/sync. Initiating Auto-Recovery Pass $recoveryPassCount/$maxRecoveryPasses..."
+                    )
+                    crawlerOverlay?.updateStatus(
+                        "Auto-Recovery Pass $recoveryPassCount...",
+                        "Targeting ${pendingAttachments.size} missing files across ${pendingTitles.size} posts"
+                    )
+
+                    val resetCount = manifest.resetItemsForRecovery(pendingTitles)
+                    visitedPostFingerprints.clear()
+                    CrawlerTraceLogger.log(
+                        "AUTO_RECOVERY",
+                        "Reset $resetCount manifest items for recovery sweep. Re-engaging reverse stream traversal."
+                    )
+                    recentScrollDirections.clear()
+                    lastRecoveryMinIndex = null
+                    consecutiveStaticRecoveryCount = 0
+                    delay(800)
+                    continue
+                }
+
                 CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
                 break
             }
@@ -1186,10 +1228,22 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Completion
+        // Cycle Completion Verification
         val finalCompleted = manifest.completedCount
         val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
-        CrawlerTraceLogger.log("DEEP_CRAWLER", "Auto-capture complete: $finalCompleted/$total notices processed, $totalFiles files saved.")
+        val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+        val remainingPending = allAttachments.filter { att ->
+            att.localUri.isBlank() &&
+            (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
+            att.driveFileId?.startsWith("restricted_") != true
+        }
+
+        val completionMessage = if (remainingPending.isEmpty()) {
+            "Auto-capture 100% complete: All attachments physically downloaded and synced to Drive ($totalFiles files saved)!"
+        } else {
+            "Auto-capture sweep complete: $totalFiles files saved (${remainingPending.size} files uncaptured after $recoveryPassCount recovery passes)."
+        }
+        CrawlerTraceLogger.log("DEEP_CRAWLER", completionMessage)
         crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
             stopDeepCrawl()
             triggerDriveSync(applicationContext)
@@ -1371,35 +1425,26 @@ class KidsAccessibilityService : AccessibilityService() {
             // Replaces arbitrary hardcoded swipe counts with physical boundary detection.
             // Scrolls dynamically until target chip is found or container reaches the physical limit!
             if (targetChip == null) {
-                // Phase 1: Downward boundary-aware search
+                // Phase 1: Downward boundary-aware search using physical gestures
                 var previousBottomFingerprint = ""
-                while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                var scrollDownCount = 0
+                while (targetChip == null && scrollDownCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                     val currentRoot = rootInActiveWindow ?: break
                     val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                    val container = findScrollableNode(currentRoot)
-
-                    val canScrollMore = if (container != null) {
-                        val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                        container.recycle()
-                        delay(450)
-                        scrolled
-                    } else {
-                        var scrollDone = false
-                        crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                        delay(400) // Essential settling delay for RecyclerView item binding
-                        true
-                    }
                     currentRoot.recycle()
+
+                    scrollDownCount++
+                    var scrollDone = false
+                    crawlerOverlay?.performDetailScrollDown { scrollDone = true }
+                    waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+                    delay(500) // Essential settling delay for RecyclerView item binding
 
                     val afterScrollRoot = rootInActiveWindow ?: break
                     val newFingerprint = computeViewportContentFingerprint(afterScrollRoot)
                     targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
                     afterScrollRoot.recycle()
 
-                    // Dynamic Bottom Boundary Detection:
-                    // If container reported cannot scroll forward, or viewport contents remained completely static
-                    val hasHitBottomBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
+                    val hasHitBottomBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
                     previousBottomFingerprint = currentFingerprint
 
                     if (targetChip != null || hasHitBottomBoundary) {
@@ -1407,36 +1452,27 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // Phase 2: If chip wasn't below, dynamically rewind upward until chip is found or physical top reached
+                // Phase 2: If chip wasn't below, rewind upward using physical gestures
                 if (targetChip == null) {
                     var previousTopFingerprint = ""
-                    while (targetChip == null && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                    var rewindCount = 0
+                    while (targetChip == null && rewindCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                         val currentRoot = rootInActiveWindow ?: break
                         val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                        val container = findScrollableNode(currentRoot)
-
-                        val canScrollMore = if (container != null) {
-                            val scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                            container.recycle()
-                            delay(450)
-                            scrolled
-                        } else {
-                            var rewindDone = false
-                            crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-                            delay(400)
-                            true
-                        }
                         currentRoot.recycle()
+
+                        rewindCount++
+                        var rewindDone = false
+                        crawlerOverlay?.performDetailScrollUp { rewindDone = true }
+                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
+                        delay(500)
 
                         val afterRewindRoot = rootInActiveWindow ?: break
                         val newFingerprint = computeViewportContentFingerprint(afterRewindRoot)
                         targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
                         afterRewindRoot.recycle()
 
-                        // Dynamic Top Boundary Detection:
-                        // If container reported cannot scroll backward, or viewport contents remained completely static
-                        val hasHitTopBoundary = !canScrollMore || (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
+                        val hasHitTopBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
                         previousTopFingerprint = currentFingerprint
 
                         if (targetChip != null || hasHitTopBoundary) {
@@ -1906,8 +1942,19 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Wait up to 2000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
-        waitForCondition(timeoutMs = 2000, pollIntervalMs = 200) {
+        // Wait patiently (up to 7000ms) for system chooser to appear and locate K.I.D.S. Vault dynamically.
+        // As long as the file is not directly closed and we haven't returned to post detail,
+        // the share sheet will be displayed by Android.
+        waitForCondition(timeoutMs = 7000, pollIntervalMs = 250) {
+            val checkDetail = rootInActiveWindow
+            if (checkDetail != null) {
+                val inDetail = isPostDetailView(checkDetail)
+                checkDetail.recycle()
+                if (inDetail) {
+                    // File closed directly without share sheet (unshareable / restricted file)
+                    return@waitForCondition true
+                }
+            }
             target = findKidsShareTargetInAllWindows()
             target != null
         }
@@ -1921,22 +1968,22 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (inDetail) return
             }
 
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Expanding bottom sheet and scrolling...")
             val displayMetrics = resources.displayMetrics
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
             // Step 1: Drag upward to expand bottom sheet and reveal app grid
-            dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.20f, 450)
-            delay(600)
+            dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.85f, screenWidth * 0.50f, screenHeight * 0.15f, 450)
+            delay(800)
             target = findKidsShareTargetInAllWindows()
 
-            // Step 2: Traverse with up to 2 scroll attempts
+            // Step 2: Thorough scroll search across all app tiles (up to 5 scroll attempts with settling delays)
             var scrollAttempts = 0
-            while (target == null && scrollAttempts < 2 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+            while (target == null && scrollAttempts < 5 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                 scrollAttempts++
                 dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.25f, 400)
-                delay(600)
+                delay(750)
                 target = findKidsShareTargetInAllWindows()
             }
         }
@@ -1953,7 +2000,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
             }
             shareTargetNode.recycle()
-            delay(800) // Allow ShareTargetActivity to process intent and stage file
+            delay(1000) // Allow ShareTargetActivity to process intent and stage file
         } ?: run {
             // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail!
             val currentWindow = rootInActiveWindow
@@ -1961,7 +2008,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 val isPostDetail = isPostDetailView(currentWindow)
                 currentWindow.recycle()
                 if (!isPostDetail) {
-                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not found in system share sheet. Dismissing share sheet.")
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not found in system share sheet after full expansion. Dismissing share sheet.")
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     delay(600)
                 }
