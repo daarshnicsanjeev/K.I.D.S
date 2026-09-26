@@ -838,9 +838,9 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      3. **Real-Time Viewer & Preview Detection:** Within 3,000ms, `automateViewerShareOrDownload()` automatically detects that the active screen has transitioned to a document viewer (`isDocumentViewerScreen`).
      4. **Autonomous Share Triggering & Universal Menu Action Support (Both "Send file..." and "Open with..."):**
         The assistant scans the viewer for direct document transfer actions. Different viewers and OEM apps present different menu items:
-        - **"Send file...", "Send a copy", or "Share":** Standard export options in Google Classroom, Google Drive Viewer, and Google Docs.
-        - **"Open with...":** Common alternative in standalone PDF viewers, image viewers, and OEM document viewers.
-        Because K.I.D.S. Vault registers intent filters for both **`ACTION_SEND` / `ACTION_SEND_MULTIPLE`** and **`ACTION_VIEW`** (`*/*`), K.I.D.S. seamlessly receives and stages attachments from **any** viewer menu option. If actions are concealed in an overflow menu, K.I.D.S. automatically taps the **More options** (⋮) button and triggers the action.
+        - **"Send a copy" or "Send file..." via 3-Dot Overflow Menu (⋮):** Prioritized export option in Google Classroom and Google Drive Viewer. Avoids top-bar collaborator invite dialogs.
+        - **Instant Return Handling on Domain Restrictions:** If school domain policy prohibits sharing a specific file (e.g. view-only audio/video), Android displays no share sheet and the viewer finishes immediately directly back to the post detail screen. K.I.D.S. detects this instant return, marks the restriction in database, skips share sheet scanning, and immediately continues to the next attachment without any accidental Back presses!
+        Because K.I.D.S. Vault registers intent filters for both **`ACTION_SEND` / `ACTION_SEND_MULTIPLE`** and **`ACTION_VIEW`** (`*/*`), K.I.D.S. seamlessly receives and stages attachments from **any** exportable viewer menu option.
      5. **Dynamic Share Target Discovery (Zero Hardcoded Positions) & Floating Overlay Exclusion:**
         When Android's native system share sheet appears, OEM skins (such as Xiaomi HyperOS/MIUI, Samsung One UI, OnePlus OxygenOS, and Oppo ColorOS) arrange app icons dynamically based on recent usage, device context, and OEM-specific direct share carousels. Target positions are **never hardcoded**.
         - K.I.D.S. scans across all active accessibility windows and system dialog layers via `findKidsShareTargetInAllWindows()`.

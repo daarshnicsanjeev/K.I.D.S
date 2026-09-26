@@ -273,11 +273,6 @@ class KidsAccessibilityService : AccessibilityService() {
 
         // 0. Drop our own app events so we never self-trigger or interfere with our own overlay
         if (packageName == applicationContext.packageName || packageName == "${applicationContext.packageName}.debug") {
-            // Watchdog guard: If crawler is actively executing and focus drifted back to K.I.D.S., restore Google Classroom immediately!
-            if (crawlerOverlay?.isAutoScrollingActive() == true && crawlerJob?.isActive == true) {
-                CrawlerTraceLogger.log("FOCUS_GUARD", "Focus drifted to K.I.D.S. app during active crawl. Restoring Google Classroom to foreground.")
-                relaunchSchoolApp()
-            }
             return
         }
 
@@ -1354,9 +1349,9 @@ class KidsAccessibilityService : AccessibilityService() {
         for ((index, fileName) in pendingTargetFileNames.withIndex()) {
             val fileHash = "${noticeId}_${fileName}".hashCode().toString()
             val existingAttachment = db.attachmentDao().findByFileHash(fileHash)
-            if (existingAttachment != null && existingAttachment.syncStatus == SyncStatus.SYNCED.name &&
+            if (existingAttachment != null && (existingAttachment.syncStatus == SyncStatus.SYNCED.name || existingAttachment.driveFileId?.startsWith("restricted_") == true) &&
                 !existingAttachment.driveFileId.isNullOrBlank() && !existingAttachment.driveFileId.startsWith("virtual_")) {
-                continue // Already physically downloaded and synced
+                continue // Already physically downloaded and synced, or confirmed unshareable/restricted
             }
 
             if (index > 0) {
@@ -1533,91 +1528,102 @@ class KidsAccessibilityService : AccessibilityService() {
             return
         }
 
-        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Viewer detected for \"$fileName\". Scanning for Share/Download actions...")
+        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Viewer detected for \"$fileName\". Scanning for Share actions...")
 
-        // Step A: Check if a direct Share or Download button exists in the viewer
         var active = rootInActiveWindow
         var sharedOrDownloaded = false
 
         if (active != null) {
-            // 1. Look for direct Share / Send button
-            val shareBtn = findShareButton(active)
-            if (shareBtn != null) {
-                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found direct Share button. Clicking it.")
-                crawlerOverlay?.updateStatus("Sharing...", fileName)
-                val clicked = shareBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            // 1. Prioritize 3-dot overflow menu ("...") to avoid top-bar collaborator invite modal
+            val overflow = findOverflowMenuButton(active)
+            if (overflow != null) {
+                CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Clicking overflow menu in viewer...")
+                val clicked = overflow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 if (!clicked) {
                     val b = Rect()
-                    shareBtn.getBoundsInScreen(b)
+                    overflow.getBoundsInScreen(b)
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
-                shareBtn.recycle()
-                sharedOrDownloaded = true
-            } else {
-                // 2. Look for direct Download / Save offline button in viewer
-                val downloadBtn = findDownloadButtonNode(active)
-                if (downloadBtn != null) {
-                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found direct Download button in viewer. Clicking it.")
-                    crawlerOverlay?.updateStatus("Downloading...", fileName)
-                    val clicked = downloadBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
+                overflow.recycle()
+                delay(400) // Wait for popup menu to appear
+
+                var popupShare: AccessibilityNodeInfo? = null
+                val popupRoot = rootInActiveWindow
+                if (popupRoot != null) {
+                    popupShare = findExplicitCopyOrDownloadButton(popupRoot) ?: findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
+                    popupRoot.recycle()
+                }
+                if (popupShare == null) {
+                    for (w in windows) {
+                        val r = w.root ?: continue
+                        popupShare = findExplicitCopyOrDownloadButton(r) ?: findShareButton(r) ?: findDownloadButtonNode(r)
+                        if (popupShare != null) {
+                            r.recycle()
+                            break
+                        }
+                        r.recycle()
+                    }
+                }
+                if (popupShare != null) {
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"Send a copy\" in overflow menu. Clicking it.")
+                    val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clickOk) {
                         val b = Rect()
-                        downloadBtn.getBoundsInScreen(b)
+                        popupShare.getBoundsInScreen(b)
                         dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                     }
-                    downloadBtn.recycle()
+                    popupShare.recycle()
                     sharedOrDownloaded = true
-                } else {
-                    // 3. Look for overflow "More options" button
-                    val overflow = findOverflowMenuButton(active)
-                    if (overflow != null) {
-                        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Clicking overflow menu in viewer...")
-                        val clicked = overflow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        if (!clicked) {
-                            val b = Rect()
-                            overflow.getBoundsInScreen(b)
-                            dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                        }
-                        overflow.recycle()
-                        delay(400) // Wait for popup menu to appear
-
-                        var popupShare: AccessibilityNodeInfo? = null
-                        val popupRoot = rootInActiveWindow
-                        if (popupRoot != null) {
-                            popupShare = findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
-                            popupRoot.recycle()
-                        }
-                        if (popupShare == null) {
-                            for (w in windows) {
-                                val r = w.root ?: continue
-                                popupShare = findShareButton(r) ?: findDownloadButtonNode(r)
-                                if (popupShare != null) {
-                                    r.recycle()
-                                    break
-                                }
-                                r.recycle()
-                            }
-                        }
-                        if (popupShare != null) {
-                            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found Share/Download in overflow menu. Clicking it.")
-                            val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            if (!clickOk) {
-                                val b = Rect()
-                                popupShare.getBoundsInScreen(b)
-                                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
-                            }
-                            popupShare.recycle()
-                            sharedOrDownloaded = true
-                        }
+                }
+            } else {
+                // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button
+                val explicitAction = findExplicitCopyOrDownloadButton(active) ?: findDownloadButtonNode(active)
+                if (explicitAction != null) {
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found explicit Copy/Download button in viewer. Clicking it.")
+                    crawlerOverlay?.updateStatus("Sharing...", fileName)
+                    val clicked = explicitAction.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val b = Rect()
+                        explicitAction.getBoundsInScreen(b)
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                     }
+                    explicitAction.recycle()
+                    sharedOrDownloaded = true
                 }
             }
             active.recycle()
         }
 
-        // Step B: If Share action was triggered, select "K.I.D.S. Vault" in system chooser
+        // Step B: Check immediate window state after clicking Send a copy
         if (sharedOrDownloaded) {
-            delay(500)
+            delay(500) // Allow system to either open share sheet or close viewer
+
+            // INSTANT RETURN DETECTION:
+            // When sharing is restricted for a file (e.g. domain policy on audio/video/docs),
+            // no share sheet appears! Instead, the viewer immediately finishes and returns
+            // directly to the Post Detail screen.
+            val checkWindow = rootInActiveWindow
+            if (checkWindow != null) {
+                val isAlreadyInDetail = isPostDetailView(checkWindow)
+                checkWindow.recycle()
+                if (isAlreadyInDetail) {
+                    CrawlerTraceLogger.log(
+                        "ATTACHMENT_SHARE",
+                        "Viewer closed directly back to post detail screen for \"$fileName\" (unshareable / restricted by domain policy). Advancing to next attachment."
+                    )
+                    activeTargetNoticeId?.let { noticeId ->
+                        val targetHash = "${noticeId}_${fileName}".hashCode().toString()
+                        db.attachmentDao().findByFileHash(targetHash)?.let { att ->
+                            db.attachmentDao().update(att.copy(
+                                syncStatus = SyncStatus.SYNCED.name,
+                                driveFileId = "restricted_${UUID.randomUUID().toString().take(8)}"
+                            ))
+                        }
+                    }
+                    return
+                }
+            }
+
             selectKidsInSystemChooser()
         }
 
@@ -1631,7 +1637,13 @@ class KidsAccessibilityService : AccessibilityService() {
                 returnAttempts++
                 continue
             }
-            if (isPostDetailView(cur) || isStreamOrClassworkView(cur)) {
+            if (isPostDetailView(cur)) {
+                // Already in Post Detail view! Never press Back again!
+                cur.recycle()
+                break
+            }
+            if (isStreamOrClassworkView(cur)) {
+                // If unexpectedly popped to Stream, break immediately so we don't press Back to Launcher!
                 cur.recycle()
                 break
             }
@@ -1873,6 +1885,11 @@ class KidsAccessibilityService : AccessibilityService() {
         // Check if Google Drive's collaborator invite screen ("Add people") appeared instead of the system chooser
         val activeRoot = rootInActiveWindow
         if (activeRoot != null) {
+            // Guard: If already back in Post Detail view, do nothing and return immediately!
+            if (isPostDetailView(activeRoot)) {
+                activeRoot.recycle()
+                return
+            }
             val texts = mutableListOf<String>()
             collectQuickText(activeRoot, texts)
             activeRoot.recycle()
@@ -1885,55 +1902,36 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Wait up to 3500ms for system chooser to appear and locate K.I.D.S. Vault dynamically
-        waitForCondition(timeoutMs = 3500, pollIntervalMs = 200) {
+        // Wait up to 2000ms for system chooser to appear and locate K.I.D.S. Vault dynamically
+        waitForCondition(timeoutMs = 2000, pollIntervalMs = 200) {
             target = findKidsShareTargetInAllWindows()
             target != null
         }
 
-        // If not found in immediate view, scroll the sharesheet horizontally, then dynamically vertically until found or boundary reached
+        // If not found in immediate view, scroll the sharesheet upward to expand bottom sheet
         if (target == null) {
+            val checkDetail = rootInActiveWindow
+            if (checkDetail != null) {
+                val inDetail = isPostDetailView(checkDetail)
+                checkDetail.recycle()
+                if (inDetail) return
+            }
+
             CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Dispatching scroll search...")
             val displayMetrics = resources.displayMetrics
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            // Step 1: Drag upward from 80% to 20% height to expand bottom sheet and reveal app grid
+            // Step 1: Drag upward to expand bottom sheet and reveal app grid
             dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.80f, screenWidth * 0.50f, screenHeight * 0.20f, 450)
-            delay(750)
+            delay(600)
             target = findKidsShareTargetInAllWindows()
 
-            // Step 2: Dynamic vertical scroll to traverse chooser apps grid
-            var previousChooserFingerprint = ""
-            var unchangedFingerprintCount = 0
+            // Step 2: Traverse with up to 2 scroll attempts
             var scrollAttempts = 0
-            while (target == null && scrollAttempts < 5 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+            while (target == null && scrollAttempts < 2 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                 scrollAttempts++
-                val currentChooserFingerprint = computeChooserContentFingerprint()
-
-                // Drag upward to scroll through the expanded app grid
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.25f, 450)
-                delay(750)
-                target = findKidsShareTargetInAllWindows()
-                if (target != null) break
-
-                val newChooserFingerprint = computeChooserContentFingerprint()
-
-                // Boundary Detection: Require at least 3 attempts and 3 consecutive unchanged samples before concluding end of chooser
-                if (newChooserFingerprint == currentChooserFingerprint || newChooserFingerprint == previousChooserFingerprint) {
-                    unchangedFingerprintCount++
-                    if (unchangedFingerprintCount >= 3 && scrollAttempts >= 3) {
-                        break
-                    }
-                } else {
-                    unchangedFingerprintCount = 0
-                }
-                previousChooserFingerprint = currentChooserFingerprint
-            }
-
-            // Step 3: Horizontal swipe fallback across apps row if still not found
-            if (target == null) {
-                dispatchSwipe(screenWidth * 0.85f, screenHeight * 0.85f, screenWidth * 0.15f, screenHeight * 0.85f, 300)
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.25f, 400)
                 delay(600)
                 target = findKidsShareTargetInAllWindows()
             }
@@ -1953,9 +1951,17 @@ class KidsAccessibilityService : AccessibilityService() {
             shareTargetNode.recycle()
             delay(800) // Allow ShareTargetActivity to process intent and stage file
         } ?: run {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault could not be found in system share sheet after scrolling. Dismissing share sheet.")
-            performGlobalAction(GLOBAL_ACTION_BACK)
-            delay(800)
+            // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail!
+            val currentWindow = rootInActiveWindow
+            if (currentWindow != null) {
+                val isPostDetail = isPostDetailView(currentWindow)
+                currentWindow.recycle()
+                if (!isPostDetail) {
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not found in system share sheet. Dismissing share sheet.")
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    delay(600)
+                }
+            }
         }
     }
 
