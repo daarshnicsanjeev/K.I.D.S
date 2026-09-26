@@ -183,6 +183,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private val classifier = ContentClassifier()
     private val deduplicationEngine = DeduplicationEngine()
+    private val db by lazy { KidsDatabase.getInstance(applicationContext) }
 
     private var crawlerOverlay: FloatingCrawlerOverlay? = null
     private var lastActiveSchoolPackage: String? = null
@@ -1611,13 +1612,16 @@ class KidsAccessibilityService : AccessibilityService() {
                         "ATTACHMENT_SHARE",
                         "Viewer closed directly back to post detail screen for \"$fileName\" (unshareable / restricted by domain policy). Advancing to next attachment."
                     )
-                    activeTargetNoticeId?.let { noticeId ->
-                        val targetHash = "${noticeId}_${fileName}".hashCode().toString()
-                        db.attachmentDao().findByFileHash(targetHash)?.let { att ->
-                            db.attachmentDao().update(att.copy(
+                    val curNoticeId = activeTargetNoticeId
+                    if (curNoticeId != null) {
+                        val targetHash = "${curNoticeId}_${fileName}".hashCode().toString()
+                        val att = db.attachmentDao().findByFileHash(targetHash)
+                        if (att != null) {
+                            val updated = att.copy(
                                 syncStatus = SyncStatus.SYNCED.name,
                                 driveFileId = "restricted_${UUID.randomUUID().toString().take(8)}"
-                            ))
+                            )
+                            db.attachmentDao().update(updated)
                         }
                     }
                     return
