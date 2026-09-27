@@ -1847,9 +1847,6 @@ class KidsAccessibilityService : AccessibilityService() {
             return null
         }
 
-        val text = node.text?.toString()
-        val desc = node.contentDescription?.toString()
-
         val isTarget = isKidsVaultLabel(text) || isKidsVaultLabel(desc)
 
         if (isTarget) {
