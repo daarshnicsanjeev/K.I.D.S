@@ -172,6 +172,7 @@ class DriveSyncWorker(
                             newStatus = SyncStatus.SYNCED.name,
                             driveFileId = uploadedAttId
                         )
+                        db.noticeDao().markNoticePending(att.noticeId)
                         physicalUploadCount++
 
                         val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
@@ -201,10 +202,11 @@ class DriveSyncWorker(
             }
 
             // 3. Batch upload pending notices to Google Drive with EMBEDDED ATTACHMENTS
-            if (pendingNotices.isNotEmpty()) {
+            val noticesToSync = db.noticeDao().getPendingNotices()
+            if (noticesToSync.isNotEmpty()) {
                 val attachmentsByNoticeId = db.attachmentDao().getAllAttachmentsDirect().groupBy { it.noticeId }
-                val classroomNotices = pendingNotices.filter { it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
-                val standardNotices = pendingNotices.filter { !it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
+                val classroomNotices = noticesToSync.filter { it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
+                val standardNotices = noticesToSync.filter { !it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
 
                 if (classroomNotices.isNotEmpty()) {
                     val actualClassroomVault = classroomVault ?: driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)

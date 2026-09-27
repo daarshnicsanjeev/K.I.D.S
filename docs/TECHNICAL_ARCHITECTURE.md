@@ -4826,6 +4826,11 @@ flowchart TD
 - **Zero Premature "Virtual" Syncing**: `DriveSyncWorker` strictly requires physical binary upload confirmation (`driveClient.uploadAttachment()`) before setting `syncStatus = SYNCED`. Un-downloaded attachments remain `PENDING`.
 - **Virtual Attachment Auto-Reset**: Automatically restores any legacy `virtual_` attachments back to `PENDING` via `resetVirtualAttachmentsToPending()` so the crawler sweeps and recaptures 100% of physical files.
 
+### 3. File Deduplication & notices.jsonl Upsert Invariants
+- **Immutable Attachment Querying (`findByNoticeAndFileName`)**: Replaces brittle `fileHash` lookup heuristics with exact composite key `(noticeId, fileName)` in `AttachmentDao`. Prevents hash mismatch between pre-download string hashing and post-download binary SHA-256 fingerprinting, ensuring that already-synced attachments are instantly skipped across crawl passes with zero duplicate re-tapping.
+- **Idempotent Drive Upload Deduplication**: `GoogleDriveClient.uploadAttachment()` performs pre-flight verification via `findFileIdByName(targetFileName, parentFolderId)`. If the file already exists on Drive, the existing Drive file ID is immediately returned, preventing Google Drive from accumulating redundant `(1)`, `(2)`, etc. clones.
+- **Dynamic Notice Upserting (`mergeNoticeJsonl`)**: When attachments complete upload in `DriveSyncWorker`, the parent notice is queued as pending, and `mergeNoticeJsonl()` cleanly upserts the updated notice into `notices.jsonl` (replacing the previous entry by `noticeId` rather than appending duplicate rows). This guarantees that Google Drive manifests consistently reflect the true `driveFileId`, `driveUrl`, and OCR text for all captured attachments.
+
 ---
 
 ## 🛡️ Security, Privacy & Compliance Verification

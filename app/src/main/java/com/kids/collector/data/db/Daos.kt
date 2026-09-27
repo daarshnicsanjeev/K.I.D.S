@@ -76,12 +76,18 @@ interface NoticeDao {
 
     @Query("UPDATE notices SET syncStatus = :newStatus, driveFileId = :driveFileId WHERE noticeId = :noticeId")
     suspend fun updateSyncStatus(noticeId: String, newStatus: String, driveFileId: String?)
+
+    @Query("UPDATE notices SET syncStatus = 'PENDING' WHERE noticeId = :noticeId")
+    suspend fun markNoticePending(noticeId: String)
 }
 
 @Dao
 interface AttachmentDao {
     @Query("SELECT * FROM attachments WHERE noticeId = :noticeId")
     suspend fun getAttachmentsForNotice(noticeId: String): List<AttachmentEntity>
+
+    @Query("SELECT * FROM attachments WHERE noticeId = :noticeId AND fileName = :fileName LIMIT 1")
+    suspend fun findByNoticeAndFileName(noticeId: String, fileName: String): AttachmentEntity?
 
     @Query("SELECT * FROM attachments")
     suspend fun getAllAttachmentsDirect(): List<AttachmentEntity>

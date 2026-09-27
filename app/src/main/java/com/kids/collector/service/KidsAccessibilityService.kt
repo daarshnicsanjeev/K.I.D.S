@@ -1379,9 +1379,9 @@ class KidsAccessibilityService : AccessibilityService() {
         )
 
         for (att in allAttachments) {
-            val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
-            val existingAtt = db.attachmentDao().findByFileHash(fileHash)
+            val existingAtt = db.attachmentDao().findByNoticeAndFileName(noticeId, att.fileName)
             if (existingAtt == null) {
+                val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
                 val attEntity = AttachmentEntity(
                     attachmentId = UUID.randomUUID().toString(),
                     noticeId = noticeId,
@@ -1418,8 +1418,7 @@ class KidsAccessibilityService : AccessibilityService() {
         // Autonomous Attachment Ingestion: Systematically re-query fresh nodes for each attachment chip,
         // bring onto screen using ACTION_SHOW_ON_SCREEN, open the viewer, and trigger Share to "K.I.D.S. Vault"
         for ((index, fileName) in pendingTargetFileNames.withIndex()) {
-            val fileHash = "${noticeId}_${fileName}".hashCode().toString()
-            val existingAttachment = db.attachmentDao().findByFileHash(fileHash)
+            val existingAttachment = db.attachmentDao().findByNoticeAndFileName(noticeId, fileName)
             if (existingAttachment != null && (existingAttachment.syncStatus == SyncStatus.SYNCED.name || existingAttachment.driveFileId?.startsWith("restricted_") == true) &&
                 !existingAttachment.driveFileId.isNullOrBlank() && !existingAttachment.driveFileId.startsWith("virtual_")) {
                 continue // Already physically downloaded and synced, or confirmed unshareable/restricted
@@ -1525,7 +1524,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     automateViewerShareOrDownload(fileName)
 
                     // Check if file was captured by ShareTargetActivity
-                    val updatedAtt = db.attachmentDao().findByFileHash(fileHash)
+                    val updatedAtt = db.attachmentDao().findByNoticeAndFileName(noticeId, fileName)
                     if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
                         if (capturedAttachmentNames.add(fileName)) {
                             crawlerOverlay?.incrementAttachmentCount()
@@ -1726,8 +1725,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun markAttachmentNonDownloadable(noticeId: String?, fileName: String, reason: String) {
         if (noticeId.isNullOrBlank()) return
         val database = KidsDatabase.getInstance(applicationContext)
-        val targetHash = "${noticeId}_${fileName}".hashCode().toString()
-        val attachmentEntity = database.attachmentDao().findByFileHash(targetHash)
+        val attachmentEntity = database.attachmentDao().findByNoticeAndFileName(noticeId, fileName)
         if (attachmentEntity != null) {
             val updatedAttachment = attachmentEntity.copy(
                 syncStatus = SyncStatus.SYNCED.name,

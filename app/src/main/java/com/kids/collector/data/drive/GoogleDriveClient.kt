@@ -147,7 +147,7 @@ class GoogleDriveClient(
     }
 
     /**
-     * Appends a JSON line to notices.jsonl in the child vault folder.
+     * Appends or updates JSON lines in notices.jsonl in the child vault folder.
      * AI-native format ideal for streaming ingestion into LLM context windows and MCP tools.
      */
     suspend fun appendNoticeToJsonl(childFolderId: String, jsonLine: String): String = withContext(Dispatchers.IO) {
@@ -167,10 +167,10 @@ class GoogleDriveClient(
             val created = driveService.files().create(fileMetadata, content).setFields("id").execute()
             created.id
         } else {
-            // Append by reading existing content and updating
+            // Upsert by reading existing content and replacing matching notice IDs or appending new ones
             val outputStream = ByteArrayOutputStream()
             driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
-            val combinedBytes = outputStream.toByteArray() + newLineBytes
+            val combinedBytes = mergeNoticeJsonl(outputStream.toByteArray(), newLineBytes)
 
             val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
             val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
@@ -249,15 +249,24 @@ class GoogleDriveClient(
         mimeType: String,
         customName: String? = null
     ): String = withContext(Dispatchers.IO) {
+        val targetFileName = customName?.takeIf { it.isNotBlank() } ?: file.name
+        val existingFileId = findFileIdByName(targetFileName, parentFolderId)
+        if (existingFileId != null) {
+            // Deduplication invariant: File already exists in Google Drive attachments vault. Return existing file ID.
+            return@withContext existingFileId
+        }
+
         val fileMetadata = File().apply {
-            name = customName?.takeIf { it.isNotBlank() } ?: file.name
+            name = targetFileName
             parents = listOf(parentFolderId)
         }
         val mediaContent = FileContent(mimeType, file)
         val uploaded = driveService.files().create(fileMetadata, mediaContent)
             .setFields("id, name, size")
             .execute()
-        uploaded.id
+        val uploadedId = uploaded.id
+        fileIdCache["$parentFolderId/$targetFileName"] = uploadedId
+        uploadedId
     }
 
     /**
@@ -288,7 +297,7 @@ class GoogleDriveClient(
     }
 
     /**
-     * Appends a notice record to a channel-specific notices.jsonl file.
+     * Appends or updates notice records in a channel-specific notices.jsonl file.
      */
     suspend fun appendNoticeToChannelJsonl(channelFolderId: String, jsonLine: String): String = withContext(Dispatchers.IO) {
         val fileName = "notices.jsonl"
@@ -307,11 +316,44 @@ class GoogleDriveClient(
         } else {
             val outputStream = ByteArrayOutputStream()
             driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
-            val combinedBytes = outputStream.toByteArray() + newLineBytes
+            val combinedBytes = mergeNoticeJsonl(outputStream.toByteArray(), newLineBytes)
             val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
             val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
             updated.id
         }
+    }
+
+    private fun mergeNoticeJsonl(existingBytes: ByteArray, newBytes: ByteArray): ByteArray {
+        val existingText = String(existingBytes, StandardCharsets.UTF_8)
+        val newText = String(newBytes, StandardCharsets.UTF_8)
+
+        val existingLines = existingText.lines().filter { it.isNotBlank() }.toMutableList()
+        val newLines = newText.lines().filter { it.isNotBlank() }
+
+        val noticeIdRegex = Regex(""""noticeId"\s*:\s*"([^"]+)"""")
+        val idToIndexMap = mutableMapOf<String, Int>()
+        for ((index, line) in existingLines.withIndex()) {
+            val noticeId = noticeIdRegex.find(line)?.groupValues?.get(1)
+            if (noticeId != null) {
+                idToIndexMap[noticeId] = index
+            }
+        }
+
+        for (newLine in newLines) {
+            val noticeId = noticeIdRegex.find(newLine)?.groupValues?.get(1)
+            if (noticeId != null && idToIndexMap.containsKey(noticeId)) {
+                val targetIndex = idToIndexMap[noticeId]!!
+                existingLines[targetIndex] = newLine
+            } else {
+                existingLines.add(newLine)
+                if (noticeId != null) {
+                    idToIndexMap[noticeId] = existingLines.lastIndex
+                }
+            }
+        }
+
+        val mergedText = existingLines.joinToString("\n") + "\n"
+        return mergedText.toByteArray(StandardCharsets.UTF_8)
     }
 
     /**
