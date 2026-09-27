@@ -1577,7 +1577,21 @@ class KidsAccessibilityService : AccessibilityService() {
         }
 
         if (!openedViewer) {
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No external/internal viewer opened for \"$fileName\" within ${viewerTimeoutMs}ms")
+            // Check if system share sheet appeared directly without an intermediary viewer
+            if (isShareSheetDisplayed() || findKidsShareTargetInAllWindows() != null) {
+                selectKidsInSystemChooser()
+            } else {
+                val checkDetail = rootInActiveWindow
+                val inDetail = checkDetail != null && isPostDetailView(checkDetail)
+                checkDetail?.recycle()
+                if (inDetail) {
+                    CrawlerTraceLogger.log(
+                        "ATTACHMENT_SHARE",
+                        "No viewer or share sheet displayed for \"$fileName\" within ${viewerTimeoutMs}ms. Marking non-downloadable."
+                    )
+                    markAttachmentNonDownloadable(activeTargetNoticeId, fileName, "No viewer or share sheet displayed")
+                }
+            }
             return
         }
 
@@ -1598,7 +1612,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
                 overflow.recycle()
-                delay(400) // Wait for popup menu to appear
+                delay(500) // Wait for popup menu to appear
 
                 var popupShare: AccessibilityNodeInfo? = null
                 val popupRoot = rootInActiveWindow
@@ -1628,6 +1642,11 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
                     popupShare.recycle()
                     sharedOrDownloaded = true
+                } else {
+                    // Overflow menu has NO share/copy/download options (e.g. School Domain Restricted PDF)
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No share/copy/download options in overflow menu for \"$fileName\". Dismissing popup.")
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                    delay(500)
                 }
             } else {
                 // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button
@@ -1649,42 +1668,28 @@ class KidsAccessibilityService : AccessibilityService() {
             active.recycle()
         }
 
-        // Step B: Check window state after clicking Send file / copy
+        // Step B: Check window state after scanning for Share action
         if (sharedOrDownloaded) {
-            delay(600) // Allow system to either open share sheet or close viewer
-
-            // INSTANT RETURN DETECTION:
-            // Only for audio/mp3 or unshareable media files where the viewer DOES NOT show a share sheet
-            // and immediately closes itself back to Post Detail screen.
-            val isAudioOrMedia = fileName.matches(Regex(".*\\.(mp3|m4a|wav|aac|ogg|wma|flac|mp4|mov|avi)$", RegexOption.IGNORE_CASE))
-            if (isAudioOrMedia) {
-                val checkWindow = rootInActiveWindow
-                if (checkWindow != null) {
-                    val isAlreadyInDetail = isPostDetailView(checkWindow)
-                    checkWindow.recycle()
-                    if (isAlreadyInDetail) {
-                        CrawlerTraceLogger.log(
-                            "ATTACHMENT_SHARE",
-                            "Viewer closed directly back to post detail screen for audio/media \"$fileName\". Advancing to next attachment."
-                        )
-                        val curNoticeId = activeTargetNoticeId
-                        if (curNoticeId != null) {
-                            val targetHash = "${curNoticeId}_${fileName}".hashCode().toString()
-                            val att = db.attachmentDao().findByFileHash(targetHash)
-                            if (att != null) {
-                                val updated = att.copy(
-                                    syncStatus = SyncStatus.SYNCED.name,
-                                    driveFileId = "restricted_${UUID.randomUUID().toString().take(8)}"
-                                )
-                                db.attachmentDao().update(updated)
-                            }
-                        }
-                        return
-                    }
+            delay(600) // Allow system to open share sheet
+            selectKidsInSystemChooser()
+        } else {
+            // No share action was present in viewer/overflow (e.g. internal audio player, school policy restricted PDF).
+            // Patiently verify whether Android displays a share sheet anyway before concluding.
+            val shareSheetAppeared = waitForCondition(timeoutMs = 4500, pollIntervalMs = 250) {
+                isShareSheetDisplayed() || findKidsShareTargetInAllWindows() != null
+            }
+            if (shareSheetAppeared) {
+                selectKidsInSystemChooser()
+            } else {
+                // Confirm NO share sheet is displayed across any window before marking non-downloadable
+                if (!isShareSheetDisplayed() && findKidsShareTargetInAllWindows() == null) {
+                    CrawlerTraceLogger.log(
+                        "ATTACHMENT_SHARE",
+                        "Confirmed no share sheet displayed for \"$fileName\". Marking as non-downloadable."
+                    )
+                    markAttachmentNonDownloadable(activeTargetNoticeId, fileName, "No share sheet displayed in viewer")
                 }
             }
-
-            selectKidsInSystemChooser()
         }
 
         // Step C: Guarded return to detail view
@@ -1716,6 +1721,63 @@ class KidsAccessibilityService : AccessibilityService() {
             delay(1000)
             returnAttempts++
         }
+    }
+
+    private suspend fun markAttachmentNonDownloadable(noticeId: String?, fileName: String, reason: String) {
+        if (noticeId.isNullOrBlank()) return
+        val database = KidsDatabase.getInstance(applicationContext)
+        val targetHash = "${noticeId}_${fileName}".hashCode().toString()
+        val attachmentEntity = database.attachmentDao().findByFileHash(targetHash)
+        if (attachmentEntity != null) {
+            val updatedAttachment = attachmentEntity.copy(
+                syncStatus = SyncStatus.SYNCED.name,
+                driveFileId = "restricted_${java.util.UUID.randomUUID().toString().take(8)}"
+            )
+            database.attachmentDao().update(updatedAttachment)
+            CrawlerTraceLogger.log(
+                "ATTACHMENT_NON_DOWNLOADABLE",
+                "Confirmed no share sheet displayed for \"$fileName\" ($reason). Marked non-downloadable."
+            )
+        }
+    }
+
+    private fun isShareSheetDisplayed(): Boolean {
+        val collectorPackageName = applicationContext.packageName.lowercase()
+        try {
+            val currentWindows = windows
+            for (window in currentWindows) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                    if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                        continue
+                    }
+                }
+                val root = window.root ?: continue
+                val windowPackageName = root.packageName?.toString()?.lowercase() ?: ""
+                if (windowPackageName == collectorPackageName) {
+                    root.recycle()
+                    continue
+                }
+                if (findKidsShareTarget(root) != null) {
+                    root.recycle()
+                    return true
+                }
+                if (windowPackageName == "android" || windowPackageName == "com.android.intentresolver" || 
+                    windowPackageName == "com.google.android.apps.nexuslauncher" || windowPackageName == "com.android.systemui") {
+                    val texts = mutableListOf<String>()
+                    collectQuickText(root, texts)
+                    root.recycle()
+                    val combined = texts.joinToString(" ").lowercase()
+                    if (combined.contains("share") || combined.contains("send to") || 
+                        combined.contains("nearby") || combined.contains("quick share") || 
+                        combined.contains("copy to") || combined.contains("kids vault")) {
+                        return true
+                    }
+                } else {
+                    root.recycle()
+                }
+            }
+        } catch (_: Exception) {}
+        return false
     }
 
     private fun findShareButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {

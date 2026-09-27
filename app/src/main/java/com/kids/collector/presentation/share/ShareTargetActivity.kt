@@ -169,16 +169,20 @@ class ShareTargetActivity : Activity() {
                             val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
                             if (!isExtensionCompatible) return@firstOrNull false
 
+                            val targetDigits = Regex("\\d+").findAll(normalizedTargetBaseName).map { it.value }.toList()
+                            val expectedDigits = Regex("\\d+").findAll(normalizedExpectedBaseName).map { it.value }.toList()
+                            val isDigitsCompatible = targetDigits == expectedDigits
+
                             // 1. Direct or normalized match
                             if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@firstOrNull true
 
-                            // 2. Substantial prefix match
-                            if (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
-                            if (normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName.take(PREFIX_SLICE_LENGTH))) return@firstOrNull true
+                            // 2. Substantial prefix match (strictly requiring matching digits)
+                            if (isDigitsCompatible && normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName)) return@firstOrNull true
+                            if (isDigitsCompatible && normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName)) return@firstOrNull true
 
-                            // 3. Substring containment
-                            if (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedTargetBaseName.contains(normalizedExpectedBaseName)) return@firstOrNull true
-                            if (normalizedTargetBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedTargetBaseName)) return@firstOrNull true
+                            // 3. Substring containment (strictly requiring matching digits and tight length bounds)
+                            if (isDigitsCompatible && Math.abs(normalizedTargetBaseName.length - normalizedExpectedBaseName.length) <= 4 &&
+                                (normalizedTargetBaseName.contains(normalizedExpectedBaseName) || normalizedExpectedBaseName.contains(normalizedTargetBaseName))) return@firstOrNull true
 
                             false
                         } ?: if (unlinkedAttachments.size == 1) {

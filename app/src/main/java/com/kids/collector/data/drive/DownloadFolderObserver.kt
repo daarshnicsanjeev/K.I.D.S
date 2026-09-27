@@ -98,6 +98,10 @@ object DownloadFolderObserver {
 
                 for (file in files) {
                     if (file.isDirectory || file.length() == 0L) continue
+                    if (isStagingDir && allAttachments.any { it.localUri == file.absolutePath }) {
+                        // File is already explicitly linked to an attachment by ShareTargetActivity. Do not steal or re-assign.
+                        continue
+                    }
                     val fileName = file.name.lowercase()
                     val fileExt = file.extension.lowercase()
                     val fileBaseName = file.nameWithoutExtension.lowercase()
@@ -118,16 +122,29 @@ object DownloadFolderObserver {
                         val expectedBaseName = cleanExpected.substringBeforeLast('.').lowercase()
                         val normalizedExpectedBaseName = expectedBaseName.replace(NON_ALPHANUMERIC_REGEX, "")
 
-                        // Robust normalized matching: tolerates spaces vs underscores, hyphens, and truncations
-                        val isMatch = isExtensionCompatible && (
-                            fileBaseName == expectedBaseName ||
+                        // Extract all numbers to prevent collisions between sequential worksheets (e.g. WS 3 vs WS 4, Level 1 vs Level 2)
+                        val fileDigits = Regex("\\d+").findAll(normalizedFileBaseName).map { it.value }.toList()
+                        val expectedDigits = Regex("\\d+").findAll(normalizedExpectedBaseName).map { it.value }.toList()
+                        val isDigitsCompatible = fileDigits == expectedDigits
+
+                        // 1. Exact or normalized full base name match
+                        val isExactMatch = fileBaseName == expectedBaseName ||
                             cleanFileBaseName == expectedBaseName ||
-                            normalizedFileBaseName == normalizedExpectedBaseName ||
-                            (normalizedFileBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedFileBaseName.take(PREFIX_SLICE_LENGTH))) ||
-                            (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedFileBaseName.startsWith(normalizedExpectedBaseName.take(PREFIX_SLICE_LENGTH))) ||
-                            (normalizedFileBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedExpectedBaseName.contains(normalizedFileBaseName)) ||
-                            (normalizedExpectedBaseName.length >= MIN_SUBSTRING_MATCH_LENGTH && normalizedFileBaseName.contains(normalizedExpectedBaseName))
+                            normalizedFileBaseName == normalizedExpectedBaseName
+
+                        // 2. Prefix match strictly requires compatible digits (WS 3 will never match WS 4)
+                        val isPrefixMatch = isDigitsCompatible && (
+                            (normalizedFileBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedFileBaseName)) ||
+                            (normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedFileBaseName.startsWith(normalizedExpectedBaseName))
                         )
+
+                        // 3. Substring match strictly requires compatible digits AND tight length bounds (never match generic 'answerkey' to a specific document)
+                        val isSubstringMatch = isDigitsCompatible && (
+                            Math.abs(normalizedFileBaseName.length - normalizedExpectedBaseName.length) <= 4 &&
+                            (normalizedExpectedBaseName.contains(normalizedFileBaseName) || normalizedFileBaseName.contains(normalizedExpectedBaseName))
+                        )
+
+                        val isMatch = isExtensionCompatible && (isExactMatch || isPrefixMatch || isSubstringMatch)
 
                         if (isMatch) {
                             val targetFile = if (isStagingDir) {

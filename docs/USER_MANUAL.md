@@ -841,7 +841,13 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
      4. **Autonomous Share Triggering & Universal Menu Action Support (Both "Send file..." and "Open with..."):**
         The assistant scans the viewer for direct document transfer actions. Different viewers and OEM apps present different menu items:
         - **"Send a copy" or "Send file..." via 3-Dot Overflow Menu (⋮):** Prioritized export option in Google Classroom and Google Drive Viewer. Avoids top-bar collaborator invite dialogs.
-        - **Instant Return Handling on Domain Restrictions:** If school domain policy prohibits sharing a specific file (e.g. view-only audio/video), Android displays no share sheet and the viewer finishes immediately directly back to the post detail screen. K.I.D.S. detects this instant return, marks the restriction in database, skips share sheet scanning, and immediately continues to the next attachment without any accidental Back presses!
+        - **Instant Return Handling & Strict Non-Downloadable Verification Gate:**
+          If a school domain policy prohibits sharing a specific file (e.g. view-only audio/MP3 or domain-locked documents where Google Workspace DLP disables "Send a copy" / "Download"), Android does not display a share sheet, or the media viewer finishes immediately back to the Post Detail screen.
+          Before marking any file non-downloadable, K.I.D.S. enforces a **Strict Share Sheet Verification Gate**:
+          1. Scans across all active accessibility windows and system dialog layers via `isShareSheetDisplayed()` and `findKidsShareTargetInAllWindows()`.
+          2. Waits up to 4,500ms for system chooser animations to settle.
+          3. **Confirmed Non-Downloadable Only:** ONLY when it is verified across all accessibility windows that **NO share sheet is displayed**, does K.I.D.S. mark the attachment as `restricted_<uuid>` and `syncStatus = "SYNCED"` in Room DB, logging `"Confirmed no share sheet displayed. Marked non-downloadable."`.
+          4. **Share Sheet Priority:** If a share sheet is displayed or appears anywhere on screen, it is **NEVER marked non-downloadable**-the assistant proceeds directly to select "K.I.D.S. Vault".
         Because K.I.D.S. Vault registers intent filters for both **`ACTION_SEND` / `ACTION_SEND_MULTIPLE`** and **`ACTION_VIEW`** (`*/*`), K.I.D.S. seamlessly receives and stages attachments from **any** exportable viewer menu option.
      5. **Dynamic Share Target Discovery (Zero Hardcoded Positions) & Floating Overlay Exclusion:**
         When Android's native system share sheet appears, OEM skins (such as Xiaomi HyperOS/MIUI, Samsung One UI, OnePlus OxygenOS, and Oppo ColorOS) arrange app icons dynamically based on recent usage, device context, and OEM-specific direct share carousels. Target positions are **never hardcoded**.
@@ -897,8 +903,11 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
        - If direct text indexing fails to match (frequent in non-Latin scripts like Hindi, where complex ligatures or font rendering fragment text across sub-nodes), K.I.D.S. automatically activates a recursive tree traversal fallback.
        - Tokenizes the sanitized filename into component words and walks the entire accessibility subtree, accumulating combined text via `collectQuickText()`.
        - Matches candidate nodes containing any valid query token ($\ge 3$ characters) and resolves the associated clickable chip ancestor.
-     - *Section Header Immunity:* Distinguishes between substantive attachment chips and static section labels (e.g., `"Attachments"` or `"Attachment"`), guaranteeing that clicks are never wasted on non-clickable section headers.
      - *Guaranteed Staging to Vault:* Taps the resolved chip, automates document sharing to "K.I.D.S. Vault", and stages the file in private storage with zero human intervention.
+     - *Numeric Compatibility & Anti-Collision Matching:*
+       - **Strict Sequential Digit Matching:** When matching downloaded files to attachments in `DownloadFolderObserver` and `ShareTargetActivity`, K.I.D.S. extracts all numeric digit sequences (`\d+`) from both the staged filename and the expected attachment title. Sequential worksheets sharing identical prefixes (e.g. `IGCSE Grade 3 SST WS 3.pdf` vs. `IGCSE Grade 3 SST WS 4.pdf`) are strictly distinguished: a file with digit `4` will **never** match an attachment expecting digit `3`.
+       - **Tight Substring Length Bounds:** Generic names (e.g. `Answer Key.pdf`) are strictly bounded to within $\pm 4$ characters of the target name, preventing generic answer key files from hijacking specific document records (such as `Editing Text in Word 2016.Answerkey.pdf`).
+       - **Staged File Immunity:** Files in private vault staging (`vault_attachments/`) already attributed to an attachment are immune from re-evaluation, preventing background scanners from reassigning or stealing already-linked files.
 
 7. **Multi-Attempt Guarded Return Loop (Preview Dismissal & Stream Re-anchoring):**
    - Tapping attachment chips occasionally causes Android or Google Classroom to open a full-screen preview sheet or document viewer.
