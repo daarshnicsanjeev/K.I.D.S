@@ -1938,6 +1938,11 @@ private suspend fun ensureAtStreamTop() {
           CrawlerTraceLogger.log("DEEP_CRAWLER", "Already on Stream/Classwork view. Skipping return action.")
           return
       }
+      if (isClassesListScreen(root)) {
+          CrawlerTraceLogger.log("DEEP_CRAWLER", "On Classes list screen. Re-entering stream instead of dispatching Back.")
+          recoverToStreamFromClassesList(root, lockedCourseTitle, lockedCourseGrade)
+          return
+      }
       val navUp = findNavigateUpButton(root)
       if (navUp != null) {
           CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
