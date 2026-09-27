@@ -190,6 +190,8 @@ class KidsAccessibilityService : AccessibilityService() {
     private var exitDebounceJob: Job? = null
 
     private var crawlerJob: Job? = null
+    private var lockedCourseTitle: String? = null
+    private var lockedCourseGrade: String? = null
     private val visitedPostFingerprints = ConcurrentHashMap.newKeySet<String>()
     private val capturedAttachmentNames = ConcurrentHashMap.newKeySet<String>()
     @Volatile var isDispatchingCrawlerGesture: Boolean = false
@@ -272,8 +274,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val packageName = event.packageName?.toString() ?: return
 
-        // 0. Drop our own app events so we never self-trigger or interfere with our own overlay
+        // 0. Drop our own app events so we never self-trigger or interfere with our own overlay,
+        // EXCEPT if auto-capture is actively running and our own app came to the foreground,
+        // in which case we must autonomously recover and relaunch Classroom!
         if (packageName == applicationContext.packageName || packageName == "${applicationContext.packageName}.debug") {
+            if (crawlerOverlay?.isAutoScrollingActive() == true) {
+                handleAppExitEvent(packageName)
+            }
             return
         }
 
@@ -623,6 +630,8 @@ class KidsAccessibilityService : AccessibilityService() {
             if (activeCourseTitle == null && isStreamOrClassworkView(root)) {
                 activeCourseTitle = extractCourseTitle(root)
                 if (activeCourseTitle != null) {
+                    lockedCourseTitle = activeCourseTitle
+                    lockedCourseGrade = activeCourseGrade
                     CrawlerTraceLogger.log("DEEP_CRAWLER", "Locked active course title from stream: \"$activeCourseTitle\"")
                 }
             }
@@ -767,9 +776,14 @@ class KidsAccessibilityService : AccessibilityService() {
             val isTransient = isTransientOrSystemPackage(currentPkg)
 
             if (!isClassroom && !isTransient) {
-                crawlerOverlay?.updateStatus("Status: Paused (External App)", currentPkg)
+                CrawlerTraceLogger.log(
+                    "CRAWLER_RECOVERY",
+                    "Active window is external app ($currentPkg) during active crawl. Relaunching school app to resume..."
+                )
+                crawlerOverlay?.updateStatus("Resuming Classroom...", currentPkg)
+                relaunchSchoolApp()
                 root.recycle()
-                delay(1000)
+                delay(1500)
                 continue
             }
 
@@ -848,6 +862,8 @@ class KidsAccessibilityService : AccessibilityService() {
             if (activeCourseTitle == null) {
                 activeCourseTitle = extractCourseTitle(root)
                 if (activeCourseTitle != null) {
+                    lockedCourseTitle = activeCourseTitle
+                    lockedCourseGrade = activeCourseGrade
                     CrawlerTraceLogger.log("DEEP_CRAWLER", "Locked active course title from stream: \"$activeCourseTitle\"")
                 }
             }
@@ -1973,16 +1989,25 @@ class KidsAccessibilityService : AccessibilityService() {
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
 
-            // Step 1: Drag upward to expand bottom sheet and reveal app grid
-            dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.85f, screenWidth * 0.50f, screenHeight * 0.15f, 450)
+            // Step 1: Drag upward to expand bottom sheet and reveal app grid (avoiding bottom 25% gesture navigation bar)
+            dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.70f, screenWidth * 0.50f, screenHeight * 0.25f, 450)
             delay(800)
             target = findKidsShareTargetInAllWindows()
 
             // Step 2: Thorough scroll search across all app tiles (up to 5 scroll attempts with settling delays)
             var scrollAttempts = 0
             while (target == null && scrollAttempts < 5 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                val currentCheck = rootInActiveWindow
+                if (currentCheck != null) {
+                    val inClassroom = isPostDetailView(currentCheck) || isStreamOrClassworkView(currentCheck) || isClassesListScreen(currentCheck)
+                    currentCheck.recycle()
+                    if (inClassroom) {
+                        CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Returned to Classroom during share sheet search. Halting scroll search.")
+                        return
+                    }
+                }
                 scrollAttempts++
-                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.75f, screenWidth * 0.50f, screenHeight * 0.25f, 400)
+                dispatchSwipe(screenWidth * 0.50f, screenHeight * 0.68f, screenWidth * 0.50f, screenHeight * 0.28f, 400)
                 delay(750)
                 target = findKidsShareTargetInAllWindows()
             }
@@ -2002,12 +2027,12 @@ class KidsAccessibilityService : AccessibilityService() {
             shareTargetNode.recycle()
             delay(1000) // Allow ShareTargetActivity to process intent and stage file
         } ?: run {
-            // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail!
+            // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail, stream, or classes list!
             val currentWindow = rootInActiveWindow
             if (currentWindow != null) {
-                val isPostDetail = isPostDetailView(currentWindow)
+                val isClassroomView = isPostDetailView(currentWindow) || isStreamOrClassworkView(currentWindow) || isClassesListScreen(currentWindow)
                 currentWindow.recycle()
-                if (!isPostDetail) {
+                if (!isClassroomView) {
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not found in system share sheet after full expansion. Dismissing share sheet.")
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     delay(600)
@@ -2019,6 +2044,11 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun performReturnToStream(root: AccessibilityNodeInfo) {
         if (isStreamOrClassworkView(root)) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Already on Stream/Classwork view. Skipping return action.")
+            return
+        }
+        if (isClassesListScreen(root)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "On Classes list screen. Re-entering stream instead of dispatching Back.")
+            recoverToStreamFromClassesList(root, lockedCourseTitle, lockedCourseGrade)
             return
         }
         val navUp = findNavigateUpButton(root)

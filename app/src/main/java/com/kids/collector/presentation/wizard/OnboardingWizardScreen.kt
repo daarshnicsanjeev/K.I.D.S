@@ -1106,7 +1106,9 @@ fun OnboardingWizardScreen(
                                         }
                                         OutlinedButton(
                                             onClick = {
-                                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")
+                                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")?.apply {
+                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                                                }
                                                 if (launchIntent != null) {
                                                     context.startActivity(launchIntent)
                                                 } else {
