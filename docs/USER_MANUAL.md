@@ -210,6 +210,8 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
 3. **Historical Backfill Assistant & Storage Status**:
    - Because you already enabled the **Accessibility Service** and **Storage Access** in Step 0, green checkmark badges confirm their active status.
    - If either service was inadvertently switched off, quick-reconnect buttons allow instant re-enablement right within Step 2.
+   - **Autonomous Attachment Capture**: When tapping attachment chips in post detail screens, K.I.D.S. recognizes both `Send file...` and `Open with...` from the viewer overflow menu, opening Android's system share sheet and directly selecting **K.I.D.S. Vault** (orange shield icon) to stage files offline.
+   - **True Physical Drive Sync Guarantee**: A sync cycle is only complete when 100% of discovered files are physically verified and stored in your Google Drive vault (`attachments/`). The assistant runs multi-pass auto-recovery until every pending file is captured.
 4. **Dynamic Button Validation & Skip Handling**:
    - **Skip without Validation (`Skip Classroom`)**: If your child's school does not use Google Classroom, tap **Skip Classroom**. This bypasses Step 2 with zero friction, marks Classroom as skipped in your Google Drive vault, and moves directly to Step 3.
    - **Save & Next with Validation (`Save & Next →`)**: When the Google Classroom toggle is **On**, selecting a student account is strictly validated. The **Save & Next →** button remains disabled until an account is picked, accompanied by a helpful inline prompt: *"Select a student account above, or tap 'Skip Classroom' to proceed."* If you switch the toggle to **Off**, the button immediately enables so you can proceed without Classroom mapping.

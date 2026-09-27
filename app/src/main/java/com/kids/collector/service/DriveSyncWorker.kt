@@ -124,10 +124,15 @@ class DriveSyncWorker(
                 Log.w(TAG, "Error scanning local downloads: ${e.message}")
             }
 
+            val virtualResetCount = db.attachmentDao().resetVirtualAttachmentsToPending()
+            if (virtualResetCount > 0) {
+                CrawlerTraceLogger.log("SYNC_WORKER", "Reset $virtualResetCount virtual attachment references back to PENDING for physical capture & sync.")
+            }
+
             val refreshedPendingAttachments = db.attachmentDao().getPendingAttachments()
             if (refreshedPendingAttachments.isNotEmpty()) {
                 var physicalUploadCount = 0
-                var virtualCount = 0
+                var pendingCount = 0
                 val ocrParser = com.kids.collector.data.ocr.MLKitOcrParser(applicationContext)
 
                 for (att in refreshedPendingAttachments) {
@@ -180,24 +185,16 @@ class DriveSyncWorker(
                             }
                         }
                     } else {
-                        val parentNotice = db.noticeDao().findById(att.noticeId)
-                        val isRecent = parentNotice != null && (System.currentTimeMillis() - parentNotice.timestampMs < 180_000L)
-                        if (!isRecent) {
-                            db.attachmentDao().updateSyncStatus(
-                                attachmentId = att.attachmentId,
-                                newStatus = SyncStatus.SYNCED.name,
-                                driveFileId = "virtual_${att.attachmentId.take(8)}"
-                            )
-                            virtualCount++
-                        }
+                        // Invariant: Attachments without physical files remain PENDING until captured
+                        pendingCount++
                     }
                 }
 
                 val targetPrefix = if (classroomVault != null) "Google Classroom/attachments/" else "attachments/"
                 val logMessage = if (physicalUploadCount > 0) {
-                    "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix (plus $virtualCount indexed references)"
+                    "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix ($pendingCount still awaiting capture/sync)"
                 } else {
-                    "[ATTACHMENT BATCH SYNC] Indexed $virtualCount attachment references in digest (0 physical files on disk yet)"
+                    "[ATTACHMENT BATCH SYNC] $pendingCount attachments registered in vault, awaiting physical download/capture."
                 }
 
                 driveClient.appendTimelineLog(vault.logsFolderId, logMessage)

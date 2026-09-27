@@ -115,4 +115,7 @@ interface AttachmentDao {
 
     @Query("UPDATE attachments SET localUri = :localUri, sizeBytes = :sizeBytes, fileHash = :fileHash, syncStatus = 'PENDING' WHERE attachmentId = :attachmentId")
     suspend fun updateLocalFile(attachmentId: String, localUri: String, sizeBytes: Long, fileHash: String)
+
+    @Query("UPDATE attachments SET syncStatus = 'PENDING', driveFileId = null WHERE driveFileId LIKE 'virtual_%'")
+    suspend fun resetVirtualAttachmentsToPending(): Int
 }

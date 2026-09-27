@@ -4810,6 +4810,19 @@ flowchart TD
 
 ---
 
+## 🎯 Share Sheet Target Resolution & True Physical Sync Architecture
+
+### 1. Robust Share Target Recognition
+- **Share Target Matching**: `isKidsVaultLabel` strictly validates `kidsvault` (matches `"K.I.D.S. Vault"`, ignoring periods and whitespace). It strictly rejects `"K.I.D.S. Assistant"`, `"Auto-Capture"`, `"Stop"`, or single `"K"` to eliminate any risk of re-clicking the floating capture overlay.
+- **Overlay Window Filtering**: `findKidsShareTargetInAllWindows` explicitly skips windows of type `TYPE_ACCESSIBILITY_OVERLAY` and nodes containing assistant/capture keywords, ensuring only the Android system share sheet bottom sheet can be selected.
+- **Dynamic Logging**: Logs the exact label (`"Send file..."`, `"Open with..."`, `"Download"`) discovered in overflow menus dynamically rather than hardcoding static action names.
+
+### 2. True Physical Drive Sync Invariant
+- **Zero Premature "Virtual" Syncing**: `DriveSyncWorker` strictly requires physical binary upload confirmation (`driveClient.uploadAttachment()`) before setting `syncStatus = SYNCED`. Un-downloaded attachments remain `PENDING`.
+- **Virtual Attachment Auto-Reset**: Automatically restores any legacy `virtual_` attachments back to `PENDING` via `resetVirtualAttachmentsToPending()` so the crawler sweeps and recaptures 100% of physical files.
+
+---
+
 ## 🛡️ Security, Privacy & Compliance Verification
 
 | Requirement | Implementation Mechanism | Verification Method |

@@ -1618,7 +1618,8 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
                 }
                 if (popupShare != null) {
-                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"Send a copy\" in overflow menu. Clicking it.")
+                    val clickedLabel = popupShare.text?.toString() ?: popupShare.contentDescription?.toString() ?: "Send file / copy"
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" in overflow menu. Clicking it.")
                     val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (!clickOk) {
                         val b = Rect()
@@ -1632,7 +1633,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button
                 val explicitAction = findExplicitCopyOrDownloadButton(active) ?: findDownloadButtonNode(active)
                 if (explicitAction != null) {
-                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found explicit Copy/Download button in viewer. Clicking it.")
+                    val clickedLabel = explicitAction.text?.toString() ?: explicitAction.contentDescription?.toString() ?: "Copy / Download"
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" button in viewer. Clicking it.")
                     crawlerOverlay?.updateStatus("Sharing...", fileName)
                     val clicked = explicitAction.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (!clicked) {
@@ -1647,36 +1649,38 @@ class KidsAccessibilityService : AccessibilityService() {
             active.recycle()
         }
 
-        // Step B: Check immediate window state after clicking Send a copy
+        // Step B: Check window state after clicking Send file / copy
         if (sharedOrDownloaded) {
-            delay(500) // Allow system to either open share sheet or close viewer
+            delay(600) // Allow system to either open share sheet or close viewer
 
             // INSTANT RETURN DETECTION:
-            // When sharing is restricted for a file (e.g. domain policy on audio/video/docs),
-            // no share sheet appears! Instead, the viewer immediately finishes and returns
-            // directly to the Post Detail screen.
-            val checkWindow = rootInActiveWindow
-            if (checkWindow != null) {
-                val isAlreadyInDetail = isPostDetailView(checkWindow)
-                checkWindow.recycle()
-                if (isAlreadyInDetail) {
-                    CrawlerTraceLogger.log(
-                        "ATTACHMENT_SHARE",
-                        "Viewer closed directly back to post detail screen for \"$fileName\" (unshareable / restricted by domain policy). Advancing to next attachment."
-                    )
-                    val curNoticeId = activeTargetNoticeId
-                    if (curNoticeId != null) {
-                        val targetHash = "${curNoticeId}_${fileName}".hashCode().toString()
-                        val att = db.attachmentDao().findByFileHash(targetHash)
-                        if (att != null) {
-                            val updated = att.copy(
-                                syncStatus = SyncStatus.SYNCED.name,
-                                driveFileId = "restricted_${UUID.randomUUID().toString().take(8)}"
-                            )
-                            db.attachmentDao().update(updated)
+            // Only for audio/mp3 or unshareable media files where the viewer DOES NOT show a share sheet
+            // and immediately closes itself back to Post Detail screen.
+            val isAudioOrMedia = fileName.matches(Regex(".*\\.(mp3|m4a|wav|aac|ogg|wma|flac|mp4|mov|avi)$", RegexOption.IGNORE_CASE))
+            if (isAudioOrMedia) {
+                val checkWindow = rootInActiveWindow
+                if (checkWindow != null) {
+                    val isAlreadyInDetail = isPostDetailView(checkWindow)
+                    checkWindow.recycle()
+                    if (isAlreadyInDetail) {
+                        CrawlerTraceLogger.log(
+                            "ATTACHMENT_SHARE",
+                            "Viewer closed directly back to post detail screen for audio/media \"$fileName\". Advancing to next attachment."
+                        )
+                        val curNoticeId = activeTargetNoticeId
+                        if (curNoticeId != null) {
+                            val targetHash = "${curNoticeId}_${fileName}".hashCode().toString()
+                            val att = db.attachmentDao().findByFileHash(targetHash)
+                            if (att != null) {
+                                val updated = att.copy(
+                                    syncStatus = SyncStatus.SYNCED.name,
+                                    driveFileId = "restricted_${UUID.randomUUID().toString().take(8)}"
+                                )
+                                db.attachmentDao().update(updated)
+                            }
                         }
+                        return
                     }
-                    return
                 }
             }
 
@@ -1823,18 +1827,23 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun isKidsVaultLabel(raw: String?): Boolean {
         if (raw.isNullOrBlank()) return false
         val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "")
-        return clean.contains("kidsvault") ||
-                clean == "kids" ||
-                clean.startsWith("kids") ||
-                clean.contains("kidscollector") ||
-                clean.contains("kidscollect") ||
-                clean.contains("collector")
+        // Strictly require both "kids" and "vault" (matches "K.I.D.S. Vault", "kidsvault")
+        // NEVER match "K.I.D.S. Assistant", "Auto-Capture", or single "K"
+        return clean == "kidsvault" || clean.contains("kidsvault")
     }
 
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val pkg = node.packageName?.toString()?.lowercase() ?: ""
-        // CRITICAL: Reject our own app's nodes to prevent tapping FloatingCrawlerOverlay!
-        if (pkg == applicationContext.packageName.lowercase()) {
+        val text = node.text?.toString() ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+        val lowerText = text.lowercase()
+        val lowerDesc = desc.lowercase()
+
+        // HARD SAFETY FILTER: Never inspect or touch overlay nodes, assistant controls, or capture buttons
+        if (lowerText.contains("auto-capture") || lowerText.contains("autocapture") ||
+            lowerDesc.contains("auto-capture") || lowerDesc.contains("autocapture") ||
+            lowerText.contains("assistant") || lowerDesc.contains("assistant") ||
+            lowerText.contains("stop") || lowerDesc.contains("stop") ||
+            lowerText == "k" || lowerDesc == "k") {
             return null
         }
 
@@ -1878,6 +1887,11 @@ class KidsAccessibilityService : AccessibilityService() {
             // 1. Inspect all accessibility windows (handles system dialogs & bottom sheets)
             val currentWindows = windows
             for (window in currentWindows) {
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.LOLLIPOP) {
+                    if (window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) {
+                        continue
+                    }
+                }
                 val windowRoot = window.root ?: continue
                 val windowPackage = windowRoot.packageName?.toString()?.lowercase() ?: ""
                 if (windowPackage == collectorPackageName) {
@@ -1958,19 +1972,9 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Wait patiently (up to 7000ms) for system chooser to appear and locate K.I.D.S. Vault dynamically.
-        // As long as the file is not directly closed and we haven't returned to post detail,
-        // the share sheet will be displayed by Android.
-        waitForCondition(timeoutMs = 7000, pollIntervalMs = 250) {
-            val checkDetail = rootInActiveWindow
-            if (checkDetail != null) {
-                val inDetail = isPostDetailView(checkDetail)
-                checkDetail.recycle()
-                if (inDetail) {
-                    // File closed directly without share sheet (unshareable / restricted file)
-                    return@waitForCondition true
-                }
-            }
+        // Wait patiently (up to 8000ms) for system chooser to appear and locate K.I.D.S. Vault dynamically.
+        // As long as the file is not directly closed, the share sheet will be displayed by Android.
+        waitForCondition(timeoutMs = 8000, pollIntervalMs = 250) {
             target = findKidsShareTargetInAllWindows()
             target != null
         }
