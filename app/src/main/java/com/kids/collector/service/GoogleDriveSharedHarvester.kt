@@ -11,6 +11,7 @@ import com.kids.collector.domain.classifier.ClassroomDateParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import java.util.Calendar
 import java.util.Locale
 
 /**
@@ -34,7 +35,8 @@ class GoogleDriveSharedHarvester(
     private val dispatchLongPressAction: suspend (Float, Float) -> Boolean,
     private val dispatchSwipeAction: suspend (Float, Float, Float, Float, Long) -> Boolean,
     private val selectKidsInChooserAction: suspend () -> Unit,
-    private val waitForConditionAction: suspend (Long, Long, () -> Boolean) -> Boolean
+    private val waitForConditionAction: suspend (Long, Long, () -> Boolean) -> Boolean,
+    private val dispatchBackAction: suspend () -> Boolean = { true }
 ) {
 
     companion object {
@@ -45,6 +47,9 @@ class GoogleDriveSharedHarvester(
 
         @Volatile
         var isDriveHarvestingActive: Boolean = false
+
+        @Volatile
+        var activeHarvestingFolderName: String? = null
     }
 
     data class DriveSharedItem(
@@ -99,50 +104,112 @@ class GoogleDriveSharedHarvester(
             navigateToSharedTab()
             delay(SETTLING_DELAY_MS)
 
-        // Step 4: Iterative Harvest Loop across Shared tab pages
-        var totalHarvestedCount = 0
-        var scrollPageCount = 0
-        var consecutiveEmptyPages = 0
-        val processedDriveTitles = mutableSetOf<String>()
+            // Step 4: Establish academic year date cutoff from earliest notice
+            val allNotices = database.noticeDao().getAllNoticesDirect()
+            val classroomNotices = allNotices.filter { it.sourceApp == "com.google.android.apps.classroom" }
+            val earliestNoticeMs = classroomNotices.minOfOrNull { it.timestampMs }
+                ?: allNotices.minOfOrNull { it.timestampMs }
 
-        while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && scrollPageCount < MAX_SCROLL_PAGES) {
-            val pendingAttachments = getPendingUncapturedAttachments()
-            if (pendingAttachments.isEmpty()) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "All pending attachments successfully captured!")
-                crawlerOverlay?.updateStatus("✓ Drive Harvest Complete", "All missing attachments received.")
-                break
+            // Date cutoff: 3 days before earliest Classroom post (e.g. if 1st post is June 10, cutoff is June 7)
+            val cutoffTimestampMs = if (earliestNoticeMs != null && earliestNoticeMs > 0L) {
+                earliestNoticeMs - (3L * 24 * 60 * 60 * 1000L)
+            } else {
+                0L
             }
 
-            crawlerOverlay?.updateStatus(
-                "Scanning Shared Tab (Page ${scrollPageCount + 1})...",
-                "${pendingAttachments.size} files remaining"
-            )
+            if (cutoffTimestampMs > 0L) {
+                val cutoffCal = Calendar.getInstance().apply { timeInMillis = cutoffTimestampMs }
+                val cutoffMonth = ClassroomDateParser.MONTH_NAMES.getOrNull(cutoffCal.get(Calendar.MONTH))?.replaceFirstChar { it.uppercase(Locale.US) }
+                val cutoffDay = cutoffCal.get(Calendar.DAY_OF_MONTH)
+                CrawlerTraceLogger.log(
+                    "DRIVE_HARVESTER",
+                    "Academic year cutoff established: $cutoffMonth $cutoffDay. Files shared before this date will be ignored as old."
+                )
+            }
 
-            val currentRoot = rootInActiveWindowProvider() ?: break
-            val visibleItems = scanVisibleDriveItems(currentRoot)
-            currentRoot.recycle()
+            // Step 5: Iterative Harvest Loop across Shared tab pages
+            var totalHarvestedCount = 0
+            var scrollPageCount = 0
+            var consecutiveEmptyPages = 0
+            var consecutiveOldItemsCount = 0
+            val processedDriveTitles = mutableSetOf<String>()
+            val processedFolderNames = mutableSetOf<String>()
 
-            val batchToSelect = mutableListOf<DriveSharedItem>()
-
-            for (item in visibleItems) {
-                if (item.isFolder) {
-                    // Folders must NEVER be multi-selected because Drive disables "Send a copy" when a folder is selected!
-                    // If this folder has a school name or matches pending files, handle folder traversal separately
-                    continue
+            while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && scrollPageCount < MAX_SCROLL_PAGES) {
+                val pendingAttachments = getPendingUncapturedAttachments()
+                if (pendingAttachments.isEmpty()) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "All pending attachments successfully captured!")
+                    crawlerOverlay?.updateStatus("✓ Drive Harvest Complete", "All missing attachments received.")
+                    break
                 }
 
-                if (processedDriveTitles.contains(item.title)) {
-                    continue
-                }
+                crawlerOverlay?.updateStatus(
+                    "Scanning Shared Tab (Page ${scrollPageCount + 1})...",
+                    "${pendingAttachments.size} files remaining"
+                )
 
-                val matchedAttachment = matchDriveItemToPendingAttachment(item, pendingAttachments)
-                if (matchedAttachment != null) {
-                    batchToSelect.add(item)
-                    if (batchToSelect.size >= MAX_BATCH_SELECTION_SIZE) {
-                        break
+                val currentRoot = rootInActiveWindowProvider() ?: break
+                val visibleItems = scanVisibleDriveItems(currentRoot)
+                currentRoot.recycle()
+
+                val batchToSelect = mutableListOf<DriveSharedItem>()
+
+                for (item in visibleItems) {
+                    val parsedItemDate = ClassroomDateParser.parse(item.subtitle)
+                    val isItemOld = cutoffTimestampMs > 0L && parsedItemDate != null && parsedItemDate.timestampMs < cutoffTimestampMs
+
+                    if (isItemOld) {
+                        CrawlerTraceLogger.log(
+                            "DRIVE_HARVESTER",
+                            "Item \"${item.title}\" (${parsedItemDate?.canonicalDate}) is older than academic cutoff. Skipping."
+                        )
+                        consecutiveOldItemsCount++
+                        if (consecutiveOldItemsCount >= 5) {
+                            CrawlerTraceLogger.log(
+                                "DRIVE_HARVESTER",
+                                "Encountered $consecutiveOldItemsCount consecutive items older than academic cutoff. Ending Shared tab scan."
+                            )
+                            break
+                        }
+                        continue
+                    } else {
+                        consecutiveOldItemsCount = 0
+                    }
+
+                    if (item.isFolder) {
+                        // Folders cannot be multi-selected because Drive disables "Send a copy"
+                        if (processedFolderNames.contains(item.title)) {
+                            continue
+                        }
+
+                        // Determine if folder is relevant (mentioned in announcements, contains Drive link, or shared within academic year)
+                        val isMentionedInNotice = allNotices.any { n ->
+                            n.title.contains(item.title, ignoreCase = true) ||
+                            n.body.contains(item.title, ignoreCase = true) ||
+                            n.body.contains("drive.google.com", ignoreCase = true)
+                        }
+                        val isRecentSchoolFolder = parsedItemDate != null && (cutoffTimestampMs == 0L || parsedItemDate.timestampMs >= cutoffTimestampMs)
+
+                        if (isMentionedInNotice || isRecentSchoolFolder) {
+                            processedFolderNames.add(item.title)
+                            val harvestedFromFolder = harvestFolder(item, pendingAttachments)
+                            totalHarvestedCount += harvestedFromFolder
+                        }
+                        continue
+                    }
+
+                    if (processedDriveTitles.contains(item.title)) {
+                        continue
+                    }
+
+                    val matchedAttachment = matchDriveItemToPendingAttachment(item, pendingAttachments)
+                    if (matchedAttachment != null) {
+                        batchToSelect.add(item)
+                        if (batchToSelect.size >= MAX_BATCH_SELECTION_SIZE) {
+                            break
+                        }
                     }
                 }
-            }
 
             if (batchToSelect.isNotEmpty()) {
                 consecutiveEmptyPages = 0
@@ -609,6 +676,126 @@ class GoogleDriveSharedHarvester(
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findSendCopyNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private val attachmentExts = listOf(
+        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".csv", ".epub",
+        ".mp3", ".m4a", ".wav", ".aac", ".ogg", ".wma", ".flac",
+        ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
+        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",
+        ".zip", ".rar", ".7z"
+    )
+
+    private fun isEducationalFile(fileName: String): Boolean {
+        val lower = fileName.trim().lowercase(Locale.US)
+        return attachmentExts.any { lower.endsWith(it) } ||
+                lower.contains(".pdf") || lower.contains(".doc") || lower.contains(".ppt") ||
+                lower.contains(".xls") || lower.contains(".jpg") || lower.contains(".png")
+    }
+
+    private suspend fun harvestFolder(folderItem: DriveSharedItem, pendingAttachments: List<AttachmentEntity>): Int {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Entering shared folder: \"${folderItem.title}\"")
+        crawlerOverlay?.updateStatus("Entering Folder...", folderItem.title)
+
+        val clicked = if (folderItem.node.isClickable) {
+            folderItem.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } else {
+            findClickableAncestor(folderItem.node)?.let {
+                val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                it.recycle()
+                ok
+            } ?: false
+        }
+
+        if (!clicked) {
+            dispatchTapAction(folderItem.bounds.centerX().toFloat(), folderItem.bounds.centerY().toFloat())
+        }
+
+        delay(SETTLING_DELAY_MS + 400L)
+
+        var harvestedInFolder = 0
+        activeHarvestingFolderName = folderItem.title
+        try {
+            val folderRoot = rootInActiveWindowProvider()
+            if (folderRoot != null) {
+                val filesInsideFolder = scanVisibleDriveItems(folderRoot)
+                folderRoot.recycle()
+
+                val batchInFolder = mutableListOf<DriveSharedItem>()
+                for (fileItem in filesInsideFolder) {
+                    if (!fileItem.isFolder && isEducationalFile(fileItem.title)) {
+                        batchInFolder.add(fileItem)
+                        if (batchInFolder.size >= MAX_BATCH_SELECTION_SIZE) {
+                            break
+                        }
+                    }
+                }
+
+                if (batchInFolder.isNotEmpty()) {
+                    CrawlerTraceLogger.log(
+                        "DRIVE_HARVESTER",
+                        "Batch harvesting ${batchInFolder.size} files inside folder \"${folderItem.title}\"..."
+                    )
+                    crawlerOverlay?.updateStatus("Harvesting Folder...", "${batchInFolder.size} files in ${folderItem.title}")
+
+                    val batchOk = selectAndDispatchBatch(batchInFolder)
+                    if (batchOk) {
+                        harvestedInFolder += batchInFolder.size
+                        delay(1200L)
+                    }
+                }
+
+                for (item in filesInsideFolder) {
+                    if (!batchInFolder.contains(item)) {
+                        item.node.recycle()
+                    }
+                }
+            }
+        } finally {
+            activeHarvestingFolderName = null
+            returnFromFolderToSharedTab()
+        }
+
+        return harvestedInFolder
+    }
+
+    private suspend fun returnFromFolderToSharedTab(): Boolean {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating back from folder to Shared tab...")
+        val root = rootInActiveWindowProvider()
+        var clickedNavigateUp = false
+        if (root != null) {
+            val navUp = findNavigateUpButton(root)
+            if (navUp != null) {
+                clickedNavigateUp = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                navUp.recycle()
+            }
+            root.recycle()
+        }
+
+        if (!clickedNavigateUp) {
+            dispatchBackAction()
+        }
+
+        delay(SETTLING_DELAY_MS + 300L)
+        return true
+    }
+
+    private fun findNavigateUpButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        if (desc.contains("navigate up") || desc == "back") {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findNavigateUpButton(child)
             if (found != null) {
                 child.recycle()
                 return found

@@ -9,7 +9,7 @@ import java.util.Locale
  */
 object ClassroomDateParser {
 
-    private val MONTH_NAMES = listOf(
+    val MONTH_NAMES = listOf(
         "jan", "feb", "mar", "apr", "may", "jun",
         "jul", "aug", "sep", "oct", "nov", "dec"
     )

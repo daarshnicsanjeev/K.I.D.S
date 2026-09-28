@@ -1283,7 +1283,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 selectKidsInChooserAction = { selectKidsInSystemChooser() },
                 waitForConditionAction = { timeoutMs, pollIntervalMs, condition ->
                     waitForCondition(timeoutMs, pollIntervalMs, condition)
-                }
+                },
+                dispatchBackAction = { performGlobalAction(GLOBAL_ACTION_BACK) }
             )
 
             val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = child?.accountEmail)

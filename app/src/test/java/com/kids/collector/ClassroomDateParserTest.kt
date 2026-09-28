@@ -45,4 +45,22 @@ class ClassroomDateParserTest {
 
         assertTrue(driveDate1.matchesMonthAndDay(classroomDate!!.month, classroomDate.day))
     }
+
+    @Test
+    fun testCanonicalDateAndCutoffComparison() {
+        val earliestNoticeDate = ClassroomDateParser.parse("Posted Jun 10", 2026)
+        assertNotNull(earliestNoticeDate)
+        assertEquals("Jun 10", earliestNoticeDate!!.canonicalDate)
+
+        // 3 days prior cutoff
+        val cutoffTimestamp = earliestNoticeDate.timestampMs - (3L * 24 * 60 * 60 * 1000L)
+
+        val oldItemDate = ClassroomDateParser.parse("Shared May 25 by Teacher", 2026)
+        assertNotNull(oldItemDate)
+        assertTrue("May 25 should be older than June 7 cutoff", oldItemDate!!.timestampMs < cutoffTimestamp)
+
+        val recentItemDate = ClassroomDateParser.parse("Shared Jun 12 by Teacher", 2026)
+        assertNotNull(recentItemDate)
+        assertTrue("Jun 12 should be newer than June 7 cutoff", recentItemDate!!.timestampMs >= cutoffTimestamp)
+    }
 }

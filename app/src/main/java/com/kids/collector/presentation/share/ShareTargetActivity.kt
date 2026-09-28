@@ -11,10 +11,14 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
+import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.data.db.KidsDatabase
+import com.kids.collector.data.db.NoticeEntity
 import com.kids.collector.domain.dedupe.DeduplicationEngine
+import com.kids.collector.domain.model.SyncStatus
 import com.kids.collector.service.CrawlerTraceLogger
 import com.kids.collector.service.DriveSyncWorker
+import com.kids.collector.service.GoogleDriveSharedHarvester
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancel
@@ -22,6 +26,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
+import java.util.UUID
 
 /**
  * Silent, transparent Share Target Activity.
@@ -230,9 +235,83 @@ class ShareTargetActivity : Activity() {
                             "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAttachment.attachmentId.take(8)}"
                         )
                     } else {
+                        // File does not match pre-indexed attachment:
+                        // Represents a file inside a shared Google Drive folder or linked announcement across any platform
+                        val folderName = GoogleDriveSharedHarvester.activeHarvestingFolderName
+                        val fileLastModified = queryFileLastModified(resolver, uri) ?: System.currentTimeMillis()
+
+                        val allNotices = db.noticeDao().getAllNoticesDirect()
+                        var targetNotice = if (!folderName.isNullOrBlank()) {
+                            allNotices.firstOrNull { notice ->
+                                notice.title.contains(folderName, ignoreCase = true) ||
+                                notice.body.contains(folderName, ignoreCase = true)
+                            }
+                        } else null
+
+                        if (targetNotice == null && allNotices.isNotEmpty()) {
+                            targetNotice = allNotices.minByOrNull { Math.abs(it.timestampMs - fileLastModified) }
+                        }
+
+                        val child = db.childProfileDao().getAllChildrenDirect().firstOrNull()
+                        val childId = child?.childId ?: "child_default"
+
+                        val finalNoticeId = if (targetNotice != null && Math.abs(targetNotice.timestampMs - fileLastModified) < 30L * 86400000L) {
+                            targetNotice.noticeId
+                        } else {
+                            val noticeTitle = if (!folderName.isNullOrBlank()) "Shared Folder: $folderName" else "Google Drive Shared Resources"
+                            val newNoticeId = UUID.randomUUID().toString()
+                            val newNotice = NoticeEntity(
+                                noticeId = newNoticeId,
+                                childId = childId,
+                                sourceApp = "com.google.android.apps.docs",
+                                category = "HOMEWORK",
+                                title = noticeTitle,
+                                body = "Educational materials harvested from Google Drive Shared Folder \"${folderName ?: "Shared with me"}\".",
+                                sender = "Google Drive",
+                                timestampMs = fileLastModified,
+                                hashSha256 = "${childId}_drive_folder_${folderName}_$fileLastModified".hashCode().toString(),
+                                syncStatus = SyncStatus.PENDING.name,
+                                driveFileId = null,
+                                attachmentCount = 1
+                            )
+                            db.noticeDao().insert(newNotice)
+                            newNoticeId
+                        }
+
+                        val newAtt = AttachmentEntity(
+                            attachmentId = UUID.randomUUID().toString(),
+                            noticeId = finalNoticeId,
+                            fileName = safeFileName.take(200),
+                            localUri = stagedFile.absolutePath,
+                            mimeType = when {
+                                safeFileName.endsWith(".pdf", true) -> "application/pdf"
+                                safeFileName.matches(Regex(".*\\.(jpg|jpeg|png|gif|webp|bmp|svg)$", RegexOption.IGNORE_CASE)) -> "image/jpeg"
+                                safeFileName.matches(Regex(".*\\.(mp3|m4a|wav|aac|ogg|wma|flac)$", RegexOption.IGNORE_CASE)) -> "audio/mpeg"
+                                safeFileName.matches(Regex(".*\\.(mp4|mov|avi|mkv|webm|3gp)$", RegexOption.IGNORE_CASE)) -> "video/mp4"
+                                safeFileName.matches(Regex(".*\\.(docx?|rtf|txt|epub)$", RegexOption.IGNORE_CASE)) -> "application/msword"
+                                safeFileName.matches(Regex(".*\\.(xlsx?|csv)$", RegexOption.IGNORE_CASE)) -> "application/vnd.ms-excel"
+                                safeFileName.matches(Regex(".*\\.(pptx?)$", RegexOption.IGNORE_CASE)) -> "application/vnd.ms-powerpoint"
+                                safeFileName.matches(Regex(".*\\.(zip|rar|7z)$", RegexOption.IGNORE_CASE)) -> "application/zip"
+                                else -> "application/octet-stream"
+                            },
+                            sizeBytes = stagedFile.length(),
+                            fileHash = fileHash,
+                            ocrText = null,
+                            pageCount = 1,
+                            driveFileId = null,
+                            syncStatus = SyncStatus.PENDING.name
+                        )
+                        db.attachmentDao().insert(newAtt)
+
+                        val count = db.attachmentDao().getAttachmentsForNotice(finalNoticeId).size
+                        val parentNotice = db.noticeDao().findById(finalNoticeId)
+                        if (parentNotice != null) {
+                            db.noticeDao().update(parentNotice.copy(attachmentCount = count))
+                        }
+
                         CrawlerTraceLogger.log(
                             "SHARE_INGEST",
-                            "Captured unlinked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) in staging."
+                            "Created and staged attachment \"$safeFileName\" (${stagedFile.length()} bytes) under notice $finalNoticeId (folder: $folderName)"
                         )
                     }
 

@@ -3195,20 +3195,29 @@ flowchart TD
 - Total processing time per notice drops from 45 seconds down to **~1.2 seconds**. An entire stream of 100 notices is fully indexed in **under 3 minutes**.
 
 #### Phase 3: Google Drive Shared Tab Batch Harvester (`GoogleDriveSharedHarvester`)
-Once Classroom metadata extraction finishes, if any attachments remain in `PENDING` status, `KidsAccessibilityService` seamlessly transitions to Google Drive:
+Once Classroom metadata extraction finishes, if any attachments remain in `PENDING` status (or when triggered for comprehensive Drive asset ingestion), `KidsAccessibilityService` seamlessly transitions to Google Drive:
 1. **Drive App Activation & Account Verification (`ensureDriveAccount`):**
    - Automatically foregrounds `com.google.android.apps.docs`.
    - Inspects the OneGoogle account avatar in the top bar. If the active account does not match the child's configured school email (`targetChild.accountEmail`), it taps the avatar and selects the child's profile from the account picker bottom sheet.
 2. **Navigation to "Shared" ("Shared with me") Tab:**
-   - Teacher-shared circulars and worksheets reside in the student's **"Shared"** tab (the `My Drive/Classroom` directory only contains student submission copies and is empty for incoming teacher notices).
+   - Teacher-shared circulars, worksheets, and announcement folders reside in the student's **"Shared"** tab (the `My Drive/Classroom` directory only contains student submission copies and is empty for incoming teacher notices).
    - Locates and taps the "Shared" bottom navigation tab.
-3. **Multi-Selection with Strict Folder Exclusion:**
+3. **Academic Year Cutoff Date Filter:**
+   - Establishes a cutoff timestamp based on the oldest captured Classroom notice (`earliestNoticeMs - 3 days`, e.g. June 7 if the first post is June 10).
+   - Because the Google Drive "Shared" tab is ordered reverse-chronologically, items dated prior to the cutoff are ignored.
+   - Concludes harvest early when 5 consecutive old items are detected, eliminating dozens of redundant scroll gestures.
+4. **Folder Traversal & Multi-File Batch Harvesting (`harvestFolder`):**
    - In Google Drive on Android, selecting a folder hides the "Send a copy" menu option.
-   - The harvester scans visible items, classifies them into files vs. folders, and **strictly skips folders during multi-selection**.
-4. **Multi-Criteria Date & Filename Disambiguation:**
+   - Harvester enters relevant shared folders (linked in Classroom announcements or shared across school channels).
+   - Inside the folder, multi-selects up to 15 educational files (`isEducationalFile`), executes "Send a copy" -> "K.I.D.S. Vault", and cleanly returns via `findNavigateUpButton()` or `dispatchBackAction()`.
+5. **Folder Notice Attribution (`activeHarvestingFolderName`):**
+   - Staging activity (`ShareTargetActivity`) reads `@Volatile var activeHarvestingFolderName`.
+   - For unlinked files from shared folders, matches against notices mentioning the folder or within 30 days of `fileLastModified`.
+   - If no matching notice exists (e.g. folder posted on external portal), auto-creates a structured `NoticeEntity` (e.g. `"Shared Folder: [FolderName]"`) ensuring 100% dashboard organization.
+6. **Multi-Criteria Date & Filename Disambiguation:**
    - Matches files using both normalized base filename and post date/time extracted via `ClassroomDateParser` against Drive item subtitles (e.g. `"Shared Jun 12 by Teacher"`).
    - Resolves ambiguous filenames (e.g. duplicate `Worksheet.pdf` or `Answer Key.pdf` posts) with zero collision.
-5. **Bulk Dispatch via `ACTION_SEND_MULTIPLE`:**
+7. **Bulk Dispatch via `ACTION_SEND_MULTIPLE`:**
    - Long-presses the first matching file, then taps subsequent matches up to batches of 15 files.
    - Taps overflow menu (`⋮`) -> "Send a copy" -> selects "K.I.D.S. Vault".
    - `ShareTargetActivity` receives the batch, disambiguates each file by matching its `last_modified` timestamp closest to `NoticeEntity.timestampMs`, stages binaries into `vault_attachments/`, and triggers `DriveSyncWorker`.
