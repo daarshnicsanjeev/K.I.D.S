@@ -26,7 +26,8 @@ fun ChildrenGridDashboard(
     onAddChildClick: () -> Unit,
     onOpenDiagnosticsClick: () -> Unit,
     onSearchClick: () -> Unit,
-    onSelectChild: (ChildProfile) -> Unit
+    onSelectChild: (ChildProfile) -> Unit,
+    onStartAutoCapture: (ChildProfile) -> Unit
 ) {
     Scaffold(
         topBar = {
@@ -142,7 +143,11 @@ fun ChildrenGridDashboard(
                     modifier = Modifier.fillMaxSize()
                 ) {
                     items(children) { child ->
-                        ChildCard(child = child, onClick = { onSelectChild(child) })
+                        ChildCard(
+                            child = child,
+                            onClick = { onSelectChild(child) },
+                            onStartAutoCapture = { onStartAutoCapture(child) }
+                        )
                     }
                 }
             }
@@ -154,7 +159,8 @@ fun ChildrenGridDashboard(
 @Composable
 fun ChildCard(
     child: ChildProfile,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onStartAutoCapture: () -> Unit
 ) {
     Card(
         modifier = Modifier
@@ -227,6 +233,25 @@ fun ChildCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = AmberOrangeDark
             )
+
+            Spacer(modifier = Modifier.height(14.dp))
+            Button(
+                onClick = onStartAutoCapture,
+                colors = ButtonDefaults.buttonColors(containerColor = AmberOrange),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .defaultMinSize(minHeight = 48.dp)
+                    .semantics {
+                        contentDescription = "Start 1-Click Auto-Capture for ${child.firstName}"
+                    },
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Text(
+                    text = "▶ 1-Click Auto-Capture",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = TextPrimary
+                )
+            }
         }
     }
 }

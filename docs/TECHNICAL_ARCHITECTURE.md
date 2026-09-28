@@ -3181,6 +3181,11 @@ flowchart TD
     end
 ```
 
+#### Phase 0: 1-Click Launch & Autonomous Stream Navigation (`ACTION_START_FULL_AUTO_CAPTURE`)
+- **Direct App-to-App Launch:** The parent initiates capture by tapping `▶ 1-Click Auto-Capture` on the child profile card in `ChildrenGridDashboard`. The activity dispatches `ACTION_START_FULL_AUTO_CAPTURE` with child metadata (`childId`, `accountEmail`, `grade`) and directly foregrounds `com.google.android.apps.classroom`.
+- **Pre-Flight Foreground Wait & Account Check:** The accessibility engine waits up to 10 seconds for Google Classroom to become active, verifying the active OneGoogle account via `ensureClassroomAccount`.
+- **Autonomous Stream Navigation (`ensureInClassStream`):** If Classroom opens on the **Classes List screen** (showing enrolled class cards and course banners), `KidsAccessibilityService` locates the child's class card matching `targetGrade` or `targetCourseTitle` via `findCourseCardInClassesList`, safely clicks the left-center region, and navigates directly into the class Stream feed hands-free.
+
 #### Phase 1: Pre-Flight Stream Survey
 - Begins at the course stream header banner (`ensureAtStreamTop()`).
 - Scrolls steadily downward from top to bottom, recording each notice's visible card boundaries and SHA-256 fingerprint into `StreamManifest`.

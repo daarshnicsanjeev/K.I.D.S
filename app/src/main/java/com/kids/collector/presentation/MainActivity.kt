@@ -17,6 +17,7 @@ import com.kids.collector.presentation.theme.KidsTheme
 import com.kids.collector.presentation.wizard.OnboardingWizardScreen
 import com.kids.collector.presentation.permission.PermissionHelper
 import com.kids.collector.presentation.permission.PermissionSetupDialog
+import com.kids.collector.service.KidsAccessibilityService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -117,6 +118,31 @@ class MainActivity : ComponentActivity() {
                             },
                             onSelectChild = { child ->
                                 Toast.makeText(this, "Viewing vault: K.I.D.S. Data/${child.academicYear}/${child.firstName}/", Toast.LENGTH_SHORT).show()
+                            },
+                            onStartAutoCapture = { child ->
+                                if (!PermissionHelper.isAccessibilityGranted(this@MainActivity)) {
+                                    Toast.makeText(this@MainActivity, "Please enable K.I.D.S. Accessibility Service first", Toast.LENGTH_LONG).show()
+                                    PermissionHelper.openAccessibilitySettings(this@MainActivity)
+                                } else {
+                                    val classroomPkg = KidsAccessibilityService.CLASSROOM_PACKAGE_NAME
+                                    val launchIntent = packageManager.getLaunchIntentForPackage(classroomPkg)?.apply {
+                                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                                    }
+                                    if (launchIntent == null) {
+                                        Toast.makeText(this@MainActivity, "Google Classroom app is not installed", Toast.LENGTH_LONG).show()
+                                    } else {
+                                        Toast.makeText(this@MainActivity, "Starting 1-Click Auto-Capture for ${child.firstName}...", Toast.LENGTH_SHORT).show()
+                                        startActivity(launchIntent)
+                                        val captureIntent = Intent(KidsAccessibilityService.ACTION_START_FULL_AUTO_CAPTURE).apply {
+                                            setPackage(packageName)
+                                            putExtra(KidsAccessibilityService.EXTRA_CHILD_ID, child.childId)
+                                            putExtra(KidsAccessibilityService.EXTRA_CHILD_EMAIL, child.accountEmail)
+                                            putExtra(KidsAccessibilityService.EXTRA_CHILD_GRADE, child.grade)
+                                            putExtra(KidsAccessibilityService.EXTRA_CHILD_NAME, child.firstName)
+                                        }
+                                        sendBroadcast(captureIntent)
+                                    }
+                                }
                             }
                         )
                     }

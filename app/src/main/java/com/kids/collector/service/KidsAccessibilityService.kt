@@ -138,9 +138,16 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
         private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
         private const val BOTTOM_NAV_BAR_MARGIN_PX = 320
+        const val CLASSROOM_PACKAGE_NAME = "com.google.android.apps.classroom"
         const val ACTION_START_CRAWL = "com.kids.collector.ACTION_START_CRAWL"
         const val ACTION_STOP_CRAWL = "com.kids.collector.ACTION_STOP_CRAWL"
         const val ACTION_SHOW_OVERLAY = "com.kids.collector.ACTION_SHOW_OVERLAY"
+        const val ACTION_START_FULL_AUTO_CAPTURE = "com.kids.collector.ACTION_START_FULL_AUTO_CAPTURE"
+
+        const val EXTRA_CHILD_ID = "extra_child_id"
+        const val EXTRA_CHILD_EMAIL = "extra_child_email"
+        const val EXTRA_CHILD_GRADE = "extra_child_grade"
+        const val EXTRA_CHILD_NAME = "extra_child_name"
 
         private val AUTHORIZED_SCHOOL_PACKAGES = setOf(
             "com.google.android.apps.classroom",
@@ -194,6 +201,10 @@ class KidsAccessibilityService : AccessibilityService() {
     private var crawlerJob: Job? = null
     private var lockedCourseTitle: String? = null
     private var lockedCourseGrade: String? = null
+    @Volatile private var activeTargetChildId: String? = null
+    @Volatile private var activeTargetChildEmail: String? = null
+    @Volatile private var activeTargetChildGrade: String? = null
+    @Volatile private var activeTargetChildName: String? = null
     private val visitedPostFingerprints = ConcurrentHashMap.newKeySet<String>()
     private val capturedAttachmentNames = ConcurrentHashMap.newKeySet<String>()
     @Volatile var isDispatchingCrawlerGesture: Boolean = false
@@ -237,6 +248,25 @@ class KidsAccessibilityService : AccessibilityService() {
                     CrawlerTraceLogger.log("CONTROL", "Received ACTION_SHOW_OVERLAY via broadcast")
                     getOrCreateOverlay().show()
                 }
+                ACTION_START_FULL_AUTO_CAPTURE -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_START_FULL_AUTO_CAPTURE via broadcast from K.I.D.S. Vault")
+                    activeTargetChildId = intent?.getStringExtra(EXTRA_CHILD_ID)
+                    activeTargetChildEmail = intent?.getStringExtra(EXTRA_CHILD_EMAIL)
+                    activeTargetChildGrade = intent?.getStringExtra(EXTRA_CHILD_GRADE)
+                    activeTargetChildName = intent?.getStringExtra(EXTRA_CHILD_NAME)
+
+                    // 1. Launch Google Classroom app to foreground
+                    val launchIntent = packageManager.getLaunchIntentForPackage(CLASSROOM_PACKAGE_NAME)?.apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    }
+                    if (launchIntent != null) {
+                        startActivity(launchIntent)
+                    }
+
+                    // 2. Activate overlay and start autonomous capture
+                    getOrCreateOverlay().show()
+                    getOrCreateOverlay().startAutoScroll()
+                }
             }
         }
     }
@@ -249,6 +279,7 @@ class KidsAccessibilityService : AccessibilityService() {
             addAction(ACTION_START_CRAWL)
             addAction(ACTION_STOP_CRAWL)
             addAction(ACTION_SHOW_OVERLAY)
+            addAction(ACTION_START_FULL_AUTO_CAPTURE)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(crawlerControlReceiver, controlFilter, Context.RECEIVER_EXPORTED)
@@ -569,16 +600,54 @@ class KidsAccessibilityService : AccessibilityService() {
         val manifest = StreamManifest()
         val surveyStartTime = System.currentTimeMillis()
         val db = KidsDatabase.getInstance(applicationContext)
-        val child = db.childProfileDao().getAllChildren().firstOrNull()?.firstOrNull()
-        val activeCourseGrade = child?.grade
+        val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
+            db.childProfileDao().getChildById(activeTargetChildId!!)
+        } else {
+            db.childProfileDao().getAllChildrenDirect().firstOrNull()
+        }
+        val targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
+        val activeCourseGrade = activeTargetChildGrade ?: targetChild?.grade
         var activeCourseTitle: String? = null
 
         // =========================================================================
-        // PRE-FLIGHT: Verify Classroom account matches target child
+        // PRE-FLIGHT 0: Wait for Classroom to be active window
         // =========================================================================
-        if (!child?.accountEmail.isNullOrBlank()) {
-            ensureClassroomAccount(child.accountEmail)
+        crawlerOverlay?.updateStatus("Launching Classroom...", "Preparing autonomous capture...")
+        var isClassroomForeground = false
+        var waitSteps = 0
+        while (serviceScope.isActive && waitSteps < 20) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                val pkg = root.packageName?.toString() ?: ""
+                root.recycle()
+                if (pkg.contains("classroom") || isAuthorizedSchoolApp(pkg)) {
+                    isClassroomForeground = true
+                    break
+                }
+            }
+            delay(500)
+            waitSteps++
         }
+
+        if (!isClassroomForeground) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Classroom did not reach foreground within 10s. Retrying launch...")
+            relaunchSchoolApp()
+            delay(2000)
+        }
+
+        // =========================================================================
+        // PRE-FLIGHT 1: Verify Classroom account matches target child
+        // =========================================================================
+        if (!targetEmail.isNullOrBlank()) {
+            ensureClassroomAccount(targetEmail)
+            delay(1000)
+        }
+
+        // =========================================================================
+        // PRE-FLIGHT 2: Automatically enter Class Stream if on Classes List screen
+        // =========================================================================
+        ensureInClassStream(activeCourseTitle, activeCourseGrade)
+        delay(800)
 
         // =========================================================================
         // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
@@ -1287,7 +1356,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 dispatchBackAction = { performGlobalAction(GLOBAL_ACTION_BACK) }
             )
 
-            val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = child?.accountEmail)
+            val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = targetEmail ?: targetChild?.accountEmail)
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
         }
 
@@ -1307,6 +1376,7 @@ class KidsAccessibilityService : AccessibilityService() {
         crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
             stopDeepCrawl()
             triggerDriveSync(applicationContext)
+            relaunchKidsApp()
         }
     }
 
@@ -3075,9 +3145,17 @@ class KidsAccessibilityService : AccessibilityService() {
         val textList = mutableListOf<String>()
         collectQuickText(root, textList)
         val combined = textList.joinToString(" ").lowercase()
-        return combined.contains("class options for") ||
-                (combined.contains("google classroom") && !combined.contains("tab 1 of")) ||
-                (combined.contains("classes") && (combined.contains("grade") || combined.contains("enrolled") || combined.contains("teaching") || combined.contains("joined")))
+        val hasTextIndicators = combined.contains("class options for") ||
+                (combined.contains("google classroom") && !combined.contains("tab 1 of") && !combined.contains("stream")) ||
+                (combined.contains("classes") && (combined.contains("grade") || combined.contains("enrolled") || combined.contains("teaching") || combined.contains("joined") || combined.contains("all classes")))
+
+        if (hasTextIndicators) return true
+
+        val cardCandidates = mutableListOf<AccessibilityNodeInfo>()
+        collectCourseCardNodes(root, cardCandidates)
+        val hasCourseCard = cardCandidates.isNotEmpty()
+        cardCandidates.forEach { it.recycle() }
+        return hasCourseCard
     }
 
     private fun extractCourseTitle(rootNode: AccessibilityNodeInfo): String? {
@@ -3241,6 +3319,65 @@ class KidsAccessibilityService : AccessibilityService() {
             return isReentrySuccessful
         }
         return false
+    }
+
+    /**
+     * Ensures Google Classroom is navigated into the class Stream feed.
+     * If Classroom is currently displaying the Classes List (course cards/banners),
+     * automatically locates the child's class card and clicks it to enter the stream.
+     */
+    private suspend fun ensureInClassStream(targetCourseTitle: String?, targetGrade: String?): Boolean {
+        CrawlerTraceLogger.log("STREAM_SURVEY", "Verifying Classroom is inside class Stream feed...")
+        var attempts = 0
+        val maxAttempts = 12
+        while (serviceScope.isActive && attempts < maxAttempts) {
+            val root = rootInActiveWindow
+            if (root == null) {
+                delay(400)
+                attempts++
+                continue
+            }
+
+            if (isStreamOrClassworkView(root)) {
+                root.recycle()
+                CrawlerTraceLogger.log("STREAM_SURVEY", "Confirmed inside class Stream feed.")
+                return true
+            }
+
+            if (isClassesListScreen(root)) {
+                CrawlerTraceLogger.log(
+                    "STREAM_SURVEY",
+                    "Classroom is at Classes List screen. Automatically selecting class banner ('${targetCourseTitle ?: targetGrade ?: "Primary Class"}')..."
+                )
+                crawlerOverlay?.updateStatus("Entering Class Stream...", targetCourseTitle ?: targetGrade ?: "Selecting class...")
+                val entered = recoverToStreamFromClassesList(root, targetCourseTitle, targetGrade)
+                root.recycle()
+                if (entered) {
+                    delay(1500)
+                    return true
+                }
+            } else {
+                root.recycle()
+            }
+
+            delay(600)
+            attempts++
+        }
+        return false
+    }
+
+    private fun relaunchKidsApp() {
+        try {
+            val launchIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            }
+            if (launchIntent != null) {
+                startActivity(launchIntent)
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Restored K.I.D.S. Vault to foreground after auto-capture completion.")
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Could not restore K.I.D.S. to foreground: ${e.message}")
+        }
     }
 
     private fun isCommentsOnlyScreen(rootNode: AccessibilityNodeInfo): Boolean {
