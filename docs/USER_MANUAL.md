@@ -207,9 +207,10 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
    - Tap **Select Account** to choose the Google account that your child uses for Google Classroom (e.g., `student@school.edu` or a family account).
    - > [!TIP]
    - > **Zero Password Typing:** Because this account is already authenticated on your Android phone, K.I.D.S. maps notifications and classroom streams by email handle without requiring school IT administration passwords or OAuth approval!
-3. **Historical Backfill Assistant & Storage Status**:
-   - Because you already enabled the **Accessibility Service** and **Storage Access** in Step 0, green checkmark badges confirm their active status.
-   - If either service was inadvertently switched off, quick-reconnect buttons allow instant re-enablement right within Step 2.
+3. **Historical Backfill Assistant & 1-Click Auto-Capture**:
+   - Because you already enabled the **Accessibility Service** and **Storage Access** in Step 0, a green checkmark badge (**✓ Assistant Ready**) confirms active status.
+   - **Direct 1-Click Auto-Capture Button (`▶ 1-Click Auto-Capture`)**: You can launch the entire autonomous capture directly from Step 2! Tapping this prominent orange button launches Google Classroom, automatically identifies your child's class banner card on the Classes list, enters the stream, sweeps all posts & attachments, and harvests files into your Vault.
+   - **Manual Preview Option (`Open Only`)**: A secondary button is available if you just want to open Classroom manually without automated scrolling.
    - **Autonomous Attachment Capture**: When tapping attachment chips in post detail screens, K.I.D.S. recognizes both `Send file...` and `Open with...` from the viewer overflow menu, opening Android's system share sheet and directly selecting **K.I.D.S. Vault** (orange shield icon) to stage files offline.
    - **True Physical Drive Sync Guarantee**: A sync cycle is only complete when 100% of discovered files are physically verified and stored in your Google Drive vault (`attachments/`). The assistant runs multi-pass auto-recovery until every pending file is captured.
 4. **Dynamic Button Validation & Skip Handling**:

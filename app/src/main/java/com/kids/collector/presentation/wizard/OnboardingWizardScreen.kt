@@ -1087,55 +1087,121 @@ fun OnboardingWizardScreen(
                                     color = TextSecondary
                                 )
 
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    if (hasAccessibility) {
-                                        Surface(
-                                            color = SuccessGreen.copy(alpha = 0.15f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        ) {
+                                if (hasAccessibility) {
+                                    Card(
+                                        colors = CardDefaults.cardColors(containerColor = AmberOrange.copy(alpha = 0.10f)),
+                                        shape = RoundedCornerShape(8.dp),
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Autonomous Backfill",
+                                                    style = MaterialTheme.typography.titleSmall,
+                                                    color = DeepNavy,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                                Surface(
+                                                    color = SuccessGreen.copy(alpha = 0.15f),
+                                                    shape = RoundedCornerShape(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "✓ Assistant Ready",
+                                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                                                        style = MaterialTheme.typography.labelSmall,
+                                                        color = DeepNavy,
+                                                        fontWeight = FontWeight.SemiBold
+                                                    )
+                                                }
+                                            }
                                             Text(
-                                                text = "✓ Backfill Assistant Active",
-                                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                                style = MaterialTheme.typography.labelMedium,
-                                                color = DeepNavy
+                                                text = "Tap below to launch Classroom, automatically enter your child's class stream, extract all posts & attachments, and harvest Drive files into your Vault.",
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = TextPrimary
                                             )
-                                        }
-                                        OutlinedButton(
-                                            onClick = {
-                                                val launchIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")?.apply {
-                                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Button(
+                                                    onClick = {
+                                                        if (!PermissionHelper.isAccessibilityGranted(context)) {
+                                                            Toast.makeText(context, "Please enable K.I.D.S. Accessibility Service first", Toast.LENGTH_LONG).show()
+                                                            PermissionHelper.openAccessibilitySettings(context)
+                                                        } else {
+                                                            val classroomPkg = KidsAccessibilityService.CLASSROOM_PACKAGE_NAME
+                                                            val launchIntent = context.packageManager.getLaunchIntentForPackage(classroomPkg)?.apply {
+                                                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                                                            }
+                                                            if (launchIntent == null) {
+                                                                Toast.makeText(context, "Google Classroom app is not installed", Toast.LENGTH_LONG).show()
+                                                            } else {
+                                                                val effectiveChildName = childName.trim().ifBlank { "Child" }
+                                                                Toast.makeText(context, "Starting 1-Click Auto-Capture for $effectiveChildName...", Toast.LENGTH_SHORT).show()
+                                                                context.startActivity(launchIntent)
+                                                                val captureIntent = Intent(KidsAccessibilityService.ACTION_START_FULL_AUTO_CAPTURE).apply {
+                                                                    setPackage(context.packageName)
+                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_ID, DriveVaultManager.currentChildVault?.childFolderId ?: "child_$effectiveChildName")
+                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_EMAIL, studentEmail.trim())
+                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_GRADE, "")
+                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_NAME, effectiveChildName)
+                                                                }
+                                                                context.sendBroadcast(captureIntent)
+                                                            }
+                                                        }
+                                                    },
+                                                    colors = ButtonDefaults.buttonColors(containerColor = AmberOrange),
+                                                    modifier = Modifier
+                                                        .weight(1f)
+                                                        .defaultMinSize(minHeight = 48.dp),
+                                                    shape = RoundedCornerShape(8.dp)
+                                                ) {
+                                                    Text(
+                                                        text = "▶ 1-Click Auto-Capture",
+                                                        color = TextPrimary,
+                                                        style = MaterialTheme.typography.titleSmall,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
                                                 }
-                                                if (launchIntent != null) {
-                                                    context.startActivity(launchIntent)
-                                                } else {
-                                                    Toast.makeText(context, "Google Classroom is not installed", Toast.LENGTH_SHORT).show()
+                                                OutlinedButton(
+                                                    onClick = {
+                                                        val launchIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")?.apply {
+                                                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+                                                        }
+                                                        if (launchIntent != null) {
+                                                            context.startActivity(launchIntent)
+                                                        } else {
+                                                            Toast.makeText(context, "Google Classroom is not installed", Toast.LENGTH_SHORT).show()
+                                                        }
+                                                    },
+                                                    modifier = Modifier.defaultMinSize(minHeight = 48.dp)
+                                                ) {
+                                                    Text("Open Only")
                                                 }
-                                            },
-                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                                        ) {
-                                            Text("Open Classroom")
+                                            }
                                         }
-                                    } else {
-                                        OutlinedButton(
-                                            onClick = {
-                                                try {
-                                                    val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
-                                                        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-                                                    }
-                                                    context.startActivity(intent)
-                                                    Toast.makeText(context, "Turn on 'K.I.D.S.' under Downloaded Apps / Accessibility", Toast.LENGTH_LONG).show()
-                                                } catch (e: Exception) {
-                                                    Toast.makeText(context, "Could not open Accessibility Settings", Toast.LENGTH_SHORT).show()
+                                    }
+                                } else {
+                                    OutlinedButton(
+                                        onClick = {
+                                            try {
+                                                val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS).apply {
+                                                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
                                                 }
-                                            },
-                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp)
-                                        ) {
-                                            Text("Enable Backfill Assistant")
-                                        }
+                                                context.startActivity(intent)
+                                                Toast.makeText(context, "Turn on 'K.I.D.S.' under Downloaded Apps / Accessibility", Toast.LENGTH_LONG).show()
+                                            } catch (e: Exception) {
+                                                Toast.makeText(context, "Could not open Accessibility Settings", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp)
+                                    ) {
+                                        Text("Enable Backfill Assistant (Accessibility)")
                                     }
                                 }
 
