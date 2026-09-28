@@ -1424,17 +1424,21 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue // Already physically downloaded and synced, or confirmed unshareable/restricted
             }
 
-            if (index > 0) {
-                // Viewport reset: Rewind to top of detail view before querying subsequent attachments
+            // Speed optimization: First check if target chip is already visible in the active viewport
+            var freshRoot = rootInActiveWindow ?: continue
+            var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
+
+            if (targetChip == null && index > 0) {
+                // Not visible in current viewport: Reset viewport to top of detail view before searching
+                freshRoot.recycle()
                 var rewindDone = false
                 crawlerOverlay?.performDetailScrollUp { rewindDone = true }
                 waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-                delay(400)
-            }
+                delay(250)
 
-            // Fresh window inspection: Locate the chip in the currently active detail window
-            val freshRoot = rootInActiveWindow ?: continue
-            var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
+                freshRoot = rootInActiveWindow ?: continue
+                targetChip = findAttachmentChipByFileName(freshRoot, fileName)
+            }
 
             // Dynamic Boundary-Aware Detail Search:
             // Replaces arbitrary hardcoded swipe counts with physical boundary detection.
@@ -1518,7 +1522,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         dispatchTap(chipBounds.centerX().toFloat(), chipBounds.centerY().toFloat())
                     }
                     targetChip.recycle()
-                    delay(800)
+                    delay(200)
 
                     // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
                     automateViewerShareOrDownload(fileName)
@@ -1537,7 +1541,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         checkRoot.recycle()
                         isDetail
                     }
-                    delay(400)
+                    delay(200)
                 } finally {
                     activeTargetNoticeId = null
                     activeTargetAttachmentFileName = null
@@ -1611,41 +1615,45 @@ class KidsAccessibilityService : AccessibilityService() {
                     dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
                 }
                 overflow.recycle()
-                delay(500) // Wait for popup menu to appear
-
+                // Reactive polling for popup menu appearance (replaces static delay)
                 var popupShare: AccessibilityNodeInfo? = null
-                val popupRoot = rootInActiveWindow
-                if (popupRoot != null) {
-                    popupShare = findExplicitCopyOrDownloadButton(popupRoot) ?: findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
-                    popupRoot.recycle()
-                }
-                if (popupShare == null) {
-                    for (w in windows) {
-                        val r = w.root ?: continue
-                        popupShare = findExplicitCopyOrDownloadButton(r) ?: findShareButton(r) ?: findDownloadButtonNode(r)
-                        if (popupShare != null) {
-                            r.recycle()
-                            break
-                        }
-                        r.recycle()
+                waitForCondition(timeoutMs = 1200, pollIntervalMs = 75) {
+                    val popupRoot = rootInActiveWindow
+                    if (popupRoot != null) {
+                        popupShare = findExplicitCopyOrDownloadButton(popupRoot) ?: findShareButton(popupRoot) ?: findDownloadButtonNode(popupRoot)
+                        popupRoot.recycle()
                     }
+                    if (popupShare == null) {
+                        for (w in windows) {
+                            val r = w.root ?: continue
+                            popupShare = findExplicitCopyOrDownloadButton(r) ?: findShareButton(r) ?: findDownloadButtonNode(r)
+                            if (popupShare != null) {
+                                r.recycle()
+                                break
+                            }
+                            r.recycle()
+                        }
+                    }
+                    popupShare != null
                 }
                 if (popupShare != null) {
-                    val clickedLabel = popupShare.text?.toString() ?: popupShare.contentDescription?.toString() ?: "Send file / copy"
+                    val clickedLabel = popupShare?.text?.toString() ?: popupShare?.contentDescription?.toString() ?: "Send file / copy"
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" in overflow menu. Clicking it.")
-                    val clickOk = popupShare.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val clickOk = popupShare?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
                     if (!clickOk) {
                         val b = Rect()
-                        popupShare.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                        popupShare?.getBoundsInScreen(b)
+                        if (b.width() > 0) {
+                            dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                        }
                     }
-                    popupShare.recycle()
+                    popupShare?.recycle()
                     sharedOrDownloaded = true
                 } else {
                     // Overflow menu has NO share/copy/download options (e.g. School Domain Restricted PDF)
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "No share/copy/download options in overflow menu for \"$fileName\". Dismissing popup.")
                     performGlobalAction(GLOBAL_ACTION_BACK)
-                    delay(500)
+                    delay(300)
                 }
             } else {
                 // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button
@@ -1669,7 +1677,6 @@ class KidsAccessibilityService : AccessibilityService() {
 
         // Step B: Check window state after scanning for Share action
         if (sharedOrDownloaded) {
-            delay(600) // Allow system to open share sheet
             selectKidsInSystemChooser()
         } else {
             // No share action was present in viewer/overflow (e.g. internal audio player, school policy restricted PDF).
