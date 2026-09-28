@@ -21,6 +21,7 @@ import androidx.work.WorkManager
 import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.data.db.NoticeEntity
+import com.kids.collector.domain.classifier.ClassroomDateParser
 import com.kids.collector.domain.classifier.ContentClassifier
 import com.kids.collector.domain.dedupe.DeduplicationEngine
 import com.kids.collector.domain.model.ChildProfile
@@ -39,6 +40,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.File
 import java.security.MessageDigest
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 
@@ -570,6 +572,13 @@ class KidsAccessibilityService : AccessibilityService() {
         val child = db.childProfileDao().getAllChildren().firstOrNull()?.firstOrNull()
         val activeCourseGrade = child?.grade
         var activeCourseTitle: String? = null
+
+        // =========================================================================
+        // PRE-FLIGHT: Verify Classroom account matches target child
+        // =========================================================================
+        if (!child?.accountEmail.isNullOrBlank()) {
+            ensureClassroomAccount(child.accountEmail)
+        }
 
         // =========================================================================
         // PASS 1: PRE-FLIGHT STREAM SURVEY (Discover Start, End, and Total Count)
@@ -1244,20 +1253,54 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        // Cycle Completion Verification
+        // Cycle Completion Verification & Phase 3 Drive Harvester Transition
         val finalCompleted = manifest.completedCount
-        val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
-        val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
-        val remainingPending = allAttachments.filter { att ->
+        val allAttachmentsDirect = db.attachmentDao().getAllAttachmentsDirect()
+        val remainingPending = allAttachmentsDirect.filter { att ->
             att.localUri.isBlank() &&
             (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
             att.driveFileId?.startsWith("restricted_") != true
         }
 
-        val completionMessage = if (remainingPending.isEmpty()) {
+        if (remainingPending.isNotEmpty() && crawlerOverlay?.isAutoScrollingActive() == true) {
+            CrawlerTraceLogger.log(
+                "DEEP_CRAWLER",
+                "Classroom fast metadata pass complete with ${remainingPending.size} pending attachments. Launching Phase 3: Google Drive Shared Tab Batch Harvester..."
+            )
+            crawlerOverlay?.updateStatus("Phase 3: Drive Harvester", "Launching Drive Shared Tab (${remainingPending.size} files)...")
+
+            val driveHarvester = GoogleDriveSharedHarvester(
+                context = applicationContext,
+                serviceScope = serviceScope,
+                database = db,
+                crawlerOverlay = crawlerOverlay,
+                rootInActiveWindowProvider = { rootInActiveWindow },
+                dispatchTapAction = { x, y -> dispatchTap(x, y) },
+                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
+                dispatchSwipeAction = { startX, startY, endX, endY, duration ->
+                    dispatchSwipe(startX, startY, endX, endY, duration)
+                },
+                selectKidsInChooserAction = { selectKidsInSystemChooser() },
+                waitForConditionAction = { timeoutMs, pollIntervalMs, condition ->
+                    waitForCondition(timeoutMs, pollIntervalMs, condition)
+                }
+            )
+
+            val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = child?.accountEmail)
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
+        }
+
+        val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
+        val finalPending = db.attachmentDao().getAllAttachmentsDirect().filter { att ->
+            att.localUri.isBlank() &&
+            (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
+            att.driveFileId?.startsWith("restricted_") != true
+        }
+
+        val completionMessage = if (finalPending.isEmpty()) {
             "Auto-capture 100% complete: All attachments physically downloaded and synced to Drive ($totalFiles files saved)!"
         } else {
-            "Auto-capture sweep complete: $totalFiles files saved (${remainingPending.size} files uncaptured after $recoveryPassCount recovery passes)."
+            "Auto-capture sweep complete: $totalFiles files saved (${finalPending.size} files uncaptured after Classroom & Drive passes)."
         }
         CrawlerTraceLogger.log("DEEP_CRAWLER", completionMessage)
         crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
@@ -1322,6 +1365,9 @@ class KidsAccessibilityService : AccessibilityService() {
             body = combinedText
         )
 
+        val parsedDate = ClassroomDateParser.parse(combinedText)
+        val postTimestamp = parsedDate?.timestampMs ?: System.currentTimeMillis()
+
         var noticeEntity = db.noticeDao().findByHash(hash)
         val noticeId = noticeEntity?.noticeId ?: UUID.randomUUID().toString()
         if (noticeEntity == null) {
@@ -1333,7 +1379,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 title = title,
                 body = combinedText,
                 sender = "Google Classroom",
-                timestampMs = System.currentTimeMillis(),
+                timestampMs = postTimestamp,
                 hashSha256 = hash,
                 syncStatus = SyncStatus.PENDING.name,
                 driveFileId = null,
@@ -1341,7 +1387,9 @@ class KidsAccessibilityService : AccessibilityService() {
             )
             db.noticeDao().insert(noticeEntity)
             crawlerOverlay?.incrementNoticeCount()
-            CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled: \"$title\" ($category)")
+            CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled: \"$title\" ($category, date: ${parsedDate?.canonicalDate ?: "current"})")
+        } else if (parsedDate != null && noticeEntity.timestampMs != postTimestamp) {
+            db.noticeDao().update(noticeEntity.copy(timestampMs = postTimestamp))
         }
 
         // 4. Discover and register attachments
@@ -1409,156 +1457,20 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        val pendingTargetFileNames = allAttachments.map { it.fileName }
+        val totalAttCount = db.attachmentDao().getAttachmentsForNotice(noticeId).size
+        db.noticeDao().update(noticeEntity.copy(attachmentCount = totalAttCount))
+
         for (att in allAttachments) {
             att.downloadNode?.recycle()
             att.clickableChip?.recycle()
         }
 
-        // Autonomous Attachment Ingestion: Systematically re-query fresh nodes for each attachment chip,
-        // bring onto screen using ACTION_SHOW_ON_SCREEN, open the viewer, and trigger Share to "K.I.D.S. Vault"
-        for ((index, fileName) in pendingTargetFileNames.withIndex()) {
-            val existingAttachment = db.attachmentDao().findByNoticeAndFileName(noticeId, fileName)
-            if (existingAttachment != null && (existingAttachment.syncStatus == SyncStatus.SYNCED.name || existingAttachment.driveFileId?.startsWith("restricted_") == true) &&
-                !existingAttachment.driveFileId.isNullOrBlank() && !existingAttachment.driveFileId.startsWith("virtual_")) {
-                continue // Already physically downloaded and synced, or confirmed unshareable/restricted
-            }
+        CrawlerTraceLogger.log(
+            "FAST_METADATA",
+            "Indexed notice \"$title\" with $totalAttCount attachments (timestamp=$postTimestamp). Fast pass skipping in-viewer download; queued for Drive batch harvest."
+        )
 
-            // Speed optimization: First check if target chip is already visible in the active viewport
-            var freshRoot = rootInActiveWindow ?: continue
-            var targetChip: AccessibilityNodeInfo? = findAttachmentChipByFileName(freshRoot, fileName)
-
-            if (targetChip == null && index > 0) {
-                // Not visible in current viewport: Reset viewport to top of detail view before searching
-                freshRoot.recycle()
-                var rewindDone = false
-                crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-                delay(250)
-
-                freshRoot = rootInActiveWindow ?: continue
-                targetChip = findAttachmentChipByFileName(freshRoot, fileName)
-            }
-
-            // Dynamic Boundary-Aware Detail Search:
-            // Replaces arbitrary hardcoded swipe counts with physical boundary detection.
-            // Scrolls dynamically until target chip is found or container reaches the physical limit!
-            if (targetChip == null) {
-                // Phase 1: Downward boundary-aware search using physical gestures
-                var previousBottomFingerprint = ""
-                var scrollDownCount = 0
-                while (targetChip == null && scrollDownCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-                    val currentRoot = rootInActiveWindow ?: break
-                    val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                    currentRoot.recycle()
-
-                    scrollDownCount++
-                    var scrollDone = false
-                    crawlerOverlay?.performDetailScrollDown { scrollDone = true }
-                    waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
-                    delay(500) // Essential settling delay for RecyclerView item binding
-
-                    val afterScrollRoot = rootInActiveWindow ?: break
-                    val newFingerprint = computeViewportContentFingerprint(afterScrollRoot)
-                    targetChip = findAttachmentChipByFileName(afterScrollRoot, fileName)
-                    afterScrollRoot.recycle()
-
-                    val hasHitBottomBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousBottomFingerprint)
-                    previousBottomFingerprint = currentFingerprint
-
-                    if (targetChip != null || hasHitBottomBoundary) {
-                        break
-                    }
-                }
-
-                // Phase 2: If chip wasn't below, rewind upward using physical gestures
-                if (targetChip == null) {
-                    var previousTopFingerprint = ""
-                    var rewindCount = 0
-                    while (targetChip == null && rewindCount < 6 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-                        val currentRoot = rootInActiveWindow ?: break
-                        val currentFingerprint = computeViewportContentFingerprint(currentRoot)
-                        currentRoot.recycle()
-
-                        rewindCount++
-                        var rewindDone = false
-                        crawlerOverlay?.performDetailScrollUp { rewindDone = true }
-                        waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { rewindDone }
-                        delay(500)
-
-                        val afterRewindRoot = rootInActiveWindow ?: break
-                        val newFingerprint = computeViewportContentFingerprint(afterRewindRoot)
-                        targetChip = findAttachmentChipByFileName(afterRewindRoot, fileName)
-                        afterRewindRoot.recycle()
-
-                        val hasHitTopBoundary = (newFingerprint == currentFingerprint) || (newFingerprint == previousTopFingerprint)
-                        previousTopFingerprint = currentFingerprint
-
-                        if (targetChip != null || hasHitTopBoundary) {
-                            break
-                        }
-                    }
-                }
-            }
-            freshRoot.recycle()
-
-            if (targetChip != null) {
-                crawlerOverlay?.updateStatus("Sharing (${index + 1}/${pendingTargetFileNames.size})...", fileName)
-                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Targeting fresh attachment chip for \"$fileName\"")
-
-                activeTargetNoticeId = noticeId
-                activeTargetAttachmentFileName = fileName
-
-                try {
-                    // Bring to screen and focus with zero guessing!
-                    targetChip.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
-                    targetChip.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-                    delay(200)
-
-                    val clicked = targetChip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val chipBounds = Rect()
-                        targetChip.getBoundsInScreen(chipBounds)
-                        dispatchTap(chipBounds.centerX().toFloat(), chipBounds.centerY().toFloat())
-                    }
-                    targetChip.recycle()
-                    delay(200)
-
-                    // Automate Share to "K.I.D.S. Vault" inside viewer and return to detail view
-                    automateViewerShareOrDownload(fileName)
-
-                    // Check if file was captured by ShareTargetActivity
-                    val updatedAtt = db.attachmentDao().findByNoticeAndFileName(noticeId, fileName)
-                    if (updatedAtt != null && updatedAtt.localUri.isNotBlank() && File(updatedAtt.localUri).exists()) {
-                        if (capturedAttachmentNames.add(fileName)) {
-                            crawlerOverlay?.incrementAttachmentCount()
-                        }
-                    }
-                    // Ensure detail view UI tree is firmly restored before querying next attachment
-                    waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
-                        val checkRoot = rootInActiveWindow ?: return@waitForCondition false
-                        val isDetail = isPostDetailView(checkRoot)
-                        checkRoot.recycle()
-                        isDetail
-                    }
-                    delay(200)
-                } finally {
-                    activeTargetNoticeId = null
-                    activeTargetAttachmentFileName = null
-                }
-            } else {
-                CrawlerTraceLogger.log("ATTACHMENT_AUTO_TAP", "Could not locate chip for \"$fileName\" in detail view")
-            }
-        }
-
-        if (allAttachments.isNotEmpty()) {
-            delay(1000) // Allow file staging to finalize
-            val stagedCount = com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-            repeat(stagedCount) {
-                crawlerOverlay?.incrementAttachmentCount()
-            }
-        }
-        return capturedAttachmentNames.size
+        return allAttachments.size
     }
 
     /**
@@ -2269,6 +2181,153 @@ class KidsAccessibilityService : AccessibilityService() {
         delay(150)
         isDispatchingCrawlerGesture = false
         return dispatched && completed
+    }
+
+    private suspend fun dispatchLongPress(x: Float, y: Float): Boolean {
+        isDispatchingCrawlerGesture = true
+        val path = Path().apply {
+            moveTo(x, y)
+        }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 800)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        var completed = false
+        val dispatched = try {
+            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(gestureDescription: GestureDescription?) {
+                    completed = true
+                }
+
+                override fun onCancelled(gestureDescription: GestureDescription?) {
+                    completed = false
+                }
+            }, null)
+        } catch (e: Exception) {
+            false
+        }
+        delay(900)
+        isDispatchingCrawlerGesture = false
+        return dispatched && completed
+    }
+
+    private fun findAccountAvatarNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val isAvatar = desc.contains("google account") || desc.contains("signed in as") ||
+                desc.contains("account and settings") || viewId.contains("og_apd_ring_view") ||
+                viewId.contains("account_avatar")
+
+        if (isAvatar) {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findAccountAvatarNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findNodeContainingText(node: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+
+        if (text.contains(query) || desc.contains(query)) {
+            return AccessibilityNodeInfo.obtain(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNodeContainingText(child, query)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private suspend fun ensureClassroomAccount(targetEmail: String): Boolean {
+        val cleanTarget = targetEmail.trim().lowercase(Locale.US)
+        val root = rootInActiveWindow ?: return false
+        val avatarNode = findAccountAvatarNode(root)
+        if (avatarNode == null) {
+            root.recycle()
+            return true
+        }
+
+        val avatarDesc = avatarNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val avatarText = avatarNode.text?.toString()?.lowercase(Locale.US) ?: ""
+
+        if (avatarDesc.contains(cleanTarget) || avatarText.contains(cleanTarget)) {
+            CrawlerTraceLogger.log("ACCOUNT_VERIFY", "Classroom account verified: $cleanTarget")
+            avatarNode.recycle()
+            root.recycle()
+            return true
+        }
+
+        CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Classroom account is not $cleanTarget (found: \"$avatarDesc\"). Switching...")
+        crawlerOverlay?.updateStatus("Switching Account...", "Selecting $cleanTarget in Classroom")
+
+        val clicked = avatarNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (!clicked) {
+            val rect = Rect()
+            avatarNode.getBoundsInScreen(rect)
+            dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+        }
+        avatarNode.recycle()
+        root.recycle()
+
+        delay(800L)
+        var accountSwitched = false
+        val dialogAppeared = waitForCondition(4000L, 250L) {
+            val dialogRoot = rootInActiveWindow ?: return@waitForCondition false
+            val hasNode = findNodeContainingText(dialogRoot, cleanTarget) != null
+            dialogRoot.recycle()
+            hasNode
+        }
+
+        if (dialogAppeared) {
+            val dialogRoot = rootInActiveWindow
+            if (dialogRoot != null) {
+                val targetNode = findNodeContainingText(dialogRoot, cleanTarget)
+                if (targetNode != null) {
+                    val selectOk = if (targetNode.isClickable) {
+                        targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    } else {
+                        findClickableAncestor(targetNode)?.let {
+                            val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            it.recycle()
+                            ok
+                        } ?: false
+                    }
+                    if (!selectOk) {
+                        val r = Rect()
+                        targetNode.getBoundsInScreen(r)
+                        dispatchTap(r.centerX().toFloat(), r.centerY().toFloat())
+                    }
+                    targetNode.recycle()
+                    accountSwitched = true
+                }
+                dialogRoot.recycle()
+            }
+        }
+
+        if (accountSwitched) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Successfully switched Classroom account to $cleanTarget")
+            delay(1500L)
+            return true
+        } else {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in Classroom account picker.")
+            return false
+        }
     }
 
     private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300): Boolean {
@@ -3537,6 +3596,9 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isAuthorizedSchoolApp(packageName: String): Boolean {
         val lower = packageName.lowercase()
+        if (GoogleDriveSharedHarvester.isDriveHarvestingActive && lower == "com.google.android.apps.docs") {
+            return true
+        }
         return AUTHORIZED_SCHOOL_PACKAGES.contains(lower) ||
                 lower == "com.google.android.apps.classroom" ||
                 lower.endsWith(".classroom") ||
@@ -3557,6 +3619,9 @@ class KidsAccessibilityService : AccessibilityService() {
         if (isHomeScreenOrLauncher(packageName)) return false
 
         val lower = packageName.lowercase()
+        if (GoogleDriveSharedHarvester.isDriveHarvestingActive && lower.startsWith("com.google.android.apps.docs")) {
+            return false
+        }
         return lower == "android" ||
                 lower == "com.android.systemui" ||
                 lower == "com.android.documentsui" ||

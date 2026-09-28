@@ -160,38 +160,62 @@ class ShareTargetActivity : Activity() {
                         val unlinkedAttachments = allAttachments.filter { it.localUri.isBlank() }
                         val candidatePool = if (unlinkedAttachments.isNotEmpty()) unlinkedAttachments else allAttachments
 
-                        matchingAttachment = candidatePool.firstOrNull { attachmentEntity ->
+                        val matchingCandidates = candidatePool.filter { attachmentEntity ->
                             val cleanExpected = attachmentEntity.fileName.replace("...", "").trim().lowercase()
                             val expectedBaseName = cleanExpected.substringBeforeLast('.')
                             val expectedExtension = cleanExpected.substringAfterLast('.', "")
                             val normalizedExpectedBaseName = normalizeForMatching(expectedBaseName)
 
                             val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
-                            if (!isExtensionCompatible) return@firstOrNull false
+                            if (!isExtensionCompatible) return@filter false
 
                             val targetDigits = Regex("\\d+").findAll(normalizedTargetBaseName).map { it.value }.toList()
                             val expectedDigits = Regex("\\d+").findAll(normalizedExpectedBaseName).map { it.value }.toList()
                             val isDigitsCompatible = targetDigits == expectedDigits
 
                             // 1. Direct or normalized match
-                            if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@firstOrNull true
+                            if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@filter true
 
                             // 2. Substantial prefix match (strictly requiring matching digits)
-                            if (isDigitsCompatible && normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName)) return@firstOrNull true
-                            if (isDigitsCompatible && normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName)) return@firstOrNull true
+                            if (isDigitsCompatible && normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName)) return@filter true
+                            if (isDigitsCompatible && normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName)) return@filter true
 
                             // 3. Substring containment (strictly requiring matching digits and tight length bounds)
                             if (isDigitsCompatible && Math.abs(normalizedTargetBaseName.length - normalizedExpectedBaseName.length) <= 4 &&
-                                (normalizedTargetBaseName.contains(normalizedExpectedBaseName) || normalizedExpectedBaseName.contains(normalizedTargetBaseName))) return@firstOrNull true
+                                (normalizedTargetBaseName.contains(normalizedExpectedBaseName) || normalizedExpectedBaseName.contains(normalizedTargetBaseName))) return@filter true
 
                             false
-                        } ?: if (unlinkedAttachments.size == 1) {
-                            // Fallback: Exactly 1 attachment is awaiting a local file with compatible extension
-                            val singleAttachment = unlinkedAttachments.first()
-                            val cleanExpected = singleAttachment.fileName.replace("...", "").trim().lowercase()
-                            val expectedExtension = cleanExpected.substringAfterLast('.', "")
-                            if (expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension) singleAttachment else null
-                        } else null
+                        }
+
+                        matchingAttachment = when {
+                            matchingCandidates.size == 1 -> matchingCandidates.first()
+                            matchingCandidates.size > 1 -> {
+                                val fileLastModified = queryFileLastModified(resolver, uri)
+                                if (fileLastModified != null && fileLastModified > 0L) {
+                                    var bestCandidate: com.kids.collector.data.db.AttachmentEntity? = null
+                                    var minDiff = Long.MAX_VALUE
+                                    for (cand in matchingCandidates) {
+                                        val parentNotice = db.noticeDao().findById(cand.noticeId)
+                                        if (parentNotice != null) {
+                                            val diff = Math.abs(parentNotice.timestampMs - fileLastModified)
+                                            if (diff < minDiff) {
+                                                minDiff = diff
+                                                bestCandidate = cand
+                                            }
+                                        }
+                                    }
+                                    bestCandidate ?: matchingCandidates.first()
+                                } else {
+                                    matchingCandidates.first()
+                                }
+                            }
+                            else -> if (unlinkedAttachments.size == 1) {
+                                val singleAttachment = unlinkedAttachments.first()
+                                val cleanExpected = singleAttachment.fileName.replace("...", "").trim().lowercase()
+                                val expectedExtension = cleanExpected.substringAfterLast('.', "")
+                                if (expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension) singleAttachment else null
+                            } else null
+                        }
                     }
 
                     if (matchingAttachment != null) {
@@ -250,6 +274,20 @@ class ShareTargetActivity : Activity() {
             name = uri.lastPathSegment
         }
         return name
+    }
+
+    private fun queryFileLastModified(resolver: android.content.ContentResolver, uri: Uri): Long? {
+        return try {
+            resolver.query(uri, null, null, null, null)?.use { cursor ->
+                val colIndex = cursor.getColumnIndex("last_modified")
+                val altIndex = if (colIndex == -1) cursor.getColumnIndex(android.provider.DocumentsContract.Document.COLUMN_LAST_MODIFIED) else colIndex
+                if (altIndex != -1 && cursor.moveToFirst()) {
+                    cursor.getLong(altIndex)
+                } else null
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun normalizeForMatching(input: String): String {

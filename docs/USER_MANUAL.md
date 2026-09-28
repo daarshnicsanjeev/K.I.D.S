@@ -595,14 +595,25 @@ Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically c
   - **True Bottom Confirmation:** Only after **5 consecutive scrolls where the screen remains physically static (`identicalScreenCount >= 5`)** does Pass 1 declare the true bottom of the academic year, guaranteeing that notices from earlier months (June, July, August) are completely cataloged.
 - **Instant Fast-Path Completion:** If all discovered notices already exist in local SQLite Room storage (`pendingCount == 0`), K.I.D.S. instantly displays `✓ Stream Up to Date (All X notices already captured)`, triggers background sync, and safely exits without running Pass 2.
 
-#### 2. Pass 2: Manifest-Driven Reverse Deep Ingestion (Bottom-to-Top)
+#### 2. Pass 2: Classroom Reverse Fast Metadata Sweep (Bottom-to-Top)
 - **Elimination of the Upward Rewind Pass:** In previous generation screen crawlers, reaching the stream bottom required an artificial "Pass 1.5 Rewind" consisting of 30 to 45 backward swipes just to return to the top, only to scroll all the way back down again during ingestion. K.I.D.S. eliminates this redundant rewind pass completely!
 - **Bottom-to-Top Reverse Traversal (`getNextPendingItemReverse()`):** Because the assistant is already resting at the chronological bottom of the stream when Pass 1 completes, it immediately begins deep capture right where it stopped. It retrieves pending items in reverse order—from the oldest post at the stream bottom (highest manifest index) upwards to the newest post at the top (index 1).
-- **40% to 50% Reduction in Total Swipes & Halved Crawl Time:** Eliminating the rewind pass and ingesting directly bottom-to-top cuts total screen swipes by **40% to 50%**, reduces battery drain, minimizes screen wear, and cuts the total historical crawl duration in half!
-- **Upward Progression & Micro-Nudges:** As the assistant processes each notice, it progresses upwards using backward physical scrolls (`performScrollBackward()`) and gentle 16% micro-nudges.
-- **Live Counter & Percentage Metric:** Parents observe real-time progress on the floating status pill:
-  $$\text{Capturing (X/Total - Y%)...}$$
-  $$\text{[Current Announcement Headline Preview]}$$
+- **Fast Metadata Sweep (Zero In-Viewer Delays):** Rather than opening hundreds of individual attachment viewers in Classroom (which previously took 2+ hours and caused app freezes), K.I.D.S. performs an ultra-fast metadata pass:
+  1. Taps each post to open its detail view.
+  2. Extracts 100% full post body text and author details.
+  3. Uses **`ClassroomDateParser`** to extract the post's exact calendar date (e.g. `"Jun 12"` or `"Posted Aug 15, 10:30 AM"`).
+  4. Discovers all attachment chips and registers them directly in local SQLite Room storage as `SyncStatus.PENDING`.
+  5. Instantly taps `"Navigate up"` back to the stream feed in ~1.2 seconds!
+  An entire stream of 100+ notices is indexed in **under 3 minutes**!
+
+#### 3. Phase 3: Google Drive Shared Tab Batch Harvester
+Once the Classroom fast metadata sweep finishes, K.I.D.S. automatically transitions to Google Drive for binary attachment collection:
+- **Automatic Drive Launch & Account Switching:** Opens the Google Drive Android app (`com.google.android.apps.docs`). If Drive is opened in the wrong account, K.I.D.S. inspects the OneGoogle avatar and switches to the child's school email.
+- **"Shared" ("Shared with me") Tab Navigation:** Navigates directly to the "Shared" tab where teachers' shared worksheets and circulars reside (avoiding the empty `My Drive/Classroom` directory).
+- **Multi-Selection Batches (Up to 15 Files):** Long-presses matching files and batch-selects up to 15 files at once.
+- **Strict Folder Exclusion:** Folders are deliberately skipped during multi-selection because Google Drive disables the "Send a copy" menu option if any folder is selected.
+- **Date & Filename Disambiguation:** When multiple assignments share the same filename (e.g. `Worksheet.pdf`), K.I.D.S. disambiguates them using both filename and post date/time matching via `ClassroomDateParser`.
+- **Bulk Dispatch to "K.I.D.S. Vault":** Dispatches all files via "Send a copy" directly into the translucent `ShareTargetActivity`, staging and uploading them without manual intervention.
 - **Announcement Discrimination & Zero-Click Direct Stream Ingestion:**
   In Google Classroom, teacher communications fall into two fundamentally different structural types:
   1. **Announcements & Circulars:** Teacher notices, daily announcements, holiday greetings, and circular texts posted directly into the stream feed. In Google Classroom, **announcements do NOT have a separate detail activity or screen**. Their full message is already visible right on the stream card. Tapping an announcement card either does nothing or inadvertently pops up the class comments dialog.
