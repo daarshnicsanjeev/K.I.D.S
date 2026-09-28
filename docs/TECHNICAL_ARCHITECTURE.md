@@ -4731,6 +4731,7 @@ This guarantees zero Drive API directory listing queries on routine sync cycles,
 | *Step 1 Unoptimized Sequential (Baseline)* | 9–11 HTTP calls (Blocking sequential) | *6.5 – 8.2 seconds (Blocking)* | *Legacy blocking pattern without pre-warm* |
 | **Step 2/3/4 Rapid Advance Synchronization** | 0 extra discovery calls | **0 ms (Non-blocking await)** | **`CompletableDeferred` in-flight tracking** |
 | **DriveSyncWorker Cached Sync Cycle** | 0 folder discovery calls | **0 ms overhead for hierarchy resolution** | **Persistent two-tier cache reuse** |
+| **Cold-Start Wizard State & Permission Resume** | 0 extra user actions | **0 ms (Immediate restoration to Step 2/3/4)** | **Multi-Tier `Settings.Secure` + `intendedStep` recovery** |
 
 ---
 

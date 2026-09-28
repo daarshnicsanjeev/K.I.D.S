@@ -173,14 +173,52 @@ class KidsAccessibilityService : AccessibilityService() {
             )
         }
 
+        @Volatile var isServiceConnected: Boolean = false
+
         fun isEnabled(context: Context): Boolean {
-            val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager ?: return false
-            val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
-            for (enabled in enabledServices) {
-                val serviceInfo = enabled.resolveInfo.serviceInfo
-                if (serviceInfo.packageName == context.packageName && serviceInfo.name == KidsAccessibilityService::class.java.name) {
-                    return true
+            if (isServiceConnected) return true
+
+            try {
+                // 1. Authoritative check via Settings.Secure (Source of truth on Android across all OEMs)
+                val accessibilityEnabled = try {
+                    android.provider.Settings.Secure.getInt(context.contentResolver, android.provider.Settings.Secure.ACCESSIBILITY_ENABLED, 0)
+                } catch (e: Exception) {
+                    0
                 }
+
+                if (accessibilityEnabled == 1) {
+                    val enabledServicesSetting = android.provider.Settings.Secure.getString(
+                        context.contentResolver,
+                        android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+                    )
+                    if (!enabledServicesSetting.isNullOrBlank()) {
+                        val targetPkg = context.packageName
+                        if (enabledServicesSetting.contains(targetPkg) &&
+                            (enabledServicesSetting.contains(KidsAccessibilityService::class.java.name) ||
+                             enabledServicesSetting.contains("KidsAccessibilityService"))
+                        ) {
+                            return true
+                        }
+                    }
+                }
+
+                // 2. Fallback check via AccessibilityManager enabled service list
+                val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager
+                if (am != null) {
+                    val enabledServices = am.getEnabledAccessibilityServiceList(AccessibilityServiceInfo.FEEDBACK_ALL_MASK)
+                    if (enabledServices != null) {
+                        for (enabled in enabledServices) {
+                            val serviceInfo = enabled.resolveInfo?.serviceInfo
+                            if (serviceInfo != null && serviceInfo.packageName == context.packageName &&
+                                (serviceInfo.name == KidsAccessibilityService::class.java.name || serviceInfo.name.endsWith("KidsAccessibilityService"))
+                            ) {
+                                return true
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Error checking accessibility service status: ${e.message}")
             }
             return false
         }
@@ -273,6 +311,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        isServiceConnected = true
         Log.i(TAG, "KidsAccessibilityService connected")
 
         val controlFilter = IntentFilter().apply {
@@ -3792,7 +3831,13 @@ class KidsAccessibilityService : AccessibilityService() {
         crawlerOverlay?.dismissAndRemove()
     }
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        isServiceConnected = false
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
+        isServiceConnected = false
         super.onDestroy()
         try {
             unregisterReceiver(crawlerControlReceiver)

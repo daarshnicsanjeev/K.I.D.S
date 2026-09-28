@@ -216,6 +216,9 @@ You never have to tap a "Refresh" button or restart K.I.D.S. after granting perm
 4. **Dynamic Button Validation & Skip Handling**:
    - **Skip without Validation (`Skip Classroom`)**: If your child's school does not use Google Classroom, tap **Skip Classroom**. This bypasses Step 2 with zero friction, marks Classroom as skipped in your Google Drive vault, and moves directly to Step 3.
    - **Save & Next with Validation (`Save & Next →`)**: When the Google Classroom toggle is **On**, selecting a student account is strictly validated. The **Save & Next →** button remains disabled until an account is picked, accompanied by a helpful inline prompt: *"Select a student account above, or tap 'Skip Classroom' to proceed."* If you switch the toggle to **Off**, the button immediately enables so you can proceed without Classroom mapping.
+5. **Cold-Start Resume & Progress Preservation Guarantee**:
+   - If you completely close the app or switch tasks while configuring Step 2, K.I.D.S. preserves your exact onboarding step and inputs in persistent preferences (`wizard_current_step = STEP_2_CLASSROOM`, student email, child name, vault settings).
+   - Upon reopening the app, K.I.D.S. performs authoritative multi-tier accessibility validation (`Settings.Secure` + `AccessibilityManager`) and resumes directly on Step 2 with all your child's data and settings intact—never resetting your progress or forcing you back to Step 0.
 
 ### Step 3: School App & ERP Picker
 *Capture notices from school management portals (CampusCare, Toddle, Edunext, Teams).*

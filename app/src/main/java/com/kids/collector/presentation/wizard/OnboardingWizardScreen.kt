@@ -105,28 +105,37 @@ fun OnboardingWizardScreen(
 
     val isNewChildSession = childSequenceNumber > 1
     val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
-    val initialStep = remember {
+
+    // Intended target step reconstructed from persistent vault preferences
+    val intendedStep = remember {
         try {
-            if (!isAccessibilityActiveInitial) {
-                WizardStep.STEP_0_PERMISSIONS
-            } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank() && savedStepStr != null) {
-                val step = WizardStep.valueOf(savedStepStr)
-                if (step == WizardStep.STEP_0_PERMISSIONS) WizardStep.STEP_1_VAULT else step
-            } else if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank()) {
-                WizardStep.STEP_2_CLASSROOM
+            if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank()) {
+                if (!savedStepStr.isNullOrBlank() && savedStepStr != WizardStep.STEP_0_PERMISSIONS.name) {
+                    WizardStep.valueOf(savedStepStr)
+                } else {
+                    WizardStep.STEP_2_CLASSROOM
+                }
             } else {
                 WizardStep.STEP_1_VAULT
             }
-        } catch (e: Exception) {
-            if (!isAccessibilityActiveInitial) WizardStep.STEP_0_PERMISSIONS else WizardStep.STEP_1_VAULT
+        } catch (_: Exception) {
+            WizardStep.STEP_1_VAULT
+        }
+    }
+
+    val initialStep = remember {
+        if (!isAccessibilityActiveInitial) {
+            WizardStep.STEP_0_PERMISSIONS
+        } else {
+            intendedStep
         }
     }
 
     var currentStep by rememberSaveable { mutableStateOf(initialStep) }
-    var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(null) }
+    var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(if (!isAccessibilityActiveInitial) intendedStep else null) }
 
     LaunchedEffect(currentStep) {
-        if (!isNewChildSession) {
+        if (!isNewChildSession && currentStep != WizardStep.STEP_0_PERMISSIONS) {
             prefs.edit().putString("wizard_current_step", currentStep.name).apply()
         }
     }
@@ -137,11 +146,10 @@ fun OnboardingWizardScreen(
         if (!hasAccessibility && currentStep != WizardStep.STEP_0_PERMISSIONS) {
             preRevocationStep = currentStep
             currentStep = WizardStep.STEP_0_PERMISSIONS
-        } else if (hasAccessibility && preRevocationStep != null && currentStep == WizardStep.STEP_0_PERMISSIONS) {
-            preRevocationStep?.let { resumeStep ->
-                preRevocationStep = null
-                currentStep = resumeStep
-            }
+        } else if (hasAccessibility && currentStep == WizardStep.STEP_0_PERMISSIONS) {
+            val resumeStep = preRevocationStep ?: intendedStep
+            preRevocationStep = null
+            currentStep = resumeStep
         }
     }
 
