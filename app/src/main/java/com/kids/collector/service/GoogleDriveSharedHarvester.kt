@@ -104,6 +104,10 @@ class GoogleDriveSharedHarvester(
             navigateToSharedTab()
             delay(SETTLING_DELAY_MS)
 
+            // Step 3b: Ensure optimal view layout (List) and sorting (Date shared, newest first)
+            ensureProperViewAndSorting()
+            delay(SETTLING_DELAY_MS)
+
             // Step 4: Establish academic year date cutoff from earliest notice
             val allNotices = database.noticeDao().getAllNoticesDirect()
             val classroomNotices = allNotices.filter { it.sourceApp == "com.google.android.apps.classroom" }
@@ -596,6 +600,314 @@ class GoogleDriveSharedHarvester(
         return null
     }
 
+    /**
+     * Ensures Google Drive is configured for optimal harvesting:
+     * 1. Layout Mode: Switches from Grid Layout to List Layout if currently in Grid.
+     * 2. Sort Criterion: Sets sorting to "Date shared" (or "Shared date") so that recent school notices appear at the top.
+     * 3. Sort Direction: Ensures reverse-chronological order (newest first) so that the academic year cutoff works reliably.
+     */
+    private suspend fun ensureProperViewAndSorting(): Boolean {
+        ensureListLayout()
+        ensureDateSharedSorting()
+        ensureDescendingSortDirection()
+        return true
+    }
+
+    /**
+     * Ensures Google Drive is displaying items in List layout rather than Grid layout.
+     * List layout provides full horizontal width for post titles and unambiguous date subtitles.
+     */
+    private suspend fun ensureListLayout(): Boolean {
+        val root = rootInActiveWindowProvider() ?: return false
+        val switchToListNode = findSwitchToListLayoutNode(root)
+        if (switchToListNode != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Grid layout detected. Switching Google Drive to List layout...")
+            val clicked = if (switchToListNode.isClickable) {
+                switchToListNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                findClickableAncestor(switchToListNode)?.let {
+                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    it.recycle()
+                    ok
+                } ?: false
+            }
+            if (!clicked) {
+                val bounds = Rect()
+                switchToListNode.getBoundsInScreen(bounds)
+                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+            }
+            switchToListNode.recycle()
+            root.recycle()
+            delay(SETTLING_DELAY_MS)
+            return true
+        } else {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive is in List layout (or already optimal).")
+        }
+        root.recycle()
+        return false
+    }
+
+    private fun findSwitchToListLayoutNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+
+        val isSwitchToList = (desc.contains("switch to list") || desc.contains("list view") || text.contains("list view")) &&
+                !desc.contains("switch to grid") && !text.contains("grid view")
+
+        if (isSwitchToList) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findSwitchToListLayoutNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    /**
+     * Checks if Drive is sorted by Date shared / Shared date, and if not, opens the sort dialog to select it.
+     */
+    private suspend fun ensureDateSharedSorting(): Boolean {
+        val root = rootInActiveWindowProvider() ?: return false
+
+        // Check if already sorted by Date shared
+        val sortLabel = findCurrentSortLabel(root)
+        if (sortLabel != null && (sortLabel.contains("date shared") || sortLabel.contains("shared date"))) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive is already sorted by: $sortLabel")
+            root.recycle()
+            return true
+        }
+
+        // Find sort trigger button/chip
+        val sortButtonNode = findSortTriggerNode(root)
+        if (sortButtonNode == null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Sort button not detected in toolbar. Retaining current sorting.")
+            root.recycle()
+            return false
+        }
+
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening Google Drive sort options dialog...")
+        val clicked = if (sortButtonNode.isClickable) {
+            sortButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } else {
+            findClickableAncestor(sortButtonNode)?.let {
+                val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                it.recycle()
+                ok
+            } ?: false
+        }
+        if (!clicked) {
+            val bounds = Rect()
+            sortButtonNode.getBoundsInScreen(bounds)
+            dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+        }
+        sortButtonNode.recycle()
+        root.recycle()
+
+        delay(SETTLING_DELAY_MS)
+
+        // Locate and select Date shared / Shared date in bottom sheet
+        return selectDateSharedOptionInBottomSheet()
+    }
+
+    private fun findCurrentSortLabel(root: AccessibilityNodeInfo): String? {
+        val candidates = mutableListOf<String>()
+        collectTopHeaderTexts(root, candidates, maxDepth = 6, maxY = 850)
+        return candidates.firstOrNull { candidate ->
+            val lower = candidate.lowercase(Locale.US)
+            lower.contains("date shared") || lower.contains("shared date") ||
+                    lower.contains("last modified") || lower.contains("name")
+        }
+    }
+
+    private fun collectTopHeaderTexts(node: AccessibilityNodeInfo, outList: MutableList<String>, maxDepth: Int, maxY: Int) {
+        if (maxDepth <= 0) return
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.top <= maxY) {
+            val text = node.text?.toString()?.trim() ?: ""
+            val desc = node.contentDescription?.toString()?.trim() ?: ""
+            if (text.isNotBlank()) outList.add(text)
+            if (desc.isNotBlank()) outList.add(desc)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectTopHeaderTexts(child, outList, maxDepth - 1, maxY)
+            child.recycle()
+        }
+    }
+
+    private fun findSortTriggerNode(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+
+        val inHeaderZone = bounds.top < 850 && bounds.height() > 20
+
+        val isSortTrigger = inHeaderZone && (
+                desc.contains("sort by") || desc.contains("sort options") ||
+                desc.startsWith("sort") || text.equals("sort", ignoreCase = true) ||
+                viewId.contains("sort_button") || viewId.contains("sort_by") ||
+                viewId.contains("sort_type") ||
+                (node.isClickable && (text.contains("Date shared", ignoreCase = true) || text.contains("Shared date", ignoreCase = true) ||
+                 text.contains("Last modified", ignoreCase = true) || text.contains("Name", ignoreCase = true) ||
+                 desc.contains("Date shared", ignoreCase = true) || desc.contains("Shared date", ignoreCase = true) ||
+                 desc.contains("Last modified", ignoreCase = true) || desc.contains("Name", ignoreCase = true)))
+        )
+
+        if (isSortTrigger) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findSortTriggerNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private suspend fun selectDateSharedOptionInBottomSheet(): Boolean {
+        val sheetRoot = rootInActiveWindowProvider() ?: return false
+        val dateOptionNode = findNodeContainingText(sheetRoot, "date shared")
+            ?: findNodeContainingText(sheetRoot, "shared date")
+            ?: findNodeContainingText(sheetRoot, "date")
+            ?: findNodeContainingText(sheetRoot, "last modified")
+
+        if (dateOptionNode != null) {
+            val optionText = dateOptionNode.text?.toString() ?: dateOptionNode.contentDescription?.toString() ?: "Date shared"
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting sort option: \"$optionText\"")
+            val clicked = if (dateOptionNode.isClickable) {
+                dateOptionNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                findClickableAncestor(dateOptionNode)?.let {
+                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    it.recycle()
+                    ok
+                } ?: false
+            }
+            if (!clicked) {
+                val bounds = Rect()
+                dateOptionNode.getBoundsInScreen(bounds)
+                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+            }
+            dateOptionNode.recycle()
+            sheetRoot.recycle()
+            delay(SETTLING_DELAY_MS)
+            return true
+        } else {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Date shared option not found in sort sheet. Dismissing sheet.")
+            sheetRoot.recycle()
+            dispatchBackAction()
+            delay(300L)
+            return false
+        }
+    }
+
+    /**
+     * Ensures sort order is descending (newest items on top).
+     * If items are ascending (oldest on top), taps the sort direction toggle to reverse it.
+     */
+    private suspend fun ensureDescendingSortDirection(): Boolean {
+        val root = rootInActiveWindowProvider() ?: return false
+
+        // Check if items are currently ordered ascending
+        val visibleItems = scanVisibleDriveItems(root)
+        val datedItems = visibleItems.mapNotNull { item ->
+            ClassroomDateParser.parse(item.subtitle)?.let { Pair(item, it) }
+        }
+
+        var isChronologicallyAscending = false
+        if (datedItems.size >= 2) {
+            val firstDateMs = datedItems[0].second.timestampMs
+            val secondDateMs = datedItems[1].second.timestampMs
+            // If top item is older than second item by more than 1 day, it is ordered oldest first (ascending)
+            if (firstDateMs < secondDateMs - 86400000L) {
+                isChronologicallyAscending = true
+            }
+        }
+
+        // Check sort direction button
+        val reverseSortButton = findReverseSortButton(root)
+
+        // Recycle visible item nodes
+        for (item in visibleItems) {
+            item.node.recycle()
+        }
+
+        if (isChronologicallyAscending && reverseSortButton != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Ascending (oldest first) sort detected. Inverting sort direction to Newest first...")
+            val clicked = if (reverseSortButton.isClickable) {
+                reverseSortButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                findClickableAncestor(reverseSortButton)?.let {
+                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    it.recycle()
+                    ok
+                } ?: false
+            }
+            if (!clicked) {
+                val bounds = Rect()
+                reverseSortButton.getBoundsInScreen(bounds)
+                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+            }
+            reverseSortButton.recycle()
+            root.recycle()
+            delay(SETTLING_DELAY_MS)
+            return true
+        } else {
+            reverseSortButton?.recycle()
+            root.recycle()
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Sort direction is confirmed Newest first (descending).")
+            return false
+        }
+    }
+
+    private fun findReverseSortButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        val inHeaderZone = bounds.top < 850
+
+        val isReverseSort = inHeaderZone && (
+                desc.contains("reverse sort") || desc.contains("change sort direction") ||
+                desc.contains("sort direction") || desc.contains("oldest first") ||
+                desc.contains("ascending") || viewId.contains("sort_direction") ||
+                viewId.contains("reverse_sort")
+        )
+
+        if (isReverseSort) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findReverseSortButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
     private fun findAccountAvatarNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
@@ -723,6 +1035,7 @@ class GoogleDriveSharedHarvester(
         var harvestedInFolder = 0
         activeHarvestingFolderName = folderItem.title
         try {
+            ensureListLayout()
             val folderRoot = rootInActiveWindowProvider()
             if (folderRoot != null) {
                 val filesInsideFolder = scanVisibleDriveItems(folderRoot)

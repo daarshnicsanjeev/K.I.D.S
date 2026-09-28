@@ -3202,7 +3202,11 @@ Once Classroom metadata extraction finishes, if any attachments remain in `PENDI
 2. **Navigation to "Shared" ("Shared with me") Tab:**
    - Teacher-shared circulars, worksheets, and announcement folders reside in the student's **"Shared"** tab (the `My Drive/Classroom` directory only contains student submission copies and is empty for incoming teacher notices).
    - Locates and taps the "Shared" bottom navigation tab.
-3. **Academic Year Cutoff Date Filter:**
+3. **Layout & Sort Order Normalization (`ensureProperViewAndSorting`):**
+   - **List Layout Enforcement (`ensureListLayout`):** Inspects the layout toggle. If Google Drive is currently displayed in multi-column Grid view, taps the view switcher to force List layout, ensuring maximum horizontal width for file titles and date subtitles.
+   - **Date Shared Sort Enforcement (`ensureDateSharedSorting`):** Verifies that the active sorting criterion is `"Date shared"` (or `"Shared date"`). If sorted by `"Name"` or `"Storage used"`, opens the sort options sheet and selects `"Date shared"`.
+   - **Descending Sort Direction Enforcement (`ensureDescendingSortDirection`):** Verifies that items appear in reverse-chronological order (newest first). If an ascending (oldest first) sequence is detected, toggles the sort direction button to place newest items at the top.
+4. **Academic Year Cutoff Date Filter:**
    - Establishes a cutoff timestamp based on the oldest captured Classroom notice (`earliestNoticeMs - 3 days`, e.g. June 7 if the first post is June 10).
    - Because the Google Drive "Shared" tab is ordered reverse-chronologically, items dated prior to the cutoff are ignored.
    - Concludes harvest early when 5 consecutive old items are detected, eliminating dozens of redundant scroll gestures.
