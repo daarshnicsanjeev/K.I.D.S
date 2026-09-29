@@ -781,6 +781,17 @@ class GoogleDriveSharedHarvester(
     private suspend fun selectAndDispatchBatch(batch: List<DriveSharedItem>): Boolean {
         if (batch.isEmpty()) return false
 
+        // Optimization for single file: Try row's 3-dots button first (fast and reliable)
+        if (batch.size == 1) {
+            val singleItem = batch.first()
+            val dispatchedSingle = dispatchSingleItemViaRowMenu(singleItem)
+            if (dispatchedSingle) {
+                singleItem.node.recycle()
+                return true
+            }
+            // If row 3-dots wasn't found or failed, fall through to multi-select
+        }
+
         // 1. Long-press first item to activate multi-select mode in Drive
         val firstItem = batch.first()
         var multiSelectActivated = firstItem.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
@@ -791,7 +802,7 @@ class GoogleDriveSharedHarvester(
             )
         }
         firstItem.node.recycle()
-        delay(400L)
+        delay(600L) // Allow contextual action bar animation to complete
 
         // 2. Tap remaining items in the batch to include them in the selection
         for (i in 1 until batch.size) {
@@ -801,31 +812,40 @@ class GoogleDriveSharedHarvester(
                 dispatchTapAction(item.bounds.centerX().toFloat(), item.bounds.centerY().toFloat())
             }
             item.node.recycle()
-            delay(200L)
+            delay(250L)
         }
 
         // 3. Find and click Drive's top-right overflow menu (More options / ⋮)
-        val overflowRoot = rootInActiveWindowProvider() ?: return false
-        val overflowButton = findOverflowMenuButton(overflowRoot)
-        overflowRoot.recycle()
+        var overflowButton: AccessibilityNodeInfo? = null
+        waitForConditionAction(2500L, 250L) {
+            val overflowRoot = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+            overflowButton = findOverflowMenuButton(overflowRoot)
+                ?: findTopRightActionButton(overflowRoot)
+            overflowRoot.recycle()
+            overflowButton != null
+        }
 
         if (overflowButton == null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Overflow menu button not found in Drive multi-select.")
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Overflow menu button not found in Drive multi-select. Deselecting.")
+            dispatchBackAction()
+            delay(400L)
             return false
         }
 
-        val clickedOverflow = overflowButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val clickedOverflow = overflowButton?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
         if (!clickedOverflow) {
             val rect = Rect()
-            overflowButton.getBoundsInScreen(rect)
-            dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+            overflowButton?.getBoundsInScreen(rect)
+            if (rect.width() > 0) {
+                dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+            }
         }
-        overflowButton.recycle()
-        delay(500L)
+        overflowButton?.recycle()
+        delay(600L)
 
         // 4. Find and click "Send a copy" in the overflow popup menu
         var sendCopyNode: AccessibilityNodeInfo? = null
-        waitForConditionAction(1500L, 100L) {
+        waitForConditionAction(2500L, 200L) {
             val popupRoot = rootInActiveWindowProvider() ?: return@waitForConditionAction false
             sendCopyNode = findSendCopyNode(popupRoot)
             popupRoot.recycle()
@@ -834,6 +854,8 @@ class GoogleDriveSharedHarvester(
 
         if (sendCopyNode == null) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Send a copy' option not found in Drive popup menu.")
+            dispatchBackAction()
+            delay(400L)
             return false
         }
 
@@ -848,6 +870,49 @@ class GoogleDriveSharedHarvester(
         sendCopyNode?.recycle()
 
         // 5. Select "K.I.D.S. Vault" in the Android system chooser
+        selectKidsInChooserAction()
+        return true
+    }
+
+    private suspend fun dispatchSingleItemViaRowMenu(item: DriveSharedItem): Boolean {
+        val displayMetrics = context.resources.displayMetrics
+        val screenWidth = displayMetrics.widthPixels.toFloat()
+
+        // Tap the 3-dots menu button on the right edge of this file row
+        val tapX = (screenWidth - 80f).coerceAtLeast(item.bounds.right - 100f)
+        val tapY = item.bounds.centerY().toFloat()
+
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening item action sheet for \"${item.title}\" via row menu...")
+        dispatchTapAction(tapX, tapY)
+        delay(600L)
+
+        // Find "Send a copy" in the opened bottom sheet
+        var sendCopyNode: AccessibilityNodeInfo? = null
+        waitForConditionAction(2000L, 150L) {
+            val sheetRoot = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+            sendCopyNode = findSendCopyNode(sheetRoot)
+            sheetRoot.recycle()
+            sendCopyNode != null
+        }
+
+        if (sendCopyNode == null) {
+            // Dismiss bottom sheet if opened
+            dispatchBackAction()
+            delay(400L)
+            return false
+        }
+
+        val clicked = sendCopyNode?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+        if (!clicked) {
+            val r = Rect()
+            sendCopyNode?.getBoundsInScreen(r)
+            if (r.width() > 0) {
+                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+            }
+        }
+        sendCopyNode?.recycle()
+
+        // Select K.I.D.S. Vault in the system share sheet
         selectKidsInChooserAction()
         return true
     }
@@ -1254,9 +1319,21 @@ class GoogleDriveSharedHarvester(
 
     private fun findOverflowMenuButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isOverflow = desc.contains("more options") || desc.contains("overflow") || viewId.contains("more_options")
+        val isOverflow = desc.contains("more options") ||
+                desc.contains("more actions") ||
+                desc.contains("more") ||
+                desc.contains("overflow") ||
+                desc.contains("action menu") ||
+                text.contains("more") ||
+                viewId.contains("more_options") ||
+                viewId.contains("overflow") ||
+                viewId.contains("action_menu") ||
+                viewId.contains("menu_overflow") ||
+                viewId.contains("action_bar_overflow")
+
         if (isOverflow) {
             return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
         }
@@ -1264,6 +1341,29 @@ class GoogleDriveSharedHarvester(
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
             val found = findOverflowMenuButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findTopRightActionButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val displayMetrics = context.resources.displayMetrics
+        val screenWidth = displayMetrics.widthPixels
+        val rect = Rect()
+        root.getBoundsInScreen(rect)
+
+        val isTopRightBar = rect.top < 350 && rect.right > screenWidth - 250 && rect.width() in 40..250 && rect.height() in 40..250
+        if (isTopRightBar && root.isClickable) {
+            return AccessibilityNodeInfo.obtain(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findTopRightActionButton(child)
             if (found != null) {
                 child.recycle()
                 return found
