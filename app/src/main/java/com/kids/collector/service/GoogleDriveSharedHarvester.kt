@@ -79,7 +79,7 @@ class GoogleDriveSharedHarvester(
             initialRoot?.recycle()
 
             if (initialPkg.contains("classroom")) {
-                openDriveViaClassroomDrawer()
+                openDriveViaClassroom()
             }
 
             // Wait for Google Drive window
@@ -90,9 +90,9 @@ class GoogleDriveSharedHarvester(
                 pkg.contains(DRIVE_PACKAGE_NAME)
             }
 
-            // Fallback: If not open via drawer, attempt direct launcher intent
+            // Fallback: If not open via Classroom folder, attempt direct launcher intent
             if (!isDriveOpen) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via drawer. Attempting direct launcher intent...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via Classroom folder. Attempting direct launcher intent...")
                 try {
                     var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
                     if (launchIntent == null) {
@@ -156,6 +156,25 @@ class GoogleDriveSharedHarvester(
                 ensureDriveAccount(targetAccountEmail)
             }
 
+            var totalHarvestedCount = 0
+
+            // Step 2b: Check if Drive opened directly into a Folder (e.g. from Class Drive folder or Classroom folder)
+            val initialDriveRoot = rootInActiveWindowProvider()
+            val currentFolderTitle = initialDriveRoot?.let { findDriveCurrentFolderTitle(it) }
+            initialDriveRoot?.recycle()
+
+            if (!currentFolderTitle.isNullOrBlank() &&
+                !currentFolderTitle.equals("drive", ignoreCase = true) &&
+                !currentFolderTitle.equals("home", ignoreCase = true) &&
+                !currentFolderTitle.equals("shared", ignoreCase = true)
+            ) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive opened directly into folder: \"$currentFolderTitle\"")
+                crawlerOverlay?.updateStatus("Harvesting Class Folder", currentFolderTitle)
+                val pending = getPendingUncapturedAttachments()
+                val folderHarvested = harvestCurrentOpenFolder(currentFolderTitle, pending)
+                totalHarvestedCount += folderHarvested
+            }
+
             // Step 3: Navigate to "Shared" ("Shared with me") tab
             navigateToSharedTab()
             delay(SETTLING_DELAY_MS)
@@ -164,31 +183,27 @@ class GoogleDriveSharedHarvester(
             ensureProperViewAndSorting()
             delay(SETTLING_DELAY_MS)
 
-            // Step 4: Establish academic year date cutoff from earliest notice
+            // Step 4: Establish academic year date cutoff (June 1 of current academic session)
             val allNotices = database.noticeDao().getAllNoticesDirect()
-            val classroomNotices = allNotices.filter { it.sourceApp == "com.google.android.apps.classroom" }
-            val earliestNoticeMs = classroomNotices.minOfOrNull { it.timestampMs }
-                ?: allNotices.minOfOrNull { it.timestampMs }
-
-            // Date cutoff: 3 days before earliest Classroom post (e.g. if 1st post is June 10, cutoff is June 7)
-            val cutoffTimestampMs = if (earliestNoticeMs != null && earliestNoticeMs > 0L) {
-                earliestNoticeMs - (3L * 24 * 60 * 60 * 1000L)
-            } else {
-                0L
+            val currentCal = Calendar.getInstance()
+            val academicYearStartCal = Calendar.getInstance().apply {
+                val curYear = currentCal.get(Calendar.YEAR)
+                val startYear = if (currentCal.get(Calendar.MONTH) >= Calendar.JUNE) curYear else curYear - 1
+                set(Calendar.YEAR, startYear)
+                set(Calendar.MONTH, Calendar.JUNE)
+                set(Calendar.DAY_OF_MONTH, 1)
+                set(Calendar.HOUR_OF_DAY, 0)
+                set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
             }
-
-            if (cutoffTimestampMs > 0L) {
-                val cutoffCal = Calendar.getInstance().apply { timeInMillis = cutoffTimestampMs }
-                val cutoffMonth = ClassroomDateParser.MONTH_NAMES.getOrNull(cutoffCal.get(Calendar.MONTH))?.replaceFirstChar { it.uppercase(Locale.US) }
-                val cutoffDay = cutoffCal.get(Calendar.DAY_OF_MONTH)
-                CrawlerTraceLogger.log(
-                    "DRIVE_HARVESTER",
-                    "Academic year cutoff established: $cutoffMonth $cutoffDay. Files shared before this date will be ignored as old."
-                )
-            }
+            val cutoffTimestampMs = academicYearStartCal.timeInMillis
+            CrawlerTraceLogger.log(
+                "DRIVE_HARVESTER",
+                "Academic year cutoff established: June 1, ${academicYearStartCal.get(Calendar.YEAR)}. Files shared during this academic year will be ingested."
+            )
 
             // Step 5: Iterative Harvest Loop across Shared tab pages
-            var totalHarvestedCount = 0
             var scrollPageCount = 0
             var consecutiveEmptyPages = 0
             var consecutiveOldItemsCount = 0
@@ -221,13 +236,13 @@ class GoogleDriveSharedHarvester(
                     if (isItemOld) {
                         CrawlerTraceLogger.log(
                             "DRIVE_HARVESTER",
-                            "Item \"${item.title}\" (${parsedItemDate?.canonicalDate}) is older than academic cutoff. Skipping."
+                            "Item \"${item.title}\" (${parsedItemDate?.canonicalDate}) is prior to academic year start (June 1). Skipping."
                         )
                         consecutiveOldItemsCount++
-                        if (consecutiveOldItemsCount >= 5) {
+                        if (consecutiveOldItemsCount >= 10) {
                             CrawlerTraceLogger.log(
                                 "DRIVE_HARVESTER",
-                                "Encountered $consecutiveOldItemsCount consecutive items older than academic cutoff. Ending Shared tab scan."
+                                "Encountered $consecutiveOldItemsCount consecutive items older than academic year start. Ending Shared tab scan."
                             )
                             break
                         }
@@ -302,7 +317,7 @@ class GoogleDriveSharedHarvester(
                 }
             }
 
-            if (consecutiveEmptyPages >= 4) {
+            if (consecutiveEmptyPages >= 15) {
                 CrawlerTraceLogger.log(
                     "DRIVE_HARVESTER",
                     "No matching pending files found across $consecutiveEmptyPages consecutive pages. Concluding harvest."
@@ -416,9 +431,9 @@ class GoogleDriveSharedHarvester(
      * This bypasses Android 14+ / MIUI background-activity-launch restrictions because
      * Google Classroom (which is currently the active foreground app) initiates the launch itself.
      */
-    private suspend fun openDriveViaClassroomDrawer(): Boolean {
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom's 'Classroom folder' drawer...")
-        crawlerOverlay?.updateStatus("Opening Drive...", "Accessing Classroom folder in menu...")
+    private suspend fun openDriveViaClassroom(): Boolean {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom folder...")
+        crawlerOverlay?.updateStatus("Opening Drive...", "Accessing Classroom folder...")
 
         val root = rootInActiveWindowProvider() ?: return false
         val pkg = root.packageName?.toString() ?: ""
@@ -427,48 +442,112 @@ class GoogleDriveSharedHarvester(
             return false
         }
 
-        // Step 1: Open the navigation drawer
-        val hamburgerNode = findHamburgerNode(root)
-        if (hamburgerNode != null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Classroom drawer button. Clicking...")
-            val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        // Method 1: Check if we are inside a Class view with a "Classwork" tab
+        // In Google Classroom, the Classwork tab has a "Class Drive folder" icon at the top right!
+        val classworkTab = findClassworkTabNode(root)
+        if (classworkTab != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Classwork tab in Classroom. Switching to Classwork...")
+            val clicked = if (classworkTab.isClickable) {
+                classworkTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                findClickableAncestor(classworkTab)?.let {
+                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    it.recycle()
+                    ok
+                } ?: false
+            }
             if (!clicked) {
                 val r = Rect()
-                hamburgerNode.getBoundsInScreen(r)
+                classworkTab.getBoundsInScreen(r)
                 dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
             }
-            hamburgerNode.recycle()
-            delay(1000L)
-        } else {
-            // Fallback: Edge swipe from left to right to open drawer
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Hamburger button not found. Performing left-edge swipe to open drawer...")
-            dispatchSwipeAction(10f, 600f, 600f, 600f, 350L)
+            classworkTab.recycle()
             delay(1200L)
+
+            val classworkRoot = rootInActiveWindowProvider()
+            if (classworkRoot != null) {
+                val driveFolderBtn = findClassDriveFolderButton(classworkRoot)
+                if (driveFolderBtn != null) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Class Drive folder button in Classwork. Clicking...")
+                    val opened = if (driveFolderBtn.isClickable) {
+                        driveFolderBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    } else {
+                        findClickableAncestor(driveFolderBtn)?.let {
+                            val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            it.recycle()
+                            ok
+                        } ?: false
+                    }
+                    if (!opened) {
+                        val r = Rect()
+                        driveFolderBtn.getBoundsInScreen(r)
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                    }
+                    driveFolderBtn.recycle()
+                    classworkRoot.recycle()
+                    root.recycle()
+                    return true
+                }
+                classworkRoot.recycle()
+            }
+        }
+
+        // Method 2: Open Classroom Drawer -> "Classroom folders"
+        // If in class view, click Navigate up (<-) to return to main classes list first
+        val hamburgerNode = findHamburgerNode(root)
+        if (hamburgerNode != null) {
+            val desc = hamburgerNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+            if (desc.contains("navigate up") || desc.contains("back")) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating up from class to main Classroom screen...")
+                hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                hamburgerNode.recycle()
+                delay(1000L)
+            } else {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom navigation drawer...")
+                hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                hamburgerNode.recycle()
+                delay(1000L)
+            }
         }
         root.recycle()
 
-        // Step 2: In the opened drawer, locate "Classroom folder" or "Class folder"
+        // In main screen, ensure drawer is opened
+        val mainRoot = rootInActiveWindowProvider()
+        if (mainRoot != null) {
+            val mainHamburger = findHamburgerNode(mainRoot)
+            if (mainHamburger != null) {
+                val desc = mainHamburger.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+                if (!desc.contains("navigate up") && !desc.contains("back")) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening navigation drawer from main screen...")
+                    mainHamburger.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    mainHamburger.recycle()
+                    delay(1000L)
+                } else {
+                    mainHamburger.recycle()
+                }
+            }
+            mainRoot.recycle()
+        }
+
+        // Step 2: In the opened drawer, locate "Classroom folders"
         val drawerRoot = rootInActiveWindowProvider() ?: return false
-        var folderNode = findNodeContainingText(drawerRoot, "classroom folder")
-            ?: findNodeContainingText(drawerRoot, "class folder")
-            ?: findNodeContainingText(drawerRoot, "classroom")
+        var folderNode = findClassroomFolderDrawerNode(drawerRoot)
 
         if (folderNode == null) {
-            // Scroll down inside the drawer in case "Classroom folder" is lower down
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Classroom folder' not immediately visible. Scrolling drawer down...")
-            dispatchSwipeAction(300f, 1500f, 300f, 700f, 400L)
+            // Scroll down inside the drawer in case "Classroom folders" is lower down
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Classroom folders' not immediately visible. Scrolling drawer down...")
+            dispatchSwipeAction(300f, 1500f, 300f, 600f, 400L)
             delay(1000L)
             val scrolledDrawerRoot = rootInActiveWindowProvider()
             if (scrolledDrawerRoot != null) {
-                folderNode = findNodeContainingText(scrolledDrawerRoot, "classroom folder")
-                    ?: findNodeContainingText(scrolledDrawerRoot, "class folder")
-                    ?: findNodeContainingText(scrolledDrawerRoot, "classroom")
+                folderNode = findClassroomFolderDrawerNode(scrolledDrawerRoot)
                 scrolledDrawerRoot.recycle()
             }
         }
 
         if (folderNode != null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found '${folderNode.text}' in Classroom menu. Clicking to launch Google Drive...")
+            val label = folderNode.text ?: folderNode.contentDescription ?: "Classroom folders"
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found '$label' in Classroom menu. Clicking to launch Google Drive...")
             val clicked = if (folderNode.isClickable) {
                 folderNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             } else {
@@ -491,6 +570,78 @@ class GoogleDriveSharedHarvester(
         drawerRoot.recycle()
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom folder option not found in drawer.")
         return false
+    }
+
+    private fun findClassworkTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+
+        if (text == "classwork" || desc.contains("classwork")) {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findClassworkTabNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findClassDriveFolderButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val isDriveFolder = desc.contains("class drive folder") ||
+                desc.contains("drive folder") ||
+                (desc.contains("folder") && desc.contains("drive")) ||
+                viewId.contains("drive_folder") ||
+                viewId.contains("class_folder")
+
+        if (isDriveFolder) {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findClassDriveFolderButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findClassroomFolderDrawerNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+
+        val isFolderItem = (text.contains("classroom folder") || text.contains("classroom folders") ||
+                desc.contains("classroom folder") || desc.contains("classroom folders") ||
+                ((text.contains("folder") || desc.contains("folder")) && (text.contains("class") || desc.contains("class")))) &&
+                !text.equals("google classroom", ignoreCase = true) &&
+                !desc.equals("google classroom", ignoreCase = true)
+
+        if (isFolderItem) {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findClassroomFolderDrawerNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     private fun findHamburgerNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -563,11 +714,31 @@ class GoogleDriveSharedHarvester(
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
         val desc = node.contentDescription?.toString()?.trim() ?: ""
         val text = node.text?.toString()?.trim() ?: ""
+        val className = node.className?.toString() ?: ""
 
-        // Check if this node represents a file or folder entry
-        val isItemRoot = viewId.contains("item_root") || viewId.contains("entry_view") ||
-                viewId.contains("card_view") || viewId.contains("doc_list_item") ||
-                (node.isClickable && (desc.length > 5 || text.length > 5))
+        val isContainer = node.isScrollable ||
+                className.contains("RecyclerView") ||
+                className.contains("ViewPager") ||
+                className.contains("ScrollView") ||
+                viewId.contains("recycler") ||
+                viewId.contains("container") ||
+                viewId.contains("content") ||
+                viewId.contains("parent")
+
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val isReasonableItemHeight = rect.height() in 40..500 && rect.width() > 100
+
+        // Check if this node represents an individual file or folder entry
+        val isItemRoot = !isContainer && isReasonableItemHeight && (
+                viewId.contains("item_root") ||
+                viewId.contains("entry_view") ||
+                viewId.contains("card_view") ||
+                viewId.contains("doc_list_item") ||
+                viewId.contains("file_list_item") ||
+                viewId.contains("drive_entry") ||
+                (node.isClickable && (desc.length > 3 || text.length > 3) && !viewId.contains("search") && !viewId.contains("tab"))
+        )
 
         if (isItemRoot && (desc.isNotBlank() || text.isNotBlank())) {
             val titleText = if (text.isNotBlank()) text else desc.substringBefore(",").substringBefore("\n")
@@ -576,20 +747,16 @@ class GoogleDriveSharedHarvester(
                     titleText.contains("folder", ignoreCase = true) ||
                     viewId.contains("folder")
 
-            val rect = Rect()
-            node.getBoundsInScreen(rect)
-            if (rect.height() > 30 && rect.width() > 100) {
-                outList.add(
-                    DriveSharedItem(
-                        title = titleText.trim(),
-                        subtitle = subtitleText.trim(),
-                        isFolder = isFolder,
-                        node = AccessibilityNodeInfo.obtain(node),
-                        bounds = rect
-                    )
+            outList.add(
+                DriveSharedItem(
+                    title = titleText.trim(),
+                    subtitle = subtitleText.trim(),
+                    isFolder = isFolder,
+                    node = AccessibilityNodeInfo.obtain(node),
+                    bounds = rect
                 )
-                return // Do not inspect children of an already identified item container
-            }
+            )
+            return // Do not inspect children of an already identified item container
         }
 
         for (i in 0 until node.childCount) {
@@ -1290,6 +1457,56 @@ class GoogleDriveSharedHarvester(
             child.recycle()
         }
         return null
+    }
+
+    private fun findDriveCurrentFolderTitle(root: AccessibilityNodeInfo): String? {
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        val text = root.text?.toString()?.trim() ?: ""
+        if ((viewId.contains("title") || viewId.contains("action_bar") || viewId.contains("toolbar")) && text.isNotBlank()) {
+            return text
+        }
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findDriveCurrentFolderTitle(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private suspend fun harvestCurrentOpenFolder(folderTitle: String, pendingAttachments: List<AttachmentEntity>): Int {
+        var harvested = 0
+        ensureListLayout()
+        val folderRoot = rootInActiveWindowProvider() ?: return 0
+        val filesInside = scanVisibleDriveItems(folderRoot)
+        folderRoot.recycle()
+
+        val batch = mutableListOf<DriveSharedItem>()
+        for (fileItem in filesInside) {
+            if (!fileItem.isFolder && (isEducationalFile(fileItem.title) || matchDriveItemToPendingAttachment(fileItem, pendingAttachments) != null)) {
+                batch.add(fileItem)
+                if (batch.size >= MAX_BATCH_SELECTION_SIZE) break
+            }
+        }
+
+        if (batch.isNotEmpty()) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatching batch of ${batch.size} files from folder \"$folderTitle\"...")
+            val ok = selectAndDispatchBatch(batch)
+            if (ok) {
+                harvested += batch.size
+                delay(1200L)
+            }
+        }
+
+        for (item in filesInside) {
+            if (!batch.contains(item)) {
+                item.node.recycle()
+            }
+        }
+        return harvested
     }
 
     private fun findClickableAncestor(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {

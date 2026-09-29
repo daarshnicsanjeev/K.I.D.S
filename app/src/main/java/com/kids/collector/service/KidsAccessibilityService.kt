@@ -1474,6 +1474,7 @@ class KidsAccessibilityService : AccessibilityService() {
             "Auto-capture sweep complete: $totalFiles files saved (${finalPending.size} files uncaptured after Classroom & Drive passes)."
         }
         CrawlerTraceLogger.log("DEEP_CRAWLER", completionMessage)
+        delay(3000L) // Settle delay to let user observe Drive state before restoring K.I.D.S. Vault
         crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
             stopDeepCrawl()
             triggerDriveSync(applicationContext)

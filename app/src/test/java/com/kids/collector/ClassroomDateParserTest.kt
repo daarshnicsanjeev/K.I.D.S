@@ -1,10 +1,10 @@
 package com.kids.collector
 
 import com.kids.collector.domain.classifier.ClassroomDateParser
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
-import org.junit.Test
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Test
 
 class ClassroomDateParserTest {
 
@@ -31,6 +31,17 @@ class ClassroomDateParserTest {
         assertNotNull(date4)
         assertEquals(9, date4!!.month)
         assertEquals(2, date4.day)
+
+        val date5 = ClassroomDateParser.parse("Important Reminder\n* Prefect Selections will be held on 12th June 2026.", 2026)
+        assertNotNull(date5)
+        assertEquals(6, date5!!.month)
+        assertEquals(12, date5.day)
+        assertEquals(2026, date5.year)
+
+        val date6 = ClassroomDateParser.parse("Posted 15-Aug-2026", 2026)
+        assertNotNull(date6)
+        assertEquals(8, date6!!.month)
+        assertEquals(15, date6.day)
     }
 
     @Test
@@ -57,10 +68,10 @@ class ClassroomDateParserTest {
 
         val oldItemDate = ClassroomDateParser.parse("Shared May 25 by Teacher", 2026)
         assertNotNull(oldItemDate)
-        assertTrue("May 25 should be older than June 7 cutoff", oldItemDate!!.timestampMs < cutoffTimestamp)
+        assertTrue(oldItemDate!!.timestampMs < cutoffTimestamp, "May 25 should be older than June 7 cutoff")
 
         val recentItemDate = ClassroomDateParser.parse("Shared Jun 12 by Teacher", 2026)
         assertNotNull(recentItemDate)
-        assertTrue("Jun 12 should be newer than June 7 cutoff", recentItemDate!!.timestampMs >= cutoffTimestamp)
+        assertTrue(recentItemDate!!.timestampMs >= cutoffTimestamp, "Jun 12 should be newer than June 7 cutoff")
     }
 }
