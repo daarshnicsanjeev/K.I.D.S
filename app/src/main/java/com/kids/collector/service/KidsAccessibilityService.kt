@@ -935,14 +935,7 @@ class KidsAccessibilityService : AccessibilityService() {
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val nextItem = manifest.getNextPendingItemReverse()
             if (nextItem == null) {
-                delay(300)
-                serviceScope.launch(Dispatchers.IO) {
-                    try {
-                        com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-                    } catch (e: Exception) {
-                        CrawlerTraceLogger.log("DOWNLOAD_SCAN", "Background local attachment scan completed with exception: ${e.message}")
-                    }
-                }
+                delay(200)
                 CrawlerTraceLogger.log(
                     "STREAM_SURVEY",
                     "All Classroom notices processed (${manifest.completedCount} notices indexed)! Exiting Classroom stream pass to launch Phase 3: Google Drive Shared Batch Harvester..."

@@ -117,12 +117,6 @@ class DriveSyncWorker(
             } catch (_: Exception) {
             }
 
-            // 2. Scan local storage and upload pending attachments FIRST so driveFileIds exist
-            try {
-                com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-            } catch (e: Exception) {
-                Log.w(TAG, "Error scanning local downloads: ${e.message}")
-            }
 
             val virtualResetCount = db.attachmentDao().resetVirtualAttachmentsToPending()
             if (virtualResetCount > 0) {
