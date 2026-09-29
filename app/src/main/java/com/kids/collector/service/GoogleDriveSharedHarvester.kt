@@ -72,26 +72,61 @@ class GoogleDriveSharedHarvester(
         try {
             // Step 1: Launch Google Drive if not already in foreground
             try {
-                val launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
+                if (launchIntent == null) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "getLaunchIntentForPackage returned null, falling back to explicit ACTION_MAIN for $DRIVE_PACKAGE_NAME")
+                    launchIntent = Intent(Intent.ACTION_MAIN).apply {
+                        addCategory(Intent.CATEGORY_LAUNCHER)
+                        setPackage(DRIVE_PACKAGE_NAME)
+                    }
                 }
-                if (launchIntent != null) {
-                    context.startActivity(launchIntent)
-                }
+                launchIntent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                )
+                context.startActivity(launchIntent)
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched launch intent for $DRIVE_PACKAGE_NAME")
             } catch (e: Exception) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to launch Drive: ${e.message}")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to launch Drive via launcher intent: ${e.message}")
             }
 
             // Wait for Google Drive window
-            val isDriveOpen = waitForConditionAction(8000L, 300L) {
+            var isDriveOpen = waitForConditionAction(6000L, 300L) {
                 val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
                 val pkg = root.packageName?.toString() ?: ""
                 root.recycle()
-                pkg.startsWith(DRIVE_PACKAGE_NAME)
+                pkg.contains("com.google.android.apps.docs")
+            }
+
+            // Fallback: If not open after 6s, attempt direct deep link view intent
+            if (!isDriveOpen) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not detected in 6s. Retrying with VIEW intent...")
+                try {
+                    val viewIntent = Intent(Intent.ACTION_VIEW).apply {
+                        data = android.net.Uri.parse("https://drive.google.com")
+                        setPackage(DRIVE_PACKAGE_NAME)
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    }
+                    context.startActivity(viewIntent)
+                } catch (e: Exception) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Retry launch with VIEW intent failed: ${e.message}")
+                }
+                isDriveOpen = waitForConditionAction(6000L, 300L) {
+                    val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                    val pkg = root.packageName?.toString() ?: ""
+                    root.recycle()
+                    pkg.contains("com.google.android.apps.docs")
+                }
             }
 
             if (!isDriveOpen) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive app window not detected. Halting.")
+                val currentPkg = rootInActiveWindowProvider()?.let {
+                    val p = it.packageName?.toString() ?: ""
+                    it.recycle()
+                    p
+                } ?: "null"
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive app window not detected (current window: $currentPkg). Halting.")
                 return 0
             }
 

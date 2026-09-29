@@ -1440,7 +1440,7 @@ class KidsAccessibilityService : AccessibilityService() {
             crawlerOverlay?.updateStatus("Phase 3: Drive Harvester", "Launching Drive Shared Tab (${remainingPending.size} files)...")
 
             val driveHarvester = GoogleDriveSharedHarvester(
-                context = applicationContext,
+                context = this,
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = crawlerOverlay,

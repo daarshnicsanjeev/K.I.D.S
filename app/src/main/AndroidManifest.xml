@@ -25,8 +25,10 @@
     <!-- Overlay permission for floating capture assistant on Xiaomi/MIUI/HyperOS -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- Package visibility queries for installed school ERP & educational app picker -->
+    <!-- Package visibility queries for installed school ERP, Classroom & Drive -->
     <queries>
+        <package android:name="com.google.android.apps.docs" />
+        <package android:name="com.google.android.apps.classroom" />
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
