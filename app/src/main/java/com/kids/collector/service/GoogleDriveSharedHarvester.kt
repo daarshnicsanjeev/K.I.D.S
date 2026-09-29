@@ -160,19 +160,19 @@ class GoogleDriveSharedHarvester(
 
             // Step 2b: Check if Drive opened directly into a Folder (e.g. from Class Drive folder or Classroom folder)
             val initialDriveRoot = rootInActiveWindowProvider()
-            val currentFolderTitle = initialDriveRoot?.let { findDriveCurrentFolderTitle(it) }
+            val currentFolderTitle = initialDriveRoot?.let { findDriveCurrentFolderTitle(it) } ?: "Classroom"
+            val hasSharedTabAlready = initialDriveRoot?.let { findSharedTabNode(it) != null } ?: false
+            val hasNavUp = initialDriveRoot?.let { findNavigateUpButton(it) != null } ?: false
             initialDriveRoot?.recycle()
 
-            if (!currentFolderTitle.isNullOrBlank() &&
-                !currentFolderTitle.equals("drive", ignoreCase = true) &&
-                !currentFolderTitle.equals("home", ignoreCase = true) &&
-                !currentFolderTitle.equals("shared", ignoreCase = true)
-            ) {
+            if (!hasSharedTabAlready && hasNavUp) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive opened directly into folder: \"$currentFolderTitle\"")
                 crawlerOverlay?.updateStatus("Harvesting Class Folder", currentFolderTitle)
                 val pending = getPendingUncapturedAttachments()
-                val folderHarvested = harvestCurrentOpenFolder(currentFolderTitle, pending)
-                totalHarvestedCount += folderHarvested
+                if (pending.isNotEmpty()) {
+                    val folderHarvested = harvestCurrentOpenFolder(currentFolderTitle, pending)
+                    totalHarvestedCount += folderHarvested
+                }
             }
 
             // Step 3: Navigate to "Shared" ("Shared with me") tab
@@ -639,23 +639,74 @@ class GoogleDriveSharedHarvester(
 
     /**
      * Navigates to the "Shared" tab on Google Drive's bottom navigation bar.
+     *
+     * In Google Drive for Android, when inside any folder (such as the Classroom folder),
+     * the bottom navigation bar (Home, Starred, Shared, Files) is hidden.
+     * To reach the "Shared" tab, we must first navigate up/back out of any folders
+     * until the bottom navigation bar is visible.
      */
     private suspend fun navigateToSharedTab(): Boolean {
-        val root = rootInActiveWindowProvider() ?: return false
-        val sharedTabNode = findSharedTabNode(root)
-        if (sharedTabNode != null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting Shared tab in Google Drive...")
-            val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating to Shared tab in Google Drive...")
+        crawlerOverlay?.updateStatus("Navigating to Shared Tab", "Finding Shared with me...")
+
+        // Step A: If bottom navigation bar is not visible (e.g. inside a folder), navigate up/back to root
+        var attempts = 0
+        while (attempts < 6) {
+            val root = rootInActiveWindowProvider() ?: break
+            val sharedTabNode = findSharedTabNode(root)
+            if (sharedTabNode != null) {
+                // Bottom navigation bar is visible! Select the Shared tab.
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected. Selecting Shared tab...")
+                val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val rect = Rect()
+                    sharedTabNode.getBoundsInScreen(rect)
+                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
+                sharedTabNode.recycle()
+                root.recycle()
+                delay(SETTLING_DELAY_MS + 200L)
+                return true
+            }
+
+            // Bottom bar not visible. Check if we are inside a folder (Navigate up / Back button present)
+            val navUp = findNavigateUpButton(root)
+            root.recycle()
+
+            if (navUp != null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside folder (bottom bar hidden). Navigating up toward root (attempt ${attempts + 1})...")
+                val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                navUp.recycle()
+                if (!clicked) {
+                    dispatchBackAction()
+                }
+            } else {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "No navigate up button found. Pressing Back to reach Drive root (attempt ${attempts + 1})...")
+                dispatchBackAction()
+            }
+
+            delay(600L)
+            attempts++
+        }
+
+        // Final attempt: check if Shared tab is now visible
+        val finalRoot = rootInActiveWindowProvider() ?: return false
+        val finalSharedTab = findSharedTabNode(finalRoot)
+        if (finalSharedTab != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting Shared tab after exiting folder...")
+            val clicked = finalSharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (!clicked) {
                 val rect = Rect()
-                sharedTabNode.getBoundsInScreen(rect)
+                finalSharedTab.getBoundsInScreen(rect)
                 dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
             }
-            sharedTabNode.recycle()
-            root.recycle()
+            finalSharedTab.recycle()
+            finalRoot.recycle()
+            delay(SETTLING_DELAY_MS + 200L)
             return true
         }
-        root.recycle()
+        finalRoot.recycle()
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to locate Shared tab on bottom navigation bar.")
         return false
     }
 
@@ -826,10 +877,17 @@ class GoogleDriveSharedHarvester(
         }
 
         if (overflowButton == null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Overflow menu button not found in Drive multi-select. Deselecting.")
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Overflow menu button not found in Drive multi-select. Falling back to row-by-row dispatch...")
             dispatchBackAction()
-            delay(400L)
-            return false
+            delay(500L)
+            var individualSuccess = 0
+            for (item in batch) {
+                if (dispatchSingleItemViaRowMenu(item)) {
+                    individualSuccess++
+                    delay(800L)
+                }
+            }
+            return individualSuccess > 0
         }
 
         val clickedOverflow = overflowButton?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
@@ -853,10 +911,17 @@ class GoogleDriveSharedHarvester(
         }
 
         if (sendCopyNode == null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Send a copy' option not found in Drive popup menu.")
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Send a copy' option not found in Drive popup menu. Falling back to row-by-row dispatch...")
             dispatchBackAction()
             delay(400L)
-            return false
+            var individualSuccess = 0
+            for (item in batch) {
+                if (dispatchSingleItemViaRowMenu(item)) {
+                    individualSuccess++
+                    delay(800L)
+                }
+            }
+            return individualSuccess > 0
         }
 
         val clickCopyOk = sendCopyNode?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
@@ -1501,8 +1566,25 @@ class GoogleDriveSharedHarvester(
 
     private fun findNavigateUpButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-        if (desc.contains("navigate up") || desc == "back") {
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val isNavUp = desc.contains("navigate up") || desc.contains("back") ||
+                desc == "up" || desc.contains("go back") || desc.contains("close") ||
+                viewId.contains("up_button") || viewId.contains("navigate_up")
+
+        if (isNavUp) {
             return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        val bounds = Rect()
+        root.getBoundsInScreen(bounds)
+        val isTopLeftButton = bounds.top < 350 && bounds.left < 250 && bounds.width() in 40..250 && bounds.height() in 40..250
+        if (isTopLeftButton && root.isClickable &&
+            !desc.contains("account") && !desc.contains("avatar") && !desc.contains("search") && !desc.contains("menu") &&
+            !text.contains("search") && !text.contains("drive")
+        ) {
+            return AccessibilityNodeInfo.obtain(root)
         }
 
         for (i in 0 until root.childCount) {
@@ -1521,6 +1603,11 @@ class GoogleDriveSharedHarvester(
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
         val text = root.text?.toString()?.trim() ?: ""
         if ((viewId.contains("title") || viewId.contains("action_bar") || viewId.contains("toolbar")) && text.isNotBlank()) {
+            return text
+        }
+        val bounds = Rect()
+        root.getBoundsInScreen(bounds)
+        if (bounds.top < 350 && bounds.left in 100..600 && bounds.height() in 30..200 && text.isNotBlank() && !text.contains("Search", ignoreCase = true)) {
             return text
         }
         for (i in 0 until root.childCount) {
