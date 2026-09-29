@@ -3,6 +3,9 @@ package com.kids.collector.service
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.AccessibilityServiceInfo
 import android.accessibilityservice.GestureDescription
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -13,6 +16,8 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
@@ -223,8 +228,102 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
+        const val NOTIFICATION_CHANNEL_ID_CAPTURE = "kids_capture_progress"
+        const val NOTIFICATION_ID_CAPTURE = 9001
+
         @Volatile var activeTargetNoticeId: String? = null
         @Volatile var activeTargetAttachmentFileName: String? = null
+    }
+
+    private fun createCaptureNotificationChannel() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID_CAPTURE,
+                "K.I.D.S. Auto-Capture Progress",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Live progress and controls during autonomous notice capture"
+                setShowBadge(false)
+            }
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.createNotificationChannel(channel)
+        }
+    }
+
+    fun updateCaptureNotification(
+        status: String,
+        detail: String? = null,
+        noticeCount: Int = crawlerOverlay?.getCapturedCount() ?: 0,
+        attachmentCount: Int = crawlerOverlay?.getCapturedAttachmentsCount() ?: 0,
+        isCompleted: Boolean = false
+    ) {
+        try {
+            createCaptureNotificationChannel()
+            val stopIntent = Intent(ACTION_STOP_CRAWL).apply {
+                setPackage(packageName)
+            }
+            val stopPendingIntent = PendingIntent.getBroadcast(
+                this,
+                0,
+                stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val openAppIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            }
+            val contentPendingIntent = if (openAppIntent != null) {
+                PendingIntent.getActivity(
+                    this,
+                    0,
+                    openAppIntent,
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                )
+            } else null
+
+            val titleText = if (isCompleted) {
+                "✓ K.I.D.S. Auto-Capture Complete"
+            } else {
+                "K.I.D.S. Capture: $noticeCount Notices • $attachmentCount Files"
+            }
+
+            val bodyText = detail ?: status
+
+            val builder = NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID_CAPTURE)
+                .setSmallIcon(android.R.drawable.stat_sys_download)
+                .setContentTitle(titleText)
+                .setContentText(bodyText)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(bodyText))
+                .setOngoing(!isCompleted)
+                .setAutoCancel(isCompleted)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+
+            if (contentPendingIntent != null) {
+                builder.setContentIntent(contentPendingIntent)
+            }
+
+            if (!isCompleted) {
+                builder.addAction(
+                    android.R.drawable.ic_media_pause,
+                    "⏹ Stop Capture",
+                    stopPendingIntent
+                )
+            }
+
+            val nm = NotificationManagerCompat.from(this)
+            nm.notify(NOTIFICATION_ID_CAPTURE, builder.build())
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to update capture notification: ${e.message}")
+        }
+    }
+
+    fun dismissCaptureNotification() {
+        try {
+            val nm = NotificationManagerCompat.from(this)
+            nm.cancel(NOTIFICATION_ID_CAPTURE)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to dismiss capture notification: ${e.message}")
+        }
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
@@ -3828,6 +3927,7 @@ class KidsAccessibilityService : AccessibilityService() {
         exitDebounceJob?.cancel()
         exitDebounceJob = null
         stopDeepCrawl()
+        dismissCaptureNotification()
         crawlerOverlay?.dismissAndRemove()
     }
 
@@ -3847,6 +3947,7 @@ class KidsAccessibilityService : AccessibilityService() {
         exitDebounceJob?.cancel()
         exitDebounceJob = null
         stopDeepCrawl()
+        dismissCaptureNotification()
         crawlerOverlay?.dismissAndRemove()
         crawlerOverlay = null
     }

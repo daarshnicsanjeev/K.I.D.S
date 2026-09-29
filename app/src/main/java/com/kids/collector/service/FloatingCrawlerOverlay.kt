@@ -58,6 +58,10 @@ class FloatingCrawlerOverlay(
 
     fun show() {
         handler.post {
+            if (!ENABLE_WINDOW_OVERLAY) {
+                Log.i(TAG, "Clean Headless Mode: Floating window overlay disabled (Zero screen occlusion)")
+                return@post
+            }
             if (overlayView != null) {
                 overlayView?.visibility = View.VISIBLE
                 autoButton?.visibility = View.VISIBLE
@@ -309,6 +313,14 @@ class FloatingCrawlerOverlay(
     fun dismissAndRemove() {
         handler.post {
             cancelPendingStopReset()
+            if (!ENABLE_WINDOW_OVERLAY) {
+                if (isAutoScrolling) {
+                    stopAutoScroll(isUserInitiated = false, reason = "Overlay dismissed/removed")
+                }
+                overlayView = null
+                isMinimized = false
+                return@post
+            }
             Log.i(TAG, "dismissAndRemove() called. isAutoScrolling=$isAutoScrolling, overlayView != null: ${overlayView != null}")
             if (isAutoScrolling) {
                 stopAutoScroll(isUserInitiated = false, reason = "Overlay dismissed/removed")
@@ -331,7 +343,7 @@ class FloatingCrawlerOverlay(
         }
     }
 
-    fun isShowing(): Boolean = overlayView != null && overlayView?.visibility == View.VISIBLE
+    fun isShowing(): Boolean = if (ENABLE_WINDOW_OVERLAY) (overlayView != null && overlayView?.visibility == View.VISIBLE) else isAutoScrolling
 
     fun isAutoScrollingActive(): Boolean = isAutoScrolling
 
@@ -340,6 +352,20 @@ class FloatingCrawlerOverlay(
     fun getCapturedAttachmentsCount(): Int = capturedAttachmentsCount
 
     fun showCompletion(countNotices: Int, countFiles: Int, onDismissed: () -> Unit = {}) {
+        capturedCount = countNotices
+        capturedAttachmentsCount = countFiles
+        service.updateCaptureNotification(
+            status = "✓ Auto-Capture Complete",
+            detail = "$countNotices Notices • $countFiles Files synced to Google Drive",
+            noticeCount = countNotices,
+            attachmentCount = countFiles,
+            isCompleted = true
+        )
+        if (!ENABLE_WINDOW_OVERLAY) {
+            isAutoScrolling = false
+            onDismissed()
+            return
+        }
         handler.post {
             isAutoScrolling = false
             statusTextView?.text = "✓ Backfill Complete!"
@@ -364,6 +390,14 @@ class FloatingCrawlerOverlay(
     }
 
     fun updateStatus(status: String, detail: String? = null) {
+        service.updateCaptureNotification(
+            status = status,
+            detail = detail,
+            noticeCount = capturedCount,
+            attachmentCount = capturedAttachmentsCount,
+            isCompleted = false
+        )
+        if (!ENABLE_WINDOW_OVERLAY) return
         handler.post {
             statusTextView?.text = status
             if (!detail.isNullOrBlank()) {
@@ -377,11 +411,27 @@ class FloatingCrawlerOverlay(
 
     fun incrementNoticeCount() {
         capturedCount++
+        service.updateCaptureNotification(
+            status = "Capturing Notices...",
+            detail = "Notice #$capturedCount",
+            noticeCount = capturedCount,
+            attachmentCount = capturedAttachmentsCount,
+            isCompleted = false
+        )
+        if (!ENABLE_WINDOW_OVERLAY) return
         updateCountDisplay()
     }
 
-    fun incrementAttachmentCount() {
-        capturedAttachmentsCount++
+    fun incrementAttachmentCount(count: Int = 1) {
+        capturedAttachmentsCount += count
+        service.updateCaptureNotification(
+            status = "Capturing Notices...",
+            detail = "$capturedAttachmentsCount Files discovered",
+            noticeCount = capturedCount,
+            attachmentCount = capturedAttachmentsCount,
+            isCompleted = false
+        )
+        if (!ENABLE_WINDOW_OVERLAY) return
         updateCountDisplay()
     }
 
@@ -392,6 +442,7 @@ class FloatingCrawlerOverlay(
     }
 
     private fun updateCountDisplay() {
+        if (!ENABLE_WINDOW_OVERLAY) return
         handler.post {
             counterTextView?.text = "$capturedCount Notices • $capturedAttachmentsCount Files"
             minimizedBubble?.text = if (capturedCount > 0) "$capturedCount" else "K"
@@ -413,6 +464,11 @@ class FloatingCrawlerOverlay(
     }
 
     private fun toggleAutoScroll() {
+        if (service.isDispatchingCrawlerGesture) {
+            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: toggleAutoScroll rejected because internal crawler gesture is active")
+            return
+        }
+
         if (isAutoScrolling) {
             val currentTimeMs = System.currentTimeMillis()
             if (currentTimeMs - lastStopRequestTimeMs < 3000L) {
@@ -447,10 +503,6 @@ class FloatingCrawlerOverlay(
             return
         }
 
-        if (service.isDispatchingCrawlerGesture) {
-            CrawlerTraceLogger.log("SCROLLER_UI", "BLOCKED: startAutoScroll rejected because internal crawler gesture is active")
-            return
-        }
         val now = System.currentTimeMillis()
         if (now - lastToggleTimeMs < 1200L) {
             Log.i(TAG, "Ignoring rapid toggle (debounce 1200ms)")
@@ -473,17 +525,26 @@ class FloatingCrawlerOverlay(
             if (isAutoScrolling) return@runOnMainThread
             cancelPendingStopReset()
             isAutoScrolling = true
-            CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
-            autoButton?.text = "⏹ Stop Capture"
-            autoButton?.contentDescription = "Stop Auto-Capture"
-            autoButton?.setTextColor(Color.WHITE)
-            autoButton?.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dpToPx(8).toFloat()
-                setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
+            CrawlerTraceLogger.log("SCROLLER_UI", "Auto-Capture started in clean headless mode (No overlay)")
+            service.updateCaptureNotification(
+                status = "Auto-Capture Active",
+                detail = "Scanning class stream...",
+                noticeCount = capturedCount,
+                attachmentCount = capturedAttachmentsCount,
+                isCompleted = false
+            )
+            if (ENABLE_WINDOW_OVERLAY) {
+                autoButton?.text = "⏹ Stop Capture"
+                autoButton?.contentDescription = "Stop Auto-Capture"
+                autoButton?.setTextColor(Color.WHITE)
+                autoButton?.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dpToPx(8).toFloat()
+                    setColor(Color.parseColor("#E53E3E")) // Red for clear stop state
+                }
+                updateStatus("Status: Scanning Stream...")
+                minimize()
             }
-            updateStatus("Status: Scanning Stream...")
-            minimize()
             onStartAutoCapture()
         }
     }
@@ -497,16 +558,19 @@ class FloatingCrawlerOverlay(
                 "SCROLLER_UI",
                 "Auto-Capture stopped (Initiator: ${if (isUserInitiated) "USER" else "SYSTEM"}, Reason: $reason). Halting crawler and triggering Drive sync."
             )
-            autoButton?.text = "▶ Start Auto-Capture"
-            autoButton?.contentDescription = "Start Auto-Capture"
-            autoButton?.setTextColor(Color.parseColor("#0F172A"))
-            autoButton?.background = GradientDrawable().apply {
-                shape = GradientDrawable.RECTANGLE
-                cornerRadius = dpToPx(8).toFloat()
-                setColor(Color.parseColor("#ED8936")) // Amber
+            service.dismissCaptureNotification()
+            if (ENABLE_WINDOW_OVERLAY) {
+                autoButton?.text = "▶ Start Auto-Capture"
+                autoButton?.contentDescription = "Start Auto-Capture"
+                autoButton?.setTextColor(Color.parseColor("#0F172A"))
+                autoButton?.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dpToPx(8).toFloat()
+                    setColor(Color.parseColor("#ED8936")) // Amber
+                }
+                updateStatus("Status: Capture Stopped")
+                expand()
             }
-            updateStatus("Status: Capture Stopped")
-            expand()
             onStopAutoCapture()
             // Trigger a single background sync cycle to Google Drive now that capture finished
             KidsAccessibilityService.triggerDriveSync(service.applicationContext)
@@ -514,6 +578,10 @@ class FloatingCrawlerOverlay(
     }
 
     fun minimize() {
+        if (!ENABLE_WINDOW_OVERLAY) {
+            isMinimized = true
+            return
+        }
         runOnMainThread {
             isMinimized = true
             expandedContent?.visibility = View.GONE
@@ -534,6 +602,10 @@ class FloatingCrawlerOverlay(
     }
 
     fun expand() {
+        if (!ENABLE_WINDOW_OVERLAY) {
+            isMinimized = false
+            return
+        }
         runOnMainThread {
             isMinimized = false
             minimizedBubble?.visibility = View.GONE
@@ -934,6 +1006,7 @@ class FloatingCrawlerOverlay(
     }
 
     companion object {
+        const val ENABLE_WINDOW_OVERLAY = false
         private const val TAG = "FloatingCrawlerOverlay"
         private const val SWIPE_HORIZONTAL_CENTER_RATIO = 0.50f
         private const val FORWARD_SWIPE_START_VERTICAL_RATIO = 0.70f
