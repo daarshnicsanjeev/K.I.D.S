@@ -58,7 +58,7 @@ class ClassroomDateParserTest {
     }
 
     @Test
-    fun testCanonicalDateAndCutoffComparison() {
+    fun testCanonicalDateAndComparison() {
         val earliestNoticeDate = ClassroomDateParser.parse("Posted Jun 10", 2026)
         assertNotNull(earliestNoticeDate)
         assertEquals("Jun 10", earliestNoticeDate!!.canonicalDate)

@@ -183,30 +183,10 @@ class GoogleDriveSharedHarvester(
             ensureProperViewAndSorting()
             delay(SETTLING_DELAY_MS)
 
-            // Step 4: Establish academic year date cutoff (June 1 of current academic session)
+            // Step 4: Iterative Harvest Loop across Shared tab pages
             val allNotices = database.noticeDao().getAllNoticesDirect()
-            val currentCal = Calendar.getInstance()
-            val academicYearStartCal = Calendar.getInstance().apply {
-                val curYear = currentCal.get(Calendar.YEAR)
-                val startYear = if (currentCal.get(Calendar.MONTH) >= Calendar.JUNE) curYear else curYear - 1
-                set(Calendar.YEAR, startYear)
-                set(Calendar.MONTH, Calendar.JUNE)
-                set(Calendar.DAY_OF_MONTH, 1)
-                set(Calendar.HOUR_OF_DAY, 0)
-                set(Calendar.MINUTE, 0)
-                set(Calendar.SECOND, 0)
-                set(Calendar.MILLISECOND, 0)
-            }
-            val cutoffTimestampMs = academicYearStartCal.timeInMillis
-            CrawlerTraceLogger.log(
-                "DRIVE_HARVESTER",
-                "Academic year cutoff established: June 1, ${academicYearStartCal.get(Calendar.YEAR)}. Files shared during this academic year will be ingested."
-            )
-
-            // Step 5: Iterative Harvest Loop across Shared tab pages
             var scrollPageCount = 0
             var consecutiveEmptyPages = 0
-            var consecutiveOldItemsCount = 0
             val processedDriveTitles = mutableSetOf<String>()
             val processedFolderNames = mutableSetOf<String>()
 
@@ -230,42 +210,20 @@ class GoogleDriveSharedHarvester(
                 val batchToSelect = mutableListOf<DriveSharedItem>()
 
                 for (item in visibleItems) {
-                    val parsedItemDate = ClassroomDateParser.parse(item.subtitle)
-                    val isItemOld = cutoffTimestampMs > 0L && parsedItemDate != null && parsedItemDate.timestampMs < cutoffTimestampMs
-
-                    if (isItemOld) {
-                        CrawlerTraceLogger.log(
-                            "DRIVE_HARVESTER",
-                            "Item \"${item.title}\" (${parsedItemDate?.canonicalDate}) is prior to academic year start (June 1). Skipping."
-                        )
-                        consecutiveOldItemsCount++
-                        if (consecutiveOldItemsCount >= 10) {
-                            CrawlerTraceLogger.log(
-                                "DRIVE_HARVESTER",
-                                "Encountered $consecutiveOldItemsCount consecutive items older than academic year start. Ending Shared tab scan."
-                            )
-                            break
-                        }
-                        continue
-                    } else {
-                        consecutiveOldItemsCount = 0
-                    }
-
                     if (item.isFolder) {
                         // Folders cannot be multi-selected because Drive disables "Send a copy"
                         if (processedFolderNames.contains(item.title)) {
                             continue
                         }
 
-                        // Determine if folder is relevant (mentioned in announcements, contains Drive link, or shared within academic year)
+                        // Determine if folder is relevant (mentioned in announcements, contains Drive link, or educational)
                         val isMentionedInNotice = allNotices.any { n ->
                             n.title.contains(item.title, ignoreCase = true) ||
                             n.body.contains(item.title, ignoreCase = true) ||
                             n.body.contains("drive.google.com", ignoreCase = true)
                         }
-                        val isRecentSchoolFolder = parsedItemDate != null && (cutoffTimestampMs == 0L || parsedItemDate.timestampMs >= cutoffTimestampMs)
 
-                        if (isMentionedInNotice || isRecentSchoolFolder) {
+                        if (isMentionedInNotice || isEducationalFile(item.title)) {
                             processedFolderNames.add(item.title)
                             val harvestedFromFolder = harvestFolder(item, pendingAttachments)
                             totalHarvestedCount += harvestedFromFolder
