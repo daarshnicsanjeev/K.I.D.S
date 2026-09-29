@@ -105,18 +105,19 @@ fun OnboardingWizardScreen(
 
     val isNewChildSession = childSequenceNumber > 1
     val isAccessibilityActiveInitial = PermissionHelper.isAccessibilityGranted(context)
+    val isStep0Completed = remember { prefs.getBoolean("step_0_completed", false) }
 
     // Intended target step reconstructed from persistent vault preferences
     val intendedStep = remember {
         try {
-            if (!isNewChildSession && savedEmail.isNotBlank() && savedChild.isNotBlank()) {
-                if (!savedStepStr.isNullOrBlank() && savedStepStr != WizardStep.STEP_0_PERMISSIONS.name) {
-                    WizardStep.valueOf(savedStepStr)
-                } else {
-                    WizardStep.STEP_2_CLASSROOM
-                }
-            } else {
+            if (!isNewChildSession && !savedStepStr.isNullOrBlank() && savedStepStr != WizardStep.STEP_0_PERMISSIONS.name) {
+                WizardStep.valueOf(savedStepStr)
+            } else if (!isNewChildSession && (savedEmail.isNotBlank() || savedChild.isNotBlank())) {
+                WizardStep.STEP_2_CLASSROOM
+            } else if (isAccessibilityActiveInitial || isStep0Completed) {
                 WizardStep.STEP_1_VAULT
+            } else {
+                WizardStep.STEP_0_PERMISSIONS
             }
         } catch (_: Exception) {
             WizardStep.STEP_1_VAULT
@@ -124,7 +125,7 @@ fun OnboardingWizardScreen(
     }
 
     val initialStep = remember {
-        if (!isAccessibilityActiveInitial) {
+        if (!isAccessibilityActiveInitial && !isStep0Completed) {
             WizardStep.STEP_0_PERMISSIONS
         } else {
             intendedStep
@@ -132,13 +133,17 @@ fun OnboardingWizardScreen(
     }
 
     var currentStep by rememberSaveable { mutableStateOf(initialStep) }
-    var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(if (!isAccessibilityActiveInitial) intendedStep else null) }
+    var preRevocationStep by rememberSaveable { mutableStateOf<WizardStep?>(if (!isAccessibilityActiveInitial && !isStep0Completed) intendedStep else null) }
 
     LaunchedEffect(currentStep) {
         if (!isNewChildSession && currentStep != WizardStep.STEP_0_PERMISSIONS) {
-            prefs.edit().putString("wizard_current_step", currentStep.name).apply()
+            prefs.edit()
+                .putString("wizard_current_step", currentStep.name)
+                .putBoolean("step_0_completed", true)
+                .apply()
         }
     }
+
 
     // Strict Invariant: If Accessibility is revoked, return to STEP_0_PERMISSIONS.
     // Cache the previous step so the parent resumes seamlessly once Accessibility is re-enabled.
@@ -189,6 +194,13 @@ fun OnboardingWizardScreen(
         if (savedEmail.isNotBlank() && driveAccountEmail.isBlank()) {
             driveAccountEmail = savedEmail
             isDriveConnected = true
+        }
+    }
+
+    // Continuously persist profile and email edits so progress is never lost across app restarts
+    LaunchedEffect(childName, selectedYear, driveAccountEmail) {
+        if (!isNewChildSession && (childName.isNotBlank() || driveAccountEmail.isNotBlank())) {
+            DriveVaultManager.saveVaultPrefs(context, driveAccountEmail, selectedYear, childName.trim())
         }
     }
 
@@ -771,6 +783,7 @@ fun OnboardingWizardScreen(
 
                         Button(
                             onClick = {
+                                prefs.edit().putBoolean("step_0_completed", true).apply()
                                 currentStep = WizardStep.STEP_1_VAULT
                             },
                             enabled = hasAccessibility,

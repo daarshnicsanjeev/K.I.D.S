@@ -20,6 +20,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * Floating Notice Capture Assistant Overlay
@@ -87,8 +88,9 @@ class FloatingCrawlerOverlay(
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
-                    x = dpToPx(20)
-                    y = dpToPx(140)
+                    val displayMetrics = service.resources.displayMetrics
+                    x = displayMetrics.widthPixels - dpToPx(56)
+                    y = dpToPx(280)
                 }
                 params = p
 
@@ -254,6 +256,15 @@ class FloatingCrawlerOverlay(
                     setOnClickListener {
                         toggleAutoScroll()
                     }
+                    setOnLongClickListener {
+                        if (isAutoScrolling) {
+                            cancelPendingStopReset()
+                            stopAutoScroll(isUserInitiated = true, reason = "User long-pressed Stop button")
+                            true
+                        } else {
+                            false
+                        }
+                    }
                 }
                 autoButton = toggleCaptureButton
                 buttonRow.addView(toggleCaptureButton)
@@ -297,6 +308,7 @@ class FloatingCrawlerOverlay(
 
     fun dismissAndRemove() {
         handler.post {
+            cancelPendingStopReset()
             Log.i(TAG, "dismissAndRemove() called. isAutoScrolling=$isAutoScrolling, overlayView != null: ${overlayView != null}")
             if (isAutoScrolling) {
                 stopAutoScroll(isUserInitiated = false, reason = "Overlay dismissed/removed")
@@ -391,11 +403,47 @@ class FloatingCrawlerOverlay(
     }
 
     private var lastToggleTimeMs = 0L
+    private var lastStopRequestTimeMs = 0L
+    private var pendingStopResetRunnable: Runnable? = null
+
+    private fun cancelPendingStopReset() {
+        pendingStopResetRunnable?.let { handler.removeCallbacks(it) }
+        pendingStopResetRunnable = null
+        lastStopRequestTimeMs = 0L
+    }
 
     private fun toggleAutoScroll() {
         if (isAutoScrolling) {
-            // Emergency stop should ALWAYS succeed immediately without gesture lock or debounce
-            stopAutoScroll(isUserInitiated = true, reason = "User pressed Stop button")
+            val currentTimeMs = System.currentTimeMillis()
+            if (currentTimeMs - lastStopRequestTimeMs < 3000L) {
+                // Second tap within 3 seconds: Confirmed user stop
+                cancelPendingStopReset()
+                CrawlerTraceLogger.log("SCROLLER_UI", "User confirmed Stop Auto-Capture (two-step verified)")
+                stopAutoScroll(isUserInitiated = true, reason = "User confirmed Stop button")
+            } else {
+                // First tap: Require confirmation to prevent accidental stop / gesture collision
+                lastStopRequestTimeMs = currentTimeMs
+                autoButton?.text = "⚠️ Tap Again to Stop"
+                autoButton?.background = GradientDrawable().apply {
+                    shape = GradientDrawable.RECTANGLE
+                    cornerRadius = dpToPx(8).toFloat()
+                    setColor(Color.parseColor("#9B2C2C")) // Deep crimson
+                }
+                Toast.makeText(service, "Tap Stop again within 3s to stop capture", Toast.LENGTH_SHORT).show()
+                val resetRunnable = Runnable {
+                    if (isAutoScrolling) {
+                        autoButton?.text = "⏹ Stop Capture"
+                        autoButton?.background = GradientDrawable().apply {
+                            shape = GradientDrawable.RECTANGLE
+                            cornerRadius = dpToPx(8).toFloat()
+                            setColor(Color.parseColor("#E53E3E")) // Red Stop
+                        }
+                    }
+                    lastStopRequestTimeMs = 0L
+                }
+                pendingStopResetRunnable = resetRunnable
+                handler.postDelayed(resetRunnable, 3000L)
+            }
             return
         }
 
@@ -423,6 +471,7 @@ class FloatingCrawlerOverlay(
     fun startAutoScroll() {
         runOnMainThread {
             if (isAutoScrolling) return@runOnMainThread
+            cancelPendingStopReset()
             isAutoScrolling = true
             CrawlerTraceLogger.log("SCROLLER_UI", "User started Auto-Capture")
             autoButton?.text = "⏹ Stop Capture"
@@ -442,6 +491,7 @@ class FloatingCrawlerOverlay(
     fun stopAutoScroll(isUserInitiated: Boolean = true, reason: String = "User clicked Stop") {
         runOnMainThread {
             if (!isAutoScrolling) return@runOnMainThread
+            cancelPendingStopReset()
             isAutoScrolling = false
             CrawlerTraceLogger.log(
                 "SCROLLER_UI",
@@ -471,7 +521,7 @@ class FloatingCrawlerOverlay(
             params?.let { p ->
                 val displayMetrics = service.resources.displayMetrics
                 p.x = displayMetrics.widthPixels - dpToPx(56)
-                p.y = dpToPx(140)
+                p.y = dpToPx(280)
                 overlayView?.let { v ->
                     try {
                         windowManager.updateViewLayout(v, p)
@@ -490,7 +540,7 @@ class FloatingCrawlerOverlay(
             expandedContent?.visibility = View.VISIBLE
             params?.let { p ->
                 p.x = dpToPx(20)
-                p.y = dpToPx(140)
+                p.y = dpToPx(240)
                 overlayView?.let { v ->
                     try {
                         windowManager.updateViewLayout(v, p)

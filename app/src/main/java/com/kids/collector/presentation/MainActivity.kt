@@ -41,9 +41,7 @@ class MainActivity : ComponentActivity() {
                 var currentScreen by rememberSaveable { mutableStateOf(AppScreen.DASHBOARD) }
                 var childrenList by remember { mutableStateOf<List<ChildProfile>>(emptyList()) }
                 var isFirstLoad by remember { mutableStateOf(true) }
-                var showPermissionDialog by remember {
-                    mutableStateOf(!PermissionHelper.isNotificationAccessGranted(this@MainActivity))
-                }
+                var showPermissionDialog by remember { mutableStateOf(false) }
 
                 if (showPermissionDialog && currentScreen == AppScreen.DASHBOARD) {
                     PermissionSetupDialog(
@@ -71,6 +69,9 @@ class MainActivity : ComponentActivity() {
                         childrenList = domainList
                         if (isFirstLoad) {
                             currentScreen = if (domainList.isEmpty()) AppScreen.WIZARD else AppScreen.DASHBOARD
+                            if (domainList.isNotEmpty() && !PermissionHelper.isNotificationAccessGranted(this@MainActivity)) {
+                                showPermissionDialog = true
+                            }
                             isFirstLoad = false
                         }
                     }
