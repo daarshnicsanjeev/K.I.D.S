@@ -70,25 +70,16 @@ class GoogleDriveSharedHarvester(
 
         isDriveHarvestingActive = true
         try {
-            // Step 1: Launch Google Drive if not already in foreground
-            try {
-                var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
-                if (launchIntent == null) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "getLaunchIntentForPackage returned null, falling back to explicit ACTION_MAIN for $DRIVE_PACKAGE_NAME")
-                    launchIntent = Intent(Intent.ACTION_MAIN).apply {
-                        addCategory(Intent.CATEGORY_LAUNCHER)
-                        setPackage(DRIVE_PACKAGE_NAME)
-                    }
-                }
-                launchIntent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                )
-                context.startActivity(launchIntent)
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched launch intent for $DRIVE_PACKAGE_NAME")
-            } catch (e: Exception) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to launch Drive via launcher intent: ${e.message}")
+            // Step 1: Open Google Drive.
+            // On Android 14+ / MIUI, external background activity launches are restricted.
+            // When Google Classroom is the active foreground app, clicking "Classroom folder"
+            // in Classroom's navigation drawer lets Classroom itself launch Drive natively!
+            val initialRoot = rootInActiveWindowProvider()
+            val initialPkg = initialRoot?.packageName?.toString() ?: ""
+            initialRoot?.recycle()
+
+            if (initialPkg.contains("classroom")) {
+                openDriveViaClassroomDrawer()
             }
 
             // Wait for Google Drive window
@@ -96,12 +87,42 @@ class GoogleDriveSharedHarvester(
                 val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
                 val pkg = root.packageName?.toString() ?: ""
                 root.recycle()
-                pkg.contains("com.google.android.apps.docs")
+                pkg.contains(DRIVE_PACKAGE_NAME)
             }
 
-            // Fallback: If not open after 6s, attempt direct deep link view intent
+            // Fallback: If not open via drawer, attempt direct launcher intent
             if (!isDriveOpen) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not detected in 6s. Retrying with VIEW intent...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via drawer. Attempting direct launcher intent...")
+                try {
+                    var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
+                    if (launchIntent == null) {
+                        launchIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_LAUNCHER)
+                            setPackage(DRIVE_PACKAGE_NAME)
+                        }
+                    }
+                    launchIntent.addFlags(
+                        Intent.FLAG_ACTIVITY_NEW_TASK or
+                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
+                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+                    )
+                    context.startActivity(launchIntent)
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched launch intent for $DRIVE_PACKAGE_NAME")
+                } catch (e: Exception) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to launch Drive via launcher intent: ${e.message}")
+                }
+
+                isDriveOpen = waitForConditionAction(6000L, 300L) {
+                    val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                    val pkg = root.packageName?.toString() ?: ""
+                    root.recycle()
+                    pkg.contains(DRIVE_PACKAGE_NAME)
+                }
+            }
+
+            // Second Fallback: Attempt ACTION_VIEW deep link to drive.google.com
+            if (!isDriveOpen) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not detected. Retrying with VIEW intent...")
                 try {
                     val viewIntent = Intent(Intent.ACTION_VIEW).apply {
                         data = android.net.Uri.parse("https://drive.google.com")
@@ -116,17 +137,17 @@ class GoogleDriveSharedHarvester(
                     val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
                     val pkg = root.packageName?.toString() ?: ""
                     root.recycle()
-                    pkg.contains("com.google.android.apps.docs")
+                    pkg.contains(DRIVE_PACKAGE_NAME)
                 }
             }
 
             if (!isDriveOpen) {
-                val currentPkg = rootInActiveWindowProvider()?.let {
+                val finalPkg = rootInActiveWindowProvider()?.let {
                     val p = it.packageName?.toString() ?: ""
                     it.recycle()
                     p
                 } ?: "null"
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive app window not detected (current window: $currentPkg). Halting.")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive app window not detected (current window: $finalPkg). Halting.")
                 return 0
             }
 
@@ -387,6 +408,124 @@ class GoogleDriveSharedHarvester(
             CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in account list.")
             return false
         }
+    }
+
+    /**
+     * Opens Google Drive directly from Google Classroom's navigation drawer ("Classroom folder").
+     *
+     * This bypasses Android 14+ / MIUI background-activity-launch restrictions because
+     * Google Classroom (which is currently the active foreground app) initiates the launch itself.
+     */
+    private suspend fun openDriveViaClassroomDrawer(): Boolean {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom's 'Classroom folder' drawer...")
+        crawlerOverlay?.updateStatus("Opening Drive...", "Accessing Classroom folder in menu...")
+
+        val root = rootInActiveWindowProvider() ?: return false
+        val pkg = root.packageName?.toString() ?: ""
+        if (!pkg.contains("classroom")) {
+            root.recycle()
+            return false
+        }
+
+        // Step 1: Open the navigation drawer
+        val hamburgerNode = findHamburgerNode(root)
+        if (hamburgerNode != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Classroom drawer button. Clicking...")
+            val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val r = Rect()
+                hamburgerNode.getBoundsInScreen(r)
+                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+            }
+            hamburgerNode.recycle()
+            delay(1000L)
+        } else {
+            // Fallback: Edge swipe from left to right to open drawer
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Hamburger button not found. Performing left-edge swipe to open drawer...")
+            dispatchSwipeAction(10f, 600f, 600f, 600f, 350L)
+            delay(1200L)
+        }
+        root.recycle()
+
+        // Step 2: In the opened drawer, locate "Classroom folder" or "Class folder"
+        val drawerRoot = rootInActiveWindowProvider() ?: return false
+        var folderNode = findNodeContainingText(drawerRoot, "classroom folder")
+            ?: findNodeContainingText(drawerRoot, "class folder")
+            ?: findNodeContainingText(drawerRoot, "classroom")
+
+        if (folderNode == null) {
+            // Scroll down inside the drawer in case "Classroom folder" is lower down
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Classroom folder' not immediately visible. Scrolling drawer down...")
+            dispatchSwipeAction(300f, 1500f, 300f, 700f, 400L)
+            delay(1000L)
+            val scrolledDrawerRoot = rootInActiveWindowProvider()
+            if (scrolledDrawerRoot != null) {
+                folderNode = findNodeContainingText(scrolledDrawerRoot, "classroom folder")
+                    ?: findNodeContainingText(scrolledDrawerRoot, "class folder")
+                    ?: findNodeContainingText(scrolledDrawerRoot, "classroom")
+                scrolledDrawerRoot.recycle()
+            }
+        }
+
+        if (folderNode != null) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found '${folderNode.text}' in Classroom menu. Clicking to launch Google Drive...")
+            val clicked = if (folderNode.isClickable) {
+                folderNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            } else {
+                findClickableAncestor(folderNode)?.let {
+                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    it.recycle()
+                    ok
+                } ?: false
+            }
+            if (!clicked) {
+                val r = Rect()
+                folderNode.getBoundsInScreen(r)
+                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+            }
+            folderNode.recycle()
+            drawerRoot.recycle()
+            return true
+        }
+
+        drawerRoot.recycle()
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom folder option not found in drawer.")
+        return false
+    }
+
+    private fun findHamburgerNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        val r = Rect()
+        root.getBoundsInScreen(r)
+
+        val isTopLeft = r.left < 250 && r.top < 350 && r.bottom > 50
+
+        if (isTopLeft && (
+            desc.contains("navigate up") ||
+            desc.contains("open navigation") ||
+            desc.contains("drawer") ||
+            desc.contains("menu") ||
+            desc.contains("main menu") ||
+            text.contains("menu") ||
+            viewId.contains("open_drawer") ||
+            viewId.contains("navigation_drawer") ||
+            viewId.contains("home")
+        )) {
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+        }
+
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findHamburgerNode(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     /**
