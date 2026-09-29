@@ -930,54 +930,17 @@ class KidsAccessibilityService : AccessibilityService() {
         var lastTargetIndex = -1
         var consecutiveTargetAttempts = 0
         var consecutiveTransientCount = 0
-        var recoveryPassCount = 0
-        val maxRecoveryPasses = 4
         val recentScrollDirections = ArrayDeque<Boolean>(6)
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
             val nextItem = manifest.getNextPendingItemReverse()
             if (nextItem == null) {
-                // Auto-Recovery Invariant: A cycle is NOT complete if any attachments are pending download/sync!
-                delay(1200)
+                delay(600)
                 com.kids.collector.data.drive.DownloadFolderObserver.scanLocalAttachments(applicationContext)
-
-                val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
-                val pendingAttachments = allAttachments.filter { att ->
-                    att.localUri.isBlank() &&
-                    (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
-                    att.driveFileId?.startsWith("restricted_") != true
-                }
-
-                if (pendingAttachments.isNotEmpty() && recoveryPassCount < maxRecoveryPasses) {
-                    recoveryPassCount++
-                    val pendingNoticeIds = pendingAttachments.map { it.noticeId }.toSet()
-                    val allNotices = db.noticeDao().getAllNoticesDirect()
-                    val pendingNotices = allNotices.filter { pendingNoticeIds.contains(it.noticeId) }
-                    val pendingTitles = pendingNotices.map { it.title }.toSet()
-
-                    CrawlerTraceLogger.log(
-                        "AUTO_RECOVERY",
-                        "Cycle INCOMPLETE: ${pendingAttachments.size} attachments across ${pendingTitles.size} notices remain pending download/sync. Initiating Auto-Recovery Pass $recoveryPassCount/$maxRecoveryPasses..."
-                    )
-                    crawlerOverlay?.updateStatus(
-                        "Auto-Recovery Pass $recoveryPassCount...",
-                        "Targeting ${pendingAttachments.size} missing files across ${pendingTitles.size} posts"
-                    )
-
-                    val resetCount = manifest.resetItemsForRecovery(pendingTitles)
-                    visitedPostFingerprints.clear()
-                    CrawlerTraceLogger.log(
-                        "AUTO_RECOVERY",
-                        "Reset $resetCount manifest items for recovery sweep. Re-engaging reverse stream traversal."
-                    )
-                    recentScrollDirections.clear()
-                    lastRecoveryMinIndex = null
-                    consecutiveStaticRecoveryCount = 0
-                    delay(800)
-                    continue
-                }
-
-                CrawlerTraceLogger.log("STREAM_SURVEY", "All manifest items processed! Manifest finished.")
+                CrawlerTraceLogger.log(
+                    "STREAM_SURVEY",
+                    "All Classroom notices processed (${manifest.completedCount} notices indexed)! Exiting Classroom stream pass to launch Phase 3: Google Drive Shared Batch Harvester..."
+                )
                 break
             }
 
