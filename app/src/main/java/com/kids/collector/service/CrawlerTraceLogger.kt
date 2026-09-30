@@ -118,10 +118,11 @@ object CrawlerTraceLogger {
         log("ATTACHMENT_DOWNLOADED", "Attachment verified on disk: \"$fileName\" ($bytesOnDisk bytes)")
     }
 
-    fun logPostCompleted(index: Int, total: Int, title: String, attachmentsSaved: Int) {
+    fun logPostCompleted(index: Int, total: Int, title: String, attachmentsCount: Int) {
+        val attText = if (attachmentsCount > 0) " ($attachmentsCount attachments cataloged & queued for Drive harvest)" else ""
         log(
             "POST_COMPLETED",
-            "Notice #$index/$total completed: \"$title\" ($attachmentsSaved attachments physically saved & verified)"
+            "Notice #$index/$total completed: \"$title\"$attText"
         )
     }
 
