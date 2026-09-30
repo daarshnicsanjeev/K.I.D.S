@@ -148,6 +148,7 @@ class KidsAccessibilityService : AccessibilityService() {
         const val ACTION_STOP_CRAWL = "com.kids.collector.ACTION_STOP_CRAWL"
         const val ACTION_SHOW_OVERLAY = "com.kids.collector.ACTION_SHOW_OVERLAY"
         const val ACTION_START_FULL_AUTO_CAPTURE = "com.kids.collector.ACTION_START_FULL_AUTO_CAPTURE"
+        const val ACTION_START_DRIVE_HARVEST = "com.kids.collector.ACTION_START_DRIVE_HARVEST"
 
         const val EXTRA_CHILD_ID = "extra_child_id"
         const val EXTRA_CHILD_EMAIL = "extra_child_email"
@@ -404,6 +405,14 @@ class KidsAccessibilityService : AccessibilityService() {
                     getOrCreateOverlay().show()
                     getOrCreateOverlay().startAutoScroll()
                 }
+                ACTION_START_DRIVE_HARVEST -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_START_DRIVE_HARVEST via broadcast")
+                    activeTargetChildId = intent?.getStringExtra(EXTRA_CHILD_ID)
+                    activeTargetChildEmail = intent?.getStringExtra(EXTRA_CHILD_EMAIL)
+                    activeTargetChildGrade = intent?.getStringExtra(EXTRA_CHILD_GRADE)
+                    activeTargetChildName = intent?.getStringExtra(EXTRA_CHILD_NAME)
+                    startDirectDriveHarvest()
+                }
             }
         }
     }
@@ -418,6 +427,7 @@ class KidsAccessibilityService : AccessibilityService() {
             addAction(ACTION_STOP_CRAWL)
             addAction(ACTION_SHOW_OVERLAY)
             addAction(ACTION_START_FULL_AUTO_CAPTURE)
+            addAction(ACTION_START_DRIVE_HARVEST)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(crawlerControlReceiver, controlFilter, Context.RECEIVER_EXPORTED)
@@ -710,6 +720,70 @@ class KidsAccessibilityService : AccessibilityService() {
         crawlerJob?.cancel()
         crawlerJob = null
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
+    }
+
+    private fun startDirectDriveHarvest() {
+        crawlerJob?.cancel()
+        crawlerJob = serviceScope.launch(Dispatchers.Default) {
+            val drivePkg = "com.google.android.apps.docs"
+            lastActiveSchoolPackage = drivePkg
+            GoogleDriveSharedHarvester.isDriveHarvestingActive = true
+
+            val overlay = getOrCreateOverlay()
+            overlay.show()
+            overlay.startAutoScroll(triggerCallback = false)
+
+            val currentRoot = rootInActiveWindow
+            val currentPkg = currentRoot?.packageName?.toString() ?: ""
+            currentRoot?.recycle()
+            if (!currentPkg.startsWith(drivePkg)) {
+                val launchIntent = packageManager.getLaunchIntentForPackage(drivePkg)?.apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                }
+                if (launchIntent != null) {
+                    startActivity(launchIntent)
+                    delay(1500L)
+                }
+            }
+
+            val db = KidsDatabase.getInstance(applicationContext)
+            val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
+                db.childProfileDao().getChildById(activeTargetChildId!!)
+            } else {
+                db.childProfileDao().getAllChildrenDirect().firstOrNull()
+            }
+            val targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
+
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Starting Direct Pass 3: Google Drive Shared Tab Batch Harvester...")
+            overlay.updateStatus("Phase 3: Drive Harvester", "Launching Drive Shared Tab...")
+
+            val driveHarvester = GoogleDriveSharedHarvester(
+                context = this@KidsAccessibilityService,
+                serviceScope = serviceScope,
+                database = db,
+                crawlerOverlay = overlay,
+                rootInActiveWindowProvider = { rootInActiveWindow },
+                dispatchTapAction = { x, y -> dispatchTap(x, y) },
+                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
+                dispatchSwipeAction = { startX, startY, endX, endY, duration ->
+                    dispatchSwipe(startX, startY, endX, endY, duration)
+                },
+                selectKidsInChooserAction = { selectKidsInSystemChooser() },
+                waitForConditionAction = { timeoutMs, pollIntervalMs, condition ->
+                    waitForCondition(timeoutMs, pollIntervalMs, condition)
+                },
+                dispatchBackAction = { performGlobalAction(GLOBAL_ACTION_BACK) }
+            )
+
+            try {
+                val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = targetEmail ?: targetChild?.accountEmail)
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Direct Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
+                overlay.stopAutoScroll(isUserInitiated = false, reason = "Harvest complete ($harvestedCount files)")
+                triggerDriveSync(applicationContext)
+            } finally {
+                GoogleDriveSharedHarvester.isDriveHarvestingActive = false
+            }
+        }
     }
 
     private suspend fun ensureAtStreamTop() {

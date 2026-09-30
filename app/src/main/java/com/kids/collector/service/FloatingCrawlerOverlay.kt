@@ -520,7 +520,7 @@ class FloatingCrawlerOverlay(
         }
     }
 
-    fun startAutoScroll() {
+    fun startAutoScroll(triggerCallback: Boolean = true) {
         runOnMainThread {
             if (isAutoScrolling) return@runOnMainThread
             cancelPendingStopReset()
@@ -545,7 +545,9 @@ class FloatingCrawlerOverlay(
                 updateStatus("Status: Scanning Stream...")
                 minimize()
             }
-            onStartAutoCapture()
+            if (triggerCallback) {
+                onStartAutoCapture()
+            }
         }
     }
 
