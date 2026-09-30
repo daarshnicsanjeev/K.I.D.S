@@ -1460,8 +1460,9 @@ class KidsAccessibilityService : AccessibilityService() {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
         }
 
-        val totalFiles = crawlerOverlay?.getCapturedAttachmentsCount() ?: capturedAttachmentNames.size
-        val finalPending = db.attachmentDao().getAllAttachmentsDirect().filter { att ->
+        val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+        val totalFiles = allAttachments.count { it.localUri.isNotBlank() || (!it.driveFileId.isNullOrBlank() && !it.driveFileId.startsWith("virtual_")) }
+        val finalPending = allAttachments.filter { att ->
             att.localUri.isBlank() &&
             (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
             att.driveFileId?.startsWith("restricted_") != true
