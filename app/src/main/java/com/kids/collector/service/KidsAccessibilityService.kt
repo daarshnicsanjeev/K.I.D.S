@@ -2586,7 +2586,7 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 300): Boolean {
+    private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 350): Boolean {
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(startX, startY)
@@ -2594,22 +2594,23 @@ class KidsAccessibilityService : AccessibilityService() {
         }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        var completed = false
-        val dispatched = try {
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        return try {
+            val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
+                    deferred.complete(true)
                 }
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
-                    completed = false
+                    deferred.complete(false)
                 }
             }, null)
+            if (!dispatched) return false
+            kotlinx.coroutines.withTimeoutOrNull(durationMs + 600) { deferred.await() } ?: false
         } finally {
+            delay(100)
+            isDispatchingCrawlerGesture = false
         }
-        delay(150)
-        isDispatchingCrawlerGesture = false
-        return dispatched && completed
     }
 
     private data class UnvisitedCard(

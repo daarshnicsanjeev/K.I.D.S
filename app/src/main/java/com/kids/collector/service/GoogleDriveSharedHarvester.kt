@@ -43,7 +43,7 @@ class GoogleDriveSharedHarvester(
         const val DRIVE_PACKAGE_NAME = "com.google.android.apps.docs"
         private const val MAX_BATCH_SELECTION_SIZE = 15
         private const val MAX_SCROLL_PAGES = 60
-        private const val SETTLING_DELAY_MS = 600L
+        private const val SETTLING_DELAY_MS = 800L
 
         @Volatile
         var isDriveHarvestingActive: Boolean = false
@@ -188,6 +188,8 @@ class GoogleDriveSharedHarvester(
             val allNotices = database.noticeDao().getAllNoticesDirect()
             var scrollPageCount = 0
             var consecutiveEmptyPages = 0
+            var consecutiveStaticPages = 0
+            var lastVisibleTitles = listOf<String>()
             val processedDriveTitles = mutableSetOf<String>()
             val processedFolderNames = mutableSetOf<String>()
 
@@ -224,6 +226,29 @@ class GoogleDriveSharedHarvester(
 
                 val visibleItems = scanVisibleDriveItems(currentRoot)
                 currentRoot.recycle()
+
+                val visibleTitles = visibleItems.map { it.title }
+                CrawlerTraceLogger.log(
+                    "DRIVE_HARVESTER",
+                    "Page ${scrollPageCount + 1}: ${visibleItems.size} items visible: ${visibleTitles.take(4)}"
+                )
+
+                // Check if list has stopped moving (reached the bottom)
+                if (visibleTitles.isNotEmpty() && visibleTitles == lastVisibleTitles) {
+                    consecutiveStaticPages++
+                    if (consecutiveStaticPages >= 5) {
+                        CrawlerTraceLogger.log(
+                            "DRIVE_HARVESTER",
+                            "Drive list reached the bottom (same items across $consecutiveStaticPages swipes). Concluding harvest."
+                        )
+                        break
+                    }
+                } else {
+                    consecutiveStaticPages = 0
+                    if (visibleTitles.isNotEmpty()) {
+                        lastVisibleTitles = visibleTitles
+                    }
+                }
 
                 val batchToSelect = mutableListOf<DriveSharedItem>()
 
@@ -288,20 +313,20 @@ class GoogleDriveSharedHarvester(
                     consecutiveEmptyPages++
                 }
 
-            // Recycle nodes of items not selected
-            for (item in visibleItems) {
-                if (!batchToSelect.contains(item)) {
-                    item.node.recycle()
+                // Recycle nodes of items not selected
+                for (item in visibleItems) {
+                    if (!batchToSelect.contains(item)) {
+                        item.node.recycle()
+                    }
                 }
-            }
 
-            if (consecutiveEmptyPages >= 15) {
-                CrawlerTraceLogger.log(
-                    "DRIVE_HARVESTER",
-                    "No matching pending files found across $consecutiveEmptyPages consecutive pages. Concluding harvest."
-                )
-                break
-            }
+                if (consecutiveEmptyPages >= 50) {
+                    CrawlerTraceLogger.log(
+                        "DRIVE_HARVESTER",
+                        "No matching pending files found across $consecutiveEmptyPages consecutive pages. Concluding harvest."
+                    )
+                    break
+                }
 
             // Scroll down in Shared tab to reveal older files
             scrollPageCount++
@@ -1167,13 +1192,13 @@ class GoogleDriveSharedHarvester(
         val screenWidth = displayMetrics.widthPixels.toFloat()
         val screenHeight = displayMetrics.heightPixels.toFloat()
 
-        // Kinetic upward swipe to scroll forward through Drive items
+        // Kinetic upward swipe in center of Drive items list (from 70% to 25% height)
         dispatchSwipeAction(
             screenWidth * 0.5f,
-            screenHeight * 0.75f,
+            screenHeight * 0.70f,
             screenWidth * 0.5f,
-            screenHeight * 0.30f,
-            350L
+            screenHeight * 0.25f,
+            380L
         )
     }
 
