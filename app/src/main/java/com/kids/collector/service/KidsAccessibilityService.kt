@@ -600,6 +600,15 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun handleAppExitEvent(foreignPackage: String) {
+        val lowerForeign = foreignPackage.lowercase()
+        if (lowerForeign.startsWith(packageName.lowercase()) ||
+            lowerForeign.contains("collector") ||
+            lowerForeign.contains("chooser") ||
+            lowerForeign.contains("resolver")
+        ) {
+            return
+        }
+
         if (exitDebounceJob?.isActive == true) return
 
         exitDebounceJob = serviceScope.launch {
@@ -3836,6 +3845,9 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isAuthorizedSchoolApp(packageName: String): Boolean {
         val lower = packageName.lowercase()
+        if (lower.startsWith(applicationContext.packageName.lowercase()) || lower.contains("collector")) {
+            return true
+        }
         if (GoogleDriveSharedHarvester.isDriveHarvestingActive && lower == "com.google.android.apps.docs") {
             return true
         }

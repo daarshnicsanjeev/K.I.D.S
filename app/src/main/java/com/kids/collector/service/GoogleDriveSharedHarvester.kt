@@ -42,7 +42,7 @@ class GoogleDriveSharedHarvester(
     companion object {
         const val DRIVE_PACKAGE_NAME = "com.google.android.apps.docs"
         private const val MAX_BATCH_SELECTION_SIZE = 15
-        private const val MAX_SCROLL_PAGES = 30
+        private const val MAX_SCROLL_PAGES = 60
         private const val SETTLING_DELAY_MS = 600L
 
         @Volatile
@@ -204,7 +204,24 @@ class GoogleDriveSharedHarvester(
                     "${pendingAttachments.size} files remaining"
                 )
 
-                val currentRoot = rootInActiveWindowProvider() ?: break
+                // Resiliently acquire active window with retries to prevent premature termination during activity switches
+                var currentRoot: AccessibilityNodeInfo? = null
+                var rootRetry = 0
+                while (serviceScope.isActive && currentRoot == null && rootRetry < 12) {
+                    currentRoot = rootInActiveWindowProvider()
+                    if (currentRoot == null) {
+                        delay(250L)
+                        rootRetry++
+                    }
+                }
+                if (currentRoot == null) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Window root unavailable on page ${scrollPageCount + 1}. Scrolling to re-attempt...")
+                    scrollPageCount++
+                    scrollSharedListForward()
+                    delay(SETTLING_DELAY_MS)
+                    continue
+                }
+
                 val visibleItems = scanVisibleDriveItems(currentRoot)
                 currentRoot.recycle()
 
@@ -235,29 +252,41 @@ class GoogleDriveSharedHarvester(
                     }
                 }
 
-            if (batchToSelect.isNotEmpty()) {
-                consecutiveEmptyPages = 0
-                CrawlerTraceLogger.log(
-                    "DRIVE_HARVESTER",
-                    "Selecting batch of ${batchToSelect.size} matching files on page ${scrollPageCount + 1}..."
-                )
-
-                // Perform multi-selection: Long press first file, tap subsequent files
-                val batchDispatched = selectAndDispatchBatch(batchToSelect)
-                if (batchDispatched) {
-                    totalHarvestedCount += batchToSelect.size
-                    for (item in batchToSelect) {
-                        processedDriveTitles.add(item.title)
-                    }
-                    crawlerOverlay?.updateStatus(
-                        "Batch Sent to Vault",
-                        "Shared ${batchToSelect.size} files (Total: $totalHarvestedCount)"
+                if (batchToSelect.isNotEmpty()) {
+                    consecutiveEmptyPages = 0
+                    CrawlerTraceLogger.log(
+                        "DRIVE_HARVESTER",
+                        "Selecting batch of ${batchToSelect.size} matching files on page ${scrollPageCount + 1}..."
                     )
-                    delay(1200L)
+
+                    // Perform multi-selection: Long press first file, tap subsequent files
+                    val batchDispatched = selectAndDispatchBatch(batchToSelect)
+                    if (batchDispatched) {
+                        totalHarvestedCount += batchToSelect.size
+                        for (item in batchToSelect) {
+                            processedDriveTitles.add(item.title)
+                        }
+                        crawlerOverlay?.updateStatus(
+                            "Batch Sent to Vault",
+                            "Shared ${batchToSelect.size} files (Total: $totalHarvestedCount)"
+                        )
+                        // Explicitly wait for Google Drive to regain foreground focus after ShareTargetActivity finishes
+                        var waitDriveAttempts = 0
+                        while (serviceScope.isActive && waitDriveAttempts < 15) {
+                            val waitRoot = rootInActiveWindowProvider()
+                            val pkg = waitRoot?.packageName?.toString() ?: ""
+                            waitRoot?.recycle()
+                            if (pkg.contains("apps.docs")) {
+                                break
+                            }
+                            delay(300L)
+                            waitDriveAttempts++
+                        }
+                        delay(SETTLING_DELAY_MS)
+                    }
+                } else {
+                    consecutiveEmptyPages++
                 }
-            } else {
-                consecutiveEmptyPages++
-            }
 
             // Recycle nodes of items not selected
             for (item in visibleItems) {
