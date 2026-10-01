@@ -50,12 +50,147 @@ class GoogleDriveSharedHarvester(
 
         @Volatile
         var activeHarvestingFolderName: String? = null
+
+        val KNOWN_FILE_EXTENSIONS = setOf(
+            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
+            "jpg", "jpeg", "png", "gif", "webp", "bmp", "svg",
+            "mp4", "mov", "avi", "mkv", "webm", "3gp",
+            "mp3", "m4a", "wav", "aac", "ogg", "wma", "flac",
+            "zip", "rar", "7z", "txt", "rtf", "csv", "epub"
+        )
+
+        fun splitTitleAndExtension(rawTitle: String): Pair<String, String> {
+            val cleaned = rawTitle.trim()
+                .replace(Regex("""\s+\."""), ".")
+                .replace(Regex("""\.{2,}"""), ".")
+            val lower = cleaned.lowercase(Locale.ROOT)
+            for (ext in KNOWN_FILE_EXTENSIONS) {
+                if (lower.endsWith(".$ext")) {
+                    val beforeExt = cleaned.substring(0, cleaned.length - ext.length - 1).trim()
+                    val secondLower = beforeExt.lowercase(Locale.ROOT)
+                    for (ext2 in KNOWN_FILE_EXTENSIONS) {
+                        if (secondLower.endsWith(".$ext2")) {
+                            val base = beforeExt.substring(0, beforeExt.length - ext2.length - 1).trim()
+                            return Pair(base, ext)
+                        }
+                    }
+                    return Pair(beforeExt, ext)
+                }
+            }
+            return Pair(cleaned, "")
+        }
+
+        fun normalizeBaseName(baseName: String): String {
+            return baseName.lowercase(Locale.ROOT)
+                .replace(Regex("""[_\-]+"""), " ")
+                .replace(Regex("""\s+"""), " ")
+                .trim()
+        }
+
+        fun matchesDriveItem(driveTitle: String, attachmentFileName: String): Boolean {
+            val (driveBase, driveExt) = splitTitleAndExtension(driveTitle)
+            val (attBase, attExt) = splitTitleAndExtension(attachmentFileName)
+
+            val isExtCompatible = driveExt.isBlank() || attExt.isBlank() || driveExt == attExt ||
+                    (driveExt in setOf("doc", "docx") && attExt == "pdf") ||
+                    (driveExt == "pdf" && attExt in setOf("doc", "docx")) ||
+                    (driveExt in setOf("ppt", "pptx") && attExt == "pdf") ||
+                    (driveExt == "pdf" && attExt in setOf("ppt", "pptx"))
+
+            if (!isExtCompatible) return false
+
+            val normDriveBase = normalizeBaseName(driveBase)
+            val normAttBase = normalizeBaseName(attBase)
+
+            val isExact = normDriveBase == normAttBase
+            val isPrefix = (normDriveBase.length >= 8 && normAttBase.startsWith(normDriveBase)) ||
+                    (normAttBase.length >= 8 && driveBase.isNotBlank() && normDriveBase.startsWith(normAttBase))
+            val isSubstring = normDriveBase.length >= 8 && normAttBase.length >= 8 &&
+                    (normDriveBase.contains(normAttBase) || normAttBase.contains(normDriveBase))
+
+            return isExact || isPrefix || isSubstring
+        }
+
+        suspend fun findBestCandidate(
+            driveTitle: String,
+            driveSubtitle: String,
+            pendingAttachments: List<AttachmentEntity>,
+            noticeLookup: (suspend (noticeId: String) -> Pair<String, String>?)? = null
+        ): AttachmentEntity? {
+            val (driveBase, _) = splitTitleAndExtension(driveTitle)
+            val normDriveBase = normalizeBaseName(driveBase)
+
+            val candidateMatches = pendingAttachments.filter { att ->
+                matchesDriveItem(driveTitle, att.fileName)
+            }
+
+            if (candidateMatches.isEmpty()) return null
+            if (candidateMatches.size == 1) return candidateMatches.first()
+
+            val exactMatches = candidateMatches.filter { att ->
+                val (attBase, _) = splitTitleAndExtension(att.fileName)
+                normDriveBase == normalizeBaseName(attBase)
+            }
+            if (exactMatches.size == 1) return exactMatches.first()
+            val poolToDisambiguate = if (exactMatches.isNotEmpty()) exactMatches else candidateMatches
+
+            if (noticeLookup != null) {
+                val parsedDriveDate = ClassroomDateParser.parse(driveSubtitle)
+                if (parsedDriveDate != null) {
+                    for (candidate in poolToDisambiguate) {
+                        val noticeInfo = noticeLookup(candidate.noticeId)
+                        if (noticeInfo != null) {
+                            val (noticeTitle, noticeBody) = noticeInfo
+                            val noticeDate = ClassroomDateParser.parse(noticeTitle + " " + noticeBody.take(150))
+                            if (noticeDate != null && parsedDriveDate.matchesMonthAndDay(noticeDate.month, noticeDate.day)) {
+                                CrawlerTraceLogger.log(
+                                    "DRIVE_HARVESTER",
+                                    "Disambiguated identical file \"$driveTitle\" by date ${parsedDriveDate.monthShortName} ${parsedDriveDate.day} -> Notice \"${noticeTitle.take(30)}\""
+                                )
+                                return candidate
+                            }
+                        }
+                    }
+                }
+            }
+
+            return poolToDisambiguate.first()
+        }
+
+        val DRIVE_FILE_BADGES = setOf(
+            "pdf", "audio", "video", "image", "photo", "document", "google docs",
+            "spreadsheet", "google sheets", "presentation", "google slides",
+            "google forms", "archive", "zip", "text", "code"
+        )
+
+        fun isDriveFolder(
+            title: String,
+            descriptions: List<String>,
+            viewId: String = ""
+        ): Boolean {
+            val lowerDescs = descriptions.map { it.trim().lowercase(Locale.US) }.filter { it.isNotBlank() }
+            val hasFolderBadge = lowerDescs.any { it.contains("folder") } || viewId.lowercase(Locale.US).contains("folder")
+            val hasFileBadge = lowerDescs.any { DRIVE_FILE_BADGES.contains(it) }
+
+            if (hasFolderBadge && !hasFileBadge) {
+                return true
+            }
+            if (hasFileBadge) {
+                return false
+            }
+            val lowerTitle = title.trim().lowercase(Locale.US)
+            if (lowerTitle == "classroom" || lowerTitle.endsWith("folder") || lowerTitle.endsWith("folders")) {
+                return true
+            }
+            return false
+        }
     }
 
     data class DriveSharedItem(
         val title: String,
         val subtitle: String,
         val isFolder: Boolean,
+        val hasFileBadge: Boolean = false,
         val node: AccessibilityNodeInfo,
         val bounds: Rect,
         val moreActionsBounds: Rect? = null
@@ -152,33 +287,23 @@ class GoogleDriveSharedHarvester(
                 return 0
             }
 
-            // Step 2: Ensure Drive is logged into the child's school account
-            if (!targetAccountEmail.isNullOrBlank()) {
-                ensureDriveAccount(targetAccountEmail)
-            }
-
             var totalHarvestedCount = 0
 
-            // Step 2b: Check if Drive opened directly into a Folder (e.g. from Class Drive folder or Classroom folder)
-            val initialDriveRoot = rootInActiveWindowProvider()
-            val currentFolderTitle = initialDriveRoot?.let { findDriveCurrentFolderTitle(it) } ?: "Classroom"
-            val hasSharedTabAlready = initialDriveRoot?.let { findSharedTabNode(it) != null } ?: false
-            val hasNavUp = initialDriveRoot?.let { findNavigateUpButton(it) != null } ?: false
-            initialDriveRoot?.recycle()
-
-            if (!hasSharedTabAlready && hasNavUp) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive opened directly into folder: \"$currentFolderTitle\"")
-                crawlerOverlay?.updateStatus("Harvesting Class Folder", currentFolderTitle)
-                val pending = getPendingUncapturedAttachments()
-                if (pending.isNotEmpty()) {
-                    val folderHarvested = harvestCurrentOpenFolder(currentFolderTitle, pending)
-                    totalHarvestedCount += folderHarvested
-                }
-            }
-
-            // Step 3: Navigate to "Shared" ("Shared with me") tab
+            // Step 2: Navigate to top-level "Shared" ("Shared with me") tab FIRST
+            // This exits any folder Drive might have opened into and exposes the root navigation and account avatar
             navigateToSharedTab()
             delay(SETTLING_DELAY_MS)
+
+            // Step 3: Validate and ensure Google Drive is viewing the child's school account
+            if (!targetAccountEmail.isNullOrBlank()) {
+                val isAccountValidated = ensureDriveAccount(targetAccountEmail)
+                if (!isAccountValidated) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Warning: Could not validate account $targetAccountEmail on first attempt. Re-navigating to Shared...")
+                }
+                // Re-ensure we are on the Shared tab after account reload
+                navigateToSharedTab()
+                delay(SETTLING_DELAY_MS)
+            }
 
             // Step 3b: Ensure optimal view layout (List) and sorting (Date shared, newest first)
             ensureProperViewAndSorting()
@@ -225,7 +350,6 @@ class GoogleDriveSharedHarvester(
                 }
 
                 val visibleItems = scanVisibleDriveItems(currentRoot)
-                currentRoot.recycle()
 
                 val visibleTitles = visibleItems.map { it.title }
                 CrawlerTraceLogger.log(
@@ -250,29 +374,21 @@ class GoogleDriveSharedHarvester(
                     }
                 }
 
+                val foldersToHarvest = mutableListOf<String>()
                 val batchToSelect = mutableListOf<DriveSharedItem>()
 
                 for (item in visibleItems) {
                     if (item.isFolder) {
-                        // Folders cannot be multi-selected because Drive disables "Send a copy"
-                        if (processedFolderNames.contains(item.title)) {
-                            continue
+                        if (!processedFolderNames.contains(item.title)) {
+                            foldersToHarvest.add(item.title)
                         }
-                        processedFolderNames.add(item.title)
-                        val harvestedFromFolder = harvestFolder(item, pendingAttachments)
-                        totalHarvestedCount += harvestedFromFolder
-                        continue
-                    }
-
-                    if (processedDriveTitles.contains(item.title)) {
-                        continue
-                    }
-
-                    val matchedAttachment = matchDriveItemToPendingAttachment(item, pendingAttachments)
-                    if (matchedAttachment != null) {
-                        batchToSelect.add(item)
-                        if (batchToSelect.size >= MAX_BATCH_SELECTION_SIZE) {
-                            break
+                    } else if (!processedDriveTitles.contains(item.title)) {
+                        val matchedAttachment = matchDriveItemToPendingAttachment(item, pendingAttachments)
+                        if (matchedAttachment != null) {
+                            batchToSelect.add(item)
+                            if (batchToSelect.size >= MAX_BATCH_SELECTION_SIZE) {
+                                break
+                            }
                         }
                     }
                 }
@@ -309,7 +425,7 @@ class GoogleDriveSharedHarvester(
                         }
                         delay(SETTLING_DELAY_MS)
                     }
-                } else {
+                } else if (foldersToHarvest.isEmpty()) {
                     consecutiveEmptyPages++
                 }
 
@@ -318,6 +434,32 @@ class GoogleDriveSharedHarvester(
                     if (!batchToSelect.contains(item)) {
                         item.node.recycle()
                     }
+                }
+                currentRoot.recycle()
+
+                // Explore any unharvested folders discovered on this page
+                for (folderTitle in foldersToHarvest) {
+                    processedFolderNames.add(folderTitle)
+                    val freshRoot = rootInActiveWindowProvider()
+                    val freshFolderItem = freshRoot?.let { r ->
+                        val currentItems = scanVisibleDriveItems(r)
+                        r.recycle()
+                        val target = currentItems.find { it.isFolder && it.title == folderTitle }
+                        for (ci in currentItems) {
+                            if (ci != target) ci.node.recycle()
+                        }
+                        target
+                    }
+                    if (freshFolderItem != null) {
+                        val harvestedFromFolder = harvestFolder(freshFolderItem, pendingAttachments, 1)
+                        totalHarvestedCount += harvestedFromFolder
+                        freshFolderItem.node.recycle()
+                    }
+                }
+
+                if (foldersToHarvest.isNotEmpty()) {
+                    lastVisibleTitles = emptyList()
+                    consecutiveStaticPages = 0
                 }
 
                 if (consecutiveEmptyPages >= 50) {
@@ -346,85 +488,262 @@ class GoogleDriveSharedHarvester(
 
     /**
      * Checks if Google Drive is currently viewing the target child's account.
-     * If not, automatically opens the OneGoogle account switcher and selects the child's account.
+     * If not, automatically opens the OneGoogle account switcher, selects the child's account,
+     * and rigorously validates the new active account avatar disc after reload.
      */
     suspend fun ensureDriveAccount(targetEmail: String): Boolean {
         val cleanTarget = targetEmail.trim().lowercase(Locale.US)
-        val root = rootInActiveWindowProvider() ?: return false
-        val avatarNode = findAccountAvatarNode(root)
+        CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Verifying Google Drive active account for target: $cleanTarget")
+
+        // 1. Ensure Drive is at root level with bottom tabs accessible
+        ensureAtDriveRoot()
+
+        // 2. Locate avatar node, uncollapsing top search bar if scrolled down
+        var avatarNode: AccessibilityNodeInfo? = null
+        for (uncollapseAttempt in 0..2) {
+            val root = rootInActiveWindowProvider()
+            if (root != null) {
+                avatarNode = findAccountAvatarNode(root)
+                root.recycle()
+            }
+            if (avatarNode != null) break
+
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Avatar not visible (attempt ${uncollapseAttempt + 1}/3). Swiping down to expose Drive top search bar...")
+            dispatchSwipeAction(540f, 400f, 540f, 1600f, 300L)
+            delay(800L)
+        }
 
         if (avatarNode == null) {
-            root.recycle()
-            return true
+            // Fallback: Re-tap Shared tab at bottom to force top bar to re-appear and scroll to top
+            val tabRoot = rootInActiveWindowProvider()
+            if (tabRoot != null) {
+                val sharedTab = findSharedTabNode(tabRoot)
+                if (sharedTab != null) {
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Tapping Shared tab to force top search bar uncollapse...")
+                    val clicked = sharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val tb = Rect()
+                        sharedTab.getBoundsInScreen(tb)
+                        if (tb.width() > 0) dispatchTapAction(tb.centerX().toFloat(), tb.centerY().toFloat())
+                    }
+                    sharedTab.recycle()
+                    delay(800L)
+                }
+                tabRoot.recycle()
+            }
+            val checkRoot = rootInActiveWindowProvider()
+            if (checkRoot != null) {
+                avatarNode = findAccountAvatarNode(checkRoot)
+                checkRoot.recycle()
+            }
+        }
+
+        if (avatarNode == null) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Account avatar not found even after uncollapsing top bar.")
+            return false
         }
 
         val avatarDesc = avatarNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
         val avatarText = avatarNode.text?.toString()?.lowercase(Locale.US) ?: ""
 
         if (avatarDesc.contains(cleanTarget) || avatarText.contains(cleanTarget)) {
-            // Already in the child's school account
+            CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✓ Confirmed Google Drive is already viewing target account ($cleanTarget).")
+            crawlerOverlay?.updateStatus("Account Verified", "Active: $cleanTarget")
             avatarNode.recycle()
-            root.recycle()
             return true
         }
 
         CrawlerTraceLogger.log(
             "ACCOUNT_SWITCH",
-            "Drive is open in wrong account ($avatarDesc). Auto-switching to $cleanTarget..."
+            "Drive is currently open in wrong account ($avatarDesc). Auto-switching to $cleanTarget..."
         )
         crawlerOverlay?.updateStatus("Switching Account...", "Selecting $cleanTarget")
 
-        val clicked = avatarNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (!clicked) {
-            val rect = Rect()
-            avatarNode.getBoundsInScreen(rect)
+        // 3. Open OneGoogle Account switcher via direct physical touch coordinates
+        val rect = Rect()
+        avatarNode.getBoundsInScreen(rect)
+        val clickedAvatar = avatarNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        if (!clickedAvatar && rect.width() > 0) {
             dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
         }
         avatarNode.recycle()
-        root.recycle()
 
-        delay(800L)
-        var accountSwitched = false
-        val dialogAppeared = waitForConditionAction(4000L, 250L) {
-            val dialogRoot = rootInActiveWindowProvider() ?: return@waitForConditionAction false
-            val hasNode = findNodeContainingText(dialogRoot, cleanTarget) != null
-            dialogRoot.recycle()
-            hasNode
+        // Wait for OneGoogle bottom sheet to open
+        val isSheetOpen = waitForConditionAction(5000L, 300L) {
+            val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+            val hasSheet = findNodeContainingText(root, "manage accounts") != null ||
+                    findNodeContainingText(root, "add another account") != null ||
+                    findNodeContainingText(root, "google account") != null
+            root.recycle()
+            hasSheet
         }
 
-        if (dialogAppeared) {
+        if (!isSheetOpen) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Account switcher bottom sheet did not appear after tapping avatar disc.")
+            return false
+        }
+
+        delay(600L)
+
+        // 4. Search and select target account in bottom sheet (with scroll support)
+        var isAccountTapped = false
+        for (attempt in 0..4) {
             val dialogRoot = rootInActiveWindowProvider()
             if (dialogRoot != null) {
-                val targetNode = findNodeContainingText(dialogRoot, cleanTarget)
-                if (targetNode != null) {
-                    val selectOk = if (targetNode.isClickable) {
-                        targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    } else {
-                        findClickableAncestor(targetNode)?.let {
-                            val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            it.recycle()
-                            ok
-                        } ?: false
-                    }
-                    if (!selectOk) {
-                        val r = Rect()
-                        targetNode.getBoundsInScreen(r)
+                val targetRow = findAccountRowInSheet(dialogRoot, cleanTarget)
+                if (targetRow != null) {
+                    val r = Rect()
+                    targetRow.getBoundsInScreen(r)
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Found target account row at $r. Dispatching click...")
+                    val clicked = targetRow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked && r.width() > 0) {
                         dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
                     }
-                    targetNode.recycle()
-                    accountSwitched = true
+                    targetRow.recycle()
+                    isAccountTapped = true
+                    dialogRoot.recycle()
+                    break
                 }
                 dialogRoot.recycle()
             }
+            if (attempt < 4) {
+                CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Account $cleanTarget not visible on attempt ${attempt + 1}. Swiping up in account list...")
+                dispatchSwipeAction(540f, 1500f, 540f, 800f, 350L)
+                delay(800L)
+            }
         }
 
-        if (accountSwitched) {
-            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Successfully switched Drive account to $cleanTarget")
-            delay(1500L)
-            return true
-        } else {
-            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in account list.")
+        if (!isAccountTapped) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in account list after scrolling.")
+            dispatchBackAction()
+            delay(500L)
             return false
+        }
+
+        // 5. ACCOUNT VALIDATION: Wait for sheet dismissal and verify the new active account
+        CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "Validating account switch to $cleanTarget...")
+        crawlerOverlay?.updateStatus("Validating Account...", cleanTarget)
+
+        // Wait for bottom sheet to close
+        waitForConditionAction(6000L, 300L) {
+            val root = rootInActiveWindowProvider() ?: return@waitForConditionAction true
+            val hasSheet = findNodeContainingText(root, "manage accounts") != null ||
+                    findNodeContainingText(root, "add another account") != null
+            root.recycle()
+            !hasSheet
+        }
+        delay(1500L)
+
+        // Ensure top bar is visible
+        ensureAtDriveRoot()
+        var validatedAvatar: AccessibilityNodeInfo? = null
+        for (checkAttempt in 0..2) {
+            val root = rootInActiveWindowProvider()
+            if (root != null) {
+                validatedAvatar = findAccountAvatarNode(root)
+                root.recycle()
+            }
+            if (validatedAvatar != null) break
+            dispatchSwipeAction(540f, 400f, 540f, 1600f, 300L)
+            delay(800L)
+        }
+
+        if (validatedAvatar != null) {
+            val newDesc = validatedAvatar.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+            validatedAvatar.recycle()
+            if (newDesc.contains(cleanTarget)) {
+                CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✓ Account validation PASSED: Google Drive successfully switched to $cleanTarget!")
+                crawlerOverlay?.updateStatus("Account Verified", "Active: $cleanTarget")
+                return true
+            } else {
+                CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✗ Account validation FAILED: Google Drive active account is \"$newDesc\", expected $cleanTarget.")
+                return false
+            }
+        } else {
+            CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "Account avatar not re-acquired after switch. Validation indeterminate.")
+            return false
+        }
+    }
+
+    private suspend fun ensureAtDriveRoot() {
+        dismissMultiSelectMode()
+        var attempts = 0
+        while (attempts < 5) {
+            val root = rootInActiveWindowProvider() ?: break
+            val hasSharedTab = findSharedTabNode(root) != null
+            val navUp = findNavigateUpButton(root)
+            root.recycle()
+
+            if (hasSharedTab) {
+                break
+            }
+            if (navUp != null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside folder/subfolder. Navigating up toward Drive root...")
+                val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                navUp.recycle()
+                if (!clicked) {
+                    dispatchBackAction()
+                }
+                delay(600L)
+            } else {
+                break
+            }
+            attempts++
+        }
+    }
+
+    private fun findAccountRowInSheet(root: AccessibilityNodeInfo, targetEmail: String): AccessibilityNodeInfo? {
+        val cleanTarget = targetEmail.trim().lowercase(Locale.US)
+        val domain = if (cleanTarget.contains("@")) "@" + cleanTarget.substringAfter('@') else ""
+
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectAvailableAccountRows(root, candidates)
+
+        for (row in candidates) {
+            val texts = mutableListOf<String>()
+            collectNodeTexts(row, texts)
+            val combined = texts.joinToString(" ").lowercase(Locale.US)
+            val matchesTarget = combined.contains(cleanTarget) ||
+                    (domain.isNotBlank() && domain.length > 3 && combined.contains(domain) && !combined.contains("daarshnic") && !combined.contains("sanjeev"))
+
+            if (matchesTarget) {
+                for (other in candidates) {
+                    if (other != row) other.recycle()
+                }
+                return row
+            }
+        }
+
+        for (c in candidates) {
+            c.recycle()
+        }
+        return null
+    }
+
+    private fun collectAvailableAccountRows(node: AccessibilityNodeInfo, outList: MutableList<AccessibilityNodeInfo>) {
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        if (viewId.contains("og_bento_available_account_root") || viewId.contains("available_account")) {
+            outList.add(AccessibilityNodeInfo.obtain(node))
+            return
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectAvailableAccountRows(child, outList)
+            child.recycle()
+        }
+    }
+
+    private fun collectNodeTexts(node: AccessibilityNodeInfo, outList: MutableList<String>) {
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        if (text.isNotBlank()) outList.add(text)
+        if (desc.isNotBlank()) outList.add(desc)
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectNodeTexts(child, outList)
+            child.recycle()
         }
     }
 
@@ -694,6 +1013,9 @@ class GoogleDriveSharedHarvester(
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating to Shared tab in Google Drive...")
         crawlerOverlay?.updateStatus("Navigating to Shared Tab", "Finding Shared with me...")
 
+        // Dismiss any full-screen viewer or media player that might be currently displayed
+        dismissAnyActiveViewer()
+
         // Step A: If bottom navigation bar is not visible (e.g. inside a folder), navigate up/back to root
         var attempts = 0
         while (attempts < 6) {
@@ -702,10 +1024,10 @@ class GoogleDriveSharedHarvester(
             if (sharedTabNode != null) {
                 // Bottom navigation bar is visible! Select the Shared tab.
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected. Selecting Shared tab...")
-                val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val rect = Rect()
-                    sharedTabNode.getBoundsInScreen(rect)
+                val rect = Rect()
+                sharedTabNode.getBoundsInScreen(rect)
+                sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (rect.width() > 0) {
                     dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
                 }
                 sharedTabNode.recycle()
@@ -739,10 +1061,10 @@ class GoogleDriveSharedHarvester(
         val finalSharedTab = findSharedTabNode(finalRoot)
         if (finalSharedTab != null) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting Shared tab after exiting folder...")
+            val rect = Rect()
+            finalSharedTab.getBoundsInScreen(rect)
             val clicked = finalSharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val rect = Rect()
-                finalSharedTab.getBoundsInScreen(rect)
+            if (!clicked && rect.width() > 0) {
                 dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
             }
             finalSharedTab.recycle()
@@ -761,19 +1083,115 @@ class GoogleDriveSharedHarvester(
     private fun scanVisibleDriveItems(root: AccessibilityNodeInfo): List<DriveSharedItem> {
         val items = mutableListOf<DriveSharedItem>()
 
-        // Strategy A: Find Drive items by their "More actions for <Name>" buttons.
-        // In Google Drive for Android (both List and Grid layouts), every educational file and folder
-        // possesses a context menu button with contentDescription="More actions for <Name>".
-        // This provides 100% precision on title and the exact click target for single-file dispatch.
+        // Strategy A: Find Drive items by their "More actions for <Name>" buttons (Grid layout)
         findItemsViaMoreActionsButtons(root, items)
-
         if (items.isNotEmpty()) {
             return items
         }
 
-        // Strategy B: Fallback recursive container collection
+        // Strategy B: Find Drive items by their List view rows (where resource-id or desc is the file/folder title)
+        findItemsViaListViewRows(root, items)
+        if (items.isNotEmpty()) {
+            return items
+        }
+
+        // Strategy C: Fallback recursive container collection
         collectDriveItemsRecursively(root, items)
         return items
+    }
+
+    private fun findItemsViaListViewRows(root: AccessibilityNodeInfo, outList: MutableList<DriveSharedItem>) {
+        val rowCandidates = mutableListOf<AccessibilityNodeInfo>()
+        collectListViewRowNodes(root, rowCandidates)
+
+        val displayMetrics = context.resources.displayMetrics
+        val maxContentBottom = (displayMetrics.heightPixels - 280).coerceAtLeast(1600)
+
+        for (rowNode in rowCandidates) {
+            val r = Rect()
+            rowNode.getBoundsInScreen(r)
+            if (r.top < 460 || r.bottom > maxContentBottom) {
+                rowNode.recycle()
+                continue
+            }
+
+            var title = rowNode.viewIdResourceName?.trim() ?: ""
+            if (title.contains(":") || title.contains("/") || title == "DISPLAY_MODE_LIST" || title == "DISPLAY_MODE_GRID" || title == "single_column_header") {
+                title = ""
+            }
+            if (title.isBlank()) {
+                val descs = mutableListOf<String>()
+                collectAllChildDescriptions(rowNode, descs)
+                title = descs.firstOrNull { isLikelyFileOrFolderTitle(it) } ?: ""
+            }
+
+            if (title.isBlank() || isSystemHeaderTitle(title)) {
+                rowNode.recycle()
+                continue
+            }
+
+            val itemDescs = mutableListOf<String>()
+            collectAllChildDescriptions(rowNode, itemDescs)
+
+            val isFolder = isDriveFolder(
+                title = title,
+                descriptions = itemDescs,
+                viewId = rowNode.viewIdResourceName ?: ""
+            )
+            val lowerDescs = itemDescs.map { it.trim().lowercase(Locale.US) }
+            val hasFileBadge = lowerDescs.any { DRIVE_FILE_BADGES.contains(it) }
+
+            outList.add(
+                DriveSharedItem(
+                    title = title,
+                    subtitle = itemDescs.joinToString(", "),
+                    isFolder = isFolder,
+                    hasFileBadge = hasFileBadge,
+                    node = rowNode,
+                    bounds = r
+                )
+            )
+        }
+    }
+
+    private fun collectListViewRowNodes(node: AccessibilityNodeInfo, outList: MutableList<AccessibilityNodeInfo>) {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val isRow = r.height() in 60..400 && r.width() > 500 && (node.isCheckable || node.isClickable || node.isLongClickable)
+        val rid = node.viewIdResourceName ?: ""
+        val desc = node.contentDescription?.toString() ?: ""
+
+        if (isRow && !rid.contains("navigation") && !rid.contains("search") && !desc.contains("tab,")) {
+            outList.add(AccessibilityNodeInfo.obtain(node))
+            return
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectListViewRowNodes(child, outList)
+            child.recycle()
+        }
+    }
+
+    private fun isLikelyFileOrFolderTitle(t: String): Boolean {
+        val lower = t.trim().lowercase(Locale.US)
+        if (isSystemHeaderTitle(lower)) return false
+        return lower.endsWith(".pdf") || lower.endsWith(".mp3") || lower.endsWith(".doc") ||
+                lower.endsWith(".docx") || lower.endsWith(".xls") || lower.endsWith(".xlsx") ||
+                lower.endsWith(".png") || lower.endsWith(".jpg") || lower.contains("worksheet") ||
+                lower.contains("grade") || lower.contains("notes") || lower.contains("colouring") ||
+                lower.contains("text in ms word") || lower.length >= 6
+    }
+
+    private fun isSystemHeaderTitle(lower: String): Boolean {
+        val clean = lower.trim().lowercase(Locale.US)
+        return clean in setOf(
+            "home", "starred", "shared", "files", "search", "search in drive",
+            "more actions", "more options", "select all", "sort by", "view as list", "view as grid",
+            "last week", "earlier this month", "earlier this year", "today", "yesterday",
+            "display_mode_list", "display_mode_grid", "single_column_header", "scan document",
+            "create new", "toggle menu", "shared folder", "pdf", "audio", "video", "image"
+        ) || clean.startsWith("sort by") || clean.startsWith("shared by") || clean.startsWith("more actions for")
     }
 
     private fun findItemsViaMoreActionsButtons(root: AccessibilityNodeInfo, outList: MutableList<DriveSharedItem>) {
@@ -791,26 +1209,37 @@ class GoogleDriveSharedHarvester(
             val moreActionsBounds = Rect()
             actionNode.getBoundsInScreen(moreActionsBounds)
 
+            val displayMetrics = context.resources.displayMetrics
+            val maxContentBottom = (displayMetrics.heightPixels - 280).coerceAtLeast(1600)
+
             // Ignore buttons outside the content area (e.g. appbar/toolbar or navigation bar)
-            if (moreActionsBounds.top < 250 || moreActionsBounds.bottom > 2350) {
+            if (moreActionsBounds.top < 100 || moreActionsBounds.bottom > maxContentBottom) {
                 actionNode.recycle()
                 continue
             }
 
-            // Find the item card/row container: Walk up ancestors to find the clickable card
+            // Find the item card/row container: Walk up ancestors to find the clickable card or full row container
             var cardNode: AccessibilityNodeInfo? = null
+            var bestRowContainer: AccessibilityNodeInfo? = null
             var currentAncestor: AccessibilityNodeInfo? = actionNode.parent
             while (currentAncestor != null) {
                 val r = Rect()
                 currentAncestor.getBoundsInScreen(r)
-                if (currentAncestor.isClickable && r.height() in 60..800 && r.width() > 150) {
-                    cardNode = AccessibilityNodeInfo.obtain(currentAncestor)
-                    currentAncestor.recycle()
-                    break
+                if (r.height() in 60..800 && r.width() > 150) {
+                    if (currentAncestor.isClickable) {
+                        cardNode = AccessibilityNodeInfo.obtain(currentAncestor)
+                        currentAncestor.recycle()
+                        break
+                    } else if (bestRowContainer == null && r.width() > 400) {
+                        bestRowContainer = AccessibilityNodeInfo.obtain(currentAncestor)
+                    }
                 }
                 val parent = currentAncestor.parent
                 currentAncestor.recycle()
                 currentAncestor = parent
+            }
+            if (cardNode == null && bestRowContainer != null) {
+                cardNode = bestRowContainer
             }
 
             val cardBounds = Rect()
@@ -820,25 +1249,19 @@ class GoogleDriveSharedHarvester(
                 actionNode.getBoundsInScreen(cardBounds)
             }
 
-            // Check if this item is a folder:
             // Check descriptions and text of all descendants in this card
             val itemDescs = mutableListOf<String>()
             val nodeToInspect = cardNode ?: actionNode
             collectAllChildDescriptions(nodeToInspect, itemDescs)
 
-            val hasFileExtension = attachmentExts.any { rawTitle.lowercase(Locale.US).endsWith(it) }
-            val hasFileBadge = itemDescs.any {
-                it.equals("pdf", ignoreCase = true) ||
-                it.equals("document", ignoreCase = true) ||
-                it.equals("spreadsheet", ignoreCase = true) ||
-                it.equals("presentation", ignoreCase = true) ||
-                it.equals("audio", ignoreCase = true) ||
-                it.equals("video", ignoreCase = true) ||
-                it.equals("image", ignoreCase = true)
-            }
-            val hasFolderBadge = itemDescs.any { it.contains("folder", ignoreCase = true) }
+            val isFolder = isDriveFolder(
+                title = rawTitle,
+                descriptions = itemDescs,
+                viewId = actionNode.viewIdResourceName ?: ""
+            )
 
-            val isFolder = hasFolderBadge || (!hasFileExtension && !hasFileBadge)
+            val lowerDescs = itemDescs.map { it.trim().lowercase(Locale.US) }
+            val hasFileBadge = lowerDescs.any { DRIVE_FILE_BADGES.contains(it) }
 
             val representativeNode = cardNode ?: AccessibilityNodeInfo.obtain(actionNode)
             actionNode.recycle()
@@ -848,6 +1271,7 @@ class GoogleDriveSharedHarvester(
                     title = rawTitle,
                     subtitle = itemDescs.joinToString(", "),
                     isFolder = isFolder,
+                    hasFileBadge = hasFileBadge,
                     node = representativeNode,
                     bounds = cardBounds,
                     moreActionsBounds = moreActionsBounds
@@ -906,8 +1330,11 @@ class GoogleDriveSharedHarvester(
         node.getBoundsInScreen(rect)
         val isReasonableItemHeight = rect.height() in 40..500 && rect.width() > 100
 
+        val displayMetrics = context.resources.displayMetrics
+        val maxContentBottom = (displayMetrics.heightPixels - 280).coerceAtLeast(1600)
+
         // Exclude system areas (appbar, toolbar, bottom navigation)
-        if (rect.top < 250 || rect.bottom > 2350) {
+        if (rect.top < 100 || rect.bottom > maxContentBottom) {
             return
         }
 
@@ -950,17 +1377,23 @@ class GoogleDriveSharedHarvester(
                 return
             }
 
-            val hasFileExtension = attachmentExts.any { titleText.lowercase(Locale.US).endsWith(it) }
-            val isFolder = !hasFileExtension ||
-                    desc.contains("folder", ignoreCase = true) ||
-                    titleText.contains("folder", ignoreCase = true) ||
-                    viewId.contains("folder")
+            val itemDescs = mutableListOf<String>()
+            collectAllChildDescriptions(node, itemDescs)
+
+            val isFolder = isDriveFolder(
+                title = titleText,
+                descriptions = itemDescs,
+                viewId = viewId
+            )
+            val lowerDescs = itemDescs.map { it.trim().lowercase(Locale.US) }
+            val hasFileBadge = lowerDescs.any { DRIVE_FILE_BADGES.contains(it) }
 
             outList.add(
                 DriveSharedItem(
                     title = titleText,
                     subtitle = subtitleText,
                     isFolder = isFolder,
+                    hasFileBadge = hasFileBadge,
                     node = AccessibilityNodeInfo.obtain(node),
                     bounds = rect
                 )
@@ -984,49 +1417,15 @@ class GoogleDriveSharedHarvester(
         item: DriveSharedItem,
         pendingAttachments: List<AttachmentEntity>
     ): AttachmentEntity? {
-        val cleanDriveTitle = item.title.trim().lowercase(Locale.US)
-        val driveExtension = cleanDriveTitle.substringAfterLast('.', "")
-        val driveBaseName = cleanDriveTitle.substringBeforeLast('.')
-
-        val candidateMatches = pendingAttachments.filter { att ->
-            val cleanAttName = att.fileName.replace("...", "").trim().lowercase(Locale.US)
-            val attExtension = cleanAttName.substringAfterLast('.', "")
-            val attBaseName = cleanAttName.substringBeforeLast('.')
-
-            val isExtCompatible = driveExtension.isBlank() || attExtension.isBlank() || driveExtension == attExtension
-            if (!isExtCompatible) return@filter false
-
-            val isExactOrPrefix = driveBaseName == attBaseName ||
-                    (driveBaseName.length >= 8 && attBaseName.startsWith(driveBaseName)) ||
-                    (attBaseName.length >= 8 && driveBaseName.startsWith(attBaseName))
-            val isSubstring = cleanDriveTitle.length >= 8 && cleanAttName.length >= 8 &&
-                    (cleanDriveTitle.contains(cleanAttName) || cleanAttName.contains(cleanDriveTitle))
-
-            isExactOrPrefix || isSubstring
-        }
-
-        if (candidateMatches.isEmpty()) return null
-        if (candidateMatches.size == 1) return candidateMatches.first()
-
-        // Disambiguate by date and time:
-        val parsedDriveDate = ClassroomDateParser.parse(item.subtitle)
-        if (parsedDriveDate != null) {
-            for (candidate in candidateMatches) {
-                val parentNotice = database.noticeDao().findById(candidate.noticeId)
-                if (parentNotice != null) {
-                    val noticeDate = ClassroomDateParser.parse(parentNotice.title + " " + parentNotice.body.take(150))
-                    if (noticeDate != null && parsedDriveDate.matchesMonthAndDay(noticeDate.month, noticeDate.day)) {
-                        CrawlerTraceLogger.log(
-                            "DRIVE_HARVESTER",
-                            "Disambiguated identical file \"${item.title}\" by date ${parsedDriveDate.monthShortName} ${parsedDriveDate.day} -> Notice \"${parentNotice.title.take(30)}\""
-                        )
-                        return candidate
-                    }
-                }
+        return findBestCandidate(
+            driveTitle = item.title,
+            driveSubtitle = item.subtitle,
+            pendingAttachments = pendingAttachments,
+            noticeLookup = { noticeId ->
+                val parentNotice = database.noticeDao().findById(noticeId)
+                if (parentNotice != null) Pair(parentNotice.title, parentNotice.body) else null
             }
-        }
-
-        return candidateMatches.first()
+        )
     }
 
     /**
@@ -1139,7 +1538,56 @@ class GoogleDriveSharedHarvester(
 
         // 5. Select "K.I.D.S. Vault" in the Android system chooser
         selectKidsInChooserAction()
+
+        // 6. Ensure Google Drive exits multi-select mode so subsequent swipes scroll the list
+        dismissMultiSelectMode()
         return true
+    }
+
+    private suspend fun dismissMultiSelectMode() {
+        delay(600L)
+        val root = rootInActiveWindowProvider() ?: return
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        val combined = texts.joinToString(" ").lowercase(Locale.US)
+        val isMultiSelectActive = combined.contains("selected") || combined.contains("clear selection")
+        if (isMultiSelectActive) {
+            val closeBtn = findCloseSelectionButton(root)
+            if (closeBtn != null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing multi-select mode via Close button...")
+                val ok = closeBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!ok) {
+                    val r = Rect()
+                    closeBtn.getBoundsInScreen(r)
+                    dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                }
+                closeBtn.recycle()
+            } else {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing multi-select mode via Back action...")
+                dispatchBackAction()
+            }
+            delay(400L)
+        }
+        root.recycle()
+    }
+
+    private fun findCloseSelectionButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+        if (desc.contains("clear selection") || desc.contains("close selection") ||
+            desc.contains("cancel selection") || (desc == "close" && root.isClickable)) {
+            return AccessibilityNodeInfo.obtain(root)
+        }
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findCloseSelectionButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     private suspend fun dispatchSingleItemViaRowMenu(item: DriveSharedItem): Boolean {
@@ -1188,18 +1636,77 @@ class GoogleDriveSharedHarvester(
     }
 
     private suspend fun scrollSharedListForward() {
+        // Ensure any remaining selection is cleared before scrolling so gestures scroll instead of selecting
+        dismissMultiSelectMode()
+
+        // Strategy 1: Attempt native accessibility scroll on the actual scrollable list (e.g. scrollList / RecyclerView)
+        var scrolledNatively = false
+        val root = rootInActiveWindowProvider()
+        if (root != null) {
+            val container = findActualScrollableContainer(root)
+            if (container != null) {
+                scrolledNatively = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                container.recycle()
+            }
+            root.recycle()
+        }
+
+        if (scrolledNatively) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Natively scrolled Shared list forward via ACTION_SCROLL_FORWARD.")
+            delay(600L)
+            return
+        }
+
         val displayMetrics = context.resources.displayMetrics
         val screenWidth = displayMetrics.widthPixels.toFloat()
         val screenHeight = displayMetrics.heightPixels.toFloat()
 
-        // Kinetic upward swipe in center of Drive items list (from 70% to 25% height)
+        val startY = screenHeight * 0.65f
+        val endY = screenHeight * 0.22f
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched forward swipe on Shared list (Y: ${startY.toInt()} -> ${endY.toInt()})...")
+
+        // Physical touch drag is universally reliable across both Compose and View hierarchies
         dispatchSwipeAction(
             screenWidth * 0.5f,
-            screenHeight * 0.70f,
+            startY,
             screenWidth * 0.5f,
-            screenHeight * 0.25f,
-            380L
+            endY,
+            450L
         )
+        delay(850L)
+    }
+
+    private fun findActualScrollableContainer(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectAllScrollableNodes(root, candidates)
+        val displayHeight = context.resources.displayMetrics.heightPixels
+        val best = candidates.firstOrNull { node ->
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            val rid = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+            (rid.contains("scrolllist") || rid.contains("recycler") || rid.contains("list")) && r.height() in 800..(displayHeight - 200)
+        } ?: candidates.firstOrNull { node ->
+            val r = Rect()
+            node.getBoundsInScreen(r)
+            r.top > 150 && r.height() in 800..(displayHeight - 200)
+        }
+        for (candidate in candidates) {
+            if (candidate != best) {
+                candidate.recycle()
+            }
+        }
+        return best
+    }
+
+    private fun collectAllScrollableNodes(node: AccessibilityNodeInfo, outList: MutableList<AccessibilityNodeInfo>) {
+        if (node.isScrollable) {
+            outList.add(AccessibilityNodeInfo.obtain(node))
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectAllScrollableNodes(child, outList)
+            child.recycle()
+        }
     }
 
     private suspend fun getPendingUncapturedAttachments(): List<AttachmentEntity> {
@@ -1211,20 +1718,60 @@ class GoogleDriveSharedHarvester(
         }
     }
 
-    private fun findSharedTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
+    private suspend fun dismissAnyActiveViewer() {
+        var attempts = 0
+        while (attempts < 4) {
+            val root = rootInActiveWindowProvider() ?: break
+            val isPlayerOrViewer = findNodeContainingText(root, "playback speed") != null ||
+                    findNodeContainingText(root, "rewind") != null ||
+                    findNodeContainingText(root, "fast forward") != null ||
+                    findNodeContainingText(root, "annotation") != null ||
+                    findNodeContainingText(root, "edit file") != null ||
+                    findNodeContainingText(root, "find") != null ||
+                    findNodeContainingText(root, "comments") != null ||
+                    findNodeContainingText(root, "external badge") != null ||
+                    findNodeContainingText(root, "external") != null
+            root.recycle()
+            if (isPlayerOrViewer) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Pressing Back to return to Drive...")
+                dispatchBackAction()
+                delay(800L)
+                attempts++
+            } else {
+                break
+            }
+        }
+    }
 
-        val isSharedTab = desc == "shared" || desc.contains("shared with me") ||
+    private fun findSharedTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val displayMetrics = context.resources.displayMetrics
+        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
+        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
+        return findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+    }
+
+    private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, minTabTop: Int, minTabLeft: Int): AccessibilityNodeInfo? {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val isInBottomNavBar = bounds.top >= minTabTop && bounds.left >= minTabLeft
+
+        val isSharedTab = (isInBottomNavBar && (
+                desc == "shared" || desc.contains("shared with me") ||
                 desc.contains("tab, 3 of") || text == "shared"
+        )) || viewId.contains("menu_navigation_shared")
 
         if (isSharedTab) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findSharedTabNode(child)
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findSharedTabNodeInternal(child, minTabTop, minTabLeft)
             if (found != null) {
                 child.recycle()
                 return found
@@ -1290,7 +1837,7 @@ class GoogleDriveSharedHarvester(
                 !desc.contains("switch to grid") && !text.contains("grid view") && !desc.contains("view as grid")
 
         if (isSwitchToList) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {
@@ -1401,7 +1948,7 @@ class GoogleDriveSharedHarvester(
         )
 
         if (isSortTrigger) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {
@@ -1528,7 +2075,7 @@ class GoogleDriveSharedHarvester(
         )
 
         if (isReverseSort) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {
@@ -1548,12 +2095,17 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isAvatar = desc.contains("google account") || desc.contains("signed in as") ||
-                desc.contains("account and settings") || viewId.contains("og_apd_ring_view") ||
-                viewId.contains("account_avatar")
+        val isAvatar = (desc.contains("google account") || desc.contains("signed in as") ||
+                desc.contains("account and settings") || viewId.contains("selected_account_disc") ||
+                viewId.contains("og_apd_ring_view") || viewId.contains("account_avatar")) &&
+                !desc.contains("collapse account list") && !desc.contains("account list expanded")
 
         if (isAvatar) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+            val r = Rect()
+            root.getBoundsInScreen(r)
+            if (r.width() in 40..300 && r.height() in 40..300 && r.top < 400) {
+                return AccessibilityNodeInfo.obtain(root)
+            }
         }
 
         for (i in 0 until root.childCount) {
@@ -1606,7 +2158,7 @@ class GoogleDriveSharedHarvester(
                 viewId.contains("action_bar_overflow")
 
         if (isOverflow) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {
@@ -1652,7 +2204,7 @@ class GoogleDriveSharedHarvester(
                 desc.contains("send a copy") || desc.contains("send file")
 
         if (isSendCopy) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
         }
 
         for (i in 0 until node.childCount) {
@@ -1675,15 +2227,25 @@ class GoogleDriveSharedHarvester(
         ".zip", ".rar", ".7z"
     )
 
-    private fun isEducationalFile(fileName: String): Boolean {
-        val lower = fileName.trim().lowercase(Locale.US)
+    private fun isEducationalFile(item: DriveSharedItem): Boolean {
+        if (item.isFolder) return false
+        if (item.hasFileBadge) return true
+        val lower = item.title.trim().lowercase(Locale.US)
         return attachmentExts.any { lower.endsWith(it) } ||
                 lower.contains(".pdf") || lower.contains(".doc") || lower.contains(".ppt") ||
                 lower.contains(".xls") || lower.contains(".jpg") || lower.contains(".png")
     }
 
-    private suspend fun harvestFolder(folderItem: DriveSharedItem, pendingAttachments: List<AttachmentEntity>): Int {
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Entering shared folder: \"${folderItem.title}\"")
+    private suspend fun harvestFolder(
+        folderItem: DriveSharedItem,
+        pendingAttachments: List<AttachmentEntity>,
+        folderDepth: Int = 1
+    ): Int {
+        if (folderDepth > 5) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Maximum folder depth (5) reached for: \"${folderItem.title}\". Skipping deeper descent.")
+            return 0
+        }
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Entering folder (depth $folderDepth): \"${folderItem.title}\"")
         crawlerOverlay?.updateStatus("Entering Folder...", folderItem.title)
 
         val clicked = if (folderItem.node.isClickable) {
@@ -1703,20 +2265,39 @@ class GoogleDriveSharedHarvester(
         delay(SETTLING_DELAY_MS + 400L)
 
         var harvestedInFolder = 0
+        val previousActiveFolder = activeHarvestingFolderName
         activeHarvestingFolderName = folderItem.title
         try {
             ensureListLayout()
             var page = 0
+            var consecutiveStaticPages = 0
+            var lastVisibleTitles = listOf<String>()
             val processedInFolder = mutableSetOf<String>()
+            val processedSubfolders = mutableSetOf<String>()
 
-            while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < 6) {
+            while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < 40) {
                 val folderRoot = rootInActiveWindowProvider() ?: break
                 val itemsInside = scanVisibleDriveItems(folderRoot)
                 folderRoot.recycle()
 
+                val visibleTitles = itemsInside.map { it.title }
+                if (visibleTitles.isNotEmpty() && visibleTitles == lastVisibleTitles) {
+                    consecutiveStaticPages++
+                    if (consecutiveStaticPages >= 3) {
+                        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Folder \"${folderItem.title}\" reached bottom (same items across $consecutiveStaticPages swipes).")
+                        for (item in itemsInside) item.node.recycle()
+                        break
+                    }
+                } else {
+                    consecutiveStaticPages = 0
+                    if (visibleTitles.isNotEmpty()) {
+                        lastVisibleTitles = visibleTitles
+                    }
+                }
+
                 val batchInFolder = mutableListOf<DriveSharedItem>()
                 for (item in itemsInside) {
-                    if (!item.isFolder && (isEducationalFile(item.title) || matchDriveItemToPendingAttachment(item, pendingAttachments) != null)) {
+                    if (!item.isFolder && (isEducationalFile(item) || matchDriveItemToPendingAttachment(item, pendingAttachments) != null)) {
                         if (!processedInFolder.contains(item.title)) {
                             batchInFolder.add(item)
                             if (batchInFolder.size >= MAX_BATCH_SELECTION_SIZE) {
@@ -1743,14 +2324,8 @@ class GoogleDriveSharedHarvester(
                     }
                 }
 
-                // Check for subfolders (e.g. English, Maths, Science)
-                for (subItem in itemsInside) {
-                    if (subItem.isFolder && !processedInFolder.contains(subItem.title)) {
-                        processedInFolder.add(subItem.title)
-                        val subHarvested = harvestFolder(subItem, pendingAttachments)
-                        harvestedInFolder += subHarvested
-                    }
-                }
+                // Check for unseen subfolders
+                val subfoldersToExplore = itemsInside.filter { it.isFolder && !processedSubfolders.contains(it.title) }
 
                 for (item in itemsInside) {
                     if (!batchInFolder.contains(item)) {
@@ -1758,23 +2333,40 @@ class GoogleDriveSharedHarvester(
                     }
                 }
 
-                if (batchInFolder.isEmpty()) {
-                    break
+                for (subfolder in subfoldersToExplore) {
+                    processedSubfolders.add(subfolder.title)
+                    val currentWindowRoot = rootInActiveWindowProvider()
+                    val freshSubfolderItem = currentWindowRoot?.let { root ->
+                        val currentItems = scanVisibleDriveItems(root)
+                        root.recycle()
+                        val match = currentItems.find { it.isFolder && it.title == subfolder.title }
+                        for (ci in currentItems) {
+                            if (ci != match) ci.node.recycle()
+                        }
+                        match
+                    }
+
+                    if (freshSubfolderItem != null) {
+                        val subHarvested = harvestFolder(freshSubfolderItem, pendingAttachments, folderDepth + 1)
+                        harvestedInFolder += subHarvested
+                        freshSubfolderItem.node.recycle()
+                    }
                 }
+
+                page++
                 scrollSharedListForward()
                 delay(SETTLING_DELAY_MS)
-                page++
             }
         } finally {
-            activeHarvestingFolderName = null
-            returnFromFolderToSharedTab()
+            activeHarvestingFolderName = previousActiveFolder
+            returnOneFolderUp()
         }
 
         return harvestedInFolder
     }
 
-    private suspend fun returnFromFolderToSharedTab(): Boolean {
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating back from folder to Shared tab...")
+    private suspend fun returnOneFolderUp(): Boolean {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating one level up from folder...")
         val root = rootInActiveWindowProvider()
         var clickedNavigateUp = false
         if (root != null) {
@@ -1799,12 +2391,12 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isNavUp = desc.contains("navigate up") || desc.contains("back") ||
-                desc == "up" || desc.contains("go back") || desc.contains("close") ||
-                viewId.contains("up_button") || viewId.contains("navigate_up")
+        val isNavUp = (desc.contains("navigate up") || desc.contains("go back") ||
+                viewId.contains("up_button") || viewId.contains("navigate_up")) &&
+                !desc.contains("more actions") && !desc.contains("more options")
 
         if (isNavUp) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else (findClickableAncestor(root) ?: AccessibilityNodeInfo.obtain(root))
         }
 
         val bounds = Rect()
@@ -1812,6 +2404,7 @@ class GoogleDriveSharedHarvester(
         val isTopLeftButton = bounds.top < 350 && bounds.left < 250 && bounds.width() in 40..250 && bounds.height() in 40..250
         if (isTopLeftButton && root.isClickable &&
             !desc.contains("account") && !desc.contains("avatar") && !desc.contains("search") && !desc.contains("menu") &&
+            !desc.contains("more actions") && !desc.contains("more options") && !viewId.contains("more_actions") && !viewId.contains("nav_button") &&
             !text.contains("search") && !text.contains("drive")
         ) {
             return AccessibilityNodeInfo.obtain(root)
@@ -1861,7 +2454,7 @@ class GoogleDriveSharedHarvester(
 
         val batch = mutableListOf<DriveSharedItem>()
         for (fileItem in filesInside) {
-            if (!fileItem.isFolder && (isEducationalFile(fileItem.title) || matchDriveItemToPendingAttachment(fileItem, pendingAttachments) != null)) {
+            if (!fileItem.isFolder && (isEducationalFile(fileItem) || matchDriveItemToPendingAttachment(fileItem, pendingAttachments) != null)) {
                 batch.add(fileItem)
                 if (batch.size >= MAX_BATCH_SELECTION_SIZE) break
             }

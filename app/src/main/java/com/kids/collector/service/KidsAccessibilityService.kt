@@ -24,6 +24,7 @@ import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import com.kids.collector.data.db.AttachmentEntity
+import com.kids.collector.data.db.ChildProfileEntity
 import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.data.db.NoticeEntity
 import com.kids.collector.domain.classifier.ClassroomDateParser
@@ -722,6 +723,21 @@ class KidsAccessibilityService : AccessibilityService() {
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
     }
 
+    private suspend fun resolveTargetChildAndEmail(db: KidsDatabase): Pair<ChildProfileEntity?, String?> {
+        val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
+            db.childProfileDao().getChildById(activeTargetChildId!!)
+        } else {
+            db.childProfileDao().getAllChildrenDirect().firstOrNull()
+        }
+        var targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
+        if (targetEmail.isNullOrBlank()) {
+            targetEmail = db.noticeDao().getAllNoticesDirect()
+                .mapNotNull { it.sender }
+                .firstOrNull { it.contains("@") && (it.contains(".school") || it.contains("caie") || it.contains("atharva")) }
+        }
+        return Pair(targetChild, targetEmail)
+    }
+
     private fun startDirectDriveHarvest() {
         crawlerJob?.cancel()
         crawlerJob = serviceScope.launch(Dispatchers.Default) {
@@ -747,14 +763,9 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             val db = KidsDatabase.getInstance(applicationContext)
-            val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
-                db.childProfileDao().getChildById(activeTargetChildId!!)
-            } else {
-                db.childProfileDao().getAllChildrenDirect().firstOrNull()
-            }
-            val targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
+            val (targetChild, targetEmail) = resolveTargetChildAndEmail(db)
 
-            CrawlerTraceLogger.log("DEEP_CRAWLER", "Starting Direct Pass 3: Google Drive Shared Tab Batch Harvester...")
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Starting Direct Pass 3: Google Drive Shared Tab Batch Harvester for email: $targetEmail...")
             overlay.updateStatus("Phase 3: Drive Harvester", "Launching Drive Shared Tab...")
 
             val driveHarvester = GoogleDriveSharedHarvester(
@@ -762,7 +773,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = overlay,
-                rootInActiveWindowProvider = { rootInActiveWindow },
+                rootInActiveWindowProvider = { findDriveRootNode() },
                 dispatchTapAction = { x, y -> dispatchTap(x, y) },
                 dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
@@ -821,12 +832,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val manifest = StreamManifest()
         val surveyStartTime = System.currentTimeMillis()
         val db = KidsDatabase.getInstance(applicationContext)
-        val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
-            db.childProfileDao().getChildById(activeTargetChildId!!)
-        } else {
-            db.childProfileDao().getAllChildrenDirect().firstOrNull()
-        }
-        val targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
+        val (targetChild, targetEmail) = resolveTargetChildAndEmail(db)
         val activeCourseGrade = activeTargetChildGrade ?: targetChild?.grade
         var activeCourseTitle: String? = null
 
@@ -1526,7 +1532,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = crawlerOverlay,
-                rootInActiveWindowProvider = { rootInActiveWindow },
+                rootInActiveWindowProvider = { findDriveRootNode() },
                 dispatchTapAction = { x, y -> dispatchTap(x, y) },
                 dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
@@ -1824,8 +1830,8 @@ class KidsAccessibilityService : AccessibilityService() {
                     delay(300)
                 }
             } else {
-                // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button
-                val explicitAction = findExplicitCopyOrDownloadButton(active) ?: findDownloadButtonNode(active)
+                // 2. Fallback: If no overflow menu exists, look for explicit Copy / Download button or Share button
+                val explicitAction = findExplicitCopyOrDownloadButton(active) ?: findShareButton(active) ?: findDownloadButtonNode(active)
                 if (explicitAction != null) {
                     val clickedLabel = explicitAction.text?.toString() ?: explicitAction.contentDescription?.toString() ?: "Copy / Download"
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" button in viewer. Clicking it.")
@@ -2413,6 +2419,26 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
+    private fun findDriveRootNode(): AccessibilityNodeInfo? {
+        val active = rootInActiveWindow
+        if (active != null && active.packageName?.toString()?.contains("apps.docs") == true) {
+            return active
+        }
+        active?.recycle()
+        try {
+            for (window in windows) {
+                val root = window.root ?: continue
+                if (root.packageName?.toString()?.contains("apps.docs") == true) {
+                    return root
+                }
+                root.recycle()
+            }
+        } catch (_: Exception) {
+            // Ignore windows inspection failure
+        }
+        return rootInActiveWindow
+    }
+
     private suspend fun dispatchTap(x: Float, y: Float): Boolean {
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
@@ -2420,49 +2446,53 @@ class KidsAccessibilityService : AccessibilityService() {
         }
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        var completed = false
-        val dispatched = try {
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        return try {
+            val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
+                    deferred.complete(true)
                 }
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
-                    completed = false
+                    deferred.complete(false)
                 }
             }, null)
+            if (!dispatched) return false
+            kotlinx.coroutines.withTimeoutOrNull(650) { deferred.await() } ?: false
+        } catch (_: Exception) {
+            false
         } finally {
-            // Keep flag active slightly past gesture completion to swallow any synthetic touch events
+            delay(100)
+            isDispatchingCrawlerGesture = false
         }
-        delay(150)
-        isDispatchingCrawlerGesture = false
-        return dispatched && completed
     }
 
-    private suspend fun dispatchLongPress(x: Float, y: Float): Boolean {
+    private suspend fun dispatchLongPress(x: Float, y: Float, durationMs: Long = 800): Boolean {
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(x, y)
         }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 800)
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
-        var completed = false
-        val dispatched = try {
-            dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
+        val deferred = kotlinx.coroutines.CompletableDeferred<Boolean>()
+        return try {
+            val dispatched = dispatchGesture(gesture, object : AccessibilityService.GestureResultCallback() {
                 override fun onCompleted(gestureDescription: GestureDescription?) {
-                    completed = true
+                    deferred.complete(true)
                 }
 
                 override fun onCancelled(gestureDescription: GestureDescription?) {
-                    completed = false
+                    deferred.complete(false)
                 }
             }, null)
-        } catch (e: Exception) {
+            if (!dispatched) return false
+            kotlinx.coroutines.withTimeoutOrNull(durationMs + 600) { deferred.await() } ?: false
+        } catch (_: Exception) {
             false
+        } finally {
+            delay(150)
+            isDispatchingCrawlerGesture = false
         }
-        delay(900)
-        isDispatchingCrawlerGesture = false
-        return dispatched && completed
     }
 
     private fun findAccountAvatarNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -2605,8 +2635,17 @@ class KidsAccessibilityService : AccessibilityService() {
                     deferred.complete(false)
                 }
             }, null)
-            if (!dispatched) return false
-            kotlinx.coroutines.withTimeoutOrNull(durationMs + 600) { deferred.await() } ?: false
+            if (!dispatched) {
+                CrawlerTraceLogger.log("GESTURE", "dispatchGesture returned FALSE for swipe ($startX,$startY -> $endX,$endY)")
+                return false
+            }
+            val res = kotlinx.coroutines.withTimeoutOrNull(durationMs + 600) { deferred.await() } ?: false
+            if (!res) {
+                CrawlerTraceLogger.log("GESTURE", "dispatchGesture timed out or cancelled for swipe")
+            } else {
+                CrawlerTraceLogger.log("GESTURE", "Swipe completed=$res ($startX,$startY -> $endX,$endY, duration=${durationMs}ms)")
+            }
+            res
         } finally {
             delay(100)
             isDispatchingCrawlerGesture = false
@@ -2957,11 +2996,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
         if (atts.isNotEmpty()) {
-            // Must verify that EVERY registered attachment is physically synced and verified in Drive
+            // Must verify that EVERY registered attachment is physically present locally or verified in Drive
             return atts.all { attachment ->
-                attachment.syncStatus == SyncStatus.SYNCED.name &&
+                (attachment.localUri.isNotBlank() && java.io.File(attachment.localUri).exists()) ||
+                (attachment.syncStatus == SyncStatus.SYNCED.name &&
                         !attachment.driveFileId.isNullOrBlank() &&
-                        !attachment.driveFileId.startsWith("virtual_")
+                        !attachment.driveFileId.startsWith("virtual_")) ||
+                attachment.driveFileId?.startsWith("restricted_") == true
             }
         }
 
@@ -2976,7 +3017,7 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
-        return notice.body.length > 120
+        return notice.body.isNotBlank()
     }
 
     private suspend fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
@@ -3632,8 +3673,9 @@ class KidsAccessibilityService : AccessibilityService() {
         val text = node.text?.toString()?.lowercase() ?: ""
         val viewId = node.viewIdResourceName?.lowercase() ?: ""
         if (desc == "navigate up" || desc == "back" || text == "back" ||
-            desc.contains("navigate up") || desc.contains("back") ||
-            viewId.contains("up") || viewId.contains("back") || viewId.contains("action_bar")
+            desc == "close" || text == "close" ||
+            desc.contains("navigate up") || desc.contains("back") || desc.contains("close") ||
+            viewId.contains("up") || viewId.contains("back") || viewId.contains("action_bar") || viewId.contains("close")
         ) {
             if (node.isClickable) return AccessibilityNodeInfo.obtain(node)
             var parent = node.parent

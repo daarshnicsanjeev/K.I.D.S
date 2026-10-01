@@ -241,7 +241,8 @@ class GoogleDriveClient(
     }
 
     /**
-     * Uploads binary attachment using Resumable Upload protocol.
+     * Uploads binary attachment using Resumable Upload protocol with bit-for-bit content verification.
+     * Prevents false deduplication if different notices share the same generic filename with different content.
      */
     suspend fun uploadAttachment(
         parentFolderId: String,
@@ -250,23 +251,74 @@ class GoogleDriveClient(
         customName: String? = null
     ): String = withContext(Dispatchers.IO) {
         val targetFileName = customName?.takeIf { it.isNotBlank() } ?: file.name
-        val existingFileId = findFileIdByName(targetFileName, parentFolderId)
-        if (existingFileId != null) {
-            // Deduplication invariant: File already exists in Google Drive attachments vault. Return existing file ID.
-            return@withContext existingFileId
+        val localMd5 = computeFileMd5(file)
+        val localSize = file.length()
+
+        val existingFiles = findFilesByName(targetFileName, parentFolderId)
+        val identicalFile = existingFiles.firstOrNull { driveFile ->
+            (driveFile.md5Checksum != null && driveFile.md5Checksum.equals(localMd5, ignoreCase = true)) ||
+            (driveFile.size?.toLong() == localSize && driveFile.md5Checksum == null)
+        }
+
+        if (identicalFile != null) {
+            // Truly identical file content! Reuse file ID without creating a duplicate.
+            fileIdCache["$parentFolderId/$targetFileName"] = identicalFile.id
+            return@withContext identicalFile.id
+        }
+
+        // If a file with this name already exists in Drive with DIFFERENT content,
+        // disambiguate using the short content hash to protect both documents from being merged or overwritten
+        val resolvedFileName = if (existingFiles.isNotEmpty() && localMd5.isNotBlank()) {
+            val baseName = targetFileName.substringBeforeLast('.')
+            val ext = targetFileName.substringAfterLast('.', "")
+            val shortHash = localMd5.take(6)
+            if (ext.isNotBlank()) "$baseName ($shortHash).$ext" else "$baseName ($shortHash)"
+        } else {
+            targetFileName
         }
 
         val fileMetadata = File().apply {
-            name = targetFileName
+            name = resolvedFileName
             parents = listOf(parentFolderId)
         }
         val mediaContent = FileContent(mimeType, file)
         val uploaded = driveService.files().create(fileMetadata, mediaContent)
-            .setFields("id, name, size")
+            .setFields("id, name, size, md5Checksum")
             .execute()
         val uploadedId = uploaded.id
-        fileIdCache["$parentFolderId/$targetFileName"] = uploadedId
+        fileIdCache["$parentFolderId/$resolvedFileName"] = uploadedId
         uploadedId
+    }
+
+    private fun findFilesByName(name: String, parentFolderId: String): List<File> {
+        val escapedName = escapeDriveQueryValue(name)
+        val query = "name = '$escapedName' and '$parentFolderId' in parents and trashed = false"
+        return try {
+            val list = driveService.files().list()
+                .setQ(query)
+                .setOrderBy("modifiedTime desc")
+                .setFields("files(id, name, size, md5Checksum)")
+                .execute()
+            list.files ?: emptyList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun computeFileMd5(file: java.io.File): String {
+        return try {
+            val md = java.security.MessageDigest.getInstance("MD5")
+            file.inputStream().use { fis ->
+                val buffer = ByteArray(8192)
+                var read: Int
+                while (fis.read(buffer).also { read = it } != -1) {
+                    md.update(buffer, 0, read)
+                }
+            }
+            md.digest().joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     /**

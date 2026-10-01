@@ -60,3 +60,6 @@ Thumbs.db
 graphify-out/.graphify_*
 graphify-out/20*
 graphify-out/**/*.tmp
+
+# Scratch temporary workspace
+scratch/

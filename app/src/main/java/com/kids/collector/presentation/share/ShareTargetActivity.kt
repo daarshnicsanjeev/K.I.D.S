@@ -42,15 +42,13 @@ class ShareTargetActivity : Activity() {
         private val FILENAME_SANITIZATION_REGEX = Regex("[^a-zA-Z0-9._-]")
         private const val MIN_PREFIX_MATCH_LENGTH = 6
         private const val PREFIX_SLICE_LENGTH = 12
-        private const val MIN_SUBSTRING_MATCH_LENGTH = 8
+        private val stagingScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
     }
 
     private val deduplicationEngine = DeduplicationEngine()
-    private val activityScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
 
     override fun onDestroy() {
         super.onDestroy()
-        activityScope.cancel()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -85,8 +83,8 @@ class ShareTargetActivity : Activity() {
     private fun processIncomingUris(uris: List<Uri>) {
         val appContext = applicationContext
         val resolver = contentResolver
-        // Process in background while keeping Activity alive until copy completes
-        activityScope.launch {
+        // Process in background using persistent stagingScope
+        stagingScope.launch {
             try {
                 for (uri in uris) {
                     processSingleUri(uri, appContext, resolver)

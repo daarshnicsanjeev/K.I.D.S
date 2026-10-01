@@ -45,7 +45,11 @@ object CrawlerTraceLogger {
     fun log(category: String, message: String) {
         val timestamp = dateFormat.format(Date())
         val formatted = "[$timestamp] [$category] $message"
-        Log.i(TAG, formatted)
+        try {
+            Log.i(TAG, formatted)
+        } catch (_: Throwable) {
+            println(formatted)
+        }
         memoryQueue.offer(formatted)
 
         // Keep high-capacity queue (up to 5,000 lines per run) to never drop survey/rewind milestones
