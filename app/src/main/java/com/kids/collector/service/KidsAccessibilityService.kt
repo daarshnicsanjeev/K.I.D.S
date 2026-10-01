@@ -3197,11 +3197,16 @@ class KidsAccessibilityService : AccessibilityService() {
                 (text?.contains("options", ignoreCase = true) == true) ||
                 (desc?.contains("more options", ignoreCase = true) == true)
 
+        val isVideoOrExternalLink = (text?.contains("youtube", ignoreCase = true) == true) ||
+                (desc?.contains("youtube", ignoreCase = true) == true) ||
+                (text?.contains("youtu.be", ignoreCase = true) == true) ||
+                (desc?.contains("youtu.be", ignoreCase = true) == true)
+
         val isSectionHeader = (text != null && ATTACHMENT_HEADER_REGEX.matches(text)) ||
                 (desc != null && ATTACHMENT_HEADER_REGEX.matches(desc))
 
         val candidate = when {
-            isOptionsButton || isSectionHeader -> null
+            isOptionsButton || isVideoOrExternalLink || isSectionHeader -> null
             !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
                 if (text.contains('.')) text else "$text.pdf"
             }
@@ -3971,7 +3976,7 @@ class KidsAccessibilityService : AccessibilityService() {
         if (lower.startsWith(applicationContext.packageName.lowercase()) || lower.contains("collector")) {
             return true
         }
-        if (GoogleDriveSharedHarvester.isDriveHarvestingActive && lower == "com.google.android.apps.docs") {
+        if (GoogleDriveSharedHarvester.isDriveHarvestingActive && (lower == "com.google.android.apps.docs" || lower.startsWith("com.google.android.apps.docs"))) {
             return true
         }
         return AUTHORIZED_SCHOOL_PACKAGES.contains(lower) ||
@@ -4018,7 +4023,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 lower == "com.sec.android.app.myfiles" ||
                 lower == "com.miui.powerkeeper" ||
                 lower == "com.miui.securityadd" ||
-                lower == "com.miui.joyose"
+                lower == "com.miui.joyose" ||
+                lower == "com.google.android.youtube" ||
+                lower.startsWith("com.google.android.youtube") ||
+                lower.startsWith("miui.systemui") ||
+                lower.contains("systemui")
     }
 
     override fun onInterrupt() {

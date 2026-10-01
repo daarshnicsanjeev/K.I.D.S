@@ -252,48 +252,63 @@ class GoogleDriveSharedHarvester(
 
         isDriveHarvestingActive = true
         try {
-            // Step 1: Open Google Drive.
-            // On Android 14+ / MIUI, external background activity launches are restricted.
-            // When Google Classroom is the active foreground app, clicking "Classroom folder"
-            // in Classroom's navigation drawer lets Classroom itself launch Drive natively!
-            val initialRoot = rootInActiveWindowProvider()
-            val initialPkg = initialRoot?.packageName?.toString() ?: ""
-            initialRoot?.recycle()
+            // Step 1: Open Google Drive via Classroom with Auto-Recovery
+            var isDriveOpen = false
+            var launchAttempts = 0
+            val maxLaunchAttempts = 3
 
-            if (initialPkg.contains("classroom")) {
-                openDriveViaClassroom()
-            }
+            while (serviceScope.isActive && !isDriveOpen && launchAttempts < maxLaunchAttempts) {
+                launchAttempts++
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive launch attempt $launchAttempts/$maxLaunchAttempts...")
 
-            // Wait for Google Drive window
-            var isDriveOpen = waitForConditionAction(6000L, 300L) {
-                val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
-                val pkg = root.packageName?.toString() ?: ""
-                root.recycle()
-                pkg.contains(DRIVE_PACKAGE_NAME)
+                val currentRoot = rootInActiveWindowProvider()
+                val currentPkg = currentRoot?.packageName?.toString() ?: ""
+                currentRoot?.recycle()
+
+                if (currentPkg.contains(DRIVE_PACKAGE_NAME)) {
+                    isDriveOpen = true
+                    break
+                }
+
+                if (!currentPkg.contains("classroom")) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom not active (current: $currentPkg). Foregrounding Classroom...")
+                    val classroomIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")?.apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    }
+                    if (classroomIntent != null) {
+                        context.startActivity(classroomIntent)
+                        delay(1200L)
+                    }
+                }
+
+                val openedViaClassroom = openDriveViaClassroom()
+                if (openedViaClassroom) {
+                    isDriveOpen = waitForConditionAction(8000L, 400L) {
+                        val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                        val pkg = root.packageName?.toString() ?: ""
+                        root.recycle()
+                        pkg.contains(DRIVE_PACKAGE_NAME)
+                    }
+                }
+
+                if (!isDriveOpen) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Checking for app chooser / resolver or retrying...")
+                    handleDriveChooserIfPresent()
+                    delay(1000L)
+                    val retryRoot = rootInActiveWindowProvider()
+                    val retryPkg = retryRoot?.packageName?.toString() ?: ""
+                    retryRoot?.recycle()
+                    if (retryPkg.contains(DRIVE_PACKAGE_NAME)) {
+                        isDriveOpen = true
+                        break
+                    }
+                }
             }
 
             // Fallback: If not open via Classroom folder, attempt direct launcher intent
             if (!isDriveOpen) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via Classroom folder. Attempting direct launcher intent...")
-                try {
-                    var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
-                    if (launchIntent == null) {
-                        launchIntent = Intent(Intent.ACTION_MAIN).apply {
-                            addCategory(Intent.CATEGORY_LAUNCHER)
-                            setPackage(DRIVE_PACKAGE_NAME)
-                        }
-                    }
-                    launchIntent.addFlags(
-                        Intent.FLAG_ACTIVITY_NEW_TASK or
-                        Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
-                        Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-                    )
-                    context.startActivity(launchIntent)
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched launch intent for $DRIVE_PACKAGE_NAME")
-                } catch (e: Exception) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to launch Drive via launcher intent: ${e.message}")
-                }
-
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via Classroom folder after $launchAttempts attempts. Attempting direct launcher intent...")
+                bringDriveToForeground()
                 isDriveOpen = waitForConditionAction(6000L, 300L) {
                     val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
                     val pkg = root.packageName?.toString() ?: ""
@@ -405,6 +420,15 @@ class GoogleDriveSharedHarvester(
                     if (candidateRoot != null && candidatePkg.contains(DRIVE_PACKAGE_NAME)) {
                         currentRoot = candidateRoot
                     } else {
+                        if (candidateRoot != null && !candidatePkg.contains(DRIVE_PACKAGE_NAME) && candidatePkg.isNotBlank()) {
+                            if (candidatePkg.contains("youtube") || candidatePkg.contains("chrome") || candidatePkg.contains("viewer")) {
+                                CrawlerTraceLogger.log(
+                                    "DRIVE_AUTO_RECOVERY",
+                                    "Displaced to external app '$candidatePkg' during harvest. Pressing Back to return to Drive..."
+                                )
+                                dispatchBackAction()
+                            }
+                        }
                         candidateRoot?.recycle()
                         delay(250L)
                         rootRetry++
@@ -871,6 +895,16 @@ class GoogleDriveSharedHarvester(
      * This bypasses Android 14+ / MIUI background-activity-launch restrictions because
      * Google Classroom (which is currently the active foreground app) initiates the launch itself.
      */
+    private fun isClassroomDrawerOpen(root: AccessibilityNodeInfo): Boolean {
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        val combined = texts.joinToString(" ").lowercase(Locale.US)
+        return (combined.contains("classes") && combined.contains("calendar")) ||
+                combined.contains("classroom folder") ||
+                combined.contains("offline files") ||
+                (combined.contains("settings") && combined.contains("help & feedback"))
+    }
+
     private suspend fun openDriveViaClassroom(): Boolean {
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom folder...")
         crawlerOverlay?.updateStatus("Opening Drive...", "Accessing Classroom folder...")
@@ -882,88 +916,58 @@ class GoogleDriveSharedHarvester(
             return false
         }
 
-        // Method 1: Check if we are inside a Class view with a "Classwork" tab
-        // In Google Classroom, the Classwork tab has a "Class Drive folder" icon at the top right!
-        val classworkTab = findClassworkTabNode(root)
-        if (classworkTab != null) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Classwork tab in Classroom. Switching to Classwork...")
-            val clicked = if (classworkTab.isClickable) {
-                classworkTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            } else {
-                findClickableAncestor(classworkTab)?.let {
-                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    it.recycle()
-                    ok
-                } ?: false
-            }
-            if (!clicked) {
-                val r = Rect()
-                classworkTab.getBoundsInScreen(r)
-                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-            }
-            classworkTab.recycle()
-            delay(1200L)
+        var isDrawerOpened = isClassroomDrawerOpen(root)
 
-            val classworkRoot = rootInActiveWindowProvider()
-            if (classworkRoot != null) {
-                val driveFolderBtn = findClassDriveFolderButton(classworkRoot)
-                if (driveFolderBtn != null) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found Class Drive folder button in Classwork. Clicking...")
-                    val opened = if (driveFolderBtn.isClickable) {
-                        driveFolderBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    } else {
-                        findClickableAncestor(driveFolderBtn)?.let {
-                            val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            it.recycle()
-                            ok
-                        } ?: false
-                    }
-                    if (!opened) {
+        if (!isDrawerOpened) {
+            val hamburgerNode = findHamburgerNode(root)
+            if (hamburgerNode != null) {
+                val desc = hamburgerNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+                if (desc.contains("navigate up") || desc.contains("back")) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating up from class to main Classroom screen...")
+                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
                         val r = Rect()
-                        driveFolderBtn.getBoundsInScreen(r)
+                        hamburgerNode.getBoundsInScreen(r)
                         dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
                     }
-                    driveFolderBtn.recycle()
-                    classworkRoot.recycle()
-                    root.recycle()
-                    return true
+                    hamburgerNode.recycle()
+                    delay(1000L)
+                } else {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom navigation drawer...")
+                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val r = Rect()
+                        hamburgerNode.getBoundsInScreen(r)
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                    }
+                    hamburgerNode.recycle()
+                    delay(1000L)
                 }
-                classworkRoot.recycle()
-            }
-        }
-
-        // Method 2: Open Classroom Drawer -> "Classroom folders"
-        // If in class view, click Navigate up (<-) to return to main classes list first
-        val hamburgerNode = findHamburgerNode(root)
-        if (hamburgerNode != null) {
-            val desc = hamburgerNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-            if (desc.contains("navigate up") || desc.contains("back")) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating up from class to main Classroom screen...")
-                hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                hamburgerNode.recycle()
-                delay(1000L)
-            } else {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom navigation drawer...")
-                hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                hamburgerNode.recycle()
-                delay(1000L)
             }
         }
         root.recycle()
 
-        // In main screen, ensure drawer is opened
+        // In main screen, ensure drawer is opened if still not open
         val mainRoot = rootInActiveWindowProvider()
         if (mainRoot != null) {
-            val mainHamburger = findHamburgerNode(mainRoot)
-            if (mainHamburger != null) {
-                val desc = mainHamburger.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-                if (!desc.contains("navigate up") && !desc.contains("back")) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening navigation drawer from main screen...")
-                    mainHamburger.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    mainHamburger.recycle()
-                    delay(1000L)
-                } else {
-                    mainHamburger.recycle()
+            isDrawerOpened = isClassroomDrawerOpen(mainRoot)
+            if (!isDrawerOpened) {
+                val mainHamburger = findHamburgerNode(mainRoot)
+                if (mainHamburger != null) {
+                    val desc = mainHamburger.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+                    if (!desc.contains("navigate up") && !desc.contains("back")) {
+                        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening navigation drawer from main screen...")
+                        val clicked = mainHamburger.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (!clicked) {
+                            val r = Rect()
+                            mainHamburger.getBoundsInScreen(r)
+                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        }
+                        mainHamburger.recycle()
+                        delay(1000L)
+                    } else {
+                        mainHamburger.recycle()
+                    }
                 }
             }
             mainRoot.recycle()
@@ -1024,59 +1028,15 @@ class GoogleDriveSharedHarvester(
         return false
     }
 
-    private fun findClassworkTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
-        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-
-        if (text == "classwork" || desc.contains("classwork")) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
-        }
-
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findClassworkTabNode(child)
-            if (found != null) {
-                child.recycle()
-                return found
-            }
-            child.recycle()
-        }
-        return null
-    }
-
-    private fun findClassDriveFolderButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
-
-        val isDriveFolder = desc.contains("class drive folder") ||
-                desc.contains("drive folder") ||
-                (desc.contains("folder") && desc.contains("drive")) ||
-                viewId.contains("drive_folder") ||
-                viewId.contains("class_folder")
-
-        if (isDriveFolder) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
-        }
-
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findClassDriveFolderButton(child)
-            if (found != null) {
-                child.recycle()
-                return found
-            }
-            child.recycle()
-        }
-        return null
-    }
-
     private fun findClassroomFolderDrawerNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
 
         val isFolderItem = (text.contains("classroom folder") || text.contains("classroom folders") ||
                 desc.contains("classroom folder") || desc.contains("classroom folders") ||
-                ((text.contains("folder") || desc.contains("folder")) && (text.contains("class") || desc.contains("class")))) &&
+                ((text.contains("folder") || desc.contains("folder")) && (text.contains("class") || desc.contains("class"))) ||
+                text.contains("google drive") || desc.contains("google drive") ||
+                text.contains("drive folder") || desc.contains("drive folder")) &&
                 !text.equals("google classroom", ignoreCase = true) &&
                 !desc.equals("google classroom", ignoreCase = true)
 
@@ -1101,6 +1061,7 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
         val r = Rect()
+        root.getBoundsInScreen(r)
         val dm = context.resources.displayMetrics
         val maxLeft = (dm.widthPixels * 0.25f).toInt()
         val maxTop = (dm.heightPixels * 0.20f).toInt()
@@ -1999,6 +1960,100 @@ class GoogleDriveSharedHarvester(
             return recovered
         }
 
+        // 6. Check for Stray Google Drive Dialogs / Prompts (e.g. "Storage full", "Not now", "Cancel")
+        if (handleStrayDriveDialogIfPresent(root)) {
+            delay(SETTLING_DELAY_MS)
+            return true
+        }
+
+        // 7. Check for Network Retry prompt ("Tap to retry", "Try again")
+        if (handleDriveNetworkRetryPrompt(root)) {
+            delay(SETTLING_DELAY_MS)
+            return true
+        }
+
+        return false
+    }
+
+    private suspend fun handleDriveChooserIfPresent(): Boolean {
+        val root = rootInActiveWindowProvider() ?: return false
+        val pkg = root.packageName?.toString()?.lowercase(Locale.US) ?: ""
+        if (!pkg.contains("resolver") && !pkg.contains("chooser") && !pkg.contains("intentresolver")) {
+            root.recycle()
+            return false
+        }
+        CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "App chooser / resolver detected. Looking for Drive...")
+        val driveNodes = root.findAccessibilityNodeInfosByText("Drive")
+        for (node in driveNodes) {
+            val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+            if (clickable != null) {
+                CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Found Drive option in app chooser. Selecting...")
+                val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val r = Rect()
+                    clickable.getBoundsInScreen(r)
+                    dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                }
+                clickable.recycle()
+                for (other in driveNodes) { other.recycle() }
+                root.recycle()
+                return true
+            }
+            node.recycle()
+        }
+        root.recycle()
+        return false
+    }
+
+    private suspend fun handleStrayDriveDialogIfPresent(root: AccessibilityNodeInfo): Boolean {
+        val dismissTexts = listOf("not now", "no thanks", "dismiss", "cancel", "close", "skip", "got it", "later")
+        for (txt in dismissTexts) {
+            val nodes = root.findAccessibilityNodeInfosByText(txt)
+            for (node in nodes) {
+                val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+                val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+                if (text == txt || desc == txt || text.contains(txt) || desc.contains(txt)) {
+                    val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+                    if (clickable != null) {
+                        CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Stray prompt detected with \"$txt\". Auto-dismissing...")
+                        val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        if (!clicked) {
+                            val r = Rect()
+                            clickable.getBoundsInScreen(r)
+                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        }
+                        clickable.recycle()
+                        for (other in nodes) { other.recycle() }
+                        return true
+                    }
+                }
+                node.recycle()
+            }
+        }
+        return false
+    }
+
+    private suspend fun handleDriveNetworkRetryPrompt(root: AccessibilityNodeInfo): Boolean {
+        val retryTexts = listOf("tap to retry", "try again", "retry")
+        for (txt in retryTexts) {
+            val nodes = root.findAccessibilityNodeInfosByText(txt)
+            for (node in nodes) {
+                val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
+                if (clickable != null) {
+                    CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Found network retry prompt: '$txt'. Clicking retry...")
+                    val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val r = Rect()
+                        clickable.getBoundsInScreen(r)
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                    }
+                    clickable.recycle()
+                    for (other in nodes) { other.recycle() }
+                    return true
+                }
+                node.recycle()
+            }
+        }
         return false
     }
 

@@ -3201,55 +3201,64 @@ flowchart TD
 
 #### Phase 3: Google Drive Shared Tab Batch Harvester (`GoogleDriveSharedHarvester`)
 Once Classroom metadata extraction finishes, if any attachments remain in `PENDING` status (or when triggered for comprehensive Drive asset ingestion), `KidsAccessibilityService` seamlessly transitions to Google Drive:
-1. **Drive App Activation & Account Verification (`ensureDriveAccount`):**
-   - Automatically foregrounds `com.google.android.apps.docs`.
+1. **Drive App Activation via Classroom Main Menu (`openDriveViaClassroom`):**
+   - Automatically navigates Google Classroom to its main screen (if in class view, clicks Navigate Up $\leftarrow$).
+   - Accesses the Classroom **Main Menu (≡ Hamburger Navigation Drawer)** and selects **"Classroom folders"** (with physical tap fallback).
+   - This allows Classroom (the active foreground app) to initiate Google Drive natively, cleanly bypassing Android 14+ and MIUI background-activity-launch restrictions without requiring risky system permissions.
+   - **Zero Tab Switching Guarantee:** Never clicks or switches to the Classwork bottom tab, maintaining strict compliance with Classroom Stream crawling rules.
+   - **App Resolver / Chooser Auto-Recovery (`handleDriveChooserIfPresent`):** If Android displays an Intent Resolver or "Open with" chooser sheet, autonomously locates and selects "Drive".
+2. **Drive App Verification & Account Validation (`ensureDriveAccount`):**
+   - Automatically verifies `com.google.android.apps.docs` in foreground.
    - Inspects the OneGoogle account avatar in the top bar. If the active account does not match the child's configured school email (`targetChild.accountEmail`), it taps the avatar and selects the child's profile from the account picker bottom sheet.
-2. **Navigation to "Shared" ("Shared with me") Tab:**
+3. **Navigation to "Shared" ("Shared with me") Tab:**
    - Teacher-shared circulars, worksheets, and announcement folders reside in the student's **"Shared"** tab (the `My Drive/Classroom` directory only contains student submission copies and is empty for incoming teacher notices).
    - Locates and taps the "Shared" bottom navigation tab.
-3. **Layout & Sort Order Normalization (`ensureProperViewAndSorting`):**
+4. **Layout & Sort Order Normalization (`ensureProperViewAndSorting`):**
    - **List Layout Enforcement (`ensureListLayout`):** Inspects the layout toggle. If Google Drive is currently displayed in multi-column Grid view, taps the view switcher to force List layout, ensuring maximum horizontal width for file titles and date subtitles.
    - **Date Shared Sort Enforcement (`ensureDateSharedSorting`):** Verifies that the active sorting criterion is `"Date shared"` (or `"Shared date"`). If sorted by `"Name"` or `"Storage used"`, opens the sort options sheet and selects `"Date shared"`.
    - **Descending Sort Direction Enforcement (`ensureDescendingSortDirection`):** Verifies that items appear in reverse-chronological order (newest first). If an ascending (oldest first) sequence is detected, toggles the sort direction button to place newest items at the top.
-4. **Academic Year Cutoff Date Filter:**
+5. **Academic Year Cutoff Date Filter:**
    - Establishes a cutoff timestamp based on the oldest captured Classroom notice (`earliestNoticeMs - 3 days`, e.g. June 7 if the first post is June 10).
    - Because the Google Drive "Shared" tab is ordered reverse-chronologically, items dated prior to the cutoff are ignored.
    - Concludes harvest early when 5 consecutive old items are detected, eliminating dozens of redundant scroll gestures.
-4. **Folder Traversal & Multi-File Batch Harvesting (`harvestFolder`):**
+6. **Folder Traversal & Multi-File Batch Harvesting (`harvestFolder`):**
    - In Google Drive on Android, selecting a folder hides the "Send a copy" menu option.
    - Harvester enters relevant shared folders (linked in Classroom announcements or shared across school channels).
    - Inside the folder, multi-selects up to 15 educational files (`isEducationalFile`), executes "Send a copy" -> "K.I.D.S. Vault", and cleanly returns via `findNavigateUpButton()` or `dispatchBackAction()`.
-5. **Folder Notice Attribution (`activeHarvestingFolderName`):**
+7. **Folder Notice Attribution (`activeHarvestingFolderName`):**
    - Staging activity (`ShareTargetActivity`) reads `@Volatile var activeHarvestingFolderName`.
    - For unlinked files from shared folders, matches against notices mentioning the folder or within 30 days of `fileLastModified`.
    - If no matching notice exists (e.g. folder posted on external portal), auto-creates a structured `NoticeEntity` (e.g. `"Shared Folder: [FolderName]"`) ensuring 100% dashboard organization.
-6. **Multi-Criteria Date & Filename Disambiguation:**
+8. **Multi-Criteria Date & Filename Disambiguation:**
    - Matches files using both normalized base filename and post date/time extracted via `ClassroomDateParser` against Drive item subtitles (e.g. `"Shared Jun 12 by Teacher"`).
    - Resolves ambiguous filenames (e.g. duplicate `Worksheet.pdf` or `Answer Key.pdf` posts) with zero collision.
-7. **Bulk Dispatch via `ACTION_SEND_MULTIPLE`:**
+9. **Bulk Dispatch via `ACTION_SEND_MULTIPLE`:**
    - Long-presses the first matching file, then taps subsequent matches up to batches of 15 files.
    - Taps overflow menu (`⋮`) -> "Send a copy" -> selects "K.I.D.S. Vault".
    - `ShareTargetActivity` receives the batch, disambiguates each file by matching its `last_modified` timestamp closest to `NoticeEntity.timestampMs`, stages binaries into `vault_attachments/`, and triggers `DriveSyncWorker`.
-8. **Material 3 / Compose Resilient Tab & Avatar Acquisition:**
-   - Resolves Google Drive's non-clickable Material 3 bottom navigation tabs (`Shared`, `Files`, `Home`) and OneGoogle account avatar via fallback physical tap dispatch at center bounds when Compose accessibility click is unhandled.
-9. **Dual-Engine Continuous List Scrolling:**
-   - Dynamically targets the internal `scrollList` / `RecyclerView` container.
-   - **Engine 1 (Native):** Directly dispatches `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` to the list container.
-   - **Engine 2 (Physical Drag Fallback):** Dispatches a deliberate 450ms physical gesture drag (`Y: 65% -> 22%`), passing Android's touch slop threshold with 100% completion across Compose and View hierarchies.
-10. **Folder Return State Reset:**
+10. **Material 3 / Compose Resilient Tab & Avatar Acquisition:**
+    - Resolves Google Drive's non-clickable Material 3 bottom navigation tabs (`Shared`, `Files`, `Home`) and OneGoogle account avatar via fallback physical tap dispatch at center bounds when Compose accessibility click is unhandled.
+11. **Dual-Engine Continuous List Scrolling:**
+    - Dynamically targets the internal `scrollList` / `RecyclerView` container.
+    - **Engine 1 (Native):** Directly dispatches `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` to the list container.
+    - **Engine 2 (Physical Drag Fallback):** Dispatches a deliberate 450ms physical gesture drag (`Y: 65% -> 22%`), passing Android's touch slop threshold with 100% completion across Compose and View hierarchies.
+12. **Folder Return State Reset:**
     - Resets `lastVisibleTitles = emptyList()` and `consecutiveStaticPages = 0` whenever returning from nested subfolders, preventing false exit detection and enabling uninterrupted multi-page harvesting.
-11. **Bit-for-Bit Content-Aware Cloud Deduplication (`GoogleDriveClient.uploadAttachment`):**
+13. **Bit-for-Bit Content-Aware Cloud Deduplication (`GoogleDriveClient.uploadAttachment`):**
     - Verifies both filename and cryptographic MD5 content checksum (`driveFile.md5Checksum` and byte size) against Google Drive.
     - If filename and content match $\rightarrow$ Reuses existing Google Drive `fileId` ($0 wasted storage and bandwidth).
     - If filename matches but content differs across notices (e.g. generic `Worksheet.pdf` with different homework questions) $\rightarrow$ Automatically disambiguates filename with deterministic short content hash (`Worksheet (a1b2c3).pdf`), guaranteeing zero collision, zero overwriting, and 100% preservation of all student assignments.
-12. **Autonomous Auto-Recovery Pipeline (`performDriveAutoRecoveryIfDisplaced`):**
-    - Mirrors the battle-tested auto-recovery architecture of Pass 1 and Pass 2 for Google Drive harvesting:
-      - **Foreign Package / Background Displacement:** `KidsAccessibilityService.relaunchSchoolApp()` detects when Google Drive is backgrounded (`isDriveHarvestingActive = true`) and immediately relaunches `com.google.android.apps.docs` with `FLAG_ACTIVITY_NEW_TASK` and `FLAG_ACTIVITY_REORDER_TO_FRONT`.
+14. **Autonomous Pass 3 Auto-Recovery Pipeline (`performDriveAutoRecoveryIfDisplaced`):**
+    - Comprehensive 7-point self-healing engine dedicated to Google Drive harvesting:
+      - **Drive Launch Auto-Recovery:** Retries up to 3 times, foregrounding Classroom, handling app choosers, and falling back to direct launcher intent.
+      - **Foreign Package / External App Displacement Recovery:** Detects displacement to external applications (YouTube, web browsers, media viewers) and dispatches Back gestures to return to Drive. YouTube and MIUI system UI overlays are registered as transient surfaces in `isTransientOrSystemPackage`, preventing accidental session terminations.
       - **File Preview / In-App Viewer Auto-Dismissal (`dismissAnyActiveViewer`, `isDriveViewerOrEditorScreen`):** If an accidental tap opens a media preview, audio/video player, or in-app viewer (detected by playback controls, "comments", "annotation", "edit file", or "external badge"), executes `findNavigateUpButton()` or `dispatchBackAction()` to return to the file list.
       - **Stray Bottom Sheet / Context Menu Dismissal (`isStrayDriveBottomSheet`):** If an accidental 3-dot tap opens a file options bottom sheet or context menu ("Make available offline", "Details & activity", "Copy link", "Add shortcut"), dispatches Back to dismiss the overlay.
       - **Stuck Multi-Select Mode Recovery (`isStuckMultiSelectMode`):** If long-press multi-select remains active without completing a batch action (detected by "selected" action bar header and close button), taps the close button or executes Back to clear selection mode.
       - **Subfolder Orphan Displacement Recovery (`isInsideFolderWithoutBottomNav`):** If the crawler is displaced inside a subfolder while root harvesting is expected (`activeHarvestingFolderName == null`), detects the absence of bottom navigation and pops back via `findNavigateUpButton()` to the root Shared tab.
       - **Bottom Navigation Tab Displacement Recovery (`isDisplacedFromSharedTab`, `findSelectedNonSharedTab`):** If the active tab shifts to "Home", "Starred", or "Files", locates the "Shared" bottom navigation tab and re-selects it via center-point touch dispatch.
+      - **Stray System / Drive Dialog Dismissal (`handleStrayDriveDialogIfPresent`):** Autonomously detects and dismisses Drive popups ("Storage full", "Not now", "Cancel", "Got it", "Dismiss").
+      - **Network Retry Recovery (`handleDriveNetworkRetryPrompt`):** Detects Drive transient connection retry prompts ("Tap to retry", "Try again") and clicks them to recover list connectivity.
 
 ---
 
