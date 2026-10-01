@@ -504,6 +504,10 @@ class GoogleDriveSharedHarvester(
                         val matchedAttachment = matchDriveItemToPendingAttachment(item, pendingAttachments)
                         if (matchedAttachment != null) {
                             batchToSelect.add(item)
+                            CrawlerTraceLogger.log(
+                                "DRIVE_ITEM_EVAL",
+                                "✓ Matched pending attachment: \"${item.title}\" -> Notice: ${matchedAttachment.noticeId} (File: ${matchedAttachment.fileName})"
+                            )
                             if (batchToSelect.size >= MAX_BATCH_SELECTION_SIZE) {
                                 break
                             }
@@ -543,6 +547,8 @@ class GoogleDriveSharedHarvester(
                             waitDriveAttempts++
                         }
                         delay(POST_BATCH_SETTLING_DELAY_MS)
+                        // Flush logs and dispatched batch files to Google Drive vault in real-time
+                        KidsAccessibilityService.triggerDriveSync(context)
                     }
                 } else if (foldersToHarvest.isEmpty()) {
                     consecutiveEmptyPages++
@@ -592,6 +598,10 @@ class GoogleDriveSharedHarvester(
                 // Scroll down in Shared tab to reveal older files
                 if (visibleItems.isNotEmpty()) {
                     scrollPageCount++
+                    // Periodically flush logs to Drive every 5 pages during extended sweeps
+                    if (scrollPageCount % 5 == 0) {
+                        KidsAccessibilityService.triggerDriveSync(context)
+                    }
                 }
                 scrollSharedListForward()
                 delay(SETTLING_DELAY_MS)
@@ -1130,12 +1140,26 @@ class GoogleDriveSharedHarvester(
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected. Selecting Shared tab...")
                 val rect = Rect()
                 sharedTabNode.getBoundsInScreen(rect)
-                sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (rect.width() > 0) {
+                val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked && rect.width() > 0) {
                     dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
                 }
                 sharedTabNode.recycle()
                 root.recycle()
+                delay(SETTLING_DELAY_MS + 200L)
+                return true
+            }
+
+            // If Shared tab node was not matched by text, but another bottom tab is selected, bottom bar is confirmed visible
+            val otherSelectedTab = findSelectedNonSharedTab(root)
+            if (otherSelectedTab != null) {
+                otherSelectedTab.recycle()
+                root.recycle()
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected via selected non-shared tab. Dispatching tap to Shared tab slot...")
+                val dm = context.resources.displayMetrics
+                val tabX = dm.widthPixels * 0.625f
+                val tabY = dm.heightPixels - (dm.density * 35f)
+                dispatchTapAction(tabX, tabY)
                 delay(SETTLING_DELAY_MS + 200L)
                 return true
             }
@@ -1185,6 +1209,21 @@ class GoogleDriveSharedHarvester(
             delay(SETTLING_DELAY_MS + 200L)
             return true
         }
+
+        // Positional fallback if non-shared tab is active on final check
+        val finalOtherTab = findSelectedNonSharedTab(finalRoot)
+        if (finalOtherTab != null) {
+            finalOtherTab.recycle()
+            finalRoot.recycle()
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab text not matched, but non-shared tab is active. Dispatching positional tap to Shared tab slot...")
+            val dm = context.resources.displayMetrics
+            val tabX = dm.widthPixels * 0.625f
+            val tabY = dm.heightPixels - (dm.density * 35f)
+            dispatchTapAction(tabX, tabY)
+            delay(SETTLING_DELAY_MS + 200L)
+            return true
+        }
+
         finalRoot.recycle()
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to locate Shared tab on bottom navigation bar.")
         return false
@@ -1867,22 +1906,20 @@ class GoogleDriveSharedHarvester(
         var attempts = 0
         while (attempts < 4) {
             val root = rootInActiveWindowProvider() ?: break
-            val isPlayerOrViewer = findNodeContainingText(root, "playback speed") != null ||
-                    findNodeContainingText(root, "rewind") != null ||
-                    findNodeContainingText(root, "fast forward") != null ||
-                    findNodeContainingText(root, "annotation") != null ||
-                    findNodeContainingText(root, "edit file") != null ||
-                    findNodeContainingText(root, "find") != null ||
-                    findNodeContainingText(root, "comments") != null ||
-                    findNodeContainingText(root, "external badge") != null ||
-                    findNodeContainingText(root, "external") != null
-            root.recycle()
-            if (isPlayerOrViewer) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Pressing Back to return to Drive...")
-                dispatchBackAction()
+            val isViewer = isDriveViewerOrEditorScreen(root)
+            if (isViewer) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Navigating back to Drive list...")
+                val navUp = findNavigateUpButton(root)
+                val clickedNavUp = navUp?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                navUp?.recycle()
+                root.recycle()
+                if (!clickedNavUp) {
+                    dispatchBackAction()
+                }
                 delay(800L)
                 attempts++
             } else {
+                root.recycle()
                 break
             }
         }
@@ -2066,6 +2103,11 @@ class GoogleDriveSharedHarvester(
             sharedTab.recycle()
             return false
         }
+        val otherSelectedTab = findSelectedNonSharedTab(root)
+        if (otherSelectedTab != null) {
+            otherSelectedTab.recycle()
+            return false // We are viewing a bottom nav tab (Home, Starred, Files), not inside a full-screen file preview
+        }
 
         val texts = mutableListOf<String>()
         collectAllChildDescriptions(root, texts)
@@ -2079,7 +2121,11 @@ class GoogleDriveSharedHarvester(
                 combined.contains("edit file") ||
                 combined.contains("annotation") ||
                 combined.contains("mode switch") ||
-                (combined.contains("view only") && findNavigateUpButton(root) != null)
+                combined.contains("add to starred") ||
+                combined.contains("remove from starred") ||
+                combined.contains("star this file") ||
+                (combined.contains("view only") && findNavigateUpButton(root) != null) ||
+                (findNavigateUpButton(root) != null && combined.contains("more options") && combined.contains("share") && !combined.contains("shared with me"))
     }
 
     private fun isStrayDriveBottomSheet(root: AccessibilityNodeInfo): Boolean {
@@ -2131,21 +2177,27 @@ class GoogleDriveSharedHarvester(
     }
 
     private fun isDisplacedFromSharedTab(root: AccessibilityNodeInfo): Boolean {
+        // 1. If any non-shared tab (Home, Starred, Files) is marked as selected, we are DEFINITELY displaced!
+        val otherSelectedTab = findSelectedNonSharedTab(root)
+        if (otherSelectedTab != null) {
+            val desc = otherSelectedTab.contentDescription?.toString() ?: otherSelectedTab.text?.toString() ?: "non-shared tab"
+            CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Displaced tab confirmed active: \"$desc\"")
+            otherSelectedTab.recycle()
+            return true
+        }
+
+        // 2. If Shared tab is present and marked selected, we are NOT displaced
         val displayMetrics = context.resources.displayMetrics
         val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
         val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft) ?: return false
-        val isSharedSelected = isNodeMarkedSelected(sharedTab)
-        sharedTab.recycle()
-
-        if (isSharedSelected) {
-            return false
+        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        if (sharedTab != null) {
+            val isSharedSelected = isNodeMarkedSelected(sharedTab)
+            sharedTab.recycle()
+            return !isSharedSelected
         }
 
-        val otherSelectedTab = findSelectedNonSharedTab(root)
-        val isDisplaced = otherSelectedTab != null
-        otherSelectedTab?.recycle()
-        return isDisplaced
+        return false
     }
 
     private fun isNodeMarkedSelected(node: AccessibilityNodeInfo): Boolean {
@@ -2214,9 +2266,10 @@ class GoogleDriveSharedHarvester(
         val isInBottomNavBar = bounds.top >= minTabTop && bounds.left >= minTabLeft
 
         val isSharedTab = (isInBottomNavBar && (
-                desc == "shared" || desc.contains("shared with me") ||
-                desc.contains("tab, 3 of") || text == "shared"
-        )) || viewId.contains("menu_navigation_shared")
+                desc.contains("shared") ||
+                desc.contains("tab, 3 of") || desc.contains("tab 3 of") || desc.contains("3 of 4") ||
+                text.contains("shared")
+        )) || viewId.contains("menu_navigation_shared") || (isInBottomNavBar && viewId.contains("shared"))
 
         if (isSharedTab) {
             return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
