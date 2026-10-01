@@ -727,6 +727,7 @@ class KidsAccessibilityService : AccessibilityService() {
             } finally {
                 CrawlerTraceLogger.flushRemainingToCloud(applicationContext, targetEmail)
                 CrawlerTraceLogger.stopCloudStreaming()
+                triggerDriveSync(applicationContext)
             }
         }
     }
@@ -735,6 +736,7 @@ class KidsAccessibilityService : AccessibilityService() {
         crawlerJob?.cancel()
         crawlerJob = null
         CrawlerTraceLogger.stopCloudStreaming()
+        triggerDriveSync(applicationContext)
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
     }
 
@@ -1578,6 +1580,7 @@ class KidsAccessibilityService : AccessibilityService() {
             "Auto-capture sweep complete: $totalFiles files saved (${finalPending.size} files uncaptured after Classroom & Drive passes)."
         }
         CrawlerTraceLogger.log("DEEP_CRAWLER", completionMessage)
+        triggerDriveSync(applicationContext)
         delay(3000L) // Settle delay to let user observe Drive state before restoring K.I.D.S. Vault
         crawlerOverlay?.showCompletion(finalCompleted, totalFiles) {
             stopDeepCrawl()

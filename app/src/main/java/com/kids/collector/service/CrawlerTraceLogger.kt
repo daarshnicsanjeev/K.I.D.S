@@ -202,8 +202,9 @@ object CrawlerTraceLogger {
         if (streamJob?.isActive == true) return
 
         streamJob = scope.launch(Dispatchers.IO) {
-            val email = targetEmail
-                ?: com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first
+            // The Google Drive Vault is strictly stored under the parent's authenticated Google Account
+            val parentEmail = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first
+                ?: com.kids.collector.data.drive.DriveVaultManager.currentAccountEmail
                 ?: return@launch
             val academicYear = com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context)
             val childName = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).third.ifBlank {
@@ -216,14 +217,17 @@ object CrawlerTraceLogger {
             }
 
             val driveService = try {
-                com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, email)
+                com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, parentEmail)
             } catch (e: Exception) {
                 log("REALTIME_LOG", "Drive service initialization deferred: ${e.message}")
                 return@launch
             }
 
             val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
-            val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, email, academicYear, childName)
+            var vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, parentEmail, academicYear, childName)
+            if (vault == null || vault.logsFolderId.isBlank()) {
+                vault = com.kids.collector.data.drive.DriveVaultManager.resolveOrAwaitChildVault(context, null, parentEmail)
+            }
             val logsFolderId = vault?.logsFolderId
             if (logsFolderId.isNullOrBlank()) {
                 log("REALTIME_LOG", "Vault logs folder not yet created; streaming standby.")
@@ -261,7 +265,9 @@ object CrawlerTraceLogger {
      * Flushes any remaining local trace logs to Google Drive before session shutdown.
      */
     suspend fun flushRemainingToCloud(context: Context, targetEmail: String? = null) = withContext(Dispatchers.IO) {
-        val email = targetEmail ?: com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first ?: return@withContext
+        val parentEmail = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first
+            ?: com.kids.collector.data.drive.DriveVaultManager.currentAccountEmail
+            ?: return@withContext
         val academicYear = com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context)
         val childName = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).third.ifBlank {
             try {
@@ -271,10 +277,13 @@ object CrawlerTraceLogger {
                 "Child"
             }
         }
-        val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, email, academicYear, childName)
+        var vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, parentEmail, academicYear, childName)
+        if (vault == null || vault.logsFolderId.isBlank()) {
+            vault = com.kids.collector.data.drive.DriveVaultManager.resolveOrAwaitChildVault(context, null, parentEmail)
+        }
         val logsFolderId = vault?.logsFolderId ?: return@withContext
         val driveService = try {
-            com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, email)
+            com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, parentEmail)
         } catch (_: Exception) {
             return@withContext
         }

@@ -406,10 +406,10 @@ object DriveVaultManager {
      * Resolves child vault folders from in-memory cache, awaiting any in-flight background
      * provisioning, or falling back to remote resolution if necessary.
      */
-    private suspend fun resolveOrAwaitChildVault(
+    suspend fun resolveOrAwaitChildVault(
         context: Context,
-        explicitFolders: ChildVaultFolders?,
-        accountEmail: String?
+        explicitFolders: ChildVaultFolders? = null,
+        accountEmail: String? = null
     ): ChildVaultFolders? {
         val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
         var vault = explicitFolders ?: currentChildVault

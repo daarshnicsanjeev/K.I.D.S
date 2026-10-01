@@ -919,7 +919,7 @@ class GoogleDriveSharedHarvester(
     }
 
     private suspend fun openDriveViaClassroom(): Boolean {
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom folder...")
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Attempting to open Google Drive via Classroom main menu folder...")
         crawlerOverlay?.updateStatus("Opening Drive...", "Accessing Classroom folder...")
 
         val root = rootInActiveWindowProvider() ?: return false
@@ -931,27 +931,47 @@ class GoogleDriveSharedHarvester(
 
         var isDrawerOpened = isClassroomDrawerOpen(root)
 
+        // Step 1: If drawer is not open, check if we are inside a Course view or on the main Classes screen
         if (!isDrawerOpened) {
-            val hamburgerNode = findHamburgerNode(root)
-            if (hamburgerNode != null) {
-                val desc = hamburgerNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-                if (desc.contains("navigate up") || desc.contains("back")) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Navigating up from class to main Classroom screen...")
-                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
+            val texts = mutableListOf<String>()
+            collectAllChildDescriptions(root, texts)
+            val combined = texts.joinToString(" ").lowercase(Locale.US)
+            val isInsideCourse = (combined.contains("stream") && combined.contains("classwork")) ||
+                    combined.contains("tab 1 of") ||
+                    (combined.contains("stream") && combined.contains("people"))
+
+            if (isInsideCourse) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Currently inside Classroom Course view. Navigating up to main Classes menu...")
+                val upNode = findHamburgerNode(root)
+                var clickedUp = false
+                if (upNode != null) {
+                    clickedUp = upNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clickedUp) {
                         val r = Rect()
-                        hamburgerNode.getBoundsInScreen(r)
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        upNode.getBoundsInScreen(r)
+                        if (r.width() > 0) {
+                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                            clickedUp = true
+                        }
                     }
-                    hamburgerNode.recycle()
-                    delay(1000L)
-                } else {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom navigation drawer...")
+                    upNode.recycle()
+                }
+                if (!clickedUp) {
+                    dispatchBackAction()
+                }
+                delay(1200L)
+            } else {
+                // On main Classes screen: click the hamburger menu icon
+                val hamburgerNode = findHamburgerNode(root)
+                if (hamburgerNode != null) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom main menu hamburger icon...")
                     val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                     if (!clicked) {
                         val r = Rect()
                         hamburgerNode.getBoundsInScreen(r)
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        if (r.width() > 0) {
+                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        }
                     }
                     hamburgerNode.recycle()
                     delay(1000L)
@@ -960,51 +980,59 @@ class GoogleDriveSharedHarvester(
         }
         root.recycle()
 
-        // In main screen, ensure drawer is opened if still not open
-        val mainRoot = rootInActiveWindowProvider()
-        if (mainRoot != null) {
-            isDrawerOpened = isClassroomDrawerOpen(mainRoot)
+        // Check if drawer is open on main screen; if still closed, use left-edge swipe gesture
+        val checkRoot = rootInActiveWindowProvider()
+        if (checkRoot != null) {
+            isDrawerOpened = isClassroomDrawerOpen(checkRoot)
             if (!isDrawerOpened) {
-                val mainHamburger = findHamburgerNode(mainRoot)
-                if (mainHamburger != null) {
-                    val desc = mainHamburger.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-                    if (!desc.contains("navigate up") && !desc.contains("back")) {
-                        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening navigation drawer from main screen...")
-                        val clicked = mainHamburger.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        if (!clicked) {
-                            val r = Rect()
-                            mainHamburger.getBoundsInScreen(r)
+                val hamburgerNode = findHamburgerNode(checkRoot)
+                val desc = hamburgerNode?.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+                val isNavUp = desc.contains("navigate up") || desc.contains("back")
+                if (hamburgerNode != null && !isNavUp) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking main menu drawer button...")
+                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    if (!clicked) {
+                        val r = Rect()
+                        hamburgerNode.getBoundsInScreen(r)
+                        if (r.width() > 0) {
                             dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
                         }
-                        mainHamburger.recycle()
-                        delay(1000L)
-                    } else {
-                        mainHamburger.recycle()
                     }
+                    hamburgerNode.recycle()
+                    delay(1000L)
+                } else {
+                    hamburgerNode?.recycle()
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatching left-edge swipe to open Classroom drawer...")
+                    val dm = context.resources.displayMetrics
+                    val startX = dm.density * 5f
+                    val endX = dm.widthPixels * 0.65f
+                    val swipeY = dm.heightPixels * 0.45f
+                    dispatchSwipeAction(startX, swipeY, endX, swipeY, 350L)
+                    delay(1000L)
                 }
             }
-            mainRoot.recycle()
+            checkRoot.recycle()
         }
 
-        // Step 2: In the opened drawer, locate "Classroom folders"
-        val drawerRoot = rootInActiveWindowProvider() ?: return false
-        var folderNode = findClassroomFolderDrawerNode(drawerRoot)
+        // Verify the drawer is actually open before searching for drawer items to prevent touching post views
+        val drawerCheckRoot = rootInActiveWindowProvider() ?: return false
+        val verifiedDrawerOpen = isClassroomDrawerOpen(drawerCheckRoot)
+        if (!verifiedDrawerOpen) {
+            drawerCheckRoot.recycle()
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom drawer is not open. Skipping drawer item scan to prevent mis-clicks.")
+            return false
+        }
+
+        // Step 2: In the verified open drawer, locate "Classroom folders"
+        var folderNode = findClassroomFolderDrawerNode(drawerCheckRoot)
 
         if (folderNode == null) {
             // Scroll down inside the drawer in case "Classroom folders" is lower down
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "'Classroom folders' not immediately visible. Scrolling drawer down...")
-            val drawerBounds = Rect()
-            val scrollableDrawer = findFirstScrollableNode(drawerRoot)
-            if (scrollableDrawer != null) {
-                scrollableDrawer.getBoundsInScreen(drawerBounds)
-                scrollableDrawer.recycle()
-            } else {
-                drawerRoot.getBoundsInScreen(drawerBounds)
-            }
             val dm = context.resources.displayMetrics
-            val swipeX = if (drawerBounds.width() > 0) drawerBounds.centerX().toFloat() else (dm.widthPixels * 0.35f)
-            val startY = if (drawerBounds.height() > 0) (drawerBounds.top + drawerBounds.height() * 0.75f) else (dm.heightPixels * 0.70f)
-            val endY = if (drawerBounds.height() > 0) (drawerBounds.top + drawerBounds.height() * 0.25f) else (dm.heightPixels * 0.25f)
+            val swipeX = dm.widthPixels * 0.40f
+            val startY = dm.heightPixels * 0.70f
+            val endY = dm.heightPixels * 0.25f
             dispatchSwipeAction(swipeX, startY, swipeX, endY, 400L)
             delay(1000L)
             val scrolledDrawerRoot = rootInActiveWindowProvider()
@@ -1032,11 +1060,11 @@ class GoogleDriveSharedHarvester(
                 dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
             }
             folderNode.recycle()
-            drawerRoot.recycle()
+            drawerCheckRoot.recycle()
             return true
         }
 
-        drawerRoot.recycle()
+        drawerCheckRoot.recycle()
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom folder option not found in drawer.")
         return false
     }
@@ -1045,10 +1073,18 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
 
+        val isForbiddenTab = text.contains("classwork") || desc.contains("classwork") ||
+                text.contains("stream") || desc.contains("stream") ||
+                text.contains("people") || desc.contains("people") ||
+                desc.contains("tab,") || desc.contains("search")
+
+        if (isForbiddenTab) {
+            return null
+        }
+
         val isFolderItem = (text.contains("classroom folder") || text.contains("classroom folders") ||
                 desc.contains("classroom folder") || desc.contains("classroom folders") ||
-                ((text.contains("folder") || desc.contains("folder")) && (text.contains("class") || desc.contains("class"))) ||
-                text.contains("google drive") || desc.contains("google drive") ||
+                text.contains("google drive folder") || desc.contains("google drive folder") ||
                 text.contains("drive folder") || desc.contains("drive folder")) &&
                 !text.equals("google classroom", ignoreCase = true) &&
                 !desc.equals("google classroom", ignoreCase = true)
@@ -1088,10 +1124,14 @@ class GoogleDriveSharedHarvester(
             desc.contains("drawer") ||
             desc.contains("menu") ||
             desc.contains("main menu") ||
+            desc.contains("back") ||
             text.contains("menu") ||
+            text.contains("back") ||
             viewId.contains("open_drawer") ||
             viewId.contains("navigation_drawer") ||
-            viewId.contains("home")
+            viewId.contains("home") ||
+            viewId.contains("up") ||
+            viewId.contains("back")
         )) {
             return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
         }
@@ -1150,21 +1190,50 @@ class GoogleDriveSharedHarvester(
                 sharedTabNode.recycle()
                 root.recycle()
                 delay(SETTLING_DELAY_MS + 200L)
-                return true
+
+                // Verify that Shared tab is selected
+                val checkRoot = rootInActiveWindowProvider()
+                val isStillDisplaced = if (checkRoot != null) {
+                    val d = isDisplacedFromSharedTab(checkRoot)
+                    checkRoot.recycle()
+                    d
+                } else false
+
+                if (!isStillDisplaced) {
+                    return true
+                }
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab click did not switch active tab; attempting positional fallback...")
+                attempts++
+                continue
             }
 
             // If Shared tab node was not matched by text, but another bottom tab is selected, bottom bar is confirmed visible
             val otherSelectedTab = findSelectedNonSharedTab(root)
             if (otherSelectedTab != null) {
+                val otherBounds = Rect()
+                otherSelectedTab.getBoundsInScreen(otherBounds)
                 otherSelectedTab.recycle()
                 root.recycle()
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected via selected non-shared tab. Dispatching tap to Shared tab slot...")
                 val dm = context.resources.displayMetrics
                 val tabX = dm.widthPixels * 0.625f
-                val tabY = dm.heightPixels - (dm.density * 35f)
+                val tabY = if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
                 dispatchTapAction(tabX, tabY)
                 delay(SETTLING_DELAY_MS + 200L)
-                return true
+
+                val checkRoot = rootInActiveWindowProvider()
+                val isStillDisplaced = if (checkRoot != null) {
+                    val d = isDisplacedFromSharedTab(checkRoot)
+                    checkRoot.recycle()
+                    d
+                } else false
+
+                if (!isStillDisplaced) {
+                    return true
+                }
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Positional tap did not switch active tab; retrying...")
+                attempts++
+                continue
             }
 
             // Bottom bar not visible. Check if we are inside a folder (Navigate up / Back button present)
@@ -1174,9 +1243,17 @@ class GoogleDriveSharedHarvester(
 
             if (navUp != null) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside folder (bottom bar hidden). Navigating up toward root (attempt ${attempts + 1})...")
-                val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                var clickedNavUp = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clickedNavUp) {
+                    val r = Rect()
+                    navUp.getBoundsInScreen(r)
+                    if (r.width() > 0) {
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        clickedNavUp = true
+                    }
+                }
                 navUp.recycle()
-                if (!clicked) {
+                if (!clickedNavUp) {
                     dispatchBackAction()
                 }
             } else if (folderTitle != null) {
@@ -1210,21 +1287,37 @@ class GoogleDriveSharedHarvester(
             finalSharedTab.recycle()
             finalRoot.recycle()
             delay(SETTLING_DELAY_MS + 200L)
-            return true
+
+            val checkRoot = rootInActiveWindowProvider()
+            val isStillDisplaced = if (checkRoot != null) {
+                val d = isDisplacedFromSharedTab(checkRoot)
+                checkRoot.recycle()
+                d
+            } else false
+            return !isStillDisplaced
         }
 
         // Positional fallback if non-shared tab is active on final check
         val finalOtherTab = findSelectedNonSharedTab(finalRoot)
         if (finalOtherTab != null) {
+            val otherBounds = Rect()
+            finalOtherTab.getBoundsInScreen(otherBounds)
             finalOtherTab.recycle()
             finalRoot.recycle()
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab text not matched, but non-shared tab is active. Dispatching positional tap to Shared tab slot...")
             val dm = context.resources.displayMetrics
             val tabX = dm.widthPixels * 0.625f
-            val tabY = dm.heightPixels - (dm.density * 35f)
+            val tabY = if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
             dispatchTapAction(tabX, tabY)
             delay(SETTLING_DELAY_MS + 200L)
-            return true
+
+            val checkRoot = rootInActiveWindowProvider()
+            val isStillDisplaced = if (checkRoot != null) {
+                val d = isDisplacedFromSharedTab(checkRoot)
+                checkRoot.recycle()
+                d
+            } else false
+            return !isStillDisplaced
         }
 
         finalRoot.recycle()
@@ -1913,7 +2006,15 @@ class GoogleDriveSharedHarvester(
             if (isViewer) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Navigating back to Drive list...")
                 val navUp = findNavigateUpButton(root)
-                val clickedNavUp = navUp?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                var clickedNavUp = navUp?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                if (!clickedNavUp && navUp != null) {
+                    val r = Rect()
+                    navUp.getBoundsInScreen(r)
+                    if (r.width() > 0) {
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        clickedNavUp = true
+                    }
+                }
                 navUp?.recycle()
                 root.recycle()
                 if (!clickedNavUp) {
@@ -2098,10 +2199,7 @@ class GoogleDriveSharedHarvester(
     }
 
     private fun isDriveViewerOrEditorScreen(root: AccessibilityNodeInfo): Boolean {
-        val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
-        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        val sharedTab = findSharedTabNode(root)
         if (sharedTab != null) {
             sharedTab.recycle()
             return false
@@ -2142,10 +2240,7 @@ class GoogleDriveSharedHarvester(
                 combined.contains("add to starred") ||
                 combined.contains("make a copy")
 
-        val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
-        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        val sharedTab = findSharedTabNode(root)
         val hasBottomTabs = sharedTab != null
         sharedTab?.recycle()
 
@@ -2166,10 +2261,7 @@ class GoogleDriveSharedHarvester(
 
     private fun isInsideFolderWithoutBottomNav(root: AccessibilityNodeInfo): Boolean {
         if (isDriveViewerOrEditorScreen(root)) return false
-        val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
-        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        val sharedTab = findSharedTabNode(root)
         val hasBottomTabs = sharedTab != null
         sharedTab?.recycle()
 
@@ -2190,10 +2282,7 @@ class GoogleDriveSharedHarvester(
         }
 
         // 2. If Shared tab is present and marked selected, we are NOT displaced
-        val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
-        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        val sharedTab = findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        val sharedTab = findSharedTabNode(root)
         if (sharedTab != null) {
             val isSharedSelected = isNodeMarkedSelected(sharedTab)
             sharedTab.recycle()
@@ -2217,7 +2306,7 @@ class GoogleDriveSharedHarvester(
 
     private fun findSelectedNonSharedTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
+        val minTabTop = (displayMetrics.heightPixels * 0.60f).toInt()
         return findSelectedNonSharedTabInternal(root, minTabTop)
     }
 
@@ -2228,7 +2317,7 @@ class GoogleDriveSharedHarvester(
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isInBottomNavBar = bounds.top >= minTabTop
+        val isInBottomNavBar = bounds.centerY() >= minTabTop
         val isNonSharedTab = isInBottomNavBar && (
                 desc.contains("home") || desc.contains("starred") || desc.contains("files") ||
                 viewId.contains("menu_navigation_home") || viewId.contains("menu_navigation_starred") || viewId.contains("menu_navigation_files") ||
@@ -2253,12 +2342,11 @@ class GoogleDriveSharedHarvester(
 
     private fun findSharedTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.75f).toInt()
-        val minTabLeft = (displayMetrics.widthPixels * 0.35f).toInt()
-        return findSharedTabNodeInternal(root, minTabTop, minTabLeft)
+        val minTabTop = (displayMetrics.heightPixels * 0.60f).toInt()
+        return findSharedTabNodeInternal(root, minTabTop)
     }
 
-    private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, minTabTop: Int, minTabLeft: Int): AccessibilityNodeInfo? {
+    private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, minTabTop: Int): AccessibilityNodeInfo? {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
 
@@ -2266,7 +2354,7 @@ class GoogleDriveSharedHarvester(
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isInBottomNavBar = bounds.top >= minTabTop && bounds.left >= minTabLeft
+        val isInBottomNavBar = bounds.centerY() >= minTabTop
 
         val isSharedTab = (isInBottomNavBar && (
                 desc.contains("shared") ||
@@ -2280,7 +2368,7 @@ class GoogleDriveSharedHarvester(
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findSharedTabNodeInternal(child, minTabTop, minTabLeft)
+            val found = findSharedTabNodeInternal(child, minTabTop)
             if (found != null) {
                 child.recycle()
                 return found
@@ -2920,6 +3008,14 @@ class GoogleDriveSharedHarvester(
             val navUp = findNavigateUpButton(root)
             if (navUp != null) {
                 clickedNavigateUp = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clickedNavigateUp) {
+                    val r = Rect()
+                    navUp.getBoundsInScreen(r)
+                    if (r.width() > 0) {
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                        clickedNavigateUp = true
+                    }
+                }
                 navUp.recycle()
             }
             root.recycle()
@@ -2938,8 +3034,10 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isNavUp = (desc.contains("navigate up") || desc.contains("go back") ||
-                viewId.contains("up_button") || viewId.contains("navigate_up")) &&
+        val isNavUp = (desc.contains("navigate up") || desc.contains("go back") || desc.contains("back") ||
+                desc == "close" || text == "close" || text == "back" ||
+                viewId.contains("up_button") || viewId.contains("navigate_up") || viewId.contains("action_bar_up") ||
+                viewId.contains("toolbar_nav") || viewId.contains("back")) &&
                 !desc.contains("more actions") && !desc.contains("more options")
 
         if (isNavUp) {
@@ -2978,7 +3076,11 @@ class GoogleDriveSharedHarvester(
     private fun findDriveCurrentFolderTitle(root: AccessibilityNodeInfo): String? {
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
         val text = root.text?.toString()?.trim() ?: ""
-        if ((viewId.contains("title") || viewId.contains("action_bar") || viewId.contains("toolbar")) && text.isNotBlank()) {
+        val lowerText = text.lowercase(Locale.US)
+        val isNonFolderTitle = lowerText in setOf(
+            "home", "starred", "shared", "shared with me", "files", "google drive", "search", "search in drive"
+        )
+        if (!isNonFolderTitle && (viewId.contains("title") || viewId.contains("action_bar") || viewId.contains("toolbar")) && text.isNotBlank()) {
             return text
         }
         val bounds = Rect()
@@ -2989,7 +3091,7 @@ class GoogleDriveSharedHarvester(
         val maxLeft = (dm.widthPixels * 0.75f).toInt()
         val minH = (dm.density * 20).toInt()
         val maxH = (dm.density * 80).toInt()
-        if (bounds.top < maxTop && bounds.left in minLeft..maxLeft && bounds.height() in minH..maxH && text.isNotBlank() && !text.contains("Search", ignoreCase = true)) {
+        if (!isNonFolderTitle && bounds.top < maxTop && bounds.left in minLeft..maxLeft && bounds.height() in minH..maxH && text.isNotBlank() && !text.contains("Search", ignoreCase = true)) {
             return text
         }
         for (i in 0 until root.childCount) {
