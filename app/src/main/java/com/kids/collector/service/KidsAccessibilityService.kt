@@ -718,14 +718,23 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun startDeepCrawl() {
         crawlerJob?.cancel()
         crawlerJob = serviceScope.launch(Dispatchers.Default) {
+            val db = KidsDatabase.getInstance(applicationContext)
+            val (_, targetEmail) = resolveTargetChildAndEmail(db)
+            CrawlerTraceLogger.startCloudStreaming(serviceScope, applicationContext, targetEmail)
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Starting deep crawl state machine...")
-            runDeepCrawlLoop()
+            try {
+                runDeepCrawlLoop()
+            } finally {
+                CrawlerTraceLogger.flushRemainingToCloud(applicationContext, targetEmail)
+                CrawlerTraceLogger.stopCloudStreaming()
+            }
         }
     }
 
     private fun stopDeepCrawl() {
         crawlerJob?.cancel()
         crawlerJob = null
+        CrawlerTraceLogger.stopCloudStreaming()
         CrawlerTraceLogger.log("DEEP_CRAWLER", "Deep crawl halted. All pending actions cancelled.")
     }
 

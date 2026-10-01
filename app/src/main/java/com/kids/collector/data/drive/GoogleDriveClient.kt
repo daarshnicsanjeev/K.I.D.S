@@ -447,6 +447,30 @@ class GoogleDriveClient(
         }
     }
 
+    /**
+     * Directly streams and synchronizes the persistent local crawler trace log to _system/logs/crawler_trace.log.
+     * Updates the cloud file with the full local file contents without requiring a prior cloud download.
+     */
+    suspend fun syncLocalCrawlerTraceLog(logsFolderId: String, localLogFile: java.io.File): String = withContext(Dispatchers.IO) {
+        if (!localLogFile.exists() || localLogFile.length() == 0L) return@withContext ""
+        val fileName = "crawler_trace.log"
+        val existingFileId = findFileIdByName(fileName, logsFolderId)
+        val content = FileContent("text/plain", localLogFile)
+
+        if (existingFileId == null) {
+            val fileMetadata = File().apply {
+                name = fileName
+                parents = listOf(logsFolderId)
+                mimeType = "text/plain"
+            }
+            val created = driveService.files().create(fileMetadata, content).setFields("id").execute()
+            created.id
+        } else {
+            val updated = driveService.files().update(existingFileId, File(), content).setFields("id").execute()
+            updated.id
+        }
+    }
+
     private fun findFileIdByName(name: String, parentFolderId: String): String? {
         val cacheKey = "$parentFolderId/$name"
         fileIdCache[cacheKey]?.let { return it }

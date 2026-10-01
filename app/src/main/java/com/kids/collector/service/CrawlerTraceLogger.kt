@@ -2,6 +2,7 @@ package com.kids.collector.service
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
@@ -181,5 +182,119 @@ object CrawlerTraceLogger {
         } catch (e: Exception) {
             Log.w(TAG, "Failed writing to local trace file", e)
         }
+    }
+
+    @Volatile
+    private var streamJob: kotlinx.coroutines.Job? = null
+
+    @Volatile
+    private var lastSyncedLogLength: Long = 0L
+
+    /**
+     * Starts background real-time cloud log synchronization to Google Drive Vault.
+     * Periodically updates _system/logs/crawler_trace.log via Google Drive REST API.
+     */
+    fun startCloudStreaming(
+        scope: CoroutineScope,
+        context: Context,
+        targetEmail: String? = null
+    ) {
+        if (streamJob?.isActive == true) return
+
+        streamJob = scope.launch(Dispatchers.IO) {
+            val email = targetEmail
+                ?: com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first
+                ?: return@launch
+            val academicYear = com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context)
+            val childName = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).third.ifBlank {
+                try {
+                    val db = com.kids.collector.data.db.KidsDatabase.getInstance(context)
+                    db.childProfileDao().getAllChildrenDirect().firstOrNull()?.firstName ?: "Child"
+                } catch (_: Exception) {
+                    "Child"
+                }
+            }
+
+            val driveService = try {
+                com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, email)
+            } catch (e: Exception) {
+                log("REALTIME_LOG", "Drive service initialization deferred: ${e.message}")
+                return@launch
+            }
+
+            val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
+            val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, email, academicYear, childName)
+            val logsFolderId = vault?.logsFolderId
+            if (logsFolderId.isNullOrBlank()) {
+                log("REALTIME_LOG", "Vault logs folder not yet created; streaming standby.")
+                return@launch
+            }
+
+            val localLogFile = File(File(context.filesDir, "logs"), "crawler_trace.log")
+            log("REALTIME_LOG", "Real-time Google Drive log streaming active (syncing every 5s to Drive Vault)...")
+
+            // Initial sync on crawler start
+            if (localLogFile.exists() && localLogFile.length() > 0L) {
+                try {
+                    driveClient.syncLocalCrawlerTraceLog(logsFolderId, localLogFile)
+                    lastSyncedLogLength = localLogFile.length()
+                } catch (e: Exception) {
+                    Log.w(TAG, "Initial real-time log sync failed: ${e.message}")
+                }
+            }
+
+            while (isActive) {
+                delay(5000L)
+                if (localLogFile.exists() && localLogFile.length() > lastSyncedLogLength) {
+                    try {
+                        driveClient.syncLocalCrawlerTraceLog(logsFolderId, localLogFile)
+                        lastSyncedLogLength = localLogFile.length()
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Periodic real-time log sync failed: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Flushes any remaining local trace logs to Google Drive before session shutdown.
+     */
+    suspend fun flushRemainingToCloud(context: Context, targetEmail: String? = null) = withContext(Dispatchers.IO) {
+        val email = targetEmail ?: com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).first ?: return@withContext
+        val academicYear = com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context)
+        val childName = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context).third.ifBlank {
+            try {
+                val db = com.kids.collector.data.db.KidsDatabase.getInstance(context)
+                db.childProfileDao().getAllChildrenDirect().firstOrNull()?.firstName ?: "Child"
+            } catch (_: Exception) {
+                "Child"
+            }
+        }
+        val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, email, academicYear, childName)
+        val logsFolderId = vault?.logsFolderId ?: return@withContext
+        val driveService = try {
+            com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, email)
+        } catch (_: Exception) {
+            return@withContext
+        }
+        val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
+        val localLogFile = File(File(context.filesDir, "logs"), "crawler_trace.log")
+        if (localLogFile.exists() && localLogFile.length() > 0L) {
+            try {
+                driveClient.syncLocalCrawlerTraceLog(logsFolderId, localLogFile)
+                lastSyncedLogLength = localLogFile.length()
+            } catch (e: Exception) {
+                Log.w(TAG, "Final real-time log flush failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Stops the real-time cloud log synchronization coroutine.
+     */
+    fun stopCloudStreaming() {
+        streamJob?.cancel()
+        streamJob = null
     }
 }

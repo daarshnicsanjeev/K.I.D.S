@@ -247,6 +247,7 @@ class GoogleDriveSharedHarvester(
      * Returns the total count of files successfully dispatched to K.I.D.S. Vault.
      */
     suspend fun executeHarvest(targetAccountEmail: String?): Int {
+        CrawlerTraceLogger.startCloudStreaming(serviceScope, context, targetAccountEmail)
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Starting Google Drive Shared Tab Harvester...")
         crawlerOverlay?.updateStatus("Google Drive Harvester", "Launching Drive & verifying account...")
 
@@ -614,6 +615,8 @@ class GoogleDriveSharedHarvester(
             return totalHarvestedCount
         } finally {
             isDriveHarvestingActive = false
+            CrawlerTraceLogger.flushRemainingToCloud(context, targetAccountEmail)
+            CrawlerTraceLogger.stopCloudStreaming()
         }
     }
 
