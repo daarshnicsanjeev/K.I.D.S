@@ -34,6 +34,15 @@ object CrawlerTraceLogger {
     @Volatile
     private var appContext: Context? = null
     private val fileLock = Any()
+    private val EMAIL_REGEX = Regex("""([a-zA-Z0-9_.+-])[a-zA-Z0-9_.+-]*@([a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)""")
+
+    fun maskPii(message: String): String {
+        return message.replace(EMAIL_REGEX) { match ->
+            val firstChar = match.groupValues[1]
+            val domain = match.groupValues[2]
+            "$firstChar***@$domain"
+        }
+    }
 
     /**
      * Initializes the logger with the application context to enable immediate disk streaming.
@@ -44,7 +53,8 @@ object CrawlerTraceLogger {
 
     fun log(category: String, message: String) {
         val timestamp = dateFormat.format(Date())
-        val formatted = "[$timestamp] [$category] $message"
+        val sanitized = maskPii(message)
+        val formatted = "[$timestamp] [$category] $sanitized"
         try {
             Log.i(TAG, formatted)
         } catch (_: Throwable) {

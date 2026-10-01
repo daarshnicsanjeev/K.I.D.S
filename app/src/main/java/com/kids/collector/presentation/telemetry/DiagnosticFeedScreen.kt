@@ -38,7 +38,7 @@ fun DiagnosticFeedScreen(
         mutableStateOf(
             listOf(
                 ProbeItem("probe_auth", "Google Drive Auth Token", true, "OAuth token valid (drive.file scope). Expires in 54 min."),
-                ProbeItem("probe_vault", "Drive Vault Folder Structure", true, "Verified path: K.I.D.S. Data/2026-2027/"),
+                ProbeItem("probe_vault", "Drive Vault Folder Structure", true, "Verified path: ${com.kids.collector.data.drive.DriveVaultManager.VAULT_ROOT_FOLDER_NAME}/${com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context)}/"),
                 ProbeItem("probe_nls", "NotificationListenerService Status", nlsActive, if (nlsActive) "Connected & listening to Classroom, WhatsApp & ERPs." else "Permission pending. Notification Access not granted in phone Settings."),
                 ProbeItem("probe_ocr", "On-Device Google ML Kit OCR", true, "play-services-mlkit-text-recognition loaded in memory."),
                 ProbeItem("probe_quota", "Drive Storage Quota", true, "11.8 GB free (Usage: 3.2 GB / 15.0 GB).")

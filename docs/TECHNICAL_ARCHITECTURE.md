@@ -3242,6 +3242,14 @@ Once Classroom metadata extraction finishes, if any attachments remain in `PENDI
     - Verifies both filename and cryptographic MD5 content checksum (`driveFile.md5Checksum` and byte size) against Google Drive.
     - If filename and content match $\rightarrow$ Reuses existing Google Drive `fileId` ($0 wasted storage and bandwidth).
     - If filename matches but content differs across notices (e.g. generic `Worksheet.pdf` with different homework questions) $\rightarrow$ Automatically disambiguates filename with deterministic short content hash (`Worksheet (a1b2c3).pdf`), guaranteeing zero collision, zero overwriting, and 100% preservation of all student assignments.
+12. **Autonomous Auto-Recovery Pipeline (`performDriveAutoRecoveryIfDisplaced`):**
+    - Mirrors the battle-tested auto-recovery architecture of Pass 1 and Pass 2 for Google Drive harvesting:
+      - **Foreign Package / Background Displacement:** `KidsAccessibilityService.relaunchSchoolApp()` detects when Google Drive is backgrounded (`isDriveHarvestingActive = true`) and immediately relaunches `com.google.android.apps.docs` with `FLAG_ACTIVITY_NEW_TASK` and `FLAG_ACTIVITY_REORDER_TO_FRONT`.
+      - **File Preview / In-App Viewer Auto-Dismissal (`dismissAnyActiveViewer`, `isDriveViewerOrEditorScreen`):** If an accidental tap opens a media preview, audio/video player, or in-app viewer (detected by playback controls, "comments", "annotation", "edit file", or "external badge"), executes `findNavigateUpButton()` or `dispatchBackAction()` to return to the file list.
+      - **Stray Bottom Sheet / Context Menu Dismissal (`isStrayDriveBottomSheet`):** If an accidental 3-dot tap opens a file options bottom sheet or context menu ("Make available offline", "Details & activity", "Copy link", "Add shortcut"), dispatches Back to dismiss the overlay.
+      - **Stuck Multi-Select Mode Recovery (`isStuckMultiSelectMode`):** If long-press multi-select remains active without completing a batch action (detected by "selected" action bar header and close button), taps the close button or executes Back to clear selection mode.
+      - **Subfolder Orphan Displacement Recovery (`isInsideFolderWithoutBottomNav`):** If the crawler is displaced inside a subfolder while root harvesting is expected (`activeHarvestingFolderName == null`), detects the absence of bottom navigation and pops back via `findNavigateUpButton()` to the root Shared tab.
+      - **Bottom Navigation Tab Displacement Recovery (`isDisplacedFromSharedTab`, `findSelectedNonSharedTab`):** If the active tab shifts to "Home", "Starred", or "Files", locates the "Shared" bottom navigation tab and re-selects it via center-point touch dispatch.
 
 ---
 
@@ -4920,6 +4928,27 @@ flowchart TD
   - Reviews proposed code and diffs before staging, providing structured Code Quality & Review Reports with actionable, production-ready refactorings.
   - Coordinates with `workflow_risk_guardian` to ensure refactorings maintain UI responsiveness and process lifecycle resilience.
   - Works with `github_ci_guardian` to ensure code committed to the repository meets the highest software engineering craftsmanship standards.
+
+### 7. dynamic_config_guardian: Dynamic Configuration & Zero-Hardcode Guardian
+- **Role & Purpose**: Inspects source files, PR diffs, and architectural specifications to identify hardcoded values, arbitrary limits, fixed coordinates, and brittle constants, guiding dynamic implementations and gating CI/CD pipelines.
+- **Key Responsibilities**:
+  1. **Automated Hardcode Detection**:
+     - Arbitrary iteration/page limits (e.g. MAX_SCROLL_PAGES = 60, page < 40).
+     - Fixed pixel coordinates and swipe vectors not scaled by runtime display metrics.
+     - Hardcoded static academic year literals (e.g. '2024-2025', '2026-2027'), static child names, or static package identifiers.
+     - Static timeouts without adaptive backoff or failure-driven retry policies.
+  2. **Dynamic Derivation Alternatives**:
+     - Replaces static coordinates with container-relative bounds (
+ode.getBoundsInScreen(rect), containerBounds.centerX(), displayMetrics.heightPixels * 0.70f).
+     - Dynamically derives work budgets proportional to Room database queue sizes (calculateDynamicScrollPageLimit(pendingCount)).
+     - Dynamically resolves academic years via system calendar (DriveVaultManager.resolveDefaultAcademicYear(context)).
+  3. **CI/CD Quality Gate & Mandatory Human Approval Protocol (scripts/verify_zero_hardcode.py)**:
+     - Integrated directly into .github/workflows/ci.yml. Every commit and pull request MUST pass python scripts/verify_zero_hardcode.py prior to compilation, testing, or release packaging.
+     - Any unapproved static pixel coordinate, academic year string, arbitrary loop limit, or developer handle immediately causes the CI build to fail with exit code 1.
+     - Mandatory Human Approval for Exemptions: If a hardcoded value is strictly necessary (e.g., WCAG accessibility standard 48.dp, standard protocol URLs), it MUST be documented with detailed technical justification (>= 15 characters) AND explicit human approval via inline annotation (// ZERO_HARDCODE_EXEMPTION: [Technical Reason] [Approved-By: <Reviewer>]) or central registry in .hardcode-exemptions.json.
+- **Integration & Coordination**:
+  - Gating authority in .github/workflows/ci.yml alongside github_ci_guardian.
+  - Works with code_quality_guardian and workflow_risk_guardian to ensure zero hardcoded values compromise adaptability across device form factors.
 
 ---
 

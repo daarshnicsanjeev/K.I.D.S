@@ -42,16 +42,15 @@ class DriveSyncWorker(
 
         return@withContext try {
             val (savedEmail, academicYear, prefChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
-            val childName = if (prefChildName.isNotBlank()) {
-                prefChildName
-            } else {
-                val dbChildren = db.childProfileDao().getAllChildrenDirect()
-                dbChildren.firstOrNull()?.firstName ?: ""
-            }
+            val dbChildren = db.childProfileDao().getAllChildrenDirect()
+            val primaryChildEntity = dbChildren.firstOrNull()
+            val childName = primaryChildEntity?.firstName?.trim()
+                ?: if (com.kids.collector.data.drive.DriveVaultManager.currentChildVault != null) prefChildName.trim() else ""
+            val effectiveChildId = primaryChildEntity?.childId ?: "child_$childName"
 
             if (savedEmail.isNullOrBlank() || childName.isBlank()) {
-                Log.w(TAG, "Sync deferred: Child profile not yet established or childName is blank.")
-                CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established.")
+                Log.w(TAG, "Sync deferred: Child profile not yet committed to database or confirmed.")
+                CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established in database.")
                 return@withContext Result.success()
             }
 
@@ -82,11 +81,12 @@ class DriveSyncWorker(
                         Log.w(TAG, "Could not purge stray folder: ${stray.name}")
                     }
                 }
-            } catch (_: Exception) {
+            } catch (folderListingException: Exception) {
+                Log.w(TAG, "Non-fatal error listing stray folders: ${folderListingException.message}")
             }
 
             // 1. Guaranteed Google Classroom channel vault provisioning
-            val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+            val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)
 
             // Autonomous self-healing: Purge stray child-level "attachments" folder if present from legacy runs
             try {
@@ -100,13 +100,13 @@ class DriveSyncWorker(
                             .setQ("'${stray.id}' in parents and trashed = false")
                             .setFields("files(id, name)")
                             .execute()
-                        for (f in filesInside.files.orEmpty()) {
-                            driveService.files().update(f.id, null)
+                        for (strayFile in filesInside.files.orEmpty()) {
+                            driveService.files().update(strayFile.id, null)
                                 .setAddParents(classroomVault.attachmentsFolderId)
                                 .setRemoveParents(stray.id)
                                 .setFields("id, parents")
                                 .execute()
-                            Log.i(TAG, "Relocated stray attachment '${f.name}' to Google Classroom/attachments/")
+                            Log.i(TAG, "Relocated stray attachment '${strayFile.name}' to Google Classroom/attachments/")
                         }
                         driveService.files().delete(stray.id).execute()
                         Log.i(TAG, "Purged legacy child-level attachments folder from Google Drive: ${stray.name}")
@@ -114,7 +114,8 @@ class DriveSyncWorker(
                         Log.w(TAG, "Could not purge child-level attachments folder: ${e.message}")
                     }
                 }
-            } catch (_: Exception) {
+            } catch (attachmentListingException: Exception) {
+                Log.w(TAG, "Non-fatal error listing stray child attachments: ${attachmentListingException.message}")
             }
 
 
@@ -129,22 +130,22 @@ class DriveSyncWorker(
                 var pendingCount = 0
                 val ocrParser = com.kids.collector.data.ocr.MLKitOcrParser(applicationContext)
 
-                for (att in refreshedPendingAttachments) {
-                    val localFile = if (att.localUri.isNotBlank()) File(att.localUri) else null
+                for (pendingAttachment in refreshedPendingAttachments) {
+                    val localFile = if (pendingAttachment.localUri.isNotBlank()) File(pendingAttachment.localUri) else null
                     val targetFolderId = classroomVault.attachmentsFolderId
 
                     if (localFile != null && localFile.exists()) {
-                        if (att.ocrText.isNullOrBlank()) {
+                        if (pendingAttachment.ocrText.isNullOrBlank()) {
                             try {
-                                val ocrResult = if (att.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
+                                val ocrResult = if (pendingAttachment.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
                                     ocrParser.extractTextFromPdfFile(localFile)
-                                } else if (att.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
+                                } else if (pendingAttachment.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
                                     ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
                                 } else null
 
                                 if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
                                     db.attachmentDao().updateOcrText(
-                                        attachmentId = att.attachmentId,
+                                        attachmentId = pendingAttachment.attachmentId,
                                         ocrText = ocrResult.fullText,
                                         pageCount = ocrResult.pageCount
                                     )
@@ -157,16 +158,16 @@ class DriveSyncWorker(
                         val uploadedAttId = driveClient.uploadAttachment(
                             parentFolderId = targetFolderId,
                             file = localFile,
-                            mimeType = att.mimeType,
-                            customName = att.fileName
+                            mimeType = pendingAttachment.mimeType,
+                            customName = pendingAttachment.fileName
                         )
 
                         db.attachmentDao().updateSyncStatus(
-                            attachmentId = att.attachmentId,
+                            attachmentId = pendingAttachment.attachmentId,
                             newStatus = SyncStatus.SYNCED.name,
                             driveFileId = uploadedAttId
                         )
-                        db.noticeDao().markNoticePending(att.noticeId)
+                        db.noticeDao().markNoticePending(pendingAttachment.noticeId)
                         physicalUploadCount++
 
                         val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
@@ -185,7 +186,7 @@ class DriveSyncWorker(
                     }
                 }
 
-                val targetPrefix = if (classroomVault != null) "Google Classroom/attachments/" else "attachments/"
+                val targetPrefix = "$CHANNEL_NAME_CLASSROOM/attachments/"
                 val logMessage = if (physicalUploadCount > 0) {
                     "[ATTACHMENT BATCH SYNC] Uploaded $physicalUploadCount physical files to $targetPrefix ($pendingCount still awaiting capture/sync)"
                 } else {
@@ -203,10 +204,9 @@ class DriveSyncWorker(
                 val standardNotices = noticesToSync.filter { !it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
 
                 if (classroomNotices.isNotEmpty()) {
-                    val actualClassroomVault = classroomVault ?: driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)
                     val batchClassroomJsonl = serializeNoticesToJsonl(classroomNotices, attachmentsByNoticeId)
 
-                    val uploadedFileId = driveClient.appendNoticeToChannelJsonl(actualClassroomVault.channelFolderId, batchClassroomJsonl)
+                    val uploadedFileId = driveClient.appendNoticeToChannelJsonl(classroomVault.channelFolderId, batchClassroomJsonl)
                     driveClient.appendNoticeToJsonl(vault.childFolderId, batchClassroomJsonl)
 
                     driveClient.appendTimelineLog(
@@ -258,49 +258,49 @@ class DriveSyncWorker(
 
                 // 4. Synthesize and update Knowledge Graph, Master Digest, Family Digest, and graph.html
                 try {
-                    val allNoticeEntities = db.noticeDao().getNoticesForChildDirect("child_$childName")
+                    val allNoticeEntities = db.noticeDao().getNoticesForChildDirect(effectiveChildId)
                         .ifEmpty { db.noticeDao().getAllNoticesDirect() }
                     val allAttachmentEntities = db.attachmentDao().getAllAttachmentsDirect()
 
-                    val allNotices = allNoticeEntities.map { n ->
+                    val allNotices = allNoticeEntities.map { noticeEntity ->
                         com.kids.collector.domain.model.Notice(
-                            noticeId = n.noticeId,
-                            childId = n.childId,
-                            sourceApp = n.sourceApp,
+                            noticeId = noticeEntity.noticeId,
+                            childId = noticeEntity.childId,
+                            sourceApp = noticeEntity.sourceApp,
                             category = try {
-                                com.kids.collector.domain.model.ContentCategory.valueOf(n.category)
+                                com.kids.collector.domain.model.ContentCategory.valueOf(noticeEntity.category)
                             } catch (_: Exception) {
                                 com.kids.collector.domain.model.ContentCategory.UNKNOWN
                             },
-                            title = n.title,
-                            body = n.body,
-                            sender = n.sender,
-                            timestampMs = n.timestampMs,
-                            hashSha256 = n.hashSha256
+                            title = noticeEntity.title,
+                            body = noticeEntity.body,
+                            sender = noticeEntity.sender,
+                            timestampMs = noticeEntity.timestampMs,
+                            hashSha256 = noticeEntity.hashSha256
                         )
                     }
 
-                    val allAttachments = allAttachmentEntities.map { a ->
+                    val allAttachments = allAttachmentEntities.map { attachmentEntity ->
                         com.kids.collector.domain.model.Attachment(
-                            attachmentId = a.attachmentId,
-                            noticeId = a.noticeId,
-                            fileName = a.fileName,
-                            localUri = a.localUri,
-                            mimeType = a.mimeType,
-                            sizeBytes = a.sizeBytes,
-                            fileHash = a.fileHash,
-                            ocrText = a.ocrText,
-                            pageCount = a.pageCount
+                            attachmentId = attachmentEntity.attachmentId,
+                            noticeId = attachmentEntity.noticeId,
+                            fileName = attachmentEntity.fileName,
+                            localUri = attachmentEntity.localUri,
+                            mimeType = attachmentEntity.mimeType,
+                            sizeBytes = attachmentEntity.sizeBytes,
+                            fileHash = attachmentEntity.fileHash,
+                            ocrText = attachmentEntity.ocrText,
+                            pageCount = attachmentEntity.pageCount
                         )
                     }
 
                     val childProfile = com.kids.collector.domain.model.ChildProfile(
-                        childId = "child_$childName",
+                        childId = effectiveChildId,
                         firstName = childName,
-                        grade = "Grade 3",
-                        academicYear = academicYear,
-                        schoolName = "School Vault",
-                        accountEmail = savedEmail
+                        grade = primaryChildEntity?.grade?.takeIf { it.isNotBlank() } ?: DEFAULT_FALLBACK_GRADE,
+                        academicYear = primaryChildEntity?.academicYear?.takeIf { it.isNotBlank() } ?: academicYear,
+                        schoolName = primaryChildEntity?.schoolName?.takeIf { it.isNotBlank() } ?: DEFAULT_FALLBACK_SCHOOL_NAME,
+                        accountEmail = primaryChildEntity?.accountEmail?.takeIf { it.isNotBlank() } ?: savedEmail
                     )
 
                     val knowledgeGraph = graphifyEngine.buildGraph(childProfile, allNotices, allAttachments)
@@ -315,11 +315,9 @@ class DriveSyncWorker(
                     driveClient.uploadOrUpdateFamilyDigest(vault.yearFolderId, familyDigest)
                     driveClient.uploadOrUpdateGraphHtml(vault.childFolderId, graphHtml)
 
-                    if (classroomVault != null) {
-                        val classroomNotices = allNotices.filter { it.sourceApp.contains("classroom", ignoreCase = true) }
-                        val classroomDigest = graphifyEngine.generateMasterDigest(childProfile, classroomNotices, allAttachments)
-                        driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, classroomDigest)
-                    }
+                    val classroomNotices = allNotices.filter { it.sourceApp.contains(APP_KEYWORD_CLASSROOM, ignoreCase = true) }
+                    val classroomDigest = graphifyEngine.generateMasterDigest(childProfile, classroomNotices, allAttachments)
+                    driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, classroomDigest)
 
                     // Check and upload crash log if present
                     val localCrashLog = File(applicationContext.filesDir, "crash.log")
@@ -400,5 +398,7 @@ class DriveSyncWorker(
         private const val VIRTUAL_DRIVE_ID_PREFIX = "virtual_"
         private const val MAX_OCR_SUMMARY_PREVIEW_LENGTH = 120
         private const val GOOGLE_DRIVE_FILE_VIEW_URL_TEMPLATE = "https://drive.google.com/file/d/%s/view"
+        private const val DEFAULT_FALLBACK_GRADE = "General"
+        private const val DEFAULT_FALLBACK_SCHOOL_NAME = "School Vault"
     }
 }

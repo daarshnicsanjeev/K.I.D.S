@@ -63,3 +63,8 @@ graphify-out/**/*.tmp
 
 # Scratch temporary workspace
 scratch/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+

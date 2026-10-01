@@ -9,7 +9,10 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import android.util.Log
+import kotlinx.coroutines.delay
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.io.InputStream
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.ConcurrentHashMap
@@ -65,12 +68,12 @@ class GoogleDriveClient(
     ): ChildVaultFolders = withContext(Dispatchers.IO) {
         val cleanChildName = childName.trim()
         require(cleanChildName.isNotBlank()) { "Child name cannot be blank when provisioning vault." }
-        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+        val cleanYear = academicYear.trim().ifBlank { DriveVaultManager.resolveDefaultAcademicYear() }
 
         val rootKidsFolderId = if (!cachedRootKidsFolderId.isNullOrBlank()) {
             cachedRootKidsFolderId
         } else {
-            getOrCreateFolder("K.I.D.S. Data", null)
+            getOrCreateFolder(DriveVaultManager.VAULT_ROOT_FOLDER_NAME, null)
         }
 
         val yearFolderId = if (!cachedYearFolderId.isNullOrBlank()) {
@@ -458,17 +461,39 @@ class GoogleDriveClient(
         return foundId
     }
 
-    private fun uploadOrUpdateTextFile(
+    private suspend fun <T> executeWithRetry(
+        operationName: String,
+        maxRetries: Int = MAX_UPLOAD_RETRIES,
+        initialBackoffMs: Long = INITIAL_RETRY_BACKOFF_MS,
+        action: () -> T
+    ): T {
+        var currentDelay = initialBackoffMs
+        var lastException: Throwable? = null
+        for (attempt in 1..maxRetries) {
+            try {
+                return action()
+            } catch (throwable: Throwable) {
+                lastException = throwable
+                if (attempt == maxRetries) break
+                Log.w(TAG, "Transient failure during $operationName (attempt $attempt/$maxRetries). Retrying in ${currentDelay}ms...", throwable)
+                delay(currentDelay)
+                currentDelay *= 2
+            }
+        }
+        throw lastException ?: IOException("Operation $operationName failed after $maxRetries attempts")
+    }
+
+    private suspend fun uploadOrUpdateTextFile(
         parentFolderId: String,
         fileName: String,
         mimeType: String,
         content: String
-    ): String {
+    ): String = executeWithRetry("uploadOrUpdateTextFile($fileName)") {
         val existingFileId = findFileIdByName(fileName, parentFolderId)
         val contentBytes = content.toByteArray(StandardCharsets.UTF_8)
         val mediaContent = ByteArrayContent(mimeType, contentBytes)
 
-        return if (existingFileId == null) {
+        if (existingFileId == null) {
             val fileMetadata = File().apply {
                 this.name = fileName
                 this.parents = listOf(parentFolderId)
@@ -487,6 +512,10 @@ class GoogleDriveClient(
     }
 
     companion object {
+        private const val TAG = "GoogleDriveClient"
+        private const val MAX_UPLOAD_RETRIES = 3
+        private const val INITIAL_RETRY_BACKOFF_MS = 1000L
+
         private val folderMutex = Mutex()
         private val folderCache = ConcurrentHashMap<String, String>()
         private val fileIdCache = ConcurrentHashMap<String, String>()

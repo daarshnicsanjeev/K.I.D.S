@@ -1,0 +1,10 @@
+[
+  {
+    "description": "Schema template for K.I.D.S. Zero-Hardcode Exemption Registry. Hardcoded values are strictly rejected by CI unless documented with detailed technical reasoning and explicit human approval.",
+    "file": "app/src/main/java/com/kids/collector/presentation/theme/Dimens.kt",
+    "pattern": "48.dp",
+    "reason": "WCAG 2.1 AA/AAA accessibility standard requires minimum 48dp x 48dp touch targets for interactive elements.",
+    "approved_by": "daarshnic",
+    "approval_date": "2026-10-01"
+  }
+]

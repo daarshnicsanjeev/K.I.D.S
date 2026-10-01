@@ -508,16 +508,21 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun relaunchSchoolApp() {
         try {
-            val targetPackageName = lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+            val targetPackageName = if (GoogleDriveSharedHarvester.isDriveHarvestingActive) {
+                GoogleDriveSharedHarvester.DRIVE_PACKAGE_NAME
+            } else {
+                lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
+            }
             val launchIntent = packageManager.getLaunchIntentForPackage(targetPackageName)?.apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
             }
             if (launchIntent != null) {
                 startActivity(launchIntent)
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "Re-launched school app ($targetPackageName) to foreground")
+                val targetAppLabel = if (GoogleDriveSharedHarvester.isDriveHarvestingActive) "Google Drive" else "school app ($targetPackageName)"
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Re-launched $targetAppLabel to foreground")
             }
         } catch (e: Exception) {
-            CrawlerTraceLogger.log("DEEP_CRAWLER", "Failed to relaunch school app: ${e.message}")
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Failed to relaunch app: ${e.message}")
         }
     }
 
@@ -664,10 +669,11 @@ class KidsAccessibilityService : AccessibilityService() {
             }
 
             if (crawlerOverlay?.isAutoScrollingActive() == true) {
-                // If auto-crawl is running, self-heal and bring Classroom back before giving up!
+                // If auto-crawl is running, self-heal and bring Classroom or Google Drive back before giving up!
+                val targetAppLabel = if (GoogleDriveSharedHarvester.isDriveHarvestingActive) "Google Drive" else "Classroom"
                 CrawlerTraceLogger.log(
                     "DEEP_CRAWLER",
-                    "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to Classroom..."
+                    "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to $targetAppLabel..."
                 )
                 relaunchSchoolApp()
                 delay(APP_RELAUNCH_RECOVERY_DELAY_MILLIS)

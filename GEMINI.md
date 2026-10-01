@@ -198,3 +198,28 @@ c:\K.I.D.S\
     3. **Jetpack Compose & WCAG Ergonomics**:
        - Enforces state hoisting, stable parameters, descriptive Composable nouns, and proper callback naming (`onDismissRequest`, `onValueChange`).
        - Validates minimum 48dp x 48dp touch targets and adherence to `KidsTheme` color and typography tokens.
+
+### 4.10. Dynamic Configuration & Zero-Hardcode Guardian Subagent (`dynamic_config_guardian`)
+- **Automated Detection of Hardcoded Values & Dynamic Implementation Guidance**:
+  - The `dynamic_config_guardian` subagent continuously inspects source files, PR diffs, and architectural specifications to identify hardcoded values, arbitrary limits, fixed coordinates, and brittle constants.
+  - Its objective is to evaluate, audit, and provide:
+    1. **Hardcode Detection**:
+       - Arbitrary iteration/page limits (e.g. `MAX_SCROLL_PAGES = 60`, `retryCount < 5`).
+       - Fixed pixel coordinates and swipe vectors not scaled by runtime display metrics.
+       - Hardcoded dates, academic years (`"2026-2027"`), child names, or static package identifiers.
+       - Static timeouts without adaptive backoff or failure-driven retry policies.
+    2. **Zero-Impact Dynamic Alternatives**:
+       - Dynamically derived algorithms (e.g. calculating harvest budgets proportionally from Room database queue sizes).
+       - Context-aware display-relative metrics (`displayMetrics.heightPixels * 0.75f`).
+       - Resilient adaptive fallback loops terminated strictly by verified state changes (e.g. `consecutiveStaticPages`) rather than arbitrary thresholds.
+       - Named configuration constants with sensible fallback defaults in companion objects.
+    3. **Non-Breaking Verification**:
+       - Guarantees all dynamic implementations preserve 100% backward compatibility, prevent runaway infinite loops with dynamic bounds, and uphold the Zero-Backend and Privacy invariants.
+    4. **CI/CD Quality Gate & Mandatory Human Approval Protocol (`scripts/verify_zero_hardcode.py`)**:
+       - **Automated Pipeline Gate**: Integrated into `.github/workflows/ci.yml`. Every commit and pull request MUST pass `python scripts/verify_zero_hardcode.py` prior to compilation, testing, or release packaging.
+       - **Zero Hardcoding Enforcement**: Any unapproved static pixel coordinate, academic year string, arbitrary loop limit, or developer handle immediately causes the CI build to fail with exit code 1.
+       - **Mandatory Human Approval for Exemptions**: If a hardcoded value is strictly necessary (e.g., WCAG accessibility standard `48.dp`, standard protocol URLs), it MUST be documented with detailed technical justification ($\ge 15$ characters) AND explicit human approval via:
+         * **Inline Annotation**: `// ZERO_HARDCODE_EXEMPTION: [Detailed Technical Reason] [Approved-By: <AuthorizerName>]`
+         * **Central Registry**: Documented entry in `.hardcode-exemptions.json` with `file`, `line`, `pattern`, `reason`, `approved_by`, and `approval_date`.
+       - **Strict Rejection**: Any hardcoded value lacking justification, possessing a reason shorter than 15 characters, or lacking a verified human reviewer signature (e.g., "TODO", "placeholder") is automatically rejected by the CI pipeline.
+

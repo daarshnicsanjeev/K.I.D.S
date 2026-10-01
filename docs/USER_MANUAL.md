@@ -640,6 +640,14 @@ Once the Classroom fast metadata sweep finishes, K.I.D.S. automatically transiti
 - **Strict Root Folder Exclusion:** Folders in the root shared tab are not multi-selected because Google Drive disables the "Send a copy" menu option if a folder is included in the selection.
 - **Date & Filename Disambiguation:** When multiple assignments share the same filename (e.g. `Worksheet.pdf`), K.I.D.S. disambiguates them using both filename and post date/time matching via `ClassroomDateParser`.
 - **Bulk Dispatch to "K.I.D.S. Vault":** Dispatches all files via "Send a copy" directly into the translucent `ShareTargetActivity`, staging and uploading them without manual intervention.
+- **Autonomous Auto-Recovery Pipeline for Drive Harvesting:**
+  Google Drive's complex multi-tab UI, bottom sheets, full-screen document viewers, and media players can sometimes displace automated workflows. K.I.D.S. features full autonomous auto-recovery for Phase 3:
+  1. **Background / App Switch Recovery:** If Google Drive is backgrounded or another application opens during harvesting, `KidsAccessibilityService` immediately relaunches Google Drive (`com.google.android.apps.docs`) and brings it to the front.
+  2. **In-App File Viewer / Media Player Dismissal (`dismissAnyActiveViewer`):** If an accidental touch opens a video player, PDF preview, or audio player (recognized by playback controls, "comments", "annotation", "edit file", or "external badge"), K.I.D.S. dispatches Back or Navigate Up to return to the file list.
+  3. **Stray Bottom Sheet Dismissal:** If a 3-dot overflow menu or file options bottom sheet appears, K.I.D.S. dismisses it via Back navigation.
+  4. **Stuck Multi-Select Mode Recovery:** If selection mode gets stuck without completing a batch action, K.I.D.S. taps the selection close button or dispatches Back to restore normal scrolling.
+  5. **Subfolder Orphan Displacement Recovery:** If the harvester finds itself trapped inside an unprompted subfolder outside active folder harvesting, it automatically presses Navigate Up to return to the root Shared tab.
+  6. **Tab Displacement Recovery:** If Drive accidentally switches to the "Home", "Starred", or "Files" tab, K.I.D.S. detects the wrong tab selection and taps the "Shared" bottom navigation tab to restore the harvest view.
 - **Announcement Discrimination & Zero-Click Direct Stream Ingestion:**
   In Google Classroom, teacher communications fall into two fundamentally different structural types:
   1. **Announcements & Circulars:** Teacher notices, daily announcements, holiday greetings, and circular texts posted directly into the stream feed. In Google Classroom, **announcements do NOT have a separate detail activity or screen**. Their full message is already visible right on the stream card. Tapping an announcement card either does nothing or inadvertently pops up the class comments dialog.
@@ -955,17 +963,17 @@ K.I.D.S. completely eliminates the exhausting chore of tapping into dozens of an
    - Once back on the stream, it enforces up to 2,000ms of verification and a 600ms stabilization delay before scanning for the next post card.
 8. **Physical Kinetic Pointer Swipes & Pass 2 Full Kinetic Upward Swiping:**
    - **Why Physical Swipes are Essential:** Modern Google Classroom `RecyclerView` implementations rely on physical finger fling momentum and `OnScrollListener` velocity callbacks to trigger infinite-scroll pagination. Traditional synthetic accessibility scrolls (`AccessibilityNodeInfo.ACTION_SCROLL_FORWARD`) often return a "success" status from the Android accessibility framework without generating actual scrolling physics, leaving Classroom's pagination adapter stalled and failing to request older historical notices.
-   - **Forward Kinetic Swipe (`performScroll`):** Starts at 75% screen height and sweeps upward to 20% screen height:
-     $$(0.65 \times \text{width}, 0.75 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.20 \times \text{height})$$
+   - **Forward Kinetic Swipe (performScroll):** Starts at 70% screen height and sweeps upward to 25% screen height:
+     (0.50 \times \text{width}, 0.70 \times \text{height}) \longrightarrow (0.50 \times \text{width}, 0.25 \times \text{height})
      Dispatched over 400ms to reveal upcoming historical posts during Pass 1 surveying and Pass 2 forward traversal.
-   - **Backward Kinetic Rewind Swipe (`performScrollBackward`):** Starts at 25% screen height and sweeps downward to 75% screen height:
-     $$(0.65 \times \text{width}, 0.25 \times \text{height}) \longrightarrow (0.65 \times \text{width}, 0.75 \times \text{height})$$
+   - **Backward Kinetic Rewind Swipe (performScrollBackward):** Starts at safe mid-height (35% screen height) to avoid pull-to-refresh headers and sweeps downward to 68% screen height:
+     (0.50 \times \text{width}, 0.35 \times \text{height}) \longrightarrow (0.50 \times \text{width}, 0.68 \times \text{height})
      Dispatched over 400ms to return to the stream start during Pass 1.5 Rewind and re-anchor upward during Auto-Recovery position correction.
    - **Pass 2 Full Kinetic Upward Swiping (Replacing Micro-Nudges):**
      In Pass 2, the crawler navigates bottom-to-top from the oldest post toward post #1 at the top of the stream. Classroom assignment and material cards are substantial UI elements measuring **600 to 800 pixels in vertical height**.
      - Legacy micro-nudges (16% screen height) frequently left these large cards clipped off-screen or stranded beneath the viewport boundary, hiding their attachment chips and action buttons.
      - Pass 2 now uses **Full Kinetic Upward Swipes (`performScrollBackward`)** when traversing bottom-to-top (`targetAhead == false`), completely revealing 600–800px cards so their attachment chips can be opened and downloaded. Micro-scrolls are strictly reserved for breaking confirmed directional oscillation.
-   - **Safe Margin Placement (65% Screen Width):** Positioned at 65% horizontal width, both swipes safely avoid triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoid colliding with or dragging the floating assistant overlay.
+   - **Safe Margin Placement (50% Screen Width):** Positioned at 50% horizontal width, both swipes safely avoid triggering Android 10+ system navigation back gestures (which intercept touches along the outer 10–15% display edges) and avoid colliding with or dragging the floating assistant overlay.
    - **Kinetic Fling Velocity:** The 400ms contact duration generates true kinetic inertia, firing `RecyclerView.OnScrollListener` and forcing Classroom's pagination adapter to fetch older notices from Google servers.
    - **Native Scroll Fallback:** If physical gestures are cancelled or restricted by an OEM layer, the assistant seamlessly falls back to native `ACTION_SCROLL_FORWARD` or `ACTION_SCROLL_BACKWARD` on the primary scroll container.
 9. **Zero-Permanent-Storage Guarantee, Deduplication & Automatic Cloud Sync:**

@@ -72,10 +72,11 @@ fun OnboardingWizardScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val prefs = remember { context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE) }
+    val prefs = remember { context.getSharedPreferences(com.kids.collector.data.drive.DriveVaultManager.PREFS_NAME, Context.MODE_PRIVATE) }
     val savedEmail = remember { prefs.getString("account_email", "") ?: "" }
     val savedChild = remember { prefs.getString("child_name", "") ?: "" }
-    val savedYear = remember { prefs.getString("academic_year", "2026-2027") ?: "2026-2027" }
+    val defaultYear = remember { com.kids.collector.data.drive.DriveVaultManager.resolveDefaultAcademicYear(context) }
+    val savedYear = remember { prefs.getString("academic_year", defaultYear) ?: defaultYear }
     val savedStepStr = remember { prefs.getString("wizard_current_step", null) }
 
     // Dynamic Permission Tracking with ON_RESUME observer
@@ -161,7 +162,13 @@ fun OnboardingWizardScreen(
     // Hardware and Gesture Back Navigation
     BackHandler {
         when (currentStep) {
-            WizardStep.STEP_0_PERMISSIONS -> onCancel?.invoke()
+            WizardStep.STEP_0_PERMISSIONS -> {
+                if (onCancel != null) {
+                    onCancel()
+                } else {
+                    (context as? android.app.Activity)?.finish()
+                }
+            }
             WizardStep.STEP_1_VAULT -> {
                 if (!hasAccessibility) {
                     currentStep = WizardStep.STEP_0_PERMISSIONS
@@ -186,7 +193,7 @@ fun OnboardingWizardScreen(
     var isDriveConnected by rememberSaveable { mutableStateOf(savedEmail.isNotBlank()) }
     var driveErrorMessage by rememberSaveable { mutableStateOf<String?>(null) }
     var childName by rememberSaveable { mutableStateOf(if (isNewChildSession) "" else savedChild) }
-    val academicYears = remember { listOf("2026-2027", "2025-2026", "2027-2028") }
+    val academicYears = remember { com.kids.collector.data.drive.DriveVaultManager.getAvailableAcademicYears(context) }
     var selectedYear by rememberSaveable { mutableStateOf(savedYear) }
     var photoUri by rememberSaveable { mutableStateOf<Uri?>(null) }
 
@@ -197,10 +204,10 @@ fun OnboardingWizardScreen(
         }
     }
 
-    // Continuously persist profile and email edits so progress is never lost across app restarts
-    LaunchedEffect(childName, selectedYear, driveAccountEmail) {
-        if (!isNewChildSession && (childName.isNotBlank() || driveAccountEmail.isNotBlank())) {
-            DriveVaultManager.saveVaultPrefs(context, driveAccountEmail, selectedYear, childName.trim())
+    // Continuously persist account email and year so progress is not lost across app restarts
+    LaunchedEffect(selectedYear, driveAccountEmail) {
+        if (!isNewChildSession && driveAccountEmail.isNotBlank()) {
+            DriveVaultManager.saveVaultPrefs(context, driveAccountEmail, selectedYear, savedChild)
         }
     }
 
@@ -928,7 +935,10 @@ fun OnboardingWizardScreen(
                                         Text(if (photoUri != null) "✓ Photo Selected" else "Choose Photo")
                                     }
                                     if (photoUri != null) {
-                                        TextButton(onClick = { photoUri = null }) {
+                                        TextButton(
+                                            onClick = { photoUri = null },
+                                            modifier = Modifier.defaultMinSize(minHeight = 48.dp, minWidth = 48.dp)
+                                        ) {
                                             Text("Remove", color = MaterialTheme.colorScheme.error)
                                         }
                                     }
@@ -1037,7 +1047,7 @@ fun OnboardingWizardScreen(
                                     }
                                 }
                             },
-                            enabled = isStep1Valid,
+                            enabled = isStep1Valid && !isProvisioning,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .defaultMinSize(minHeight = 48.dp),

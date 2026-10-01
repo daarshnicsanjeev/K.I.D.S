@@ -34,7 +34,8 @@ sealed interface ProvisionStep1Result {
  */
 object DriveVaultManager {
     private const val TAG = "DriveVaultManager"
-    private const val PROVISIONING_AWAIT_TIMEOUT_MS = 6_000L
+    const val PREFS_NAME = "kids_vault_prefs"
+    const val VAULT_ROOT_FOLDER_NAME = "K.I.D.S. Data"
     const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
     const val GOOGLE_CLIENT_ID = "378609737196-c7bsdma5l20d1vf9r5dm7vahneai10am.apps.googleusercontent.com"
 
@@ -47,8 +48,79 @@ object DriveVaultManager {
     @Volatile
     var activeProvisioningDeferred: CompletableDeferred<ChildVaultFolders>? = null
 
+    /**
+     * Dynamically resolves the active academic year without any hardcoded year strings.
+     * Hierarchy:
+     * 1. Saved SharedPreferences "academic_year"
+     * 2. First enrolled ChildProfile from Room database
+     * 3. Current calendar date (school year rolling June-to-May)
+     */
+    fun resolveDefaultAcademicYear(context: Context? = null): String {
+        if (context != null) {
+            try {
+                val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val savedYear = prefs.getString("academic_year", null)
+                if (!savedYear.isNullOrBlank()) return savedYear.trim()
+
+                val db = com.kids.collector.data.db.KidsDatabase.getInstance(context)
+                val enrolledChild = kotlinx.coroutines.runBlocking(Dispatchers.IO) {
+                    db.childProfileDao().getAllChildrenDirect().firstOrNull()
+                }
+                if (enrolledChild != null && enrolledChild.academicYear.isNotBlank()) {
+                    return enrolledChild.academicYear.trim()
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not resolve academic year from DB/Prefs: ${e.message}")
+            }
+        }
+        val calendar = java.util.Calendar.getInstance()
+        val currentYear = calendar.get(java.util.Calendar.YEAR)
+        val currentMonth = calendar.get(java.util.Calendar.MONTH) // 0=Jan, 5=June
+        return if (currentMonth >= java.util.Calendar.JUNE) {
+            "$currentYear-${currentYear + 1}"
+        } else {
+            "${currentYear - 1}-$currentYear"
+        }
+    }
+
+    /**
+     * Dynamically generates a selection list of academic years centered around the current default academic year.
+     */
+    fun getAvailableAcademicYears(context: Context? = null): List<String> {
+        val defaultYear = resolveDefaultAcademicYear(context)
+        val startYear = defaultYear.substringBefore('-').toIntOrNull()
+            ?: java.util.Calendar.getInstance().get(java.util.Calendar.YEAR)
+        return listOf(
+            "$startYear-${startYear + 1}",
+            "${startYear - 1}-$startYear",
+            "${startYear + 1}-${startYear + 2}"
+        ).distinct()
+    }
+
+    /**
+     * Dynamically computes the provisioning await timeout based on active network transport.
+     * High bandwidth (Wi-Fi, Ethernet): 15s.
+     * Variable cellular latency: 30s.
+     */
+    fun getDynamicProvisioningTimeout(context: Context?): Long {
+        if (context == null) return 15_000L
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            val caps = cm?.getNetworkCapabilities(cm.activeNetwork)
+            when {
+                caps == null -> 30_000L
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET) -> 15_000L
+                caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> 30_000L
+                else -> 20_000L
+            }
+        } catch (e: Exception) {
+            15_000L
+        }
+    }
+
     fun saveVaultPrefs(context: Context, accountEmail: String, academicYear: String, childName: String) {
-        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString("account_email", accountEmail)
             .putString("academic_year", academicYear)
             .putString("child_name", childName)
@@ -56,9 +128,9 @@ object DriveVaultManager {
     }
 
     fun getSavedVaultPrefs(context: Context): Triple<String?, String, String> {
-        val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val email = prefs.getString("account_email", null) ?: currentAccountEmail
-        val year = prefs.getString("academic_year", null) ?: "2026-2027"
+        val year = prefs.getString("academic_year", null) ?: resolveDefaultAcademicYear(context)
         var child = prefs.getString("child_name", null) ?: ""
         if (child.isBlank()) {
             try {
@@ -77,6 +149,10 @@ object DriveVaultManager {
         return Triple(email, year, child)
     }
 
+    private const val HTTP_CONNECT_TIMEOUT_MS = 60_000
+    private const val HTTP_READ_TIMEOUT_MS = 90_000
+    private const val HTTP_NUMBER_OF_RETRIES = 3
+
     fun getDriveService(context: Context, accountEmail: String): Drive {
         val credential = GoogleAccountCredential.usingOAuth2(
             context,
@@ -87,34 +163,38 @@ object DriveVaultManager {
 
         return Drive.Builder(
             NetHttpTransport(),
-            GsonFactory.getDefaultInstance(),
-            credential
-        ).setApplicationName("K.I.D.S.").build()
+            GsonFactory.getDefaultInstance()
+        ) { request ->
+            credential.initialize(request)
+            request.connectTimeout = HTTP_CONNECT_TIMEOUT_MS
+            request.readTimeout = HTTP_READ_TIMEOUT_MS
+            request.numberOfRetries = HTTP_NUMBER_OF_RETRIES
+        }.setApplicationName("K.I.D.S.").build()
     }
 
     fun saveGlobalFolderIds(context: Context, rootId: String, academicYear: String, yearId: String) {
-        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
-        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+        val cleanYear = academicYear.trim().ifBlank { resolveDefaultAcademicYear(context) }
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString("global_root_kids_folder_id", rootId)
             .putString("global_year_folder_id_$cleanYear", yearId)
             .apply()
     }
 
     fun getSavedGlobalRootFolderId(context: Context): String? {
-        return context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString("global_root_kids_folder_id", null)
     }
 
     fun getSavedGlobalYearFolderId(context: Context, academicYear: String): String? {
-        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
-        return context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        val cleanYear = academicYear.trim().ifBlank { resolveDefaultAcademicYear(context) }
+        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString("global_year_folder_id_$cleanYear", null)
     }
 
     fun saveVaultFolderPrefs(context: Context, accountEmail: String, academicYear: String, childName: String, folders: ChildVaultFolders) {
-        val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+        val cleanYear = academicYear.trim().ifBlank { resolveDefaultAcademicYear(context) }
         val prefix = "vault_${accountEmail}_${cleanYear}_${childName.trim().lowercase()}_"
-        context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE).edit()
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).edit()
             .putString("account_email", accountEmail)
             .putString("academic_year", cleanYear)
             .putString("child_name", childName)
@@ -130,7 +210,7 @@ object DriveVaultManager {
     }
 
     fun getSavedVaultFolders(context: Context, accountEmail: String, academicYear: String, childName: String): ChildVaultFolders? {
-        val prefs = context.getSharedPreferences("kids_vault_prefs", Context.MODE_PRIVATE)
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val prefix = "vault_${accountEmail}_${academicYear}_${childName.trim().lowercase()}_"
         val rootId = prefs.getString("${prefix}rootKidsFolderId", null) ?: return null
         val yearId = prefs.getString("${prefix}yearFolderId", null) ?: return null
@@ -306,9 +386,9 @@ object DriveVaultManager {
             val rootId = if (!cachedRootId.isNullOrBlank()) {
                 cachedRootId
             } else {
-                driveClient.getOrCreateFolder("K.I.D.S. Data", null)
+                driveClient.getOrCreateFolder(VAULT_ROOT_FOLDER_NAME, null)
             }
-            val cleanYear = academicYear.trim().ifBlank { "2026-2027" }
+            val cleanYear = academicYear.trim().ifBlank { resolveDefaultAcademicYear(context) }
             val cachedYearId = getSavedGlobalYearFolderId(context, cleanYear)
             val yearId = if (!cachedYearId.isNullOrBlank()) {
                 cachedYearId
@@ -334,8 +414,9 @@ object DriveVaultManager {
         val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
         var vault = explicitFolders ?: currentChildVault
         if (vault == null && activeProvisioningDeferred != null) {
+            val awaitTimeoutMs = getDynamicProvisioningTimeout(context)
             vault = try {
-                withTimeoutOrNull(PROVISIONING_AWAIT_TIMEOUT_MS) { activeProvisioningDeferred?.await() }
+                withTimeoutOrNull(awaitTimeoutMs) { activeProvisioningDeferred?.await() }
             } catch (e: Exception) {
                 null
             }
