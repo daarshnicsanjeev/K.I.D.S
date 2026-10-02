@@ -38,7 +38,8 @@ class GoogleDriveSharedHarvester(
     private val dispatchSwipeAction: suspend (Float, Float, Float, Float, Long) -> Boolean,
     private val selectKidsInChooserAction: suspend () -> Unit,
     private val waitForConditionAction: suspend (Long, Long, () -> Boolean) -> Boolean,
-    private val dispatchBackAction: suspend () -> Boolean = { true }
+    private val dispatchBackAction: suspend () -> Boolean = { true },
+    private val dispatchHomeAction: (suspend () -> Boolean)? = null
 ) {
 
     companion object {
@@ -261,33 +262,10 @@ class GoogleDriveSharedHarvester(
     )
 
     /**
-     * Brings Google Drive to the foreground using an explicit system intent with REORDER_TO_FRONT.
-     * If another 3rd-party app (e.g. Classroom) is currently active, returns focus to K.I.D.S. first
-     * to ensure Android grants foreground activity start privilege.
+     * Brings Google Drive to the foreground using an explicit system intent with RESET_TASK_IF_NEEDED.
      */
-    private suspend fun bringDriveToForeground(): Boolean {
+    private fun bringDriveToForeground(): Boolean {
         return try {
-            val currentRoot = rootInActiveWindowProvider()
-            val currentPkg = currentRoot?.packageName?.toString() ?: ""
-            currentRoot?.recycle()
-
-            if (currentPkg.isNotBlank() && !currentPkg.contains(DRIVE_PACKAGE_NAME) && currentPkg != context.packageName) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Returning focus to K.I.D.S. app (${context.packageName}) before foregrounding Google Drive...")
-                val kidsIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                }
-                if (kidsIntent != null) {
-                    context.startActivity(kidsIntent)
-                    waitForConditionAction(5000L, 250L) {
-                        val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
-                        val pkg = root.packageName?.toString() ?: ""
-                        root.recycle()
-                        pkg == context.packageName
-                    }
-                    delay(600L)
-                }
-            }
-
             var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
             if (launchIntent == null) {
                 launchIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -300,7 +278,7 @@ class GoogleDriveSharedHarvester(
                 Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             )
             context.startActivity(launchIntent)
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched Google Drive launch intent from K.I.D.S. host.")
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched Google Drive launch intent.")
             true
         } catch (e: Exception) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to bring Google Drive to foreground: ${e.message}")
@@ -326,7 +304,6 @@ class GoogleDriveSharedHarvester(
 
             while (serviceScope.isActive && !isDriveOpen && launchAttempts < maxLaunchAttempts) {
                 launchAttempts++
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening Google Drive directly via launcher intent (attempt $launchAttempts/$maxLaunchAttempts)...")
 
                 val currentRoot = rootInActiveWindowProvider()
                 val currentPkg = currentRoot?.packageName?.toString() ?: ""
@@ -337,12 +314,36 @@ class GoogleDriveSharedHarvester(
                     break
                 }
 
-                bringDriveToForeground()
-                isDriveOpen = waitForConditionAction(6000L, 300L) {
-                    val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
-                    val pkg = root.packageName?.toString() ?: ""
-                    root.recycle()
-                    pkg.contains(DRIVE_PACKAGE_NAME)
+                // Strategy 1: If Classroom is active in foreground, open Drive via Classroom drawer menu ("Classroom folders").
+                // Because this click occurs inside the foreground app, Classroom itself launches Google Drive as an allowed foreground transition!
+                if (currentPkg.contains("classroom")) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom active in foreground. Launching Drive via Classroom folders menu (attempt $launchAttempts/$maxLaunchAttempts)...")
+                    val openedViaClassroom = openDriveViaClassroom()
+                    if (openedViaClassroom) {
+                        isDriveOpen = waitForConditionAction(8000L, 300L) {
+                            val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                            val pkg = root.packageName?.toString() ?: ""
+                            root.recycle()
+                            pkg.contains(DRIVE_PACKAGE_NAME)
+                        }
+                    }
+                }
+
+                // Strategy 2: If Drive is still not open, return to Android Home screen to clear foreground app, then launch Drive
+                if (!isDriveOpen) {
+                    if (dispatchHomeAction != null) {
+                        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatching GLOBAL_ACTION_HOME to clear foreground app before launching Drive...")
+                        dispatchHomeAction.invoke()
+                        delay(800L)
+                    }
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Launching Google Drive directly via launcher intent (attempt $launchAttempts/$maxLaunchAttempts)...")
+                    bringDriveToForeground()
+                    isDriveOpen = waitForConditionAction(6000L, 300L) {
+                        val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                        val pkg = root.packageName?.toString() ?: ""
+                        root.recycle()
+                        pkg.contains(DRIVE_PACKAGE_NAME)
+                    }
                 }
 
                 if (!isDriveOpen) {
