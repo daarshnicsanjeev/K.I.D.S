@@ -287,11 +287,17 @@ class ShareTargetActivity : Activity() {
                                 existingFolderNotice.noticeId
                             } else {
                                 val newNoticeId = UUID.randomUUID().toString()
+                                val noticeCategory = if (GoogleDriveSharedHarvester.isCurriculumResourceFile(safeFileName) ||
+                                    folderName?.contains("exam", ignoreCase = true) == true ||
+                                    folderName?.contains("paper", ignoreCase = true) == true ||
+                                    folderName?.contains("revision", ignoreCase = true) == true
+                                ) "CIRCULAR" else "HOMEWORK"
+
                                 val newNotice = NoticeEntity(
                                     noticeId = newNoticeId,
                                     childId = childId,
                                     sourceApp = "com.google.android.apps.docs",
-                                    category = "HOMEWORK",
+                                    category = noticeCategory,
                                     title = noticeTitle,
                                     body = "Educational materials harvested from Google Drive Shared Folder \"${folderName ?: "Shared with me"}\".",
                                     sender = "Google Drive",

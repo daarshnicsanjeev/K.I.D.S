@@ -297,5 +297,25 @@ class DriveAttachmentMatcherTest {
         )
         assertThat(matchesHindi).isTrue()
     }
+
+    @Test
+    fun `identifies curriculum question papers and exam revision files accurately`() {
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Grade4_Maths_HalfYearly_QP.pdf")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Science_Question_Paper_Term1.pdf")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("English_Literature_Practice.pdf")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Hindi_Sample_Paper.docx")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Mathematics_Model_Paper_Set_1.pdf")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Class4_EVS_Revision_Worksheet.pdf")).isTrue()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Computer_Midterm_Test.pptx")).isTrue()
+    }
+
+    @Test
+    fun `rejects individual classmate homework submissions as curriculum resources`() {
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Kiyansh_Vora.docx")).isFalse()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Kiara.docx")).isFalse()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Param.docx")).isFalse()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Rohan_Homework.pdf")).isFalse()
+        assertThat(GoogleDriveSharedHarvester.isCurriculumResourceFile("Aarav_Submission.docx")).isFalse()
+    }
 }
 

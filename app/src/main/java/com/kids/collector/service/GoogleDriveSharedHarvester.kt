@@ -81,6 +81,47 @@ class GoogleDriveSharedHarvester(
             "zip", "rar", "7z", "txt", "rtf", "csv", "epub"
         )
 
+        val CURRICULUM_SUBJECT_KEYWORDS = setOf(
+            "math", "maths", "mathematics", "science", "physics", "chemistry", "biology",
+            "evs", "environmental", "english", "hindi", "social", "history", "geography",
+            "civics", "computer", "ict", "sanskrit", "french", "spanish", "art", "music"
+        )
+
+        val CURRICULUM_EXAM_KEYWORDS = setOf(
+            "qp", "paper", "exam", "test", "revision", "worksheet", "assessment",
+            "sample", "model", "practice", "syllabus", "portion", "half yearly", "annual",
+            "midterm", "periodic", "pt1", "pt2", "pt3", "prelim", "term 1", "term 2",
+            "term1", "term2", "question paper", "blueprint"
+        )
+
+        val CURRICULUM_FOLDER_KEYWORDS = setOf(
+            "question paper", "question papers", "past paper", "past papers",
+            "sample paper", "sample papers", "model paper", "model papers",
+            "revision", "syllabus", "blueprint", "exam", "exams", "test",
+            "worksheet", "worksheets", "study material", "notes", "term 1", "term 2",
+            "half yearly", "annual", "periodic test", "midterm", "practice paper",
+            "question upload", "qp upload", "exam upload"
+        )
+
+        fun isCurriculumResourceFile(fileName: String): Boolean {
+            val (base, ext) = splitTitleAndExtension(fileName)
+            if (ext.isBlank() || !KNOWN_FILE_EXTENSIONS.contains(ext.lowercase(Locale.ROOT))) return false
+            val normBase = normalizeBaseName(base)
+
+            val hasSubject = CURRICULUM_SUBJECT_KEYWORDS.any { normBase.contains(it) }
+            val hasExamKeyword = CURRICULUM_EXAM_KEYWORDS.any { normBase.contains(it) }
+
+            val isExplicitPaper = normBase.contains("question paper") ||
+                    normBase.contains("sample paper") ||
+                    normBase.contains("past paper") ||
+                    normBase.contains("model paper") ||
+                    normBase.contains("practice paper") ||
+                    normBase.contains("revision worksheet") ||
+                    normBase.contains("blueprint")
+
+            return (hasSubject && hasExamKeyword) || isExplicitPaper
+        }
+
         fun splitTitleAndExtension(rawTitle: String): Pair<String, String> {
             val cleaned = rawTitle.trim()
                 .replace(Regex("""\s+\."""), ".")
@@ -2874,17 +2915,65 @@ class GoogleDriveSharedHarvester(
         return names
     }
 
+    private suspend fun isTeacherCuratedFolder(folderTitle: String): Boolean {
+        val cleanFolder = folderTitle.trim().lowercase(Locale.US)
+        if (cleanFolder.isBlank()) return false
+        if (CURRICULUM_FOLDER_KEYWORDS.any { cleanFolder.contains(it) }) {
+            return true
+        }
+        return try {
+            val allNotices = database.noticeDao().getAllNoticesDirect()
+            allNotices.any { notice ->
+                val titleLower = notice.title.lowercase(Locale.US)
+                val bodyLower = notice.body.lowercase(Locale.US)
+                titleLower.contains(cleanFolder) || bodyLower.contains(cleanFolder)
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private suspend fun isFolderItemRelevant(
         item: DriveSharedItem,
+        isFolderTeacherCurated: Boolean,
         pendingAttachments: List<AttachmentEntity>,
         childNames: Set<String>
     ): Boolean {
         if (item.isFolder) return false
-        val isMatched = matchDriveItemToPendingAttachment(item, pendingAttachments) != null
+
+        // 1. Direct match with Classroom post attachment
+        if (matchDriveItemToPendingAttachment(item, pendingAttachments) != null) {
+            return true
+        }
+
+        // 2. Child-specific submission (contains enrolled child's name)
         val isChildSpecific = childNames.any { name ->
             name.length >= 3 && item.title.lowercase(Locale.US).contains(name)
         }
-        return isMatched || isChildSpecific
+        if (isChildSpecific) {
+            return true
+        }
+
+        // 3. Curriculum / Examination resource file (e.g. Maths_QP.pdf, Science_HalfYearly.pdf)
+        if (isCurriculumResourceFile(item.title)) {
+            return true
+        }
+
+        // 4. In a verified teacher-curated folder (e.g. "Old Question Papers" or "Master Question Upload"):
+        // Ingest educational files if they match a curriculum subject or exam keyword
+        if (isFolderTeacherCurated) {
+            val (base, ext) = splitTitleAndExtension(item.title)
+            if (ext.isNotBlank() && KNOWN_FILE_EXTENSIONS.contains(ext.lowercase(Locale.ROOT))) {
+                val normBase = normalizeBaseName(base)
+                val matchesSubject = CURRICULUM_SUBJECT_KEYWORDS.any { normBase.contains(it) }
+                val matchesExam = CURRICULUM_EXAM_KEYWORDS.any { normBase.contains(it) }
+                if (matchesSubject || matchesExam) {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     private suspend fun harvestFolder(
@@ -2928,6 +3017,7 @@ class GoogleDriveSharedHarvester(
             val processedSubfolders = mutableSetOf<String>()
             val maxScrollPages = calculateDynamicScrollPageLimit(pendingAttachments.size)
             val childNames = getEnrolledChildNames()
+            val isFolderTeacherCurated = isTeacherCuratedFolder(folderItem.title)
 
             while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < maxScrollPages) {
                 var folderRoot: AccessibilityNodeInfo? = null
@@ -2978,7 +3068,7 @@ class GoogleDriveSharedHarvester(
 
                 val batchInFolder = mutableListOf<DriveSharedItem>()
                 for (item in itemsInside) {
-                    if (isFolderItemRelevant(item, pendingAttachments, childNames)) {
+                    if (isFolderItemRelevant(item, isFolderTeacherCurated, pendingAttachments, childNames)) {
                         if (!processedInFolder.contains(item.title)) {
                             batchInFolder.add(item)
                             if (batchInFolder.size >= MAX_BATCH_SELECTION_SIZE) {
@@ -3160,9 +3250,10 @@ class GoogleDriveSharedHarvester(
         folderRoot.recycle()
 
         val childNames = getEnrolledChildNames()
+        val isFolderTeacherCurated = isTeacherCuratedFolder(folderTitle)
         val batch = mutableListOf<DriveSharedItem>()
         for (fileItem in filesInside) {
-            if (isFolderItemRelevant(fileItem, pendingAttachments, childNames)) {
+            if (isFolderItemRelevant(fileItem, isFolderTeacherCurated, pendingAttachments, childNames)) {
                 batch.add(fileItem)
                 if (batch.size >= MAX_BATCH_SELECTION_SIZE) break
             }
