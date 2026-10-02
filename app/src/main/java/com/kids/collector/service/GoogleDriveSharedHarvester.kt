@@ -2795,25 +2795,111 @@ class GoogleDriveSharedHarvester(
         return null
     }
 
+    /**
+     * Checks if the node is inside a scrollable list container (RecyclerView, ListView, ScrollView).
+     * Bottom navigation tabs live strictly outside scrollable file list containers.
+     */
+    private fun isInsideScrollableList(node: AccessibilityNodeInfo): Boolean {
+        var current = node.parent
+        while (current != null) {
+            val cls = current.className?.toString() ?: ""
+            if (cls.contains("RecyclerView") || cls.contains("ListView") ||
+                cls.contains("ScrollView") || cls.contains("ViewPager")) {
+                current.recycle()
+                return true
+            }
+            val next = current.parent
+            current.recycle()
+            current = next
+        }
+        return false
+    }
+
+    /**
+     * Verifies that the element type represents a genuine navigation tab or navigation rail item.
+     * Incorporates element className, roleDescription ("tab"), and navigation container hierarchy
+     * to eliminate misidentification of file list rows, filter chips ("Shared by"), and search inputs.
+     */
+    private fun isNavigationTabElementType(node: AccessibilityNodeInfo): Boolean {
+        val className = node.className?.toString() ?: ""
+        val roleDesc = node.extras?.getCharSequence("AccessibilityNodeInfo.roleDescription")?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        // Exclude filter chips ("Shared by", "Shared with") and search fields
+        if (className.contains("Chip") || className.contains("EditText")) {
+            return false
+        }
+
+        // Direct tab indicators
+        if (roleDesc.contains("tab") ||
+            className.contains("BottomNavigationItem") ||
+            className.contains("TabItem") ||
+            viewId.contains("menu_navigation_") ||
+            viewId.contains("bottom_nav") ||
+            viewId.contains("navigation_bar_item")
+        ) {
+            return true
+        }
+
+        // Ancestor hierarchy check: verify that an immediate parent is a navigation bar or tab container
+        var current = node.parent
+        var depth = 0
+        val maxAncestorScanDepth = 4
+        while (current != null && depth < maxAncestorScanDepth) {
+            val parentClass = current.className?.toString() ?: ""
+            val parentRole = current.extras?.getCharSequence("AccessibilityNodeInfo.roleDescription")?.toString()?.lowercase(Locale.US) ?: ""
+            val parentId = current.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+            if (parentRole.contains("tab") ||
+                parentClass.contains("BottomNavigation") ||
+                parentClass.contains("NavigationBar") ||
+                parentClass.contains("TabLayout") ||
+                parentId.contains("bottom_nav") ||
+                parentId.contains("navigation_bar") ||
+                parentId.contains("menu_navigation_")
+            ) {
+                current.recycle()
+                return true
+            }
+            val next = current.parent
+            current.recycle()
+            current = next
+            depth++
+        }
+        current?.recycle()
+
+        // Fallback for custom FrameLayout / ViewGroup tab containers in Material 3
+        return className.contains("FrameLayout") || className.contains("ViewGroup") ||
+                className.contains("TextView") || className.contains("ImageView")
+    }
+
     private fun findSelectedNonSharedTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val displayMetrics = context.resources.displayMetrics
         return findSelectedNonSharedTabInternal(root, displayMetrics)
     }
 
     private fun findSelectedNonSharedTabInternal(node: AccessibilityNodeInfo, displayMetrics: DisplayMetrics): AccessibilityNodeInfo? {
+        val cls = node.className?.toString() ?: ""
+        // Prune scrollable file lists: bottom tabs are never inside RecyclerView/ListView
+        if (cls.contains("RecyclerView") || cls.contains("ListView")) {
+            return null
+        }
+
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
         val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
+        val isInsideFileList = isInsideScrollableList(node)
+        val isTabElement = isNavigationTabElementType(node)
         val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) ||
                 viewId.contains("menu_navigation_home") ||
                 viewId.contains("menu_navigation_starred") ||
                 viewId.contains("menu_navigation_drives") ||
                 viewId.contains("menu_navigation_files")
 
-        val isNonSharedTab = inNavZone && (
+        val isNonSharedTab = !isInsideFileList && isTabElement && inNavZone && (
                 viewId.contains("menu_navigation_home") ||
                 viewId.contains("menu_navigation_starred") ||
                 viewId.contains("menu_navigation_drives") ||
@@ -2853,6 +2939,12 @@ class GoogleDriveSharedHarvester(
     }
 
     private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, displayMetrics: DisplayMetrics): AccessibilityNodeInfo? {
+        val cls = node.className?.toString() ?: ""
+        // Prune scrollable file lists: bottom tabs are never inside RecyclerView/ListView
+        if (cls.contains("RecyclerView") || cls.contains("ListView")) {
+            return null
+        }
+
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
 
@@ -2869,9 +2961,11 @@ class GoogleDriveSharedHarvester(
                 text.endsWith(".pdf") || text.endsWith(".mp3") || text.endsWith(".m4a") ||
                 desc.contains("worksheet") || text.contains("worksheet")
 
+        val isInsideFileList = isInsideScrollableList(node)
+        val isTabElement = isNavigationTabElementType(node)
         val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
 
-        if (!isExcludedSubtitle && inNavZone) {
+        if (!isInsideFileList && isTabElement && !isExcludedSubtitle && inNavZone) {
             val isSharedTab = viewId.contains("menu_navigation_shared") ||
                     text.equals("shared", ignoreCase = true) ||
                     desc.equals("shared", ignoreCase = true) ||
