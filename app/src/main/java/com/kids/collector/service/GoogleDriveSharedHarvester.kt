@@ -434,6 +434,7 @@ class GoogleDriveSharedHarvester(
             var lastVisibleTitles = listOf<String>()
             val processedDriveTitles = mutableSetOf<String>()
             val processedFolderNames = mutableSetOf<String>()
+            val itemFailureCounts = mutableMapOf<String, Int>()
 
             val initialPendingAttachments = getPendingUncapturedAttachments()
             val dynamicMaxScrollPages = calculateDynamicScrollPageLimit(initialPendingAttachments.size)
@@ -593,6 +594,18 @@ class GoogleDriveSharedHarvester(
                         delay(POST_BATCH_SETTLING_DELAY_MS)
                         // Flush logs and dispatched batch files to Google Drive vault in real-time
                         KidsAccessibilityService.triggerDriveSync(context)
+                    } else {
+                        for (item in batchToSelect) {
+                            val failCount = (itemFailureCounts[item.title] ?: 0) + 1
+                            itemFailureCounts[item.title] = failCount
+                            if (failCount >= 2) {
+                                CrawlerTraceLogger.log(
+                                    "DRIVE_HARVESTER",
+                                    "Item \"${item.title}\" failed dispatch $failCount times. Skipping to prevent loop."
+                                )
+                                processedDriveTitles.add(item.title)
+                            }
+                        }
                     }
                 } else if (foldersToHarvest.isEmpty()) {
                     consecutiveEmptyPages++
@@ -1459,6 +1472,17 @@ class GoogleDriveSharedHarvester(
             val lowerDescs = itemDescs.map { it.trim().lowercase(Locale.US) }
             val hasFileBadge = lowerDescs.any { DRIVE_FILE_BADGES.contains(it) }
 
+            var rowMoreActionsBounds: Rect? = null
+            val moreNode = findMoreActionsNodeInRow(rowNode)
+            if (moreNode != null) {
+                val rMore = Rect()
+                moreNode.getBoundsInScreen(rMore)
+                if (rMore.width() > 0 && rMore.height() > 0) {
+                    rowMoreActionsBounds = rMore
+                }
+                moreNode.recycle()
+            }
+
             outList.add(
                 DriveSharedItem(
                     title = title,
@@ -1466,10 +1490,28 @@ class GoogleDriveSharedHarvester(
                     isFolder = isFolder,
                     hasFileBadge = hasFileBadge,
                     node = rowNode,
-                    bounds = r
+                    bounds = r,
+                    moreActionsBounds = rowMoreActionsBounds
                 )
             )
         }
+    }
+
+    private fun findMoreActionsNodeInRow(row: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = row.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        if (desc.startsWith("more actions") || desc.contains("more actions for")) {
+            return AccessibilityNodeInfo.obtain(row)
+        }
+        for (i in 0 until row.childCount) {
+            val child = row.getChild(i) ?: continue
+            val found = findMoreActionsNodeInRow(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
     }
 
     private fun collectListViewRowNodes(node: AccessibilityNodeInfo, outList: MutableList<AccessibilityNodeInfo>) {
@@ -1771,8 +1813,9 @@ class GoogleDriveSharedHarvester(
         val firstItem = batch.first()
         var multiSelectActivated = firstItem.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
         if (!multiSelectActivated) {
+            val thumbX = (firstItem.bounds.left + (firstItem.bounds.height() * 0.5f)).coerceAtMost(firstItem.bounds.centerX().toFloat())
             multiSelectActivated = dispatchLongPressAction(
-                firstItem.bounds.centerX().toFloat(),
+                thumbX,
                 firstItem.bounds.centerY().toFloat()
             )
         }
@@ -1912,18 +1955,60 @@ class GoogleDriveSharedHarvester(
         return null
     }
 
+    private fun findMoreActionsNodeForItem(root: AccessibilityNodeInfo, itemTitle: String): AccessibilityNodeInfo? {
+        val lowerTitle = itemTitle.trim().lowercase(Locale.US)
+        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        if (desc.startsWith("more actions for") && (desc.contains(lowerTitle) || (lowerTitle.length >= 6 && desc.contains(lowerTitle.take(12))))) {
+            return AccessibilityNodeInfo.obtain(root)
+        }
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            val found = findMoreActionsNodeForItem(child, itemTitle)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
     private suspend fun dispatchSingleItemViaRowMenu(item: DriveSharedItem): Boolean {
-        val displayMetrics = context.resources.displayMetrics
-        val screenWidth = displayMetrics.widthPixels.toFloat()
+        var openedActionSheet = false
 
-        // Tap the 3-dots menu button on this file row
-        val tapX = item.moreActionsBounds?.centerX()?.toFloat()
-            ?: ((screenWidth - 80f).coerceAtLeast(item.bounds.right - 100f))
-        val tapY = item.moreActionsBounds?.centerY()?.toFloat()
-            ?: item.bounds.centerY().toFloat()
+        // Strategy A: Find the explicit 3-dots "More actions for <title>" node in current window
+        val root = rootInActiveWindowProvider()
+        if (root != null) {
+            val moreActionsNode = findMoreActionsNodeForItem(root, item.title)
+            if (moreActionsNode != null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking dedicated 3-dots button for \"${item.title}\"...")
+                val clicked = moreActionsNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val r = Rect()
+                    moreActionsNode.getBoundsInScreen(r)
+                    if (r.width() > 0 && r.height() > 0) {
+                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
+                    }
+                }
+                moreActionsNode.recycle()
+                openedActionSheet = true
+            }
+            root.recycle()
+        }
 
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening item action sheet for \"${item.title}\" via 3-dots menu (tap at $tapX, $tapY)...")
-        dispatchTapAction(tapX, tapY)
+        // Strategy B: Use accurate recorded moreActionsBounds from row scanning
+        if (!openedActionSheet && item.moreActionsBounds != null && item.moreActionsBounds.width() > 0) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping recorded 3-dots bounds for \"${item.title}\"...")
+            dispatchTapAction(item.moreActionsBounds.centerX().toFloat(), item.moreActionsBounds.centerY().toFloat())
+            openedActionSheet = true
+        }
+
+        if (!openedActionSheet) {
+            // NEVER blind-tap the row container! Fall back to multi-select mode to avoid opening the file/player!
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "3-dots button not found for \"${item.title}\". Falling back to safe multi-select mode.")
+            return false
+        }
+
         delay(600L)
 
         // Find "Send a copy" in the opened bottom sheet
@@ -1936,8 +2021,19 @@ class GoogleDriveSharedHarvester(
         }
 
         if (sendCopyNode == null) {
-            // Dismiss bottom sheet if opened
-            dispatchBackAction()
+            // Auto-heal: check if an accidental viewer/player was opened instead of action sheet
+            val checkRoot = rootInActiveWindowProvider()
+            if (checkRoot != null) {
+                if (isDriveViewerOrEditorScreen(checkRoot)) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Viewer/player opened instead of action sheet for \"${item.title}\". Dismissing...")
+                    dismissAnyActiveViewer()
+                } else {
+                    dispatchBackAction()
+                }
+                checkRoot.recycle()
+            } else {
+                dispatchBackAction()
+            }
             delay(400L)
             return false
         }
@@ -2276,6 +2372,11 @@ class GoogleDriveSharedHarvester(
         val combined = texts.joinToString(" ").lowercase(Locale.US)
 
         return combined.contains("playback speed") ||
+                combined.contains("pause") ||
+                combined.contains("rewind") ||
+                combined.contains("fast forward") ||
+                (combined.contains("play") && (combined.contains("seek") || combined.contains("duration") || combined.contains("audio") || combined.contains("speed"))) ||
+                (findNavigateUpButton(root) != null && (combined.contains("audio") || combined.contains("player") || combined.contains("now playing"))) ||
                 combined.contains("page 1 of") ||
                 combined.contains("page 1/") ||
                 combined.contains("fit to width") ||
@@ -3015,6 +3116,7 @@ class GoogleDriveSharedHarvester(
             var lastVisibleTitles = listOf<String>()
             val processedInFolder = mutableSetOf<String>()
             val processedSubfolders = mutableSetOf<String>()
+            val folderItemFailureCounts = mutableMapOf<String, Int>()
             val maxScrollPages = calculateDynamicScrollPageLimit(pendingAttachments.size)
             val childNames = getEnrolledChildNames()
             val isFolderTeacherCurated = isTeacherCuratedFolder(folderItem.title)
@@ -3092,6 +3194,18 @@ class GoogleDriveSharedHarvester(
                             processedInFolder.add(item.title)
                         }
                         delay(1000L)
+                    } else {
+                        for (item in batchInFolder) {
+                            val fails = (folderItemFailureCounts[item.title] ?: 0) + 1
+                            folderItemFailureCounts[item.title] = fails
+                            if (fails >= 2) {
+                                CrawlerTraceLogger.log(
+                                    "DRIVE_HARVESTER",
+                                    "Item \"${item.title}\" failed dispatch $fails times in folder \"${folderItem.title}\". Skipping to prevent loop."
+                                )
+                                processedInFolder.add(item.title)
+                            }
+                        }
                     }
                 }
 
