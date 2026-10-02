@@ -49,6 +49,7 @@ class GoogleDriveSharedHarvester(
         private const val MAX_CONSECUTIVE_STATIC_PAGES = 5
         private const val MAX_CONSECUTIVE_EMPTY_PAGES = 50
         private const val MAX_EMPTY_PAGE_RETRIES = 3
+        private const val MAX_CONSECUTIVE_WINDOW_FAILURES = 5
         private const val INITIAL_DRIVE_LAUNCH_SETTLE_DELAY_MS = 1500L
         private const val MAX_NAV_UP_ATTEMPTS = 6
         private const val POST_BATCH_SETTLING_DELAY_MS = 1200L
@@ -273,7 +274,6 @@ class GoogleDriveSharedHarvester(
             }
             launchIntent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT or
                 Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             )
             context.startActivity(launchIntent)
@@ -431,6 +431,7 @@ class GoogleDriveSharedHarvester(
             var scrollPageCount = 0
             var consecutiveEmptyPages = 0
             var consecutiveStaticPages = 0
+            var consecutiveWindowFailures = 0
             var lastVisibleTitles = listOf<String>()
             val processedDriveTitles = mutableSetOf<String>()
             val processedFolderNames = mutableSetOf<String>()
@@ -480,11 +481,29 @@ class GoogleDriveSharedHarvester(
                     }
                 }
                 if (currentRoot == null) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive window unavailable on page ${scrollPageCount + 1}. Re-bringing Drive to front...")
+                    consecutiveWindowFailures++
+                    val activePkg = rootInActiveWindowProvider()?.let {
+                        val p = it.packageName?.toString() ?: ""
+                        it.recycle()
+                        p
+                    } ?: "null"
+                    if (consecutiveWindowFailures >= MAX_CONSECUTIVE_WINDOW_FAILURES) {
+                        CrawlerTraceLogger.log(
+                            "DRIVE_HARVESTER",
+                            "Drive window unavailable after $consecutiveWindowFailures consecutive attempts (active window: '$activePkg'). Safely concluding Drive harvest pass."
+                        )
+                        crawlerOverlay?.updateStatus("Drive Unavailable", "Harvest concluded safely")
+                        break
+                    }
+                    CrawlerTraceLogger.log(
+                        "DRIVE_HARVESTER",
+                        "Drive window unavailable on page ${scrollPageCount + 1} (attempt $consecutiveWindowFailures/$MAX_CONSECUTIVE_WINDOW_FAILURES, active window: '$activePkg'). Re-bringing Drive to front..."
+                    )
                     bringDriveToForeground()
                     delay(SETTLING_DELAY_MS)
                     continue
                 }
+                consecutiveWindowFailures = 0
 
                 // Autonomous Pass 3 Auto-Recovery: detect and heal any tab displacement, open viewer/editor, stuck multi-select, or stray modal sheet
                 if (performDriveAutoRecoveryIfDisplaced(currentRoot)) {
@@ -2157,7 +2176,7 @@ class GoogleDriveSharedHarvester(
 
     private suspend fun dismissAnyActiveViewer() {
         var attempts = 0
-        while (attempts < 4) {
+        while (attempts < 2) {
             val root = rootInActiveWindowProvider() ?: break
             val isViewer = isDriveViewerOrEditorScreen(root)
             if (isViewer) {
@@ -2355,6 +2374,15 @@ class GoogleDriveSharedHarvester(
         return false
     }
 
+    private fun hasVisibleDriveFileList(root: AccessibilityNodeInfo): Boolean {
+        val container = findActualScrollableContainer(root)
+        if (container != null) {
+            container.recycle()
+            return true
+        }
+        return false
+    }
+
     private fun isDriveViewerOrEditorScreen(root: AccessibilityNodeInfo): Boolean {
         val sharedTab = findSharedTabNode(root)
         if (sharedTab != null) {
@@ -2367,28 +2395,27 @@ class GoogleDriveSharedHarvester(
             return false // We are viewing a bottom nav tab (Home, Starred, Files), not inside a full-screen file preview
         }
 
+        // If a scrollable Drive file list is visible, this is a file list, NOT a full-screen viewer
+        if (hasVisibleDriveFileList(root)) {
+            return false
+        }
+
         val texts = mutableListOf<String>()
         collectAllChildDescriptions(root, texts)
         val combined = texts.joinToString(" ").lowercase(Locale.US)
 
         return combined.contains("playback speed") ||
-                combined.contains("pause") ||
-                combined.contains("rewind") ||
-                combined.contains("fast forward") ||
-                (combined.contains("play") && (combined.contains("seek") || combined.contains("duration") || combined.contains("audio") || combined.contains("speed"))) ||
-                (findNavigateUpButton(root) != null && (combined.contains("audio") || combined.contains("player") || combined.contains("now playing"))) ||
+                combined.contains("rewind 10") ||
+                combined.contains("forward 10") ||
+                (combined.contains("pause") && combined.contains("playback")) ||
+                (combined.contains("now playing") && findNavigateUpButton(root) != null) ||
                 combined.contains("page 1 of") ||
                 combined.contains("page 1/") ||
                 combined.contains("fit to width") ||
                 combined.contains("fit to screen") ||
                 combined.contains("edit file") ||
                 combined.contains("annotation") ||
-                combined.contains("mode switch") ||
-                combined.contains("add to starred") ||
-                combined.contains("remove from starred") ||
-                combined.contains("star this file") ||
-                (combined.contains("view only") && findNavigateUpButton(root) != null) ||
-                (findNavigateUpButton(root) != null && combined.contains("more options") && combined.contains("share") && !combined.contains("shared with me"))
+                (combined.contains("view only") && findNavigateUpButton(root) != null)
     }
 
     private fun isStrayDriveBottomSheet(root: AccessibilityNodeInfo): Boolean {
@@ -2465,10 +2492,27 @@ class GoogleDriveSharedHarvester(
     private fun isInDriveNavigationRailOrBar(bounds: Rect, displayMetrics: DisplayMetrics): Boolean {
         val isLandscape = displayMetrics.widthPixels > displayMetrics.heightPixels
         return if (isLandscape) {
-            bounds.right <= displayMetrics.widthPixels * 0.35f && bounds.width() > 0
+            bounds.right <= displayMetrics.widthPixels * 0.25f && bounds.width() > 0
         } else {
-            bounds.centerY() >= displayMetrics.heightPixels * 0.60f && bounds.height() > 0
+            bounds.centerY() >= displayMetrics.heightPixels * 0.85f && bounds.height() > 0
         }
+    }
+
+    private fun findClickableAncestorInNavZone(node: AccessibilityNodeInfo, displayMetrics: DisplayMetrics): AccessibilityNodeInfo? {
+        var current: AccessibilityNodeInfo? = node.parent
+        while (current != null) {
+            val b = Rect()
+            current.getBoundsInScreen(b)
+            if (isInDriveNavigationRailOrBar(b, displayMetrics) || current.viewIdResourceName?.contains("menu_navigation_shared") == true) {
+                if (current.isClickable) {
+                    return current
+                }
+            }
+            val parent = current.parent
+            current.recycle()
+            current = parent
+        }
+        return null
     }
 
     private fun findSelectedNonSharedTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -2490,14 +2534,25 @@ class GoogleDriveSharedHarvester(
                 viewId.contains("menu_navigation_files")
 
         val isNonSharedTab = inNavZone && (
-                desc.contains("home") || desc.contains("starred") || desc.contains("files") || desc.contains("drives") ||
-                viewId.contains("menu_navigation_home") || viewId.contains("menu_navigation_starred") ||
-                viewId.contains("menu_navigation_drives") || viewId.contains("menu_navigation_files") ||
-                text == "home" || text == "starred" || text == "files" || text == "drives"
+                viewId.contains("menu_navigation_home") ||
+                viewId.contains("menu_navigation_starred") ||
+                viewId.contains("menu_navigation_drives") ||
+                viewId.contains("menu_navigation_files") ||
+                text.equals("home", ignoreCase = true) ||
+                text.equals("starred", ignoreCase = true) ||
+                text.equals("files", ignoreCase = true) ||
+                text.equals("drives", ignoreCase = true) ||
+                desc.equals("home", ignoreCase = true) ||
+                desc.equals("starred", ignoreCase = true) ||
+                desc.equals("files", ignoreCase = true) ||
+                desc.startsWith("home,") ||
+                desc.startsWith("starred,") ||
+                desc.startsWith("files,")
         )
 
         if (isNonSharedTab && isNodeMarkedSelected(node)) {
-            return AccessibilityNodeInfo.obtain(node)
+            val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestorInNavZone(node, displayMetrics)
+            return clickable ?: AccessibilityNodeInfo.obtain(node)
         }
 
         for (i in 0 until node.childCount) {
@@ -2525,16 +2580,28 @@ class GoogleDriveSharedHarvester(
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
+        val isExcludedSubtitle = desc.contains("shared by") || desc.contains("shared on") ||
+                desc.contains("shared with") || text.contains("shared by") ||
+                text.contains("shared on") || text.contains("shared with")
 
-        val isSharedTab = (inNavZone && (
-                desc.contains("shared") ||
-                desc.contains("tab, 3 of") || desc.contains("tab 3 of") || desc.contains("3 of 4") ||
-                text.contains("shared")
-        )) || viewId.contains("menu_navigation_shared") || (inNavZone && viewId.contains("shared"))
+        if (!isExcludedSubtitle) {
+            val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
 
-        if (isSharedTab) {
-            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
+            val isSharedTab = inNavZone && (
+                    viewId.contains("menu_navigation_shared") ||
+                    text.equals("shared", ignoreCase = true) ||
+                    desc.equals("shared", ignoreCase = true) ||
+                    desc.startsWith("shared,") ||
+                    desc.contains("shared tab") ||
+                    desc.contains("tab, 3 of") || desc.contains("tab 3 of") || desc.contains("3 of 4")
+            )
+
+            if (isSharedTab) {
+                val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestorInNavZone(node, displayMetrics)
+                if (clickable != null) {
+                    return clickable
+                }
+            }
         }
 
         for (i in 0 until node.childCount) {
