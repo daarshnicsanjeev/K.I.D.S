@@ -1873,6 +1873,25 @@ class GoogleDriveSharedHarvester(
         delay(600L) // Allow contextual action bar animation to complete
 
         // 2. Tap remaining items in the batch to include them in the selection
+        val checkRoot = rootInActiveWindowProvider()
+        val isMultiSelectActive = if (checkRoot != null) {
+            val active = isStuckMultiSelectMode(checkRoot)
+            checkRoot.recycle()
+            active
+        } else false
+
+        if (!isMultiSelectActive && batch.size > 1) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Multi-select mode not active after long press. Falling back to row-by-row dispatch to avoid opening files.")
+            var individualSuccess = 0
+            for (item in batch) {
+                if (dispatchSingleItemViaRowMenu(item)) {
+                    individualSuccess++
+                    delay(800L)
+                }
+            }
+            return individualSuccess > 0
+        }
+
         for (i in 1 until batch.size) {
             val item = batch[i]
             val tapped = item.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -2207,11 +2226,19 @@ class GoogleDriveSharedHarvester(
 
     private suspend fun dismissAnyActiveViewer() {
         var attempts = 0
-        while (attempts < 2) {
+        while (attempts < 3) {
             val root = rootInActiveWindowProvider() ?: break
             val isViewer = isDriveViewerOrEditorScreen(root)
             if (isViewer) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Navigating back to Drive list...")
+                val audioDismissed = dismissAudioPlayerIfActive(root)
+                if (audioDismissed) {
+                    root.recycle()
+                    delay(500L)
+                    attempts++
+                    continue
+                }
+
                 val navUp = findNavigateUpButton(root)
                 var clickedNavUp = navUp?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
                 if (!clickedNavUp && navUp != null) {
@@ -2236,6 +2263,125 @@ class GoogleDriveSharedHarvester(
         }
     }
 
+    private suspend fun dismissAudioPlayerIfActive(root: AccessibilityNodeInfo): Boolean {
+        var dismissed = false
+
+        // A. If pause button is present (media actively playing), halt playback
+        val pauseButton = findAudioPauseButton(root)
+        if (pauseButton != null) {
+            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found active audio Pause button. Halting playback...")
+            val clicked = pauseButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val rect = Rect()
+                pauseButton.getBoundsInScreen(rect)
+                if (rect.width() > 0 && rect.height() > 0) {
+                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
+            }
+            pauseButton.recycle()
+            dismissed = true
+            delay(250L)
+        }
+
+        // B. Find dedicated Close / Dismiss button for audio player (mini-player or full-screen)
+        val closeButton = findAudioPlayerDismissButton(root)
+        if (closeButton != null) {
+            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found audio player Close/Dismiss button. Dismissing media player...")
+            val clicked = closeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (!clicked) {
+                val rect = Rect()
+                closeButton.getBoundsInScreen(rect)
+                if (rect.width() > 0 && rect.height() > 0) {
+                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
+            }
+            closeButton.recycle()
+            dismissed = true
+            delay(400L)
+        }
+
+        return dismissed
+    }
+
+    private fun findAudioPauseButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val isPause = (desc.contains("pause") || text.equals("pause", ignoreCase = true) || viewId.contains("pause")) &&
+                !desc.contains("more actions") && !desc.contains("more options")
+
+        if (isPause) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findAudioPauseButton(child)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
+    private fun findAudioPlayerDismissButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val displayMetrics = context.resources.displayMetrics
+        val minBottomY = (displayMetrics.heightPixels * 0.65f).toInt()
+        val maxHeaderTop = (displayMetrics.density * 100).toInt()
+        return findAudioPlayerDismissButtonInternal(node, displayMetrics, minBottomY, maxHeaderTop)
+    }
+
+    private fun findAudioPlayerDismissButtonInternal(
+        node: AccessibilityNodeInfo,
+        displayMetrics: DisplayMetrics,
+        minBottomY: Int,
+        maxHeaderTop: Int
+    ): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+
+        // Case 1: Close button on bottom docked mini-player
+        val isInBottomZone = bounds.centerY() >= minBottomY && bounds.height() > 0
+        val isBottomClose = isInBottomZone && (
+                desc.contains("close") || desc.contains("dismiss") || desc == "x" ||
+                desc.contains("stop") || viewId.contains("close") || viewId.contains("dismiss") ||
+                viewId.contains("cancel") || (text == "✕" || text == "x")
+        ) && !desc.contains("more actions") && !desc.contains("more options")
+
+        if (isBottomClose) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
+        }
+
+        // Case 2: Close/collapse button on full-screen audio player
+        val isInHeaderZone = bounds.top <= maxHeaderTop && bounds.left <= displayMetrics.widthPixels * 0.35f
+        val isHeaderClose = isInHeaderZone && (
+                desc.contains("close") || desc.contains("collapse") || desc.contains("navigate up") ||
+                desc == "back" || viewId.contains("close") || viewId.contains("collapse")
+        ) && !desc.contains("more actions") && !desc.contains("more options")
+
+        if (isHeaderClose) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findAudioPlayerDismissButtonInternal(child, displayMetrics, minBottomY, maxHeaderTop)
+            if (found != null) {
+                child.recycle()
+                return found
+            }
+            child.recycle()
+        }
+        return null
+    }
+
     /**
      * Autonomous Auto-Recovery Pipeline for Pass 3 (Google Drive Harvester).
      *
@@ -2258,6 +2404,16 @@ class GoogleDriveSharedHarvester(
             crawlerOverlay?.updateStatus("Drive Auto-Recovery", "Returning from file preview...")
             dismissAnyActiveViewer()
             delay(SETTLING_DELAY_MS)
+            return true
+        }
+
+        // 1b. Check if an audio mini-player or lingering audio controls are docked at the bottom while browsing
+        if (dismissAudioPlayerIfActive(root)) {
+            CrawlerTraceLogger.log(
+                "DRIVE_AUTO_RECOVERY",
+                "Active audio player controls dismissed while on browsing screen."
+            )
+            delay(400L)
             return true
         }
 
@@ -2405,13 +2561,48 @@ class GoogleDriveSharedHarvester(
         return false
     }
 
+    private fun hasDriveSearchBar(root: AccessibilityNodeInfo): Boolean {
+        val dm = context.resources.displayMetrics
+        val maxSearchBottom = (dm.density * 130).toInt()
+        return hasDriveSearchBarInternal(root, maxSearchBottom)
+    }
+
+    private fun hasDriveSearchBarInternal(node: AccessibilityNodeInfo, maxBottom: Int): Boolean {
+        val bounds = Rect()
+        node.getBoundsInScreen(bounds)
+        if (bounds.bottom <= maxBottom && bounds.width() > 0) {
+            val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+            val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+            val rid = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+            if (text.contains("search in drive") || desc.contains("search in drive") ||
+                rid.contains("search_src_text") || rid.contains("search_box") || rid.contains("open_search_bar")
+            ) {
+                return true
+            }
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            if (hasDriveSearchBarInternal(child, maxBottom)) {
+                child.recycle()
+                return true
+            }
+            child.recycle()
+        }
+        return false
+    }
+
     private fun hasVisibleDriveFileList(root: AccessibilityNodeInfo): Boolean {
         val container = findActualScrollableContainer(root)
         if (container != null) {
             container.recycle()
             return true
         }
-        return false
+        val items = scanVisibleDriveItems(root)
+        val hasItems = items.isNotEmpty()
+        for (item in items) {
+            item.node.recycle()
+        }
+        return hasItems
     }
 
     private fun isDriveViewerOrEditorScreen(root: AccessibilityNodeInfo): Boolean {
@@ -2426,8 +2617,8 @@ class GoogleDriveSharedHarvester(
             return false // We are viewing a bottom nav tab (Home, Starred, Files), not inside a full-screen file preview
         }
 
-        // If a scrollable Drive file list is visible, this is a file list, NOT a full-screen viewer
-        if (hasVisibleDriveFileList(root)) {
+        // If a scrollable Drive file list or search bar is visible, this is a file list / browsing screen, NOT a full-screen viewer
+        if (hasVisibleDriveFileList(root) || hasDriveSearchBar(root)) {
             return false
         }
 
@@ -2435,7 +2626,7 @@ class GoogleDriveSharedHarvester(
         collectAllChildDescriptions(root, texts)
         val combined = texts.joinToString(" ").lowercase(Locale.US)
 
-        return combined.contains("playback speed") ||
+        val isViewer = combined.contains("playback speed") ||
                 combined.contains("rewind 10") ||
                 combined.contains("forward 10") ||
                 (combined.contains("pause") && combined.contains("playback")) ||
@@ -2447,6 +2638,14 @@ class GoogleDriveSharedHarvester(
                 combined.contains("edit file") ||
                 combined.contains("annotation") ||
                 (combined.contains("view only") && findNavigateUpButton(root) != null)
+
+        if (isViewer) {
+            val triggers = listOf("playback speed", "rewind 10", "forward 10", "pause", "now playing", "page 1 of", "fit to width", "edit file", "annotation", "view only")
+                .filter { combined.contains(it) }
+            CrawlerTraceLogger.log("DRIVE_VIEWER_CHECK", "Identified full-screen viewer/editor by triggers: $triggers")
+        }
+
+        return isViewer
     }
 
     private fun isStrayDriveBottomSheet(root: AccessibilityNodeInfo): Boolean {
@@ -2505,7 +2704,8 @@ class GoogleDriveSharedHarvester(
             return !isSharedSelected
         }
 
-        return false
+        // 3. If neither tab is present (e.g. inside a folder or displaced viewer), we ARE displaced from Shared root!
+        return true
     }
 
     private fun isNodeMarkedSelected(node: AccessibilityNodeInfo): Boolean {
@@ -2613,7 +2813,12 @@ class GoogleDriveSharedHarvester(
 
         val isExcludedSubtitle = desc.contains("shared by") || desc.contains("shared on") ||
                 desc.contains("shared with") || text.contains("shared by") ||
-                text.contains("shared on") || text.contains("shared with")
+                text.contains("shared on") || text.contains("shared with") ||
+                desc.contains("shared yesterday") || desc.contains("shared today") ||
+                text.contains("shared yesterday") || text.contains("shared today") ||
+                desc.endsWith(".pdf") || desc.endsWith(".mp3") || desc.endsWith(".m4a") ||
+                text.endsWith(".pdf") || text.endsWith(".mp3") || text.endsWith(".m4a") ||
+                desc.contains("worksheet") || text.contains("worksheet")
 
         if (!isExcludedSubtitle) {
             val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
@@ -3378,40 +3583,48 @@ class GoogleDriveSharedHarvester(
     }
 
     private fun findNavigateUpButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val desc = root.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
-        val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
-        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        val dm = context.resources.displayMetrics
+        val maxHeaderTop = (dm.density * 90).toInt()
+        return findNavigateUpButtonInternal(root, dm, maxHeaderTop)
+    }
 
-        val isNavUp = (desc.contains("navigate up") || desc.contains("go back") || desc.contains("back") ||
-                desc == "close" || text == "close" || text == "back" ||
-                viewId.contains("up_button") || viewId.contains("navigate_up") || viewId.contains("action_bar_up") ||
-                viewId.contains("toolbar_nav") || viewId.contains("back")) &&
-                !desc.contains("more actions") && !desc.contains("more options")
-
-        if (isNavUp) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else (findClickableAncestor(root) ?: AccessibilityNodeInfo.obtain(root))
-        }
+    private fun findNavigateUpButtonInternal(node: AccessibilityNodeInfo, dm: DisplayMetrics, maxHeaderTop: Int): AccessibilityNodeInfo? {
+        val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+        val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
         val bounds = Rect()
-        root.getBoundsInScreen(bounds)
-        val dm = context.resources.displayMetrics
-        val maxTop = (dm.heightPixels * 0.20f).toInt()
-        val maxLeft = (dm.widthPixels * 0.25f).toInt()
-        val minDim = (dm.density * 24).toInt()
-        val maxDim = (dm.density * 88).toInt()
+        node.getBoundsInScreen(bounds)
 
-        val isTopLeftButton = bounds.top < maxTop && bounds.left < maxLeft && bounds.width() in minDim..maxDim && bounds.height() in minDim..maxDim
-        if (isTopLeftButton && root.isClickable &&
-            !desc.contains("account") && !desc.contains("avatar") && !desc.contains("search") && !desc.contains("menu") &&
-            !desc.contains("more actions") && !desc.contains("more options") && !viewId.contains("more_actions") && !viewId.contains("nav_button") &&
-            !text.contains("search") && !text.contains("drive")
-        ) {
-            return AccessibilityNodeInfo.obtain(root)
+        // Strict Guard: NEVER match any node that represents a file, card, or list entry!
+        val isFileOrCard = desc.endsWith(".pdf") || desc.endsWith(".mp3") || desc.endsWith(".m4a") ||
+                desc.endsWith(".doc") || desc.endsWith(".docx") || desc.endsWith(".xls") || desc.endsWith(".xlsx") ||
+                desc.contains("shared by") || desc.contains("shared on") || desc.contains("shared with") ||
+                desc.contains("more actions for") || viewId.contains("item_root") || viewId.contains("entry_view") ||
+                viewId.contains("card_view") || viewId.contains("recycler") || desc.contains("worksheet")
+
+        if (isFileOrCard) {
+            return null
         }
 
-        for (i in 0 until root.childCount) {
-            val child = root.getChild(i) ?: continue
-            val found = findNavigateUpButton(child)
+        // Strict navigation semantics: Must explicitly represent Navigate Up, Back, Close, or Collapse
+        val hasNavSemantics = (
+                desc.contains("navigate up") || desc.contains("go back") ||
+                desc == "back" || desc.startsWith("back,") || desc == "close" ||
+                desc == "collapse" || text == "close" || text == "back" ||
+                viewId.contains("up_button") || viewId.contains("navigate_up") ||
+                viewId.contains("action_bar_up") || viewId.contains("toolbar_nav") ||
+                (viewId.endsWith(":id/up") && node.isClickable)
+        ) && !desc.contains("more actions") && !desc.contains("more options") && !desc.contains("search")
+
+        // Must be in the top toolbar area (strictly above file list) and on the left portion of the display
+        if (hasNavSemantics && bounds.top < maxHeaderTop && bounds.left <= dm.widthPixels * 0.35f && bounds.height() > 0) {
+            return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val found = findNavigateUpButtonInternal(child, dm, maxHeaderTop)
             if (found != null) {
                 child.recycle()
                 return found
