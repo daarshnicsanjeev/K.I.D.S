@@ -303,7 +303,7 @@ class GoogleDriveSharedHarvester(
 
             while (serviceScope.isActive && !isDriveOpen && launchAttempts < maxLaunchAttempts) {
                 launchAttempts++
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive launch attempt $launchAttempts/$maxLaunchAttempts...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening Google Drive directly via launcher intent (attempt $launchAttempts/$maxLaunchAttempts)...")
 
                 val currentRoot = rootInActiveWindowProvider()
                 val currentPkg = currentRoot?.packageName?.toString() ?: ""
@@ -314,25 +314,12 @@ class GoogleDriveSharedHarvester(
                     break
                 }
 
-                if (!currentPkg.contains("classroom")) {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Classroom not active (current: $currentPkg). Foregrounding Classroom...")
-                    val classroomIntent = context.packageManager.getLaunchIntentForPackage("com.google.android.apps.classroom")?.apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-                    }
-                    if (classroomIntent != null) {
-                        context.startActivity(classroomIntent)
-                        delay(1200L)
-                    }
-                }
-
-                val openedViaClassroom = openDriveViaClassroom()
-                if (openedViaClassroom) {
-                    isDriveOpen = waitForConditionAction(8000L, 400L) {
-                        val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
-                        val pkg = root.packageName?.toString() ?: ""
-                        root.recycle()
-                        pkg.contains(DRIVE_PACKAGE_NAME)
-                    }
+                bringDriveToForeground()
+                isDriveOpen = waitForConditionAction(6000L, 300L) {
+                    val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                    val pkg = root.packageName?.toString() ?: ""
+                    root.recycle()
+                    pkg.contains(DRIVE_PACKAGE_NAME)
                 }
 
                 if (!isDriveOpen) {
@@ -349,9 +336,9 @@ class GoogleDriveSharedHarvester(
                 }
             }
 
-            // Fallback: If not open via Classroom folder, attempt direct launcher intent
+            // Fallback: If not open, attempt direct launcher intent with retry
             if (!isDriveOpen) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive not opened via Classroom folder after $launchAttempts attempts. Attempting direct launcher intent...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Retrying direct launcher intent for Google Drive...")
                 bringDriveToForeground()
                 isDriveOpen = waitForConditionAction(6000L, 300L) {
                     val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
@@ -2729,12 +2716,11 @@ class GoogleDriveSharedHarvester(
             return true
         }
 
-        // 2. If Shared tab is present and marked selected, we are NOT displaced
+        // 2. If Shared tab is present and bottom navigation bar is visible, we are NOT displaced!
         val sharedTab = findSharedTabNode(root)
         if (sharedTab != null) {
-            val isSharedSelected = isNodeMarkedSelected(sharedTab)
             sharedTab.recycle()
-            return !isSharedSelected
+            return false
         }
 
         // 3. If neither tab is present (e.g. inside a folder or displaced viewer), we ARE displaced from Shared root!
@@ -2755,10 +2741,16 @@ class GoogleDriveSharedHarvester(
 
     private fun isInDriveNavigationRailOrBar(bounds: Rect, displayMetrics: DisplayMetrics): Boolean {
         val isLandscape = displayMetrics.widthPixels > displayMetrics.heightPixels
+        val maxTabWidth = (displayMetrics.widthPixels * 0.35f).toInt()
+        val minTabHeight = (displayMetrics.density * 36).toInt()
+        val maxTabHeight = (displayMetrics.density * 110).toInt()
         return if (isLandscape) {
-            bounds.right <= displayMetrics.widthPixels * 0.25f && bounds.width() > 0
+            bounds.right <= displayMetrics.widthPixels * 0.25f && bounds.width() in 1..maxTabWidth
         } else {
-            bounds.centerY() >= displayMetrics.heightPixels * 0.78f && bounds.height() > 0
+            bounds.width() in 1..maxTabWidth &&
+                    bounds.height() in minTabHeight..maxTabHeight &&
+                    bounds.bottom >= displayMetrics.heightPixels - (displayMetrics.density * 60).toInt() &&
+                    bounds.centerY() >= displayMetrics.heightPixels * 0.82f
         }
     }
 
@@ -2853,17 +2845,15 @@ class GoogleDriveSharedHarvester(
                 text.endsWith(".pdf") || text.endsWith(".mp3") || text.endsWith(".m4a") ||
                 desc.contains("worksheet") || text.contains("worksheet")
 
-        if (!isExcludedSubtitle) {
-            val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
+        val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
 
-            val isSharedTab = inNavZone && (
-                    viewId.contains("menu_navigation_shared") ||
+        if (!isExcludedSubtitle && inNavZone) {
+            val isSharedTab = viewId.contains("menu_navigation_shared") ||
                     text.equals("shared", ignoreCase = true) ||
                     desc.equals("shared", ignoreCase = true) ||
-                    desc.startsWith("shared,") ||
-                    desc.contains("shared tab") ||
-                    desc.contains("tab, 3 of") || desc.contains("tab 3 of") || desc.contains("3 of 4")
-            )
+                    desc.startsWith("shared, tab") ||
+                    desc.startsWith("shared tab") ||
+                    desc.contains("tab 3 of") || desc.contains("tab, 3 of") || desc.contains("3 of 4")
 
             if (isSharedTab) {
                 val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestorInNavZone(node, displayMetrics)
