@@ -36,6 +36,7 @@ object DriveVaultManager {
     private const val TAG = "DriveVaultManager"
     const val PREFS_NAME = "kids_vault_prefs"
     const val VAULT_ROOT_FOLDER_NAME = "K.I.D.S. Data"
+    const val CHANNEL_NAME_CLASSROOM = "Google Classroom"
     const val DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
     const val GOOGLE_CLIENT_ID = "378609737196-c7bsdma5l20d1vf9r5dm7vahneai10am.apps.googleusercontent.com"
 
@@ -336,7 +337,21 @@ object DriveVaultManager {
                     """.trimIndent()
                     driveClient.uploadOrUpdateFamilyDigest(folders.yearFolderId, familyDigest)
 
-                    Log.i(TAG, "Step 1: Background initial file seeding completed successfully.")
+                    // 6. Pre-provision Google Classroom channel vault & attachments subfolder
+                    val classroomVault = driveClient.provisionChannelVault(folders.childFolderId, CHANNEL_NAME_CLASSROOM)
+                    val initialClassroomDigest = """
+                        # Google Classroom Digest
+                        **Status:** Ready & Monitoring
+                        **Configured:** $timeStampStr
+
+                        ---
+
+                        ## Announcements & Assignments
+                        * Real-time monitoring and auto-capture ready.
+                    """.trimIndent()
+                    driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, initialClassroomDigest)
+
+                    Log.i(TAG, "Step 1: Background initial file seeding completed successfully (including $CHANNEL_NAME_CLASSROOM).")
                 } catch (e: Exception) {
                     Log.w(TAG, "Step 1: Non-fatal error during background initial file seeding: ${e.message}")
                 }
@@ -464,7 +479,7 @@ object DriveVaultManager {
             val backfillActive = com.kids.collector.service.KidsAccessibilityService.isEnabled(context)
             if (!isSkipped) {
                 // Provision dedicated Google Classroom vault folder & attachments subfolder
-                val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, "Google Classroom")
+                val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)
                 val timeStampStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date())
                 val initialDigest = """
                     # Google Classroom Digest

@@ -728,6 +728,8 @@ class KidsAccessibilityService : AccessibilityService() {
             val (_, targetEmail) = resolveTargetChildAndEmail(db)
             CrawlerTraceLogger.startCloudStreaming(serviceScope, applicationContext, targetEmail)
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Starting deep crawl state machine...")
+            // Preemptively ensure cloud vault folders exist on Google Drive
+            triggerDriveSync(applicationContext)
             try {
                 runDeepCrawlLoop()
             } finally {
