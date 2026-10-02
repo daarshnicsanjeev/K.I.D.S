@@ -8,6 +8,7 @@ import android.util.DisplayMetrics
 import android.view.accessibility.AccessibilityNodeInfo
 import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.data.db.KidsDatabase
+import com.kids.collector.data.drive.DriveVaultManager
 import com.kids.collector.domain.classifier.ClassroomDateParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -2853,21 +2854,37 @@ class GoogleDriveSharedHarvester(
         return null
     }
 
-    private val attachmentExts = listOf(
-        ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".rtf", ".csv", ".epub",
-        ".mp3", ".m4a", ".wav", ".aac", ".ogg", ".wma", ".flac",
-        ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",
-        ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".svg",
-        ".zip", ".rar", ".7z"
-    )
+    private suspend fun getEnrolledChildNames(): Set<String> {
+        val names = mutableSetOf<String>()
+        val savedChild = DriveVaultManager.getSavedVaultPrefs(context).third.trim().lowercase(Locale.US)
+        if (savedChild.isNotBlank()) {
+            names.add(savedChild)
+        }
+        try {
+            val children = database.childProfileDao().getAllChildrenDirect()
+            for (child in children) {
+                val firstName = child.firstName.trim().lowercase(Locale.US)
+                if (firstName.isNotBlank()) {
+                    names.add(firstName)
+                }
+            }
+        } catch (_: Exception) {
+            // Room DB fallback
+        }
+        return names
+    }
 
-    private fun isEducationalFile(item: DriveSharedItem): Boolean {
+    private suspend fun isFolderItemRelevant(
+        item: DriveSharedItem,
+        pendingAttachments: List<AttachmentEntity>,
+        childNames: Set<String>
+    ): Boolean {
         if (item.isFolder) return false
-        if (item.hasFileBadge) return true
-        val lower = item.title.trim().lowercase(Locale.US)
-        return attachmentExts.any { lower.endsWith(it) } ||
-                lower.contains(".pdf") || lower.contains(".doc") || lower.contains(".ppt") ||
-                lower.contains(".xls") || lower.contains(".jpg") || lower.contains(".png")
+        val isMatched = matchDriveItemToPendingAttachment(item, pendingAttachments) != null
+        val isChildSpecific = childNames.any { name ->
+            name.length >= 3 && item.title.lowercase(Locale.US).contains(name)
+        }
+        return isMatched || isChildSpecific
     }
 
     private suspend fun harvestFolder(
@@ -2910,6 +2927,7 @@ class GoogleDriveSharedHarvester(
             val processedInFolder = mutableSetOf<String>()
             val processedSubfolders = mutableSetOf<String>()
             val maxScrollPages = calculateDynamicScrollPageLimit(pendingAttachments.size)
+            val childNames = getEnrolledChildNames()
 
             while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < maxScrollPages) {
                 var folderRoot: AccessibilityNodeInfo? = null
@@ -2960,7 +2978,7 @@ class GoogleDriveSharedHarvester(
 
                 val batchInFolder = mutableListOf<DriveSharedItem>()
                 for (item in itemsInside) {
-                    if (!item.isFolder && (isEducationalFile(item) || matchDriveItemToPendingAttachment(item, pendingAttachments) != null)) {
+                    if (isFolderItemRelevant(item, pendingAttachments, childNames)) {
                         if (!processedInFolder.contains(item.title)) {
                             batchInFolder.add(item)
                             if (batchInFolder.size >= MAX_BATCH_SELECTION_SIZE) {
@@ -3141,9 +3159,10 @@ class GoogleDriveSharedHarvester(
         val filesInside = scanVisibleDriveItems(folderRoot)
         folderRoot.recycle()
 
+        val childNames = getEnrolledChildNames()
         val batch = mutableListOf<DriveSharedItem>()
         for (fileItem in filesInside) {
-            if (!fileItem.isFolder && (isEducationalFile(fileItem) || matchDriveItemToPendingAttachment(fileItem, pendingAttachments) != null)) {
+            if (isFolderItemRelevant(fileItem, pendingAttachments, childNames)) {
                 batch.add(fileItem)
                 if (batch.size >= MAX_BATCH_SELECTION_SIZE) break
             }
