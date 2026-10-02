@@ -287,6 +287,31 @@ fun OnboardingWizardScreen(
         if (!selected.isNullOrBlank()) {
             studentEmail = selected
             prefs.edit().putString("wizard_student_email", selected).apply()
+
+            // Create Google Classroom vault folder on Google Drive immediately on school account selection
+            scope.launch {
+                isProvisioning = true
+                provisioningMessage = "Creating Google Classroom folder on Drive..."
+                try {
+                    val provisionResult = DriveVaultManager.provisionStep2Classroom(
+                        context = context,
+                        accountEmail = driveAccountEmail,
+                        folders = DriveVaultManager.currentChildVault,
+                        studentEmail = selected,
+                        isSkipped = false
+                    )
+                    if (provisionResult.isSuccess) {
+                        Toast.makeText(context, "✓ Google Classroom folder created on Drive!", Toast.LENGTH_SHORT).show()
+                    } else {
+                        val warning = provisionResult.exceptionOrNull()?.localizedMessage ?: "Classroom folder setup warning"
+                        Toast.makeText(context, "Drive note: $warning", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (t: Throwable) {
+                    Log.e("OnboardingWizardScreen", "Error provisioning Classroom on account selection", t)
+                } finally {
+                    isProvisioning = false
+                }
+            }
         }
     }
 
@@ -1172,7 +1197,18 @@ fun OnboardingWizardScreen(
                                                             if (launchIntent == null) {
                                                                 Toast.makeText(context, "Google Classroom app is not installed", Toast.LENGTH_LONG).show()
                                                             } else {
-                                                                val effectiveChildName = childName.trim().ifBlank { "Child" }
+                                                                 val effectiveChildName = childName.trim().ifBlank { "Child" }
+                                                                if (studentEmail.isNotBlank()) {
+                                                                    scope.launch(Dispatchers.IO) {
+                                                                        DriveVaultManager.provisionStep2Classroom(
+                                                                            context = context,
+                                                                            accountEmail = driveAccountEmail,
+                                                                            folders = DriveVaultManager.currentChildVault,
+                                                                            studentEmail = studentEmail.trim(),
+                                                                            isSkipped = false
+                                                                        )
+                                                                    }
+                                                                }
                                                                 Toast.makeText(context, "Starting 1-Click Auto-Capture for $effectiveChildName...", Toast.LENGTH_SHORT).show()
                                                                 context.startActivity(launchIntent)
                                                                 val captureIntent = Intent(KidsAccessibilityService.ACTION_START_FULL_AUTO_CAPTURE).apply {

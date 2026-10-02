@@ -337,21 +337,7 @@ object DriveVaultManager {
                     """.trimIndent()
                     driveClient.uploadOrUpdateFamilyDigest(folders.yearFolderId, familyDigest)
 
-                    // 6. Pre-provision Google Classroom channel vault & attachments subfolder
-                    val classroomVault = driveClient.provisionChannelVault(folders.childFolderId, CHANNEL_NAME_CLASSROOM)
-                    val initialClassroomDigest = """
-                        # Google Classroom Digest
-                        **Status:** Ready & Monitoring
-                        **Configured:** $timeStampStr
-
-                        ---
-
-                        ## Announcements & Assignments
-                        * Real-time monitoring and auto-capture ready.
-                    """.trimIndent()
-                    driveClient.uploadOrUpdateChannelDigest(classroomVault.channelFolderId, initialClassroomDigest)
-
-                    Log.i(TAG, "Step 1: Background initial file seeding completed successfully (including $CHANNEL_NAME_CLASSROOM).")
+                    Log.i(TAG, "Step 1: Background initial file seeding completed successfully.")
                 } catch (e: Exception) {
                     Log.w(TAG, "Step 1: Non-fatal error during background initial file seeding: ${e.message}")
                 }
@@ -441,15 +427,20 @@ object DriveVaultManager {
         }
         if (vault == null && !email.isNullOrBlank()) {
             val (_, academicYear, childName) = getSavedVaultPrefs(context)
-            val driveClient = GoogleDriveClient(getDriveService(context, email))
-            val cachedRootKidsFolderId = getSavedGlobalRootFolderId(context)
-            val cachedYearFolderId = getSavedGlobalYearFolderId(context, academicYear)
-            vault = driveClient.provisionChildVault(
-                academicYear = academicYear,
-                childName = childName,
-                cachedRootKidsFolderId = cachedRootKidsFolderId,
-                cachedYearFolderId = cachedYearFolderId
-            )
+            if (childName.isNotBlank()) {
+                vault = getSavedVaultFolders(context, email, academicYear, childName)
+            }
+            if (vault == null && childName.isNotBlank()) {
+                val driveClient = GoogleDriveClient(getDriveService(context, email))
+                val cachedRootKidsFolderId = getSavedGlobalRootFolderId(context)
+                val cachedYearFolderId = getSavedGlobalYearFolderId(context, academicYear)
+                vault = driveClient.provisionChildVault(
+                    academicYear = academicYear,
+                    childName = childName,
+                    cachedRootKidsFolderId = cachedRootKidsFolderId,
+                    cachedYearFolderId = cachedYearFolderId
+                )
+            }
             currentChildVault = vault
             currentAccountEmail = email
         }
@@ -472,7 +463,8 @@ object DriveVaultManager {
 
             val vault = resolveOrAwaitChildVault(context, folders, accountEmail)
             val email = accountEmail ?: currentAccountEmail ?: getSavedVaultPrefs(context).first
-            if (email.isNullOrBlank() || vault == null) return@withContext Result.success(Unit)
+            if (email.isNullOrBlank()) return@withContext Result.failure(IllegalStateException("No Google Account configured."))
+            if (vault == null) return@withContext Result.failure(IllegalStateException("Child vault folders could not be resolved."))
 
             val driveClient = GoogleDriveClient(getDriveService(context, email))
 
