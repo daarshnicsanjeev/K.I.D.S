@@ -2224,13 +2224,38 @@ class GoogleDriveSharedHarvester(
         }
     }
 
+    private fun dumpVisibleScreenSummary(root: AccessibilityNodeInfo): String {
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        return texts.filter { it.isNotBlank() }.distinct().take(15).joinToString(" | ")
+    }
+
+    private fun findAudioPlayerTrackTitle(root: AccessibilityNodeInfo): String? {
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        val explicitTrack = texts.firstOrNull { t ->
+            val lower = t.trim().lowercase(Locale.US)
+            (lower.endsWith(".mp3") || lower.endsWith(".m4a") || lower.endsWith(".wav") || lower.endsWith(".aac") ||
+             lower.endsWith(".pdf") || lower.contains("audio") || lower.contains("reading") || lower.contains("listening")) &&
+            !lower.contains("playback speed") && !lower.contains("rewind") && !lower.contains("forward")
+        }
+        if (explicitTrack != null) return explicitTrack.trim()
+
+        return texts.firstOrNull { t ->
+            val lower = t.trim().lowercase(Locale.US)
+            lower.length >= 4 && !isSystemHeaderTitle(lower) && !lower.contains("playback") && !lower.contains("pause") && !lower.contains("seconds")
+        }?.trim()
+    }
+
     private suspend fun dismissAnyActiveViewer() {
         var attempts = 0
         while (attempts < 3) {
             val root = rootInActiveWindowProvider() ?: break
             val isViewer = isDriveViewerOrEditorScreen(root)
             if (isViewer) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected. Navigating back to Drive list...")
+                val trackTitle = findAudioPlayerTrackTitle(root) ?: "Unknown Document/Audio"
+                val summary = dumpVisibleScreenSummary(root)
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active file preview / media player detected for: \"$trackTitle\". Screen nodes: [$summary]. Navigating back to Drive list...")
                 val audioDismissed = dismissAudioPlayerIfActive(root)
                 if (audioDismissed) {
                     root.recycle()
@@ -2265,11 +2290,12 @@ class GoogleDriveSharedHarvester(
 
     private suspend fun dismissAudioPlayerIfActive(root: AccessibilityNodeInfo): Boolean {
         var dismissed = false
+        val trackTitle = findAudioPlayerTrackTitle(root)
 
         // A. If pause button is present (media actively playing), halt playback
         val pauseButton = findAudioPauseButton(root)
         if (pauseButton != null) {
-            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found active audio Pause button. Halting playback...")
+            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found active audio Pause button for \"${trackTitle ?: "Audio"}\". Halting playback...")
             val clicked = pauseButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (!clicked) {
                 val rect = Rect()
@@ -2286,7 +2312,7 @@ class GoogleDriveSharedHarvester(
         // B. Find dedicated Close / Dismiss button for audio player (mini-player or full-screen)
         val closeButton = findAudioPlayerDismissButton(root)
         if (closeButton != null) {
-            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found audio player Close/Dismiss button. Dismissing media player...")
+            CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found audio player Close/Dismiss button for \"${trackTitle ?: "Audio"}\". Dismissing media player...")
             val clicked = closeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             if (!clicked) {
                 val rect = Rect()
@@ -2397,11 +2423,13 @@ class GoogleDriveSharedHarvester(
     suspend fun performDriveAutoRecoveryIfDisplaced(root: AccessibilityNodeInfo): Boolean {
         // 1. Check for Active Viewer / Document Editor / Media Player
         if (isDriveViewerOrEditorScreen(root)) {
+            val trackTitle = findAudioPlayerTrackTitle(root) ?: "Unknown Document/Audio"
+            val summary = dumpVisibleScreenSummary(root)
             CrawlerTraceLogger.log(
                 "DRIVE_AUTO_RECOVERY",
-                "Displaced to document viewer/editor/player. Executing auto-recovery back to Drive list..."
+                "Displaced to document viewer/editor/player for file: \"$trackTitle\". Screen nodes: [$summary]. Executing auto-recovery back to Drive list..."
             )
-            crawlerOverlay?.updateStatus("Drive Auto-Recovery", "Returning from file preview...")
+            crawlerOverlay?.updateStatus("Drive Auto-Recovery", "Returning from: $trackTitle")
             dismissAnyActiveViewer()
             delay(SETTLING_DELAY_MS)
             return true
