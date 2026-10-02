@@ -8,9 +8,13 @@ import androidx.room.withTransaction
 import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.data.db.NoticeEntity
 import com.kids.collector.data.db.AttachmentEntity
+import com.kids.collector.data.db.ChildProfileEntity
 import com.kids.collector.domain.graph.KotlinGraphifyEngine
+import com.kids.collector.domain.model.ChannelConfig
+import com.kids.collector.domain.model.ChannelType
 import com.kids.collector.domain.model.SyncStatus
 import com.kids.collector.telemetry.DriveDeepLogger
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.add
@@ -45,13 +49,46 @@ class DriveSyncWorker(
             val dbChildren = db.childProfileDao().getAllChildrenDirect()
             val primaryChildEntity = dbChildren.firstOrNull()
             val childName = primaryChildEntity?.firstName?.trim()
-                ?: if (com.kids.collector.data.drive.DriveVaultManager.currentChildVault != null) prefChildName.trim() else ""
-            val effectiveChildId = primaryChildEntity?.childId ?: "child_$childName"
+                ?: prefChildName.trim()
+            val effectiveChildId = primaryChildEntity?.childId
+                ?: "child_${childName.lowercase(Locale.US).replace(" ", "_")}"
 
             if (savedEmail.isNullOrBlank() || childName.isBlank()) {
-                Log.w(TAG, "Sync deferred: Child profile not yet committed to database or confirmed.")
-                CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established in database.")
+                Log.w(TAG, "Sync deferred: Neither child profile nor vault preferences established.")
+                CrawlerTraceLogger.log("SYNC_WORKER", "Sync deferred: Child profile not yet established in preferences or database.")
                 return@withContext Result.success()
+            }
+
+            // Auto-seed baseline child profile if missing so all downstream queries and UI locate the active child
+            if (primaryChildEntity == null && childName.isNotBlank()) {
+                try {
+                    val studentEmail = applicationContext.getSharedPreferences(
+                        com.kids.collector.data.drive.DriveVaultManager.PREFS_NAME,
+                        Context.MODE_PRIVATE
+                    ).getString("wizard_student_email", "") ?: ""
+                    val newChild = ChildProfileEntity(
+                        childId = effectiveChildId,
+                        firstName = childName,
+                        grade = "Grade 3",
+                        academicYear = academicYear,
+                        schoolName = "School",
+                        accountEmail = studentEmail,
+                        disambiguationTag = "",
+                        photoUri = null,
+                        channels = listOf(
+                            ChannelConfig(
+                                channelType = ChannelType.GOOGLE_CLASSROOM,
+                                isEnabled = true,
+                                studentAccountEmail = studentEmail
+                            )
+                        ),
+                    )
+                    db.childProfileDao().insert(newChild)
+                    Log.i(TAG, "Auto-seeded ChildProfile for '$childName' into database.")
+                    CrawlerTraceLogger.log("SYNC_WORKER", "Auto-seeded ChildProfile for '$childName' in database.")
+                } catch (dbEx: Exception) {
+                    Log.w(TAG, "Could not auto-seed child profile: ${dbEx.message}")
+                }
             }
 
             val pendingNotices = db.noticeDao().getPendingNotices()

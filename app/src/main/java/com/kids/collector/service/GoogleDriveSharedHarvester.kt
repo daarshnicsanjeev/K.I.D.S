@@ -4,6 +4,7 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Context
 import android.content.Intent
 import android.graphics.Rect
+import android.util.DisplayMetrics
 import android.view.accessibility.AccessibilityNodeInfo
 import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.data.db.KidsDatabase
@@ -1214,10 +1215,19 @@ class GoogleDriveSharedHarvester(
                 otherSelectedTab.getBoundsInScreen(otherBounds)
                 otherSelectedTab.recycle()
                 root.recycle()
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected via selected non-shared tab. Dispatching tap to Shared tab slot...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar/rail detected via selected non-shared tab. Dispatching tap to Shared tab slot...")
                 val dm = context.resources.displayMetrics
-                val tabX = dm.widthPixels * 0.625f
-                val tabY = if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
+                val isLandscape = dm.widthPixels > dm.heightPixels
+                val tabX = if (isLandscape) {
+                    if (otherBounds.width() > 0) otherBounds.centerX().toFloat() else (dm.widthPixels * 0.10f)
+                } else {
+                    dm.widthPixels * 0.625f
+                }
+                val tabY = if (isLandscape) {
+                    dm.heightPixels * 0.70f
+                } else {
+                    if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
+                }
                 dispatchTapAction(tabX, tabY)
                 delay(SETTLING_DELAY_MS + 200L)
 
@@ -1306,8 +1316,17 @@ class GoogleDriveSharedHarvester(
             finalRoot.recycle()
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab text not matched, but non-shared tab is active. Dispatching positional tap to Shared tab slot...")
             val dm = context.resources.displayMetrics
-            val tabX = dm.widthPixels * 0.625f
-            val tabY = if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
+            val isLandscape = dm.widthPixels > dm.heightPixels
+            val tabX = if (isLandscape) {
+                if (otherBounds.width() > 0) otherBounds.centerX().toFloat() else (dm.widthPixels * 0.10f)
+            } else {
+                dm.widthPixels * 0.625f
+            }
+            val tabY = if (isLandscape) {
+                dm.heightPixels * 0.70f
+            } else {
+                if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
+            }
             dispatchTapAction(tabX, tabY)
             delay(SETTLING_DELAY_MS + 200L)
 
@@ -2261,14 +2280,10 @@ class GoogleDriveSharedHarvester(
 
     private fun isInsideFolderWithoutBottomNav(root: AccessibilityNodeInfo): Boolean {
         if (isDriveViewerOrEditorScreen(root)) return false
-        val sharedTab = findSharedTabNode(root)
-        val hasBottomTabs = sharedTab != null
-        sharedTab?.recycle()
-
         val navUp = findNavigateUpButton(root)
-        val isFolder = !hasBottomTabs && navUp != null
+        val hasNavUp = navUp != null
         navUp?.recycle()
-        return isFolder
+        return hasNavUp
     }
 
     private fun isDisplacedFromSharedTab(root: AccessibilityNodeInfo): Boolean {
@@ -2304,24 +2319,38 @@ class GoogleDriveSharedHarvester(
         return isParentSelected
     }
 
-    private fun findSelectedNonSharedTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
-        val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.60f).toInt()
-        return findSelectedNonSharedTabInternal(root, minTabTop)
+    private fun isInDriveNavigationRailOrBar(bounds: Rect, displayMetrics: DisplayMetrics): Boolean {
+        val isLandscape = displayMetrics.widthPixels > displayMetrics.heightPixels
+        return if (isLandscape) {
+            bounds.right <= displayMetrics.widthPixels * 0.35f && bounds.width() > 0
+        } else {
+            bounds.centerY() >= displayMetrics.heightPixels * 0.60f && bounds.height() > 0
+        }
     }
 
-    private fun findSelectedNonSharedTabInternal(node: AccessibilityNodeInfo, minTabTop: Int): AccessibilityNodeInfo? {
+    private fun findSelectedNonSharedTab(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        val displayMetrics = context.resources.displayMetrics
+        return findSelectedNonSharedTabInternal(root, displayMetrics)
+    }
+
+    private fun findSelectedNonSharedTabInternal(node: AccessibilityNodeInfo, displayMetrics: DisplayMetrics): AccessibilityNodeInfo? {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
         val desc = node.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isInBottomNavBar = bounds.centerY() >= minTabTop
-        val isNonSharedTab = isInBottomNavBar && (
-                desc.contains("home") || desc.contains("starred") || desc.contains("files") ||
-                viewId.contains("menu_navigation_home") || viewId.contains("menu_navigation_starred") || viewId.contains("menu_navigation_files") ||
-                text == "home" || text == "starred" || text == "files"
+        val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) ||
+                viewId.contains("menu_navigation_home") ||
+                viewId.contains("menu_navigation_starred") ||
+                viewId.contains("menu_navigation_drives") ||
+                viewId.contains("menu_navigation_files")
+
+        val isNonSharedTab = inNavZone && (
+                desc.contains("home") || desc.contains("starred") || desc.contains("files") || desc.contains("drives") ||
+                viewId.contains("menu_navigation_home") || viewId.contains("menu_navigation_starred") ||
+                viewId.contains("menu_navigation_drives") || viewId.contains("menu_navigation_files") ||
+                text == "home" || text == "starred" || text == "files" || text == "drives"
         )
 
         if (isNonSharedTab && isNodeMarkedSelected(node)) {
@@ -2330,7 +2359,7 @@ class GoogleDriveSharedHarvester(
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findSelectedNonSharedTabInternal(child, minTabTop)
+            val found = findSelectedNonSharedTabInternal(child, displayMetrics)
             if (found != null) {
                 child.recycle()
                 return found
@@ -2342,11 +2371,10 @@ class GoogleDriveSharedHarvester(
 
     private fun findSharedTabNode(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
         val displayMetrics = context.resources.displayMetrics
-        val minTabTop = (displayMetrics.heightPixels * 0.60f).toInt()
-        return findSharedTabNodeInternal(root, minTabTop)
+        return findSharedTabNodeInternal(root, displayMetrics)
     }
 
-    private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, minTabTop: Int): AccessibilityNodeInfo? {
+    private fun findSharedTabNodeInternal(node: AccessibilityNodeInfo, displayMetrics: DisplayMetrics): AccessibilityNodeInfo? {
         val bounds = Rect()
         node.getBoundsInScreen(bounds)
 
@@ -2354,13 +2382,13 @@ class GoogleDriveSharedHarvester(
         val text = node.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isInBottomNavBar = bounds.centerY() >= minTabTop
+        val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
 
-        val isSharedTab = (isInBottomNavBar && (
+        val isSharedTab = (inNavZone && (
                 desc.contains("shared") ||
                 desc.contains("tab, 3 of") || desc.contains("tab 3 of") || desc.contains("3 of 4") ||
                 text.contains("shared")
-        )) || viewId.contains("menu_navigation_shared") || (isInBottomNavBar && viewId.contains("shared"))
+        )) || viewId.contains("menu_navigation_shared") || (inNavZone && viewId.contains("shared"))
 
         if (isSharedTab) {
             return if (node.isClickable) AccessibilityNodeInfo.obtain(node) else (findClickableAncestor(node) ?: AccessibilityNodeInfo.obtain(node))
@@ -2368,7 +2396,7 @@ class GoogleDriveSharedHarvester(
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val found = findSharedTabNodeInternal(child, minTabTop)
+            val found = findSharedTabNodeInternal(child, displayMetrics)
             if (found != null) {
                 child.recycle()
                 return found

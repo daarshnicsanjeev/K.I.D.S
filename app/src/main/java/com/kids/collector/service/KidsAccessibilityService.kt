@@ -150,6 +150,7 @@ class KidsAccessibilityService : AccessibilityService() {
         const val ACTION_SHOW_OVERLAY = "com.kids.collector.ACTION_SHOW_OVERLAY"
         const val ACTION_START_FULL_AUTO_CAPTURE = "com.kids.collector.ACTION_START_FULL_AUTO_CAPTURE"
         const val ACTION_START_DRIVE_HARVEST = "com.kids.collector.ACTION_START_DRIVE_HARVEST"
+        const val ACTION_TRIGGER_DRIVE_SYNC = "com.kids.collector.ACTION_TRIGGER_DRIVE_SYNC"
 
         const val EXTRA_CHILD_ID = "extra_child_id"
         const val EXTRA_CHILD_EMAIL = "extra_child_email"
@@ -414,6 +415,10 @@ class KidsAccessibilityService : AccessibilityService() {
                     activeTargetChildName = intent?.getStringExtra(EXTRA_CHILD_NAME)
                     startDirectDriveHarvest()
                 }
+                ACTION_TRIGGER_DRIVE_SYNC -> {
+                    CrawlerTraceLogger.log("CONTROL", "Received ACTION_TRIGGER_DRIVE_SYNC via broadcast")
+                    triggerDriveSync(applicationContext)
+                }
             }
         }
     }
@@ -429,6 +434,7 @@ class KidsAccessibilityService : AccessibilityService() {
             addAction(ACTION_SHOW_OVERLAY)
             addAction(ACTION_START_FULL_AUTO_CAPTURE)
             addAction(ACTION_START_DRIVE_HARVEST)
+            addAction(ACTION_TRIGGER_DRIVE_SYNC)
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(crawlerControlReceiver, controlFilter, Context.RECEIVER_EXPORTED)
