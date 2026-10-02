@@ -16,6 +16,7 @@ import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
+import android.view.accessibility.AccessibilityWindowInfo
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.work.Constraints
@@ -520,7 +521,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 lastActiveSchoolPackage ?: "com.google.android.apps.classroom"
             }
             val launchIntent = packageManager.getLaunchIntentForPackage(targetPackageName)?.apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
             }
             if (launchIntent != null) {
                 startActivity(launchIntent)
@@ -681,11 +682,26 @@ class KidsAccessibilityService : AccessibilityService() {
                     "DEEP_CRAWLER",
                     "Displaced to \"$foreignPackage\" during active crawl. Attempting autonomous recovery back to $targetAppLabel..."
                 )
+                // First try pressing Back to dismiss any inadvertent notification destination or overlay
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                delay(600L)
+                val checkRoot = rootInActiveWindow
+                val checkPkg = checkRoot?.packageName?.toString() ?: ""
+                val isBackSuccess = checkRoot != null && isAuthorizedSchoolApp(checkPkg)
+                checkRoot?.recycle()
+                if (isBackSuccess) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded via Back gesture! Resumed $targetAppLabel.")
+                    return@launch
+                }
+
                 relaunchSchoolApp()
                 delay(APP_RELAUNCH_RECOVERY_DELAY_MILLIS)
-                val recoveredPackageName = rootInActiveWindow?.packageName?.toString() ?: ""
-                if (isAuthorizedSchoolApp(recoveredPackageName)) {
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded! Back in $recoveredPackageName")
+                val recoveredRoot = rootInActiveWindow
+                val recoveredPackageName = recoveredRoot?.packageName?.toString() ?: ""
+                val isRelaunchSuccess = recoveredRoot != null && isAuthorizedSchoolApp(recoveredPackageName)
+                recoveredRoot?.recycle()
+                if (isRelaunchSuccess) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Autonomous recovery succeeded via app relaunch! Back in $recoveredPackageName")
                     return@launch
                 }
             }
@@ -1068,12 +1084,22 @@ class KidsAccessibilityService : AccessibilityService() {
             if (!isClassroom && !isTransient) {
                 CrawlerTraceLogger.log(
                     "CRAWLER_RECOVERY",
-                    "Active window is external app ($currentPkg) during active crawl. Relaunching school app to resume..."
+                    "Active window is external app ($currentPkg) during active crawl. Attempting recovery..."
                 )
                 crawlerOverlay?.updateStatus("Resuming Classroom...", currentPkg)
-                relaunchSchoolApp()
+                performGlobalAction(GLOBAL_ACTION_BACK)
                 root.recycle()
-                delay(1500)
+                delay(600L)
+                val backRoot = rootInActiveWindow
+                val backPkg = backRoot?.packageName?.toString() ?: ""
+                val isRecovered = backRoot != null && isAuthorizedSchoolApp(backPkg)
+                backRoot?.recycle()
+                if (isRecovered) {
+                    CrawlerTraceLogger.log("CRAWLER_RECOVERY", "Returned to Classroom via Back gesture.")
+                    continue
+                }
+                relaunchSchoolApp()
+                delay(1200L)
                 continue
             }
 
@@ -1237,10 +1263,22 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
 
                 val displayMetrics = resources.displayMetrics
-                val minTop = 140
+                val minTopSafeZone = getMinTopSafeZonePx()
                 val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
-                // Guard against tapping cards that are cut off at the bottom near the bottom navigation bar
+                // Guard 1: If card is situated in the top notification banner danger zone,
+                // nudge stream backward to scroll it down into the safe middle viewing zone
+                if (bounds.bottom < minTopSafeZone + (displayMetrics.density * 20).toInt()) {
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Card #${targetItem.index} in top notification banner zone (bottom=${bounds.bottom}, minTopSafeZone=$minTopSafeZone). Nudging backward into safe middle zone..."
+                    )
+                    stepScrollStream(isScrollForward = false)
+                    clickableNode.recycle()
+                    continue
+                }
+
+                // Guard 2: Guard against tapping cards that are cut off at the bottom near the bottom navigation bar
                 if (bounds.top > maxBottom - 100) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
@@ -1256,37 +1294,47 @@ class KidsAccessibilityService : AccessibilityService() {
                     title
                 )
 
-                // Dispatch physical tap safely: target the title node itself, or top safe third of the card
-                // NEVER tap the bottom where comments or "Add class comment" are located!
+                // Dispatch click safely:
+                // Step A: First attempt programmatic ACTION_CLICK on the card or title node.
+                // Programmatic clicks target internal accessibility nodes directly without touching the screen coordinate layer,
+                // making it impossible to hit floating notification banners or external overlays!
+                val targetClickable = findClickableTarget(clickableNode, title)
+                val openStart = System.currentTimeMillis()
+                val clicked = if (targetClickable != null) {
+                    val success = targetClickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    targetClickable.recycle()
+                    if (success) {
+                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Programmatic click delivered to card #${targetItem.index} (\"$title\")")
+                    }
+                    success
+                } else {
+                    false
+                }
+
+                // Step B: Calculate safe physical tap coordinates as fallback (strictly coerced into safe viewport zone)
                 val titleNode = findTitleNodeInCard(clickableNode, title)
                 val (safeTapX, safeTapY) = if (titleNode != null) {
                     val titleRect = Rect()
                     titleNode.getBoundsInScreen(titleRect)
                     titleNode.recycle()
                     val tapX = titleRect.centerX().toFloat().coerceIn(bounds.left.toFloat() + 20f, bounds.right.toFloat() - 20f)
-                    val tapY = titleRect.centerY().toFloat().coerceIn(minTop + 20f, maxBottom - 20f)
+                    val tapY = titleRect.centerY().toFloat().coerceIn(minTopSafeZone + 20f, maxBottom - 20f)
                     Pair(tapX, tapY)
                 } else {
-                    val safeY = (bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20).toFloat()
+                    val safeY = (bounds.top + 50).coerceIn(minTopSafeZone + 20, maxBottom - 20).toFloat()
                     Pair(bounds.centerX().toFloat(), safeY)
                 }
 
-                val nodeDesc = clickableNode.contentDescription?.toString()?.lowercase() ?: ""
-                val nodeText = clickableNode.text?.toString()?.lowercase() ?: ""
-                val isCommentNode = nodeDesc.contains("comment") || nodeText.contains("comment")
-
-                val openStart = System.currentTimeMillis()
-                val clicked = if (!isCommentNode && clickableNode.isClickable) {
-                    clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                } else {
-                    false
-                }
                 if (!clicked) {
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Programmatic click unavailable for #${targetItem.index}. Dispatching safe physical tap at ($safeTapX, $safeTapY)..."
+                    )
                     dispatchTap(safeTapX, safeTapY)
                 }
                 clickableNode.recycle()
 
-                // Check if detail view opened with 2500ms timeout & retry
+                // Check if detail view opened with 1200ms timeout & retry
                 var enteredDetail = waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) {
                     val active = rootInActiveWindow ?: return@waitForCondition false
                     val isDetail = isPostDetailView(active)
@@ -1437,10 +1485,17 @@ class KidsAccessibilityService : AccessibilityService() {
                         }
                         if (candidateCard != null) {
                             val displayMetrics = resources.displayMetrics
-                            val minTop = 140
+                            val minTopSafeZone = getMinTopSafeZonePx()
                             val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
-                            val candSafeTapY = (candidateCard.bounds.top + 50).coerceIn(minTop + 20, maxBottom - 20)
-                            val clicked = candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            val candSafeTapY = (candidateCard.bounds.top + 50).coerceIn(minTopSafeZone + 20, maxBottom - 20)
+                            val targetClickable = findClickableTarget(candidateCard.clickableNode, nextItem.title)
+                            val clicked = if (targetClickable != null) {
+                                val success = targetClickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                targetClickable.recycle()
+                                success
+                            } else {
+                                candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            }
                             if (!clicked) {
                                 dispatchTap(candidateCard.bounds.centerX().toFloat(), candSafeTapY.toFloat())
                             }
@@ -2463,7 +2518,124 @@ class KidsAccessibilityService : AccessibilityService() {
         return rootInActiveWindow
     }
 
+    /**
+     * Calculates the minimum top vertical boundary (in pixels) below which touch interactions are safe.
+     * Android heads-up notifications (HUNs) and top status bars occupy the top 18% of the display
+     * (or at least 150dp). Interacting strictly below this zone guarantees that physical gestures
+     * never inadvertently activate floating system notification banners or drop-down alerts.
+     */
+    private fun getMinTopSafeZonePx(): Int {
+        val displayMetrics = resources.displayMetrics
+        val screenHeight = displayMetrics.heightPixels
+        val density = displayMetrics.density
+        return (screenHeight * 0.18f).toInt().coerceAtLeast((density * 150f).toInt())
+    }
+
+    /**
+     * Inspects active system windows to determine if a heads-up notification (HUN) banner or
+     * expanded notification shade from com.android.systemui is hovering over the display viewport.
+     */
+    private fun isSystemNotificationOverlayPresent(): Boolean {
+        try {
+            val windowList = windows ?: return false
+            val displayMetrics = resources.displayMetrics
+            val statusBarThresholdPx = (displayMetrics.density * 60f).toInt()
+            for (window in windowList) {
+                val root = window.root
+                val pkg = root?.packageName?.toString()?.lowercase().orEmpty()
+                root?.recycle()
+                if (pkg == "com.android.systemui") {
+                    val rect = Rect()
+                    window.getBoundsInScreen(rect)
+                    // A floating heads-up banner or notification shade extends downwards from the top (top <= 10)
+                    // with a height significantly exceeding the standard clock/battery status bar (> 60dp)
+                    if (rect.top <= 10 && rect.height() > statusBarThresholdPx && window.type != AccessibilityWindowInfo.TYPE_APPLICATION) {
+                        return true
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Gracefully ignore window inspection exceptions
+        }
+        return false
+    }
+
+    /**
+     * Locates the most appropriate clickable node for a stream notice card.
+     * Prioritizes the title node, clickable container, or primary child while
+     * explicitly excluding comment buttons, author avatars, and 3-dot overflow options.
+     */
+    private fun findClickableTarget(cardNode: AccessibilityNodeInfo, title: String? = null): AccessibilityNodeInfo? {
+        // 1. If title is provided, try to find the title node first
+        if (!title.isNullOrBlank()) {
+            val titleNode = findTitleNodeInCard(cardNode, title)
+            if (titleNode != null) {
+                if (titleNode.isClickable || titleNode.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) {
+                    return titleNode
+                }
+                var parent = titleNode.parent
+                titleNode.recycle()
+                var depth = 0
+                while (parent != null && depth < 3) {
+                    val desc = parent.contentDescription?.toString()?.lowercase().orEmpty()
+                    val text = parent.text?.toString()?.lowercase().orEmpty()
+                    val isComment = desc.contains("comment") || text.contains("comment")
+                    val isOptions = desc.contains("option") || desc.contains("more") || desc.contains("menu")
+                    if ((parent.isClickable || parent.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) && !isComment && !isOptions) {
+                        return parent
+                    }
+                    val nextParent = parent.parent
+                    parent.recycle()
+                    parent = nextParent
+                    depth++
+                }
+                parent?.recycle()
+            }
+        }
+
+        // 2. Check if the card container itself is clickable
+        val cardDesc = cardNode.contentDescription?.toString()?.lowercase().orEmpty()
+        val cardText = cardNode.text?.toString()?.lowercase().orEmpty()
+        val isCommentCard = cardDesc.contains("comment") || cardText.contains("comment")
+        val isOptionsCard = cardDesc.contains("option") || cardDesc.contains("more") || cardDesc.contains("menu")
+        val isCardClickable = cardNode.isClickable || cardNode.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+        if (isCardClickable && !isCommentCard && !isOptionsCard) {
+            return AccessibilityNodeInfo.obtain(cardNode)
+        }
+
+        // 3. Recursively search children for the first suitable clickable child
+        for (i in 0 until cardNode.childCount) {
+            val child = cardNode.getChild(i) ?: continue
+            val childDesc = child.contentDescription?.toString()?.lowercase().orEmpty()
+            val childText = child.text?.toString()?.lowercase().orEmpty()
+            val isComment = childDesc.contains("comment") || childText.contains("comment")
+            val isOptions = childDesc.contains("option") || childDesc.contains("more") || childDesc.contains("menu")
+            val isClickable = child.isClickable || child.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }
+            if (isClickable && !isComment && !isOptions) {
+                return child
+            }
+            val nested = findClickableTarget(child, title)
+            child.recycle()
+            if (nested != null) {
+                return nested
+            }
+        }
+
+        return null
+    }
+
     private suspend fun dispatchTap(x: Float, y: Float): Boolean {
+        // Safe-Zone & Notification Guard: If a system notification banner is present, pause tap gesture
+        if (isSystemNotificationOverlayPresent()) {
+            CrawlerTraceLogger.log("NOTIFICATION_GUARD", "System notification banner detected. Pausing tap gesture until notification clears...")
+            val cleared = waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
+                !isSystemNotificationOverlayPresent()
+            }
+            if (!cleared) {
+                CrawlerTraceLogger.log("NOTIFICATION_GUARD", "Notification banner still active after 3000ms. Proceeding cautiously.")
+            }
+        }
+
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(x, y)
@@ -2694,7 +2866,7 @@ class KidsAccessibilityService : AccessibilityService() {
         manifest: StreamManifest
     ): VisiblePendingCard? {
         val displayMetrics = resources.displayMetrics
-        val minTop = 140
+        val minTopSafeZone = getMinTopSafeZonePx()
         val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
         val rect = Rect()
 
@@ -2725,8 +2897,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (matchedItem != null && matchedItem.status == StreamItemStatus.PENDING) {
                     card.getBoundsInScreen(rect)
                     // Check if card is comfortably inside safe tap zone and not overlapping bottom bar
-                    if (rect.top in minTop..(maxBottom - 100)) {
-                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                    if (rect.top in minTopSafeZone..(maxBottom - 100)) {
+                        val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
                         val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                         for (other in postCards) {
                             if (other != card) other.recycle()
@@ -2746,7 +2918,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findNextUnvisitedPost(rootNode: AccessibilityNodeInfo): UnvisitedCard? {
         val postCards = findPostCards(rootNode)
         val displayMetrics = resources.displayMetrics
-        val minTop = 140
+        val minTopSafeZone = getMinTopSafeZonePx()
         val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
         val rect = Rect()
@@ -2755,12 +2927,12 @@ class KidsAccessibilityService : AccessibilityService() {
             
             // Viewport guard: Ensure card is visibly accessible (at least 35% visible or center in viewport)
             val cardHeight = rect.height().coerceAtLeast(1)
-            val visibleTop = rect.top.coerceAtLeast(minTop)
+            val visibleTop = rect.top.coerceAtLeast(minTopSafeZone)
             val visibleBottom = rect.bottom.coerceAtMost(maxBottom)
             val visibleHeight = (visibleBottom - visibleTop).coerceAtLeast(0)
             val visibilityFraction = visibleHeight.toFloat() / cardHeight.toFloat()
 
-            if (visibilityFraction < 0.35f && rect.centerY() !in minTop..maxBottom) {
+            if (visibilityFraction < 0.35f && rect.centerY() !in minTopSafeZone..maxBottom) {
                 card.recycle()
                 continue
             }
@@ -2795,7 +2967,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
             if (!visitedPostFingerprints.contains(fingerprint)) {
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
                 val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                 card.recycle()
                 return UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
@@ -2807,7 +2979,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun findCardForTarget(rootNode: AccessibilityNodeInfo, targetItem: StreamManifestItem): UnvisitedCard? {
         val displayMetrics = resources.displayMetrics
-        val minTop = 140
+        val minTopSafeZone = getMinTopSafeZonePx()
         val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
         val rect = Rect()
 
@@ -2836,7 +3008,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         clickable.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                         clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                         clickable.getBoundsInScreen(rect)
-                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                        val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
                         val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                         for (m in fastMatches) m.recycle()
                         return UnvisitedCard(targetItem.title, combinedText, fingerprint, clickable, cardBounds)
@@ -2899,7 +3071,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
                         clickable.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SHOW_ON_SCREEN.id)
                         clickable.performAction(AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
-                        val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                        val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
                         val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                         matchedCard = UnvisitedCard(title, combinedText, fingerprint, clickable, cardBounds)
                     }
@@ -2916,7 +3088,7 @@ class KidsAccessibilityService : AccessibilityService() {
         if (postCards.isEmpty()) return null
 
         val displayMetrics = resources.displayMetrics
-        val minTop = 140
+        val minTopSafeZone = getMinTopSafeZonePx()
         val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
         var bestCard: UnvisitedCard? = null
@@ -2956,14 +3128,14 @@ class KidsAccessibilityService : AccessibilityService() {
                 score += tokenRatio * 40f
             }
 
-            if (rect.centerY() in (minTop + 50)..(maxBottom - 50)) {
+            if (rect.centerY() in (minTopSafeZone + 50)..(maxBottom - 50)) {
                 score += 10f
             }
 
             if (score > bestScore || bestCard == null) {
                 bestCard?.clickableNode?.recycle()
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
-                val safeCenterY = rect.centerY().coerceIn(minTop + 40, maxBottom - 40)
+                val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
                 val cardBounds = Rect(rect.left, safeCenterY - 20, rect.right, safeCenterY + 20)
                 bestCard = UnvisitedCard(title, combined, fp, clickable, cardBounds)
                 bestScore = score
