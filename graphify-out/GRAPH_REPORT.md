@@ -4,12 +4,12 @@
 - cluster-only mode — file stats not available
 
 ## Summary
-- 973 nodes · 2432 edges · 63 communities (23 shown, 40 thin omitted)
+- 980 nodes · 2465 edges · 68 communities (19 shown, 49 thin omitted)
 - Extraction: 98% EXTRACTED · 2% INFERRED · 0% AMBIGUOUS · INFERRED: 38 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `14cc42bc`
+- Built from commit: `974c8e57`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -17,45 +17,43 @@
 - KidsAccessibilityService
 - GoogleDriveSharedHarvester
 - FloatingCrawlerOverlay
-- Query
-- MLKitOcrParser.kt
-- Test
-- DriveVaultManager
-- ci_watch.py
 - GoogleDriveClient
-- StreamManifest
-- OnboardingWizardScreen.kt
-- KotlinGraphifyEngine.kt
-- ShareTargetActivity.kt
-- .matchesAttachmentChipText
-- DriveSyncWorker.kt
-- ContentCategory
-- OnboardingWizardScreen
-- WhatsAppChatExportParser.kt
-- Models.kt
-- MainActivity.kt
-- DeduplicationEngine
-- PrivacyFilterTest
 - ChildProfile
+- Query
+- ContentCategory
+- MLKitOcrParser.kt
+- StreamManifest
+- ci_watch.py
+- Test
+- OnboardingWizardScreen.kt
+- ShareTargetActivity.kt
+- DriveSyncWorker.kt
+- CrawlerTraceLogger
+- .matchesAttachmentChipText
+- OnboardingWizardScreen
+- NotificationParserTest.kt
+- .parse
+- PrivacyFilterTest
+- MainActivity.kt
 - GestureDescription
 - DriveDeepLogger.kt
-- K.I.D.S. Android Collector (PRD)
 - log
 - ChildProfile
 - dispatchers
 - Intent
 - WizardStep
+- DeduplicationHashTest.kt
 - DiagnosticFeedScreen
 
 ## God Nodes (most connected - your core abstractions)
 1. `KidsAccessibilityService` - 113 edges
-2. `GoogleDriveSharedHarvester` - 96 edges
+2. `GoogleDriveSharedHarvester` - 103 edges
 3. `FloatingCrawlerOverlay` - 44 edges
 4. `GoogleDriveClient` - 32 edges
 5. `OnboardingWizardScreen()` - 25 edges
 6. `DriveVaultManager` - 23 edges
-7. `CrawlerTraceLogger` - 22 edges
-8. `DriveAttachmentMatcherTest` - 22 edges
+7. `DriveAttachmentMatcherTest` - 22 edges
+8. `CrawlerTraceLogger` - 22 edges
 9. `ChildProfile` - 18 edges
 10. `NoticeDao` - 18 edges
 
@@ -64,129 +62,113 @@
   app/src/main/java/com/kids/collector/service/KidsAccessibilityService.kt → app/src/main/java/com/kids/collector/domain/classifier/ContentClassifier.kt
 - `KidsAccessibilityService` --calls--> `DeduplicationEngine`  [INFERRED]
   app/src/main/java/com/kids/collector/service/KidsAccessibilityService.kt → app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt
-- `DriveSyncWorker` --calls--> `KotlinGraphifyEngine`  [INFERRED]
-  app/src/main/java/com/kids/collector/service/DriveSyncWorker.kt → app/src/main/java/com/kids/collector/domain/graph/KotlinGraphifyEngine.kt
-- `DriveSyncWorker` --calls--> `DriveDeepLogger`  [INFERRED]
-  app/src/main/java/com/kids/collector/service/DriveSyncWorker.kt → app/src/main/java/com/kids/collector/telemetry/DriveDeepLogger.kt
 - `DownloadFolderObserver` --calls--> `DeduplicationEngine`  [INFERRED]
   app/src/main/java/com/kids/collector/data/drive/DownloadFolderObserver.kt → app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt
+- `ShareTargetActivity` --calls--> `DeduplicationEngine`  [INFERRED]
+  app/src/main/java/com/kids/collector/presentation/share/ShareTargetActivity.kt → app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt
+- `DriveSyncWorker` --calls--> `KotlinGraphifyEngine`  [INFERRED]
+  app/src/main/java/com/kids/collector/service/DriveSyncWorker.kt → app/src/main/java/com/kids/collector/domain/graph/KotlinGraphifyEngine.kt
 
 ## Import Cycles
 - None detected.
 
-## Communities (63 total, 40 thin omitted)
+## Communities (68 total, 49 thin omitted)
 
 ### Community 0 - "KidsAccessibilityService"
-Cohesion: 0.06
-Nodes (6): NoticeEntity, CrawlerTraceLogger, ExtractedAttachmentDetail, KidsAccessibilityService, UnvisitedCard, VisiblePendingCard
+Cohesion: 0.07
+Nodes (5): NoticeEntity, ExtractedAttachmentDetail, KidsAccessibilityService, UnvisitedCard, VisiblePendingCard
 
 ### Community 2 - "FloatingCrawlerOverlay"
-Cohesion: 0.06
+Cohesion: 0.05
 Nodes (7): FloatingCrawlerOverlay, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback
 
-### Community 3 - "Query"
+### Community 3 - "GoogleDriveClient"
+Cohesion: 0.08
+Nodes (10): DriveVaultManager, Failure, ProvisionStep1Result, Success, UserConsentRequired, ChannelVaultFolders, ChildVaultFolders, DriveQuotaInfo (+2 more)
+
+### Community 4 - "ChildProfile"
+Cohesion: 0.05
+Nodes (26): AttachmentEntity, ChildProfileEntity, NoticeFtsEntity, Converters, GraphEdge, GraphNode, KnowledgeGraph, KotlinGraphifyEngine (+18 more)
+
+### Community 5 - "Query"
 Cohesion: 0.07
 Nodes (4): AttachmentDao, ChildProfileDao, NoticeDao, KidsDatabase
 
-### Community 4 - "MLKitOcrParser.kt"
-Cohesion: 0.07
-Nodes (8): SafVaultFolders, SafVaultManager, MLKitOcrParser, OcrExtractionResult, NotificationParser, ParsedNotification, ShareTargetActivity, NotificationParserTest
+### Community 6 - "ContentCategory"
+Cohesion: 0.06
+Nodes (18): ContentClassifier, ImportedNoticeRecord, WhatsAppChatExportParser, ContentCategory, ATTENDANCE, CIRCULAR, FEES, HOMEWORK (+10 more)
 
-### Community 5 - "Test"
+### Community 7 - "MLKitOcrParser.kt"
 Cohesion: 0.10
-Nodes (4): ClassroomDateParser, ParsedDate, ClassroomDateParserTest, DriveAttachmentMatcherTest
+Nodes (5): SafVaultFolders, SafVaultManager, MLKitOcrParser, OcrExtractionResult, ShareTargetActivity
 
-### Community 6 - "DriveVaultManager"
-Cohesion: 0.13
-Nodes (6): DriveVaultManager, Failure, ProvisionStep1Result, Success, UserConsentRequired, DriveVaultManagerTest
-
-### Community 7 - "ci_watch.py"
-Cohesion: 0.07
-Nodes (16): AttachmentEntity, ChildProfileEntity, NoticeFtsEntity, Converters, ChannelConfig, diagnose_failure(), get_latest_run(), main() (+8 more)
-
-### Community 8 - "GoogleDriveClient"
-Cohesion: 0.08
-Nodes (4): ChannelVaultFolders, ChildVaultFolders, DriveQuotaInfo, GoogleDriveClient
-
-### Community 9 - "StreamManifest"
+### Community 8 - "StreamManifest"
 Cohesion: 0.08
 Nodes (9): StreamItemStatus, ALREADY_SYNCED, COMPLETED, FAILED_SKIPPED, IN_PROGRESS, PENDING, StreamManifest, StreamManifestItem (+1 more)
 
-### Community 11 - "OnboardingWizardScreen.kt"
+### Community 10 - "ci_watch.py"
+Cohesion: 0.12
+Nodes (11): diagnose_failure(), get_latest_run(), main(), monitor_workflow(), run_cmd(), sync_local_graph(), verify_release(), check_file() (+3 more)
+
+### Community 12 - "OnboardingWizardScreen.kt"
 Cohesion: 0.10
 Nodes (3): getDefaultSchoolAppList(), launchAccountPicker(), queryInstalledLauncherApps()
 
-### Community 13 - "KotlinGraphifyEngine.kt"
-Cohesion: 0.22
-Nodes (7): GraphEdge, GraphNode, KnowledgeGraph, KotlinGraphifyEngine, Attachment, Notice, KnowledgeGraphBuilderTest
-
-### Community 18 - "ContentCategory"
-Cohesion: 0.14
-Nodes (8): ContentClassifier, ContentCategory, ATTENDANCE, CIRCULAR, FEES, HOMEWORK, UNKNOWN, ContentClassifierTest
-
-### Community 19 - "OnboardingWizardScreen"
+### Community 18 - "OnboardingWizardScreen"
 Cohesion: 0.35
 Nodes (3): PermissionHelper, PermissionSetupDialog(), OnboardingWizardScreen()
 
-### Community 20 - "WhatsAppChatExportParser.kt"
-Cohesion: 0.16
-Nodes (4): ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest, Dual WhatsApp Catch-Up Engine
+### Community 20 - "NotificationParserTest.kt"
+Cohesion: 0.20
+Nodes (3): NotificationParser, ParsedNotification, NotificationParserTest
 
-### Community 21 - "Models.kt"
-Cohesion: 0.15
-Nodes (11): ChannelType, FILE_IMPORT, GOOGLE_CLASSROOM, SCHOOL_ERP, WHATSAPP, CloudHealthReport, SyncStatus, DROPPED (+3 more)
+### Community 21 - ".parse"
+Cohesion: 0.22
+Nodes (3): ClassroomDateParser, ParsedDate, ClassroomDateParserTest
 
-### Community 22 - "MainActivity.kt"
+### Community 23 - "MainActivity.kt"
 Cohesion: 0.18
 Nodes (5): AppScreen, DASHBOARD, DIAGNOSTICS, WIZARD, MainActivity
 
-### Community 25 - "ChildProfile"
-Cohesion: 0.27
-Nodes (3): ChildProfile, MultiChildRouter, MultiChildAttributionTest
-
-### Community 26 - "GestureDescription"
+### Community 25 - "GestureDescription"
 Cohesion: 0.27
 Nodes (3): GestureResultCallback, GestureResultCallback, GestureResultCallback
 
-### Community 27 - "DriveDeepLogger.kt"
+### Community 26 - "DriveDeepLogger.kt"
 Cohesion: 0.24
 Nodes (5): DeviceInfo, DiagnosticSnapshot, DriveDeepLogger, PipelineMetrics, StepStatus
 
-### Community 28 - "K.I.D.S. Android Collector (PRD)"
-Cohesion: 0.22
-Nodes (6): 5-Point Cloud Health Probe, Google Credential Manager API, Memory Boundary Privacy Filter, K.I.D.S. Android Collector (PRD), Sequential 4-Step Onboarding, Streaming PdfRenderer OCR
-
-### Community 30 - "ChildProfile"
+### Community 28 - "ChildProfile"
 Cohesion: 0.28
 Nodes (3): ChildCard(), ChildrenGridDashboard(), KidsTheme()
 
-### Community 35 - "WizardStep"
+### Community 33 - "WizardStep"
 Cohesion: 0.33
 Nodes (6): WizardStep, STEP_0_PERMISSIONS, STEP_1_VAULT, STEP_2_CLASSROOM, STEP_3_PORTALS, STEP_4_WHATSAPP
 
-### Community 36 - "DiagnosticFeedScreen"
+### Community 35 - "DiagnosticFeedScreen"
 Cohesion: 0.50
 Nodes (3): ProbeItem, DiagnosticFeedScreen(), LogLine
 
 ## Knowledge Gaps
-- **34 isolated node(s):** `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `NoticeFtsEntity` (+29 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 226 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **40 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **34 isolated node(s):** `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `CloudHealthReport`, `NoticeFtsEntity` (+29 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 229 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **49 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `assertthat`, `FloatingCrawlerOverlay`, `Intent`, `MLKitOcrParser.kt`, `OnboardingWizardScreen.kt`, `DriveVaultManager.kt`, `.matchesAttachmentChipText`, `KidsAccessibilityService.kt`, `ContentCategory`, `DeduplicationEngine`?**
-  _High betweenness centrality (0.242) - this node is a cross-community bridge._
-- **Why does `GoogleDriveSharedHarvester` connect `GoogleDriveSharedHarvester` to `KidsAccessibilityService`, `DriveVaultManager.kt`, `Test`, `ShareTargetActivity.kt`?**
-  _High betweenness centrality (0.125) - this node is a cross-community bridge._
+- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `Intent`, `GoogleDriveSharedHarvester`, `FloatingCrawlerOverlay`, `ContentCategory`, `MLKitOcrParser.kt`, `OnboardingWizardScreen.kt`, `ShareTargetActivity.kt`, `.matchesAttachmentChipText`, `KidsAccessibilityService.kt`, `assertthat`?**
+  _High betweenness centrality (0.231) - this node is a cross-community bridge._
+- **Why does `GoogleDriveSharedHarvester` connect `GoogleDriveSharedHarvester` to `KidsAccessibilityService`, `MLKitOcrParser.kt`, `Test`, `ShareTargetActivity.kt`, `DriveVaultManager.kt`, `MainActivity.kt`, `assertthat`?**
+  _High betweenness centrality (0.102) - this node is a cross-community bridge._
 - **Why does `FloatingCrawlerOverlay` connect `FloatingCrawlerOverlay` to `KidsAccessibilityService`?**
-  _High betweenness centrality (0.063) - this node is a cross-community bridge._
+  _High betweenness centrality (0.062) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `KidsAccessibilityService` (e.g. with `ContentClassifier` and `DeduplicationEngine`) actually correct?**
   _`KidsAccessibilityService` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `GoogleDriveSharedHarvester` (e.g. with `.runDeepCrawlLoop()` and `.startDirectDriveHarvest()`) actually correct?**
   _`GoogleDriveSharedHarvester` has 2 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `CloudHealthReport`, `DeviceInfo`, `PipelineMetrics` to the rest of the system?**
+- **What connects `DeviceInfo`, `PipelineMetrics`, `StepStatus` to the rest of the system?**
   _34 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `KidsAccessibilityService` be split into smaller, more focused modules?**
-  _Cohesion score 0.06056089960709931 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.06877093986951155 - nodes in this community are weakly interconnected._
