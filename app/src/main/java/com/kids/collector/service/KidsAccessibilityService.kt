@@ -792,8 +792,23 @@ class KidsAccessibilityService : AccessibilityService() {
             val currentPkg = currentRoot?.packageName?.toString() ?: ""
             currentRoot?.recycle()
             if (!currentPkg.startsWith(drivePkg)) {
+                if (currentPkg != packageName) {
+                    val kidsIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    }
+                    if (kidsIntent != null) {
+                        startActivity(kidsIntent)
+                        waitForCondition(5000L, 250L) {
+                            val root = rootInActiveWindow ?: return@waitForCondition false
+                            val pkg = root.packageName?.toString() ?: ""
+                            root.recycle()
+                            pkg == packageName
+                        }
+                        delay(600L)
+                    }
+                }
                 val launchIntent = packageManager.getLaunchIntentForPackage(drivePkg)?.apply {
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
                 }
                 if (launchIntent != null) {
                     startActivity(launchIntent)
@@ -1613,8 +1628,46 @@ class KidsAccessibilityService : AccessibilityService() {
         if (remainingPending.isNotEmpty() && crawlerOverlay?.isAutoScrollingActive() == true) {
             CrawlerTraceLogger.log(
                 "DEEP_CRAWLER",
-                "Classroom fast metadata pass complete with ${remainingPending.size} pending attachments. Launching Phase 3: Google Drive Shared Tab Batch Harvester..."
+                "Classroom fast metadata pass complete with ${remainingPending.size} pending attachments. Closing Classroom and returning focus to K.I.D.S. app before launching Phase 3: Google Drive Shared Tab Batch Harvester..."
             )
+            crawlerOverlay?.updateStatus("Phase 3: Drive Transition", "Returning to K.I.D.S. app...")
+
+            // 1. Cleanly dismiss Classroom view state with Back action
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            delay(400L)
+
+            // 2. Bring K.I.D.S. app to foreground
+            val kidsIntent = packageManager.getLaunchIntentForPackage(packageName)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            }
+            if (kidsIntent != null) {
+                startActivity(kidsIntent)
+                val isKidsInForeground = waitForCondition(5000L, 250L) {
+                    val root = rootInActiveWindow ?: return@waitForCondition false
+                    val pkg = root.packageName?.toString() ?: ""
+                    root.recycle()
+                    pkg == packageName
+                }
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "K.I.D.S. app focused in foreground (success: $isKidsInForeground). Now launching Google Drive from K.I.D.S....")
+                delay(600L)
+            }
+
+            // 3. Launch Google Drive directly from K.I.D.S. app
+            val drivePkg = "com.google.android.apps.docs"
+            val driveIntent = packageManager.getLaunchIntentForPackage(drivePkg)?.apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            }
+            if (driveIntent != null) {
+                startActivity(driveIntent)
+                waitForCondition(6000L, 300L) {
+                    val root = rootInActiveWindow ?: return@waitForCondition false
+                    val pkg = root.packageName?.toString() ?: ""
+                    root.recycle()
+                    pkg.contains(drivePkg)
+                }
+                delay(800L)
+            }
+
             crawlerOverlay?.updateStatus("Phase 3: Drive Harvester", "Launching Drive Shared Tab (${remainingPending.size} files)...")
 
             val driveHarvester = GoogleDriveSharedHarvester(

@@ -262,9 +262,32 @@ class GoogleDriveSharedHarvester(
 
     /**
      * Brings Google Drive to the foreground using an explicit system intent with REORDER_TO_FRONT.
+     * If another 3rd-party app (e.g. Classroom) is currently active, returns focus to K.I.D.S. first
+     * to ensure Android grants foreground activity start privilege.
      */
-    private fun bringDriveToForeground(): Boolean {
+    private suspend fun bringDriveToForeground(): Boolean {
         return try {
+            val currentRoot = rootInActiveWindowProvider()
+            val currentPkg = currentRoot?.packageName?.toString() ?: ""
+            currentRoot?.recycle()
+
+            if (currentPkg.isNotBlank() && !currentPkg.contains(DRIVE_PACKAGE_NAME) && currentPkg != context.packageName) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Returning focus to K.I.D.S. app (${context.packageName}) before foregrounding Google Drive...")
+                val kidsIntent = context.packageManager.getLaunchIntentForPackage(context.packageName)?.apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                }
+                if (kidsIntent != null) {
+                    context.startActivity(kidsIntent)
+                    waitForConditionAction(5000L, 250L) {
+                        val root = rootInActiveWindowProvider() ?: return@waitForConditionAction false
+                        val pkg = root.packageName?.toString() ?: ""
+                        root.recycle()
+                        pkg == context.packageName
+                    }
+                    delay(600L)
+                }
+            }
+
             var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
             if (launchIntent == null) {
                 launchIntent = Intent(Intent.ACTION_MAIN).apply {
@@ -277,7 +300,7 @@ class GoogleDriveSharedHarvester(
                 Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             )
             context.startActivity(launchIntent)
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Re-brought Google Drive to foreground.")
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched Google Drive launch intent from K.I.D.S. host.")
             true
         } catch (e: Exception) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to bring Google Drive to foreground: ${e.message}")
