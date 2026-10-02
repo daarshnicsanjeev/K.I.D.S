@@ -577,12 +577,12 @@ class KidsAccessibilityService : AccessibilityService() {
 
                 if (waitButton != null) {
                     CrawlerTraceLogger.log("ANR_RECOVERY", "Autonomous ANR resolution: Clicking 'Wait' button to allow app to recover")
-                    val clicked = waitButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val clicked = waitButton.performVerifiedClick("ANR Dialog Wait Button")
                     if (!clicked) {
                         val bounds = Rect()
                         waitButton.getBoundsInScreen(bounds)
                         serviceScope.launch {
-                            dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                            dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "ANR Dialog Wait Button")
                         }
                     }
                     waitButton.recycle()
@@ -813,8 +813,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 database = db,
                 crawlerOverlay = overlay,
                 rootInActiveWindowProvider = { findDriveRootNode() },
-                dispatchTapAction = { x, y -> dispatchTap(x, y) },
-                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
+                dispatchTapAction = { x, y -> dispatchTap(x, y, "Drive Harvester Tap") },
+                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y, 800L, "Drive Harvester Long Press") },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
                     dispatchSwipe(startX, startY, endX, endY, duration)
                 },
@@ -1300,15 +1300,15 @@ class KidsAccessibilityService : AccessibilityService() {
                 // making it impossible to hit floating notification banners or external overlays!
                 val targetClickable = findClickableTarget(clickableNode, title)
                 val openStart = System.currentTimeMillis()
-                val clicked = if (targetClickable != null) {
-                    val success = targetClickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                var clicked = if (targetClickable != null) {
+                    val success = targetClickable.performVerifiedClick("Card #${targetItem.index} (\"$title\")")
                     targetClickable.recycle()
-                    if (success) {
-                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Programmatic click delivered to card #${targetItem.index} (\"$title\")")
-                    }
                     success
                 } else {
                     false
+                }
+                if (!clicked) {
+                    clicked = clickableNode.performVerifiedClick("Card Container #${targetItem.index} (\"$title\")")
                 }
 
                 // Step B: Calculate safe physical tap coordinates as fallback (strictly coerced into safe viewport zone)
@@ -1328,9 +1328,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!clicked) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Programmatic click unavailable for #${targetItem.index}. Dispatching safe physical tap at ($safeTapX, $safeTapY)..."
+                        "Programmatic click unavailable for #${targetItem.index}. Dispatching verified physical tap at ($safeTapX, $safeTapY)..."
                     )
-                    dispatchTap(safeTapX, safeTapY)
+                    dispatchTap(safeTapX, safeTapY, "Card #${targetItem.index} (\"$title\")")
                 }
                 clickableNode.recycle()
 
@@ -1345,9 +1345,21 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!enteredDetail) {
                     CrawlerTraceLogger.log(
                         "DEEP_CRAWLER",
-                        "Detail transition pending after 1200ms for #${targetItem.index}. Retrying physical tap at ($safeTapX, $safeTapY)"
+                        "Detail transition pending after 1200ms for #${targetItem.index}. Retrying card entry..."
                     )
-                    dispatchTap(safeTapX, safeTapY)
+                    var retryProgrammaticClicked = false
+                    val freshRoot = rootInActiveWindow
+                    if (freshRoot != null) {
+                        val retryCard = findCardForTarget(freshRoot, targetItem)
+                        if (retryCard != null) {
+                            retryProgrammaticClicked = retryCard.clickableNode.performVerifiedClick("Retry Card #${targetItem.index} (\"$title\")")
+                            retryCard.clickableNode.recycle()
+                        }
+                        freshRoot.recycle()
+                    }
+                    if (!retryProgrammaticClicked) {
+                        dispatchTap(safeTapX, safeTapY, "Retry Tap Card #${targetItem.index} (\"$title\")")
+                    }
                     enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
                         val active = rootInActiveWindow ?: return@waitForCondition false
                         val isDetail = isPostDetailView(active)
@@ -1490,14 +1502,14 @@ class KidsAccessibilityService : AccessibilityService() {
                             val candSafeTapY = (candidateCard.bounds.top + 50).coerceIn(minTopSafeZone + 20, maxBottom - 20)
                             val targetClickable = findClickableTarget(candidateCard.clickableNode, nextItem.title)
                             val clicked = if (targetClickable != null) {
-                                val success = targetClickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                val success = targetClickable.performVerifiedClick("Candidate Card #${nextItem.index} (\"${nextItem.title}\")")
                                 targetClickable.recycle()
                                 success
                             } else {
-                                candidateCard.clickableNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                                candidateCard.clickableNode.performVerifiedClick("Candidate Card Container #${nextItem.index} (\"${nextItem.title}\")")
                             }
                             if (!clicked) {
-                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candSafeTapY.toFloat())
+                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candSafeTapY.toFloat(), "Candidate Card #${nextItem.index}")
                             }
                             candidateCard.clickableNode.recycle()
                             delay(800)
@@ -1611,8 +1623,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 database = db,
                 crawlerOverlay = crawlerOverlay,
                 rootInActiveWindowProvider = { findDriveRootNode() },
-                dispatchTapAction = { x, y -> dispatchTap(x, y) },
-                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y) },
+                dispatchTapAction = { x, y -> dispatchTap(x, y, "Phase 3 Drive Harvester Tap") },
+                dispatchLongPressAction = { x, y -> dispatchLongPress(x, y, 800L, "Phase 3 Drive Harvester Long Press") },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
                     dispatchSwipe(startX, startY, endX, endY, duration)
                 },
@@ -1861,11 +1873,11 @@ class KidsAccessibilityService : AccessibilityService() {
             val overflow = findOverflowMenuButton(active)
             if (overflow != null) {
                 CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Clicking overflow menu in viewer...")
-                val clicked = overflow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                val clicked = overflow.performVerifiedClick("Viewer Overflow 3-dots")
                 if (!clicked) {
                     val b = Rect()
                     overflow.getBoundsInScreen(b)
-                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                    dispatchTap(b.centerX().toFloat(), b.centerY().toFloat(), "Viewer Overflow 3-dots")
                 }
                 overflow.recycle()
                 // Reactive polling for popup menu appearance (replaces static delay)
@@ -1892,12 +1904,12 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (popupShare != null) {
                     val clickedLabel = popupShare?.text?.toString() ?: popupShare?.contentDescription?.toString() ?: "Send file / copy"
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" in overflow menu. Clicking it.")
-                    val clickOk = popupShare?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
+                    val clickOk = popupShare?.performVerifiedClick("Overflow '$clickedLabel'") == true
                     if (!clickOk) {
                         val b = Rect()
                         popupShare?.getBoundsInScreen(b)
                         if (b.width() > 0) {
-                            dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                            dispatchTap(b.centerX().toFloat(), b.centerY().toFloat(), "Overflow '$clickedLabel'")
                         }
                     }
                     popupShare?.recycle()
@@ -1915,11 +1927,11 @@ class KidsAccessibilityService : AccessibilityService() {
                     val clickedLabel = explicitAction.text?.toString() ?: explicitAction.contentDescription?.toString() ?: "Copy / Download"
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Found \"$clickedLabel\" button in viewer. Clicking it.")
                     crawlerOverlay?.updateStatus("Sharing...", fileName)
-                    val clicked = explicitAction.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    val clicked = explicitAction.performVerifiedClick("Viewer '$clickedLabel'")
                     if (!clicked) {
                         val b = Rect()
                         explicitAction.getBoundsInScreen(b)
-                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                        dispatchTap(b.centerX().toFloat(), b.centerY().toFloat(), "Viewer '$clickedLabel'")
                     }
                     explicitAction.recycle()
                     sharedOrDownloaded = true
@@ -2341,9 +2353,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 "ATTACHMENT_SHARE",
                 "Dynamically located \"K.I.D.S. Vault\" in share sheet at bounds ($bounds). Selecting it."
             )
-            val isClickDispatched = shareTargetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val isClickDispatched = shareTargetNode.performVerifiedClick("K.I.D.S. Vault Share Target")
             if (!isClickDispatched) {
-                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "K.I.D.S. Vault Share Target")
             }
             shareTargetNode.recycle()
             delay(1000) // Allow ShareTargetActivity to process intent and stage file
@@ -2375,11 +2387,11 @@ class KidsAccessibilityService : AccessibilityService() {
         val navUp = findNavigateUpButton(root)
         if (navUp != null) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
-            val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val clicked = navUp.performVerifiedClick("Navigate Up Button")
             if (!clicked) {
                 val b = Rect()
                 navUp.getBoundsInScreen(b)
-                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat())
+                dispatchTap(b.centerX().toFloat(), b.centerY().toFloat(), "Navigate Up Button")
             }
             navUp.recycle()
         } else {
@@ -2544,7 +2556,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 val root = window.root
                 val pkg = root?.packageName?.toString()?.lowercase().orEmpty()
                 root?.recycle()
-                if (pkg == "com.android.systemui") {
+                if (pkg == "com.android.systemui" || window.type == AccessibilityWindowInfo.TYPE_SYSTEM) {
                     val rect = Rect()
                     window.getBoundsInScreen(rect)
                     // A floating heads-up banner or notification shade extends downwards from the top (top <= 10)
@@ -2558,6 +2570,158 @@ class KidsAccessibilityService : AccessibilityService() {
             // Gracefully ignore window inspection exceptions
         }
         return false
+    }
+
+    private fun isAllowedSystemUiPackage(packageName: String): Boolean {
+        val lower = packageName.lowercase(Locale.US)
+        return lower == "android" ||
+                lower == "com.android.intentresolver" ||
+                lower == "com.android.documentsui" ||
+                lower == "com.google.android.apps.docs" ||
+                lower.contains("chooser") ||
+                lower.contains("resolver") ||
+                lower.contains("share")
+    }
+
+    /**
+     * Verifies that the screen and window state is completely safe to interact with:
+     * 1. Foreground window strictly belongs to an authorized school app or allowed system dialog.
+     * 2. No notification overlay, heads-up banner, or foreign app alert is visible.
+     * 3. Target coordinates are strictly within safe viewport boundaries and do not intersect any foreign window.
+     */
+    private suspend fun isSafeToInteractWithScreen(
+        x: Float? = null,
+        y: Float? = null,
+        targetDescription: String = ""
+    ): Boolean {
+        val activeRoot = rootInActiveWindow
+        if (activeRoot == null) {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Safety check failed: Active window root is null (window transition, lockscreen, or transient state).")
+            return false
+        }
+        val activePkg = activeRoot.packageName?.toString()?.lowercase(Locale.US).orEmpty()
+        activeRoot.recycle()
+        val isActiveOwnApp = activePkg.startsWith(applicationContext.packageName.lowercase(Locale.US)) || activePkg.contains("collector")
+        if (activePkg.isNotEmpty() && !isAuthorizedSchoolApp(activePkg) && !isAllowedSystemUiPackage(activePkg) && !isActiveOwnApp) {
+            CrawlerTraceLogger.log(
+                "CLICK_GUARD",
+                "BLOCKED interaction with '$targetDescription': Foreground package '$activePkg' is an unauthorized external app!"
+            )
+            return false
+        }
+
+        if (isSystemNotificationOverlayPresent()) {
+            CrawlerTraceLogger.log(
+                "NOTIFICATION_GUARD",
+                "System notification banner detected. Pausing interaction with '$targetDescription' until notification clears..."
+            )
+            val cleared = waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
+                !isSystemNotificationOverlayPresent()
+            }
+            if (!cleared) {
+                CrawlerTraceLogger.log(
+                    "NOTIFICATION_GUARD",
+                    "Notification banner still active after 3000ms. ABORTING interaction with '$targetDescription' to guarantee zero misclicks!"
+                )
+                return false
+            }
+        }
+
+        if (x != null && y != null) {
+            val displayMetrics = resources.displayMetrics
+            val minTopSafeZone = displayMetrics.density * 48f
+            val maxBottomSafeZone = displayMetrics.heightPixels - (displayMetrics.density * 48f)
+            if (y < minTopSafeZone || y > maxBottomSafeZone) {
+                CrawlerTraceLogger.log(
+                    "CLICK_GUARD",
+                    "BLOCKED gesture for '$targetDescription': Coordinate ($x, $y) is in unsafe system bar zone ($minTopSafeZone..$maxBottomSafeZone)."
+                )
+                return false
+            }
+
+            try {
+                val windowList = windows
+                if (windowList != null) {
+                    for (window in windowList) {
+                        val rect = Rect()
+                        window.getBoundsInScreen(rect)
+                        if (rect.contains(x.toInt(), y.toInt())) {
+                            val root = window.root
+                            val pkg = root?.packageName?.toString()?.lowercase(Locale.US).orEmpty()
+                            root?.recycle()
+                            val isOwnApp = pkg.startsWith(applicationContext.packageName.lowercase(Locale.US)) || pkg.contains("collector")
+                            if (pkg.isNotEmpty() && !isAuthorizedSchoolApp(pkg) && !isAllowedSystemUiPackage(pkg) && !isOwnApp) {
+                                CrawlerTraceLogger.log(
+                                    "CLICK_GUARD",
+                                    "BLOCKED gesture at ($x, $y) for '$targetDescription': Intersects unauthorized window '$pkg'."
+                                )
+                                return false
+                            }
+                        }
+                    }
+                }
+            } catch (_: Exception) {
+                // Ignore window query error
+            }
+        }
+
+        return true
+    }
+
+    /**
+     * Safely clicks an AccessibilityNodeInfo with multi-factor pre-verification:
+     * 1. Verifies the node's package belongs to an authorized school app or allowed system dialog.
+     * 2. Verifies the active foreground window belongs to an authorized app.
+     * 3. Attempts programmatic ACTION_CLICK on the node.
+     * 4. If direct click fails, searches clickable ancestors and triggers ACTION_CLICK.
+     *
+     * Programmatic clicks directly target internal view nodes via the accessibility bridge,
+     * completely immune to floating notification banners, heads-up overlays, or physical coordinate shifts.
+     */
+    private fun AccessibilityNodeInfo?.performVerifiedClick(targetDescription: String = ""): Boolean {
+        if (this == null) return false
+        val nodePkg = this.packageName?.toString()?.lowercase(Locale.US).orEmpty()
+        val isOwnApp = nodePkg.startsWith(applicationContext.packageName.lowercase(Locale.US)) || nodePkg.contains("collector")
+        if (nodePkg.isNotEmpty() && !isAuthorizedSchoolApp(nodePkg) && !isAllowedSystemUiPackage(nodePkg) && !isOwnApp) {
+            CrawlerTraceLogger.log(
+                "CLICK_GUARD",
+                "VETOED programmatic click on '$targetDescription': Node package '$nodePkg' is unauthorized."
+            )
+            return false
+        }
+
+        val active = rootInActiveWindow
+        if (active != null) {
+            val activePkg = active.packageName?.toString()?.lowercase(Locale.US).orEmpty()
+            active.recycle()
+            val isActiveOwnApp = activePkg.startsWith(applicationContext.packageName.lowercase(Locale.US)) || activePkg.contains("collector")
+            if (activePkg.isNotEmpty() && !isAuthorizedSchoolApp(activePkg) && !isAllowedSystemUiPackage(activePkg) && !isActiveOwnApp) {
+                CrawlerTraceLogger.log(
+                    "CLICK_GUARD",
+                    "VETOED programmatic click on '$targetDescription': Foreground app '$activePkg' is not an authorized app."
+                )
+                return false
+            }
+        }
+
+        var isClickSuccess = if (this.isClickable || this.actionList.any { it.id == AccessibilityNodeInfo.ACTION_CLICK }) {
+            this.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        } else false
+
+        if (!isClickSuccess) {
+            val clickableAncestor = findClickableAncestor(this)
+            if (clickableAncestor != null) {
+                isClickSuccess = clickableAncestor.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                clickableAncestor.recycle()
+            }
+        }
+
+        if (isClickSuccess) {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Verified programmatic click successfully delivered to '$targetDescription'.")
+        } else {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Programmatic click unhandled for '$targetDescription' (node is not clickable and has no clickable ancestors).")
+        }
+        return isClickSuccess
     }
 
     /**
@@ -2624,16 +2788,10 @@ class KidsAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private suspend fun dispatchTap(x: Float, y: Float): Boolean {
-        // Safe-Zone & Notification Guard: If a system notification banner is present, pause tap gesture
-        if (isSystemNotificationOverlayPresent()) {
-            CrawlerTraceLogger.log("NOTIFICATION_GUARD", "System notification banner detected. Pausing tap gesture until notification clears...")
-            val cleared = waitForCondition(timeoutMs = 3000, pollIntervalMs = 250) {
-                !isSystemNotificationOverlayPresent()
-            }
-            if (!cleared) {
-                CrawlerTraceLogger.log("NOTIFICATION_GUARD", "Notification banner still active after 3000ms. Proceeding cautiously.")
-            }
+    private suspend fun dispatchTap(x: Float, y: Float, targetDescription: String = ""): Boolean {
+        if (!isSafeToInteractWithScreen(x, y, targetDescription)) {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Aborting physical tap at ($x, $y) for '$targetDescription' due to safety verification failure.")
+            return false
         }
 
         isDispatchingCrawlerGesture = true
@@ -2663,7 +2821,12 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun dispatchLongPress(x: Float, y: Float, durationMs: Long = 800): Boolean {
+    private suspend fun dispatchLongPress(x: Float, y: Float, durationMs: Long = 800, targetDescription: String = ""): Boolean {
+        if (!isSafeToInteractWithScreen(x, y, targetDescription)) {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Aborting long press at ($x, $y) for '$targetDescription' due to safety verification failure.")
+            return false
+        }
+
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(x, y)
@@ -2758,11 +2921,11 @@ class KidsAccessibilityService : AccessibilityService() {
         CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Classroom account is not $cleanTarget (found: \"$avatarDesc\"). Switching...")
         crawlerOverlay?.updateStatus("Switching Account...", "Selecting $cleanTarget in Classroom")
 
-        val clicked = avatarNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val clicked = avatarNode.performVerifiedClick("Classroom Account Avatar")
         if (!clicked) {
             val rect = Rect()
             avatarNode.getBoundsInScreen(rect)
-            dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat())
+            dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat(), "Classroom Account Avatar")
         }
         avatarNode.recycle()
         root.recycle()
@@ -2781,19 +2944,11 @@ class KidsAccessibilityService : AccessibilityService() {
             if (dialogRoot != null) {
                 val targetNode = findNodeContainingText(dialogRoot, cleanTarget)
                 if (targetNode != null) {
-                    val selectOk = if (targetNode.isClickable) {
-                        targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    } else {
-                        findClickableAncestor(targetNode)?.let {
-                            val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                            it.recycle()
-                            ok
-                        } ?: false
-                    }
+                    val selectOk = targetNode.performVerifiedClick("Account Entry $cleanTarget")
                     if (!selectOk) {
                         val r = Rect()
                         targetNode.getBoundsInScreen(r)
-                        dispatchTap(r.centerX().toFloat(), r.centerY().toFloat())
+                        dispatchTap(r.centerX().toFloat(), r.centerY().toFloat(), "Account Entry $cleanTarget")
                     }
                     targetNode.recycle()
                     accountSwitched = true
@@ -2813,6 +2968,11 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 350): Boolean {
+        if (!isSafeToInteractWithScreen(startX, startY, "Swipe Gesture")) {
+            CrawlerTraceLogger.log("CLICK_GUARD", "Aborting swipe gesture ($startX,$startY -> $endX,$endY) due to safety verification failure.")
+            return false
+        }
+
         isDispatchingCrawlerGesture = true
         val path = Path().apply {
             moveTo(startX, startY)
@@ -3495,12 +3655,12 @@ class KidsAccessibilityService : AccessibilityService() {
         val streamTabButtonNode = findStreamTabButton(rootNode)
         if (streamTabButtonNode != null) {
             CrawlerTraceLogger.log("STREAM_RECOVERY", "Found Stream tab button. Clicking to restore Stream view...")
-            val clicked = streamTabButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            val clicked = streamTabButtonNode.performVerifiedClick("Stream Tab Button")
             val bounds = Rect()
             streamTabButtonNode.getBoundsInScreen(bounds)
             streamTabButtonNode.recycle()
             if (!clicked && bounds.width() > 0) {
-                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat())
+                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "Stream Tab Button")
             }
             delay(1000)
             return true
@@ -3509,7 +3669,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val tapX = displayMetrics.widthPixels * STREAM_TAB_FALLBACK_HORIZONTAL_RATIO
         val tapY = displayMetrics.heightPixels * STREAM_TAB_FALLBACK_VERTICAL_RATIO
         CrawlerTraceLogger.log("STREAM_RECOVERY", "Dispatching gesture tap to restore Stream tab at ($tapX, $tapY)...")
-        dispatchTap(tapX, tapY)
+        dispatchTap(tapX, tapY, "Stream Tab Fallback Position")
         delay(1000)
         return true
     }
@@ -3738,9 +3898,9 @@ class KidsAccessibilityService : AccessibilityService() {
             val safeClickX = rect.left + (rect.width() * SAFE_CARD_TAP_HORIZONTAL_RATIO)
             val safeClickY = rect.centerY().toFloat()
 
-            var isReentrySuccessful = dispatchTap(safeClickX, safeClickY)
+            var isReentrySuccessful = card.performVerifiedClick("Target Class Card")
             if (!isReentrySuccessful) {
-                isReentrySuccessful = card.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                isReentrySuccessful = dispatchTap(safeClickX, safeClickY, "Target Class Card Fallback Tap")
             }
             card.recycle()
             delay(1500) // Allow class stream to load
