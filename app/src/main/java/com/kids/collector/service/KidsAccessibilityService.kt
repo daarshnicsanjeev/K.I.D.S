@@ -2503,11 +2503,11 @@ class KidsAccessibilityService : AccessibilityService() {
         if (active != null && active.packageName?.toString()?.contains("apps.docs") == true) {
             return active
         }
-        active?.recycle()
         try {
             for (window in windows) {
                 val root = window.root ?: continue
                 if (root.packageName?.toString()?.contains("apps.docs") == true) {
+                    active?.recycle()
                     return root
                 }
                 root.recycle()
@@ -2515,7 +2515,7 @@ class KidsAccessibilityService : AccessibilityService() {
         } catch (_: Exception) {
             // Ignore windows inspection failure
         }
-        return rootInActiveWindow
+        return active
     }
 
     /**

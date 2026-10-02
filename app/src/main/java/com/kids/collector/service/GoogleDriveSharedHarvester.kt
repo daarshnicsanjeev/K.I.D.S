@@ -1224,6 +1224,30 @@ class GoogleDriveSharedHarvester(
     }
 
     /**
+     * Resiliently acquires the Google Drive active window root node, retrying up to [maxRetries] times
+     * with an adaptive settling interval to accommodate Android activity and fragment transition animations.
+     */
+    private suspend fun acquireDriveRootWithRetry(maxRetries: Int = 10, intervalMs: Long = 250L): AccessibilityNodeInfo? {
+        var retries = 0
+        while (serviceScope.isActive && retries < maxRetries) {
+            val candidate = rootInActiveWindowProvider()
+            if (candidate != null) {
+                val pkg = candidate.packageName?.toString() ?: ""
+                if (pkg.contains(DRIVE_PACKAGE_NAME)) {
+                    return candidate
+                }
+                if (retries >= 5) {
+                    return candidate
+                }
+                candidate.recycle()
+            }
+            delay(intervalMs)
+            retries++
+        }
+        return rootInActiveWindowProvider()
+    }
+
+    /**
      * Navigates to the "Shared" tab on Google Drive's bottom navigation bar.
      *
      * In Google Drive for Android, when inside any folder (such as the Classroom folder),
@@ -1241,7 +1265,14 @@ class GoogleDriveSharedHarvester(
         // Step A: If bottom navigation bar is not visible (e.g. inside a folder), navigate up/back to root
         var attempts = 0
         while (attempts < MAX_NAV_UP_ATTEMPTS && serviceScope.isActive) {
-            val root = rootInActiveWindowProvider() ?: break
+            val root = acquireDriveRootWithRetry()
+            if (root == null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Drive window not yet available during transition (attempt ${attempts + 1}). Bringing Drive to foreground...")
+                bringDriveToForeground()
+                delay(SETTLING_DELAY_MS)
+                attempts++
+                continue
+            }
             val currentPkg = root.packageName?.toString() ?: ""
             if (!currentPkg.contains(DRIVE_PACKAGE_NAME)) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Active window is not Google Drive ($currentPkg). Bringing Drive to foreground (attempt ${attempts + 1})...")
@@ -1267,7 +1298,7 @@ class GoogleDriveSharedHarvester(
                 delay(SETTLING_DELAY_MS + 200L)
 
                 // Verify that Shared tab is selected
-                val checkRoot = rootInActiveWindowProvider()
+                val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
                 val isStillDisplaced = if (checkRoot != null) {
                     val d = isDisplacedFromSharedTab(checkRoot)
                     checkRoot.recycle()
@@ -1305,7 +1336,7 @@ class GoogleDriveSharedHarvester(
                 dispatchTapAction(tabX, tabY)
                 delay(SETTLING_DELAY_MS + 200L)
 
-                val checkRoot = rootInActiveWindowProvider()
+                val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
                 val isStillDisplaced = if (checkRoot != null) {
                     val d = isDisplacedFromSharedTab(checkRoot)
                     checkRoot.recycle()
@@ -1352,8 +1383,8 @@ class GoogleDriveSharedHarvester(
             attempts++
         }
 
-        // Final attempt: check if Shared tab is now visible
-        val finalRoot = rootInActiveWindowProvider() ?: return false
+        // Final attempt: check if Shared tab is now visible with retry
+        val finalRoot = acquireDriveRootWithRetry(maxRetries = 8, intervalMs = 250L) ?: return false
         val finalPkg = finalRoot.packageName?.toString() ?: ""
         if (!finalPkg.contains(DRIVE_PACKAGE_NAME)) {
             finalRoot.recycle()
@@ -1372,7 +1403,7 @@ class GoogleDriveSharedHarvester(
             finalRoot.recycle()
             delay(SETTLING_DELAY_MS + 200L)
 
-            val checkRoot = rootInActiveWindowProvider()
+            val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
             val isStillDisplaced = if (checkRoot != null) {
                 val d = isDisplacedFromSharedTab(checkRoot)
                 checkRoot.recycle()
@@ -1404,7 +1435,7 @@ class GoogleDriveSharedHarvester(
             dispatchTapAction(tabX, tabY)
             delay(SETTLING_DELAY_MS + 200L)
 
-            val checkRoot = rootInActiveWindowProvider()
+            val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
             val isStillDisplaced = if (checkRoot != null) {
                 val d = isDisplacedFromSharedTab(checkRoot)
                 checkRoot.recycle()
@@ -2494,7 +2525,7 @@ class GoogleDriveSharedHarvester(
         return if (isLandscape) {
             bounds.right <= displayMetrics.widthPixels * 0.25f && bounds.width() > 0
         } else {
-            bounds.centerY() >= displayMetrics.heightPixels * 0.85f && bounds.height() > 0
+            bounds.centerY() >= displayMetrics.heightPixels * 0.78f && bounds.height() > 0
         }
     }
 
