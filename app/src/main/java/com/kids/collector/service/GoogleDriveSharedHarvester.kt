@@ -1622,7 +1622,7 @@ class GoogleDriveSharedHarvester(
                 parent.getBoundsInScreen(pr)
                 parent.recycle()
                 if (pr.width() > 0 && r.right >= pr.right - (displayMetrics.density * 48).toInt()) {
-                    return AccessibilityNodeInfo.obtain(row)
+                    return if (row.isClickable) AccessibilityNodeInfo.obtain(row) else (findClickableAncestor(row) ?: AccessibilityNodeInfo.obtain(row))
                 }
             }
         }
@@ -2014,12 +2014,15 @@ class GoogleDriveSharedHarvester(
         val isMatchByDesc = (desc.contains("more action") || desc.contains("more option") || desc.contains("option") || desc.contains("overflow")) &&
                 (desc.contains(lowerTitle) || (lowerTitle.length >= 6 && desc.contains(lowerTitle.take(12))))
         if (isMatchByDesc) {
-            return AccessibilityNodeInfo.obtain(root)
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else (findClickableAncestor(root) ?: AccessibilityNodeInfo.obtain(root))
         }
 
-        // Direct search: If node contains the item's title, find its row container and get the 3-dots node in that row
+        // Direct search: If node contains the item's title in text, desc, or viewId, find its row container and get the 3-dots node in that row
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
-        if (text == lowerTitle || (lowerTitle.length >= 8 && text.contains(lowerTitle.take(16)))) {
+        val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        val matchesTitle = text == lowerTitle || desc == lowerTitle || viewId.contains(lowerTitle) ||
+                (lowerTitle.length >= 8 && (text.contains(lowerTitle.take(16)) || desc.contains(lowerTitle.take(16)) || viewId.contains(lowerTitle.take(16))))
+        if (matchesTitle && !desc.contains("more action") && !desc.contains("more option")) {
             var rowAncestor: AccessibilityNodeInfo? = root.parent
             val displayMetrics = context.resources.displayMetrics
             val minRowHeight = (displayMetrics.density * 28).toInt()
@@ -2061,12 +2064,22 @@ class GoogleDriveSharedHarvester(
             val moreActionsNode = findMoreActionsNodeForItem(root, item.title)
                 ?: findMoreActionsNodeInRow(item.node)
             if (moreActionsNode != null) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking dedicated 3-dots button for \"${item.title}\"...")
-                val clicked = moreActionsNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking dedicated 3-dots button for \"${item.title}\" (clickable=${moreActionsNode.isClickable})...")
+                var clicked = moreActionsNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked && !moreActionsNode.isClickable) {
+                    val clickableParent = findClickableAncestor(moreActionsNode)
+                    if (clickableParent != null) {
+                        clicked = clickableParent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                        clickableParent.recycle()
+                    }
+                }
                 if (!clicked) {
                     val r = Rect()
                     moreActionsNode.getBoundsInScreen(r)
-                    if (r.width() > 0 && r.height() > 0) {
+                    val dm = context.resources.displayMetrics
+                    val safeTop = (dm.density * 56).toInt()
+                    val safeBottom = dm.heightPixels - (dm.density * 48).toInt()
+                    if (r.width() > 0 && r.height() > 0 && r.centerY() in safeTop..safeBottom) {
                         dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
                         openedActionSheet = true
                     }
@@ -2080,9 +2093,14 @@ class GoogleDriveSharedHarvester(
 
         // Strategy B: Use accurate recorded moreActionsBounds from row scanning
         if (!openedActionSheet && item.moreActionsBounds != null && item.moreActionsBounds.width() > 0) {
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping recorded 3-dots bounds for \"${item.title}\"...")
-            dispatchTapAction(item.moreActionsBounds.centerX().toFloat(), item.moreActionsBounds.centerY().toFloat())
-            openedActionSheet = true
+            val dm = context.resources.displayMetrics
+            val safeTop = (dm.density * 56).toInt()
+            val safeBottom = dm.heightPixels - (dm.density * 48).toInt()
+            if (item.moreActionsBounds.centerY() in safeTop..safeBottom) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping recorded 3-dots bounds for \"${item.title}\"...")
+                dispatchTapAction(item.moreActionsBounds.centerX().toFloat(), item.moreActionsBounds.centerY().toFloat())
+                openedActionSheet = true
+            }
         }
 
         // Strategy C: Physical 3-dots tap on far right edge (guaranteed NEVER to click the file body / thumbnail!)
