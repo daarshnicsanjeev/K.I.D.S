@@ -36,7 +36,7 @@ class GoogleDriveSharedHarvester(
     private val dispatchTapAction: suspend (Float, Float) -> Boolean,
     private val dispatchLongPressAction: suspend (Float, Float) -> Boolean,
     private val dispatchSwipeAction: suspend (Float, Float, Float, Float, Long) -> Boolean,
-    private val selectKidsInChooserAction: suspend () -> Unit,
+    private val selectKidsInChooserAction: suspend () -> Boolean,
     private val waitForConditionAction: suspend (Long, Long, () -> Boolean) -> Boolean,
     private val dispatchBackAction: suspend () -> Boolean = { true },
     private val dispatchHomeAction: (suspend () -> Boolean)? = null
@@ -2317,8 +2317,12 @@ class GoogleDriveSharedHarvester(
         }
         sendCopyNode?.recycle()
 
-        // 3. Select K.I.D.S. Vault in the Android system share sheet
-        selectKidsInChooserAction()
+        // 3. Select K.I.D.S. in the Android system share sheet
+        val dispatched = selectKidsInChooserAction()
+        if (!dispatched) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to select K.I.D.S. in system chooser.")
+            return false
+        }
 
         // 4. Wait for Google Drive to regain foreground focus
         waitForDriveForeground(10000L)
@@ -3763,11 +3767,12 @@ class GoogleDriveSharedHarvester(
         )
         var totalFromFolders = 0
 
+        // Ensure we start from the top of the Shared feed
+        scrollToTopOfSharedList()
+        delay(SETTLING_DELAY_MS)
+
         for (folderTitle in folderNames) {
             if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) break
-
-            navigateToSharedTab()
-            delay(SETTLING_DELAY_MS)
 
             val folderItem = findFolderItemInSharedList(folderTitle)
             if (folderItem != null) {
@@ -3778,21 +3783,83 @@ class GoogleDriveSharedHarvester(
                     "DRIVE_HARVESTER",
                     "Harvested $harvested items from folder \"$folderTitle\""
                 )
-                navigateToSharedTab()
                 delay(SETTLING_DELAY_MS)
             } else {
                 CrawlerTraceLogger.log(
                     "DRIVE_HARVESTER",
                     "Folder \"$folderTitle\" could not be located in Shared tab list."
                 )
+                scrollToTopOfSharedList()
+                delay(SETTLING_DELAY_MS)
             }
         }
         return totalFromFolders
     }
 
+    private suspend fun scrollToTopOfSharedList() {
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Returning to top of Shared tab...")
+        val root = rootInActiveWindowProvider()
+        if (root != null) {
+            val sharedTab = findSharedTabNode(root)
+            if (sharedTab != null) {
+                val rect = Rect()
+                sharedTab.getBoundsInScreen(rect)
+                if (rect.width() > 0 && rect.height() > 0) {
+                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
+                }
+                sharedTab.recycle()
+            }
+            root.recycle()
+        }
+        delay(SETTLING_DELAY_MS)
+
+        var previousTitles = listOf<String>()
+        var staticTopCount = 0
+        var scrollSteps = 0
+        val maxScrollSteps = 15
+        while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && scrollSteps < maxScrollSteps) {
+            val checkRoot = rootInActiveWindowProvider() ?: break
+            val items = scanVisibleDriveItems(checkRoot)
+            val currentTitles = items.map { it.title }
+            for (i in items) i.node.recycle()
+            checkRoot.recycle()
+
+            if (currentTitles.isNotEmpty() && currentTitles == previousTitles) {
+                staticTopCount++
+                if (staticTopCount >= 2) break
+            } else {
+                staticTopCount = 0
+                if (currentTitles.isNotEmpty()) previousTitles = currentTitles
+            }
+
+            var scrolled = false
+            val scrollRoot = rootInActiveWindowProvider()
+            if (scrollRoot != null) {
+                val container = findActualScrollableContainer(scrollRoot)
+                if (container != null) {
+                    scrolled = container.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                    container.recycle()
+                }
+                scrollRoot.recycle()
+            }
+            if (!scrolled) {
+                val dm = context.resources.displayMetrics
+                val swipeX = dm.widthPixels * 0.5f
+                val swipeStartY = dm.heightPixels * 0.35f
+                val swipeEndY = dm.heightPixels * 0.75f
+                dispatchSwipeAction(swipeX, swipeStartY, swipeX, swipeEndY, 450L)
+            }
+            delay(SETTLING_DELAY_MS)
+            scrollSteps++
+        }
+    }
+
     private suspend fun findFolderItemInSharedList(folderTitle: String): DriveSharedItem? {
-        val dynamicScrollLimit = calculateDynamicScrollPageLimit(10)
+        val dynamicScrollLimit = calculateDynamicScrollPageLimit(10).coerceAtMost(25)
         var page = 0
+        var lastVisibleTitles = listOf<String>()
+        var consecutiveStaticPages = 0
+
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < dynamicScrollLimit) {
             val root = rootInActiveWindowProvider() ?: return null
             val items = scanVisibleDriveItems(root)
@@ -3804,6 +3871,21 @@ class GoogleDriveSharedHarvester(
                 root.recycle()
                 return match
             }
+
+            val visibleTitles = items.map { it.title }
+            if (visibleTitles.isNotEmpty() && visibleTitles == lastVisibleTitles) {
+                consecutiveStaticPages++
+                if (consecutiveStaticPages >= MAX_CONSECUTIVE_STATIC_PAGES) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Reached bottom of Shared list while looking for folder \"$folderTitle\".")
+                    for (item in items) item.node.recycle()
+                    root.recycle()
+                    break
+                }
+            } else {
+                consecutiveStaticPages = 0
+                if (visibleTitles.isNotEmpty()) lastVisibleTitles = visibleTitles
+            }
+
             for (item in items) item.node.recycle()
             root.recycle()
             page++

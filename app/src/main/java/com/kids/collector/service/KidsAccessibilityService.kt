@@ -2316,10 +2316,10 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isKidsVaultLabel(raw: String?): Boolean {
         if (raw.isNullOrBlank()) return false
-        val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "")
-        // Strictly require both "kids" and "vault" (matches "K.I.D.S. Vault", "kidsvault")
-        // NEVER match "K.I.D.S. Assistant", "Auto-Capture", or single "K"
-        return clean == "kidsvault" || clean.contains("kidsvault")
+        val clean = raw.lowercase().replace(".", "").replace(" ", "").replace("_", "").trim()
+        // Matches "K.I.D.S.", "K.I.D.S. Vault", "Kids", "kidsvault", "kidscollector"
+        return clean == "kids" || clean == "kidsvault" || clean == "kidscollector" ||
+                clean.startsWith("kids")
     }
 
     private fun findKidsShareTarget(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
@@ -2436,7 +2436,7 @@ class KidsAccessibilityService : AccessibilityService() {
         return textList.joinToString("|").hashCode().toString()
     }
 
-    private suspend fun selectKidsInSystemChooser() {
+    private suspend fun selectKidsInSystemChooser(): Boolean {
         var target: AccessibilityNodeInfo? = null
 
         // Check if Google Drive's collaborator invite screen ("Add people") appeared instead of the system chooser
@@ -2445,7 +2445,7 @@ class KidsAccessibilityService : AccessibilityService() {
             // Guard: If already back in Post Detail view, do nothing and return immediately!
             if (isPostDetailView(activeRoot)) {
                 activeRoot.recycle()
-                return
+                return false
             }
             val texts = mutableListOf<String>()
             collectQuickText(activeRoot, texts)
@@ -2455,11 +2455,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Google Drive collaborator screen detected instead of system share sheet. Pressing Back.")
                 performGlobalAction(GLOBAL_ACTION_BACK)
                 delay(600)
-                return
+                return false
             }
         }
 
-        // Wait patiently (up to 8000ms) for system chooser to appear and locate K.I.D.S. Vault dynamically.
+        // Wait patiently (up to 8000ms) for system chooser to appear and locate K.I.D.S. dynamically.
         // As long as the file is not directly closed, the share sheet will be displayed by Android.
         waitForCondition(timeoutMs = 8000, pollIntervalMs = 250) {
             target = findKidsShareTargetInAllWindows()
@@ -2472,10 +2472,10 @@ class KidsAccessibilityService : AccessibilityService() {
             if (checkDetail != null) {
                 val inDetail = isPostDetailView(checkDetail)
                 checkDetail.recycle()
-                if (inDetail) return
+                if (inDetail) return false
             }
 
-            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not visible in initial chooser view. Expanding bottom sheet and scrolling...")
+            CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. not visible in initial chooser view. Expanding bottom sheet and scrolling...")
             val displayMetrics = resources.displayMetrics
             val screenWidth = displayMetrics.widthPixels
             val screenHeight = displayMetrics.heightPixels
@@ -2494,7 +2494,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     currentCheck.recycle()
                     if (inClassroom) {
                         CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Returned to Classroom during share sheet search. Halting scroll search.")
-                        return
+                        return false
                     }
                 }
                 scrollAttempts++
@@ -2504,31 +2504,34 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
-        target?.let { shareTargetNode ->
+        return if (target != null) {
+            val shareTargetNode = target
             val bounds = Rect()
-            shareTargetNode.getBoundsInScreen(bounds)
+            shareTargetNode?.getBoundsInScreen(bounds)
             CrawlerTraceLogger.log(
                 "ATTACHMENT_SHARE",
-                "Dynamically located \"K.I.D.S. Vault\" in share sheet at bounds ($bounds). Selecting it."
+                "Dynamically located \"K.I.D.S.\" in share sheet at bounds ($bounds). Selecting it."
             )
-            val isClickDispatched = shareTargetNode.performVerifiedClick("K.I.D.S. Vault Share Target")
-            if (!isClickDispatched) {
-                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "K.I.D.S. Vault Share Target")
+            val isClickDispatched = shareTargetNode?.performVerifiedClick("K.I.D.S. Share Target") == true
+            if (!isClickDispatched && bounds.width() > 0) {
+                dispatchTap(bounds.centerX().toFloat(), bounds.centerY().toFloat(), "K.I.D.S. Share Target")
             }
-            shareTargetNode.recycle()
+            shareTargetNode?.recycle()
             delay(1000) // Allow ShareTargetActivity to process intent and stage file
-        } ?: run {
+            true
+        } else {
             // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail, stream, or classes list!
             val currentWindow = rootInActiveWindow
             if (currentWindow != null) {
                 val isClassroomView = isPostDetailView(currentWindow) || isStreamOrClassworkView(currentWindow) || isClassesListScreen(currentWindow)
                 currentWindow.recycle()
                 if (!isClassroomView) {
-                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. Vault not found in system share sheet after full expansion. Dismissing share sheet.")
+                    CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. not found in system share sheet after full expansion. Dismissing share sheet.")
                     performGlobalAction(GLOBAL_ACTION_BACK)
                     delay(600)
                 }
             }
+            false
         }
     }
 
