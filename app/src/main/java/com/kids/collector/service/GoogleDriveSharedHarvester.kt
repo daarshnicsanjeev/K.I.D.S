@@ -1289,7 +1289,7 @@ class GoogleDriveSharedHarvester(
                 val rect = Rect()
                 sharedTabNode.getBoundsInScreen(rect)
                 val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked && rect.width() > 0) {
+                if (rect.width() > 0 && rect.height() > 0) {
                     dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
                 }
                 sharedTabNode.recycle()
@@ -1375,6 +1375,13 @@ class GoogleDriveSharedHarvester(
                 dispatchBackAction()
             } else {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "At root level or awaiting bottom navigation bar render (attempt ${attempts + 1})...")
+                if (attempts >= 1) {
+                    val debugRoot = acquireDriveRootWithRetry(maxRetries = 2, intervalMs = 100L)
+                    if (debugRoot != null) {
+                        logDriveNavigationDebugSnapshot(debugRoot)
+                        debugRoot.recycle()
+                    }
+                }
                 delay(SETTLING_DELAY_MS)
             }
 
@@ -1395,7 +1402,7 @@ class GoogleDriveSharedHarvester(
             val rect = Rect()
             finalSharedTab.getBoundsInScreen(rect)
             val clicked = finalSharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked && rect.width() > 0) {
+            if (rect.width() > 0 && rect.height() > 0) {
                 dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
             }
             finalSharedTab.recycle()
@@ -2766,15 +2773,14 @@ class GoogleDriveSharedHarvester(
     private fun isInDriveNavigationRailOrBar(bounds: Rect, displayMetrics: DisplayMetrics): Boolean {
         val isLandscape = displayMetrics.widthPixels > displayMetrics.heightPixels
         val maxTabWidth = (displayMetrics.widthPixels * 0.35f).toInt()
-        val minTabHeight = (displayMetrics.density * 36).toInt()
-        val maxTabHeight = (displayMetrics.density * 110).toInt()
+        val minTabHeight = (displayMetrics.density * 28).toInt()
+        val maxTabHeight = (displayMetrics.density * 120).toInt()
         return if (isLandscape) {
             bounds.right <= displayMetrics.widthPixels * 0.25f && bounds.width() in 1..maxTabWidth
         } else {
             bounds.width() in 1..maxTabWidth &&
                     bounds.height() in minTabHeight..maxTabHeight &&
-                    bounds.bottom >= displayMetrics.heightPixels - (displayMetrics.density * 60).toInt() &&
-                    bounds.centerY() >= displayMetrics.heightPixels * 0.82f
+                    bounds.centerY() >= displayMetrics.heightPixels * 0.78f
         }
     }
 
@@ -2952,9 +2958,8 @@ class GoogleDriveSharedHarvester(
         val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
         val isExcludedSubtitle = desc.contains("shared by") || desc.contains("shared on") ||
-                desc.contains("shared with") || text.contains("shared by") ||
-                text.contains("shared on") || text.contains("shared with") ||
                 desc.contains("shared yesterday") || desc.contains("shared today") ||
+                text.contains("shared by") || text.contains("shared on") ||
                 text.contains("shared yesterday") || text.contains("shared today") ||
                 desc.endsWith(".pdf") || desc.endsWith(".mp3") || desc.endsWith(".m4a") ||
                 text.endsWith(".pdf") || text.endsWith(".mp3") || text.endsWith(".m4a") ||
@@ -2965,12 +2970,24 @@ class GoogleDriveSharedHarvester(
         val inNavZone = isInDriveNavigationRailOrBar(bounds, displayMetrics) || viewId.contains("menu_navigation_shared")
 
         if (!isInsideFileList && isTabElement && !isExcludedSubtitle && inNavZone) {
-            val isSharedTab = viewId.contains("menu_navigation_shared") ||
-                    text.equals("shared", ignoreCase = true) ||
-                    desc.equals("shared", ignoreCase = true) ||
-                    desc.startsWith("shared, tab") ||
-                    desc.startsWith("shared tab") ||
+            val isOtherTab = viewId.contains("menu_navigation_home") ||
+                    viewId.contains("menu_navigation_starred") ||
+                    viewId.contains("menu_navigation_files") ||
+                    viewId.contains("menu_navigation_drives") ||
+                    text.equals("home", ignoreCase = true) ||
+                    text.equals("starred", ignoreCase = true) ||
+                    text.equals("files", ignoreCase = true) ||
+                    text.equals("drives", ignoreCase = true) ||
+                    desc.startsWith("home") ||
+                    desc.startsWith("starred") ||
+                    desc.startsWith("files")
+
+            val isSharedTab = !isOtherTab && (
+                    viewId.contains("shared") ||
+                    text.contains("shared", ignoreCase = true) ||
+                    desc.contains("shared", ignoreCase = true) ||
                     desc.contains("tab 3 of") || desc.contains("tab, 3 of") || desc.contains("3 of 4")
+            )
 
             if (isSharedTab) {
                 val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestorInNavZone(node, displayMetrics)
@@ -2990,6 +3007,39 @@ class GoogleDriveSharedHarvester(
             child.recycle()
         }
         return null
+    }
+
+    private fun logDriveNavigationDebugSnapshot(root: AccessibilityNodeInfo) {
+        val dm = context.resources.displayMetrics
+        val minTop = (dm.heightPixels * 0.70f).toInt()
+        val bottomNodes = mutableListOf<String>()
+        collectBottomZoneNodes(root, minTop, bottomNodes)
+        if (bottomNodes.isNotEmpty()) {
+            val sample = bottomNodes.take(10).joinToString(" | ")
+            CrawlerTraceLogger.log("DRIVE_TAB_DEBUG", "Bottom zone elements: $sample")
+        }
+    }
+
+    private fun collectBottomZoneNodes(node: AccessibilityNodeInfo, minTop: Int, result: MutableList<String>) {
+        val b = Rect()
+        node.getBoundsInScreen(b)
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        val id = node.viewIdResourceName ?: ""
+        val cls = node.className?.toString()?.substringAfterLast('.') ?: ""
+        if (b.top >= minTop && (text.isNotBlank() || desc.isNotBlank() || id.isNotBlank())) {
+            val label = listOfNotNull(
+                if (text.isNotBlank()) "text='$text'" else null,
+                if (desc.isNotBlank()) "desc='$desc'" else null,
+                if (id.isNotBlank()) "id='${id.substringAfterLast('/')}'" else null
+            ).joinToString(",")
+            result.add("$cls($label, bounds=$b)")
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectBottomZoneNodes(child, minTop, result)
+            child.recycle()
+        }
     }
 
     /**
