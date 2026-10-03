@@ -56,6 +56,9 @@ interface NoticeDao {
     @Query("SELECT COUNT(*) FROM notices")
     suspend fun getTotalNoticeCount(): Int
 
+    @Query("SELECT MIN(timestampMs) FROM notices WHERE timestampMs > 0")
+    suspend fun getOldestNoticeTimestamp(): Long?
+
     // Full-Text Search via FTS4
     @Query("""
         SELECT notices.* FROM notices
