@@ -635,19 +635,38 @@ class KidsAccessibilityService : AccessibilityService() {
         if (exitDebounceJob?.isActive == true) return
 
         exitDebounceJob = serviceScope.launch {
-            // Immediate graceful halt if user explicitly pressed Home or switched to Home Launcher
-            if (isHomeScreenOrLauncher(foreignPackage)) {
-                if (checkAndDismissSystemAnr()) {
-                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Dismissed system ANR before home exit check. Relaunching school app...")
-                    relaunchSchoolApp()
+            // 1. Immediate check: Ignore background/gesture system events if the active foreground window
+            // is still an authorized school app or Google Drive. On MIUI/HyperOS/Samsung, the system
+            // gesture bar or wallpaper host (e.g. com.miui.home) dispatches transient window events
+            // during scrolls or touches even when the school app remains fully active in the foreground!
+            val immediateActivePackage = rootInActiveWindow?.packageName?.toString() ?: ""
+            if (isAuthorizedSchoolApp(immediateActivePackage)) {
+                CrawlerTraceLogger.log(
+                    "DEEP_CRAWLER",
+                    "Ignored transient event from \"$foreignPackage\" - foreground window is still active authorized app ($immediateActivePackage)."
+                )
+                return@launch
+            }
+
+            // Also inspect visible windows: if an authorized school app window is visible, do not exit
+            try {
+                val hasVisibleSchoolWindow = windows.any { window ->
+                    val windowRootNode = window.root
+                    try {
+                        windowRootNode?.packageName?.toString()?.let { isAuthorizedSchoolApp(it) } == true
+                    } finally {
+                        windowRootNode?.recycle()
+                    }
+                }
+                if (hasVisibleSchoolWindow) {
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Ignored transient event from \"$foreignPackage\" - authorized school window is currently visible."
+                    )
                     return@launch
                 }
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "User navigated to Home/Launcher. Halting crawler and dismissing overlay.")
-                stopDeepCrawl()
-                crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
-                crawlerOverlay?.dismissAndRemove()
-                triggerDriveSync(applicationContext)
-                return@launch
+            } catch (e: Exception) {
+                // Ignore window query failure
             }
 
             delay(APP_EXIT_DEBOUNCE_MILLIS)
@@ -673,6 +692,24 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
             } catch (e: Exception) {
                 // Ignore window query failure
+            }
+
+            // 3. Graceful halt if user genuinely navigated to Home or switched to Home Launcher after debounce
+            if (isHomeScreenOrLauncher(foreignPackage) || isHomeScreenOrLauncher(currentPackageName)) {
+                if (checkAndDismissSystemAnr()) {
+                    CrawlerTraceLogger.log("DEEP_CRAWLER", "Dismissed system ANR before home exit check. Relaunching school app...")
+                    relaunchSchoolApp()
+                    return@launch
+                }
+                CrawlerTraceLogger.log(
+                    "DEEP_CRAWLER",
+                    "Confirmed user navigated to Home/Launcher (\"$currentPackageName\"). Halting crawler and dismissing overlay."
+                )
+                stopDeepCrawl()
+                crawlerOverlay?.stopAutoScroll(isUserInitiated = false, reason = "User navigated to Home")
+                crawlerOverlay?.dismissAndRemove()
+                triggerDriveSync(applicationContext)
+                return@launch
             }
 
             if (crawlerOverlay?.isAutoScrollingActive() == true) {
