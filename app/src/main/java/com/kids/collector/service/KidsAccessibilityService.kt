@@ -69,6 +69,7 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val POST_RETURN_PACING_DELAY_MILLIS = 500L
         private const val INTER_POST_SETTLING_DELAY_MILLIS = 600L
         private const val ANR_RESOLUTION_WAIT_DELAY_MILLIS = 1_000L
+        private const val MAX_STEADY_INGESTION_CYCLES = 5
 
         fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
             val normalizedTarget = java.text.Normalizer.normalize(targetFileName, java.text.Normalizer.Form.NFC)
@@ -1691,6 +1692,28 @@ class KidsAccessibilityService : AccessibilityService() {
 
             val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = targetEmail ?: targetChild?.accountEmail)
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
+
+            if (harvestedCount > 0 && crawlerOverlay?.isAutoScrollingActive() == true) {
+                crawlerOverlay?.updateStatus("Saving to Vault...", "Ingesting $harvestedCount dispatched files...")
+                var previousSavedCount = -1
+                var steadyCheckCount = 0
+                while (serviceScope.isActive && steadyCheckCount < MAX_STEADY_INGESTION_CYCLES) {
+                    delay(1200L)
+                    val currentSavedCount = db.attachmentDao().getAllAttachmentsDirect().count {
+                        it.localUri.isNotBlank() || (!it.driveFileId.isNullOrBlank() && !it.driveFileId.startsWith("virtual_"))
+                    }
+                    crawlerOverlay?.updateStatus(
+                        "Saving to Vault ($currentSavedCount files)...",
+                        "Processing background stream..."
+                    )
+                    if (currentSavedCount == previousSavedCount) {
+                        steadyCheckCount++
+                    } else {
+                        steadyCheckCount = 0
+                        previousSavedCount = currentSavedCount
+                    }
+                }
+            }
         }
 
         val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
