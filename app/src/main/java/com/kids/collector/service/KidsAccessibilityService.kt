@@ -70,6 +70,9 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val INTER_POST_SETTLING_DELAY_MILLIS = 600L
         private const val ANR_RESOLUTION_WAIT_DELAY_MILLIS = 1_000L
         private const val MAX_STEADY_INGESTION_CYCLES = 5
+        private const val ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS = 1200L
+        private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 1500L
+        private const val ATTACHMENT_WAKE_SETTLE_DELAY_MS = 350L
 
         fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
             val normalizedTarget = java.text.Normalizer.normalize(targetFileName, java.text.Normalizer.Form.NFC)
@@ -1890,6 +1893,10 @@ class KidsAccessibilityService : AccessibilityService() {
         val totalAttCount = db.attachmentDao().getAttachmentsForNotice(noticeId).size
         db.noticeDao().update(noticeEntity.copy(attachmentCount = totalAttCount))
 
+        if (allAttachments.isNotEmpty() && crawlerOverlay?.isAutoScrollingActive() == true) {
+            fastWakeAttachmentsInDrive(allAttachments, title)
+        }
+
         for (att in allAttachments) {
             att.downloadNode?.recycle()
             att.clickableChip?.recycle()
@@ -1901,6 +1908,80 @@ class KidsAccessibilityService : AccessibilityService() {
         )
 
         return allAttachments.size
+    }
+
+    /**
+     * Fast Touch: Taps uncaptured attachment chips in Classroom and immediately presses Back.
+     * This registers the student's access with Google's backend, prompting Google Drive to
+     * immediately populate the file in "Shared with me" where the single-pass multi-selector harvests it.
+     */
+    private suspend fun fastWakeAttachmentsInDrive(attachments: List<ExtractedAttachmentDetail>, postTitle: String) {
+        val db = KidsDatabase.getInstance(applicationContext)
+
+        for (i in attachments.indices) {
+            if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) break
+
+            val att = attachments[i]
+            val isAlreadyCaptured = db.attachmentDao().getAllAttachmentsDirect().any {
+                it.fileName.equals(att.fileName, ignoreCase = true) &&
+                        (it.localUri.isNotBlank() || (!it.driveFileId.isNullOrBlank() && !it.driveFileId.startsWith("virtual_")))
+            }
+            if (isAlreadyCaptured) {
+                continue
+            }
+
+            val currentRoot = rootInActiveWindow ?: continue
+            if (!isPostDetailView(currentRoot)) {
+                currentRoot.recycle()
+                break
+            }
+
+            val freshAtts = extractDetailAttachments(currentRoot)
+            val targetAtt = freshAtts.find { it.fileName.equals(att.fileName, ignoreCase = true) } ?: freshAtts.getOrNull(i)
+            val chip = targetAtt?.clickableChip
+
+            if (chip != null) {
+                CrawlerTraceLogger.log("FAST_WAKE", "Touching chip for \"${att.fileName}\" to register in Drive...")
+                crawlerOverlay?.updateStatus("Waking in Drive...", att.fileName.take(30))
+
+                var clicked = chip.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                if (!clicked) {
+                    val rect = Rect()
+                    chip.getBoundsInScreen(rect)
+                    if (rect.width() > 0 && rect.height() > 0) {
+                        dispatchTap(rect.centerX().toFloat(), rect.centerY().toFloat(), "Touch Chip \"${att.fileName}\"")
+                        clicked = true
+                    }
+                }
+
+                if (clicked) {
+                    val viewerOpened = waitForCondition(timeoutMs = ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS, pollIntervalMs = 150L) {
+                        val active = rootInActiveWindow ?: return@waitForCondition false
+                        val isExternal = !isPostDetailView(active) && !isStreamOrClassworkView(active)
+                        active.recycle()
+                        isExternal
+                    }
+
+                    if (viewerOpened) {
+                        delay(ATTACHMENT_WAKE_SETTLE_DELAY_MS)
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                        waitForCondition(timeoutMs = ATTACHMENT_WAKE_RETURN_TIMEOUT_MS, pollIntervalMs = 150L) {
+                            val active = rootInActiveWindow ?: return@waitForCondition false
+                            val isBack = isPostDetailView(active)
+                            active.recycle()
+                            isBack
+                        }
+                        delay(200L)
+                    }
+                }
+            }
+
+            for (f in freshAtts) {
+                f.downloadNode?.recycle()
+                f.clickableChip?.recycle()
+            }
+            currentRoot.recycle()
+        }
     }
 
     /**

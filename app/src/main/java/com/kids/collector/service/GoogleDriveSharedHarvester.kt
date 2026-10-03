@@ -758,6 +758,13 @@ class GoogleDriveSharedHarvester(
                 isContinuousMultiSelecting = false
             }
 
+            // Step 6: Harvest Discovered Folders (e.g. Teacher Assignment & Subject Folders)
+            if (processedFolderNames.isNotEmpty() && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
+                val pendingAfterRoot = getPendingUncapturedAttachments()
+                val folderHarvested = harvestDiscoveredFolders(processedFolderNames, pendingAfterRoot)
+                totalHarvestedCount += folderHarvested
+            }
+
             CrawlerTraceLogger.log(
                 "DRIVE_HARVESTER",
                 "Google Drive Shared Tab Harvest completed: $totalHarvestedCount files dispatched to K.I.D.S. Vault."
@@ -3743,6 +3750,67 @@ class GoogleDriveSharedHarvester(
         } catch (_: Exception) {
             false
         }
+    }
+
+    private suspend fun harvestDiscoveredFolders(
+        folderNames: Set<String>,
+        pendingAttachments: List<AttachmentEntity>
+    ): Int {
+        if (folderNames.isEmpty()) return 0
+        CrawlerTraceLogger.log(
+            "DRIVE_HARVESTER",
+            "Commencing dynamic child-aware folder harvest for ${folderNames.size} folders: $folderNames"
+        )
+        var totalFromFolders = 0
+
+        for (folderTitle in folderNames) {
+            if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) break
+
+            navigateToSharedTab()
+            delay(SETTLING_DELAY_MS)
+
+            val folderItem = findFolderItemInSharedList(folderTitle)
+            if (folderItem != null) {
+                val harvested = harvestFolder(folderItem, pendingAttachments)
+                folderItem.node.recycle()
+                totalFromFolders += harvested
+                CrawlerTraceLogger.log(
+                    "DRIVE_HARVESTER",
+                    "Harvested $harvested items from folder \"$folderTitle\""
+                )
+                navigateToSharedTab()
+                delay(SETTLING_DELAY_MS)
+            } else {
+                CrawlerTraceLogger.log(
+                    "DRIVE_HARVESTER",
+                    "Folder \"$folderTitle\" could not be located in Shared tab list."
+                )
+            }
+        }
+        return totalFromFolders
+    }
+
+    private suspend fun findFolderItemInSharedList(folderTitle: String): DriveSharedItem? {
+        val dynamicScrollLimit = calculateDynamicScrollPageLimit(10)
+        var page = 0
+        while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && page < dynamicScrollLimit) {
+            val root = rootInActiveWindowProvider() ?: return null
+            val items = scanVisibleDriveItems(root)
+            val match = items.find { it.isFolder && it.title.equals(folderTitle, ignoreCase = true) }
+            if (match != null) {
+                for (item in items) {
+                    if (item != match) item.node.recycle()
+                }
+                root.recycle()
+                return match
+            }
+            for (item in items) item.node.recycle()
+            root.recycle()
+            page++
+            scrollSharedListForward(preserveSelection = false)
+            delay(SETTLING_DELAY_MS)
+        }
+        return null
     }
 
     private suspend fun isFolderItemRelevant(
