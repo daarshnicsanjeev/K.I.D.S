@@ -1370,11 +1370,11 @@ class GoogleDriveSharedHarvester(
                 if (!clickedNavUp) {
                     dispatchBackAction()
                 }
-            } else if (folderTitle != null) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside folder \"$folderTitle\" without visible up button. Pressing Back toward root (attempt ${attempts + 1})...")
+            } else if (folderTitle != null && !isTopLevelDriveTitle(folderTitle)) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside subfolder \"$folderTitle\" without visible up button. Pressing Back toward root (attempt ${attempts + 1})...")
                 dispatchBackAction()
             } else {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "No folder navigation detected. Awaiting bottom navigation bar render (attempt ${attempts + 1})...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "At root level or awaiting bottom navigation bar render (attempt ${attempts + 1})...")
                 delay(SETTLING_DELAY_MS)
             }
 
@@ -2796,15 +2796,14 @@ class GoogleDriveSharedHarvester(
     }
 
     /**
-     * Checks if the node is inside a scrollable list container (RecyclerView, ListView, ScrollView).
+     * Checks if the node is inside a scrollable list container (RecyclerView, ListView).
      * Bottom navigation tabs live strictly outside scrollable file list containers.
      */
     private fun isInsideScrollableList(node: AccessibilityNodeInfo): Boolean {
         var current = node.parent
         while (current != null) {
             val cls = current.className?.toString() ?: ""
-            if (cls.contains("RecyclerView") || cls.contains("ListView") ||
-                cls.contains("ScrollView") || cls.contains("ViewPager")) {
+            if (cls.contains("RecyclerView") || cls.contains("ListView")) {
                 current.recycle()
                 return true
             }
@@ -3777,13 +3776,17 @@ class GoogleDriveSharedHarvester(
         return null
     }
 
+    private fun isTopLevelDriveTitle(title: String): Boolean {
+        val clean = title.trim().lowercase(Locale.US)
+        return clean in setOf(
+            "home", "starred", "shared", "shared with me", "files", "google drive", "search", "search in drive", "my drive", "computers", "drive"
+        )
+    }
+
     private fun findDriveCurrentFolderTitle(root: AccessibilityNodeInfo): String? {
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
         val text = root.text?.toString()?.trim() ?: ""
-        val lowerText = text.lowercase(Locale.US)
-        val isNonFolderTitle = lowerText in setOf(
-            "home", "starred", "shared", "shared with me", "files", "google drive", "search", "search in drive"
-        )
+        val isNonFolderTitle = isTopLevelDriveTitle(text)
         if (!isNonFolderTitle && (viewId.contains("title") || viewId.contains("action_bar") || viewId.contains("toolbar")) && text.isNotBlank()) {
             return text
         }
