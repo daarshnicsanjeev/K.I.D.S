@@ -2590,7 +2590,7 @@
       "file_type": "code",
       "norm_label": ".collectallscrollablenodes()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2248"
+      "source_location": "L2266"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_collectavailableaccountrows",
@@ -2614,7 +2614,7 @@
       "file_type": "code",
       "norm_label": ".collectbottomzonenodes()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3083"
+      "source_location": "L3101"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_collectdriveitemsrecursively",
@@ -2674,7 +2674,7 @@
       "file_type": "code",
       "norm_label": ".collecttopheadertexts()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3232"
+      "source_location": "L3250"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissanyactiveviewer",
@@ -2686,7 +2686,7 @@
       "file_type": "code",
       "norm_label": ".dismissanyactiveviewer()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2295"
+      "source_location": "L2313"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissaudioplayerifactive",
@@ -2698,7 +2698,7 @@
       "file_type": "code",
       "norm_label": ".dismissaudioplayerifactive()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2336"
+      "source_location": "L2354"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissmultiselectmode",
@@ -2722,7 +2722,7 @@
       "file_type": "code",
       "norm_label": ".dispatchsingleitemviarowmenu()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2055"
+      "source_location": "L2058"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dumpvisiblescreensummary",
@@ -2734,7 +2734,7 @@
       "file_type": "code",
       "norm_label": ".dumpvisiblescreensummary()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2268"
+      "source_location": "L2286"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_ensureatdriveroot",
@@ -2758,7 +2758,7 @@
       "file_type": "code",
       "norm_label": ".ensuredatesharedsorting()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3179"
+      "source_location": "L3197"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_ensuredescendingsortdirection",
@@ -2770,7 +2770,7 @@
       "file_type": "code",
       "norm_label": ".ensuredescendingsortdirection()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3328"
+      "source_location": "L3346"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_ensuredriveaccount",
@@ -2794,7 +2794,7 @@
       "file_type": "code",
       "norm_label": ".ensurelistlayout()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3122"
+      "source_location": "L3140"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_ensureproperviewandsorting",
@@ -2806,7 +2806,7 @@
       "file_type": "code",
       "norm_label": ".ensureproperviewandsorting()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3111"
+      "source_location": "L3129"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_executeharvest",
@@ -2830,7 +2830,7 @@
       "file_type": "code",
       "norm_label": ".findaccountavatarnode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3414"
+      "source_location": "L3432"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findaccountrowinsheet",
@@ -2854,7 +2854,7 @@
       "file_type": "code",
       "norm_label": ".findactualscrollablecontainer()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2207"
+      "source_location": "L2225"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findaudiopausebutton",
@@ -2866,7 +2866,7 @@
       "file_type": "code",
       "norm_label": ".findaudiopausebutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2377"
+      "source_location": "L2395"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findaudioplayerdismissbutton",
@@ -2878,7 +2878,7 @@
       "file_type": "code",
       "norm_label": ".findaudioplayerdismissbutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2401"
+      "source_location": "L2419"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findaudioplayerdismissbuttoninternal",
@@ -2890,7 +2890,7 @@
       "file_type": "code",
       "norm_label": ".findaudioplayerdismissbuttoninternal()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2408"
+      "source_location": "L2426"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findaudioplayertracktitle",
@@ -2902,7 +2902,7 @@
       "file_type": "code",
       "norm_label": ".findaudioplayertracktitle()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2274"
+      "source_location": "L2292"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findclassroomfolderdrawernode",
@@ -2926,7 +2926,7 @@
       "file_type": "code",
       "norm_label": ".findclickableancestor()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3962"
+      "source_location": "L3980"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findclickableancestorinnavzone",
@@ -2938,7 +2938,7 @@
       "file_type": "code",
       "norm_label": ".findclickableancestorinnavzone()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2847"
+      "source_location": "L2865"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findcloseselectionbutton",
@@ -2962,7 +2962,7 @@
       "file_type": "code",
       "norm_label": ".findcurrentsortlabel()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3222"
+      "source_location": "L3240"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_finddrivecurrentfoldertitle",
@@ -2974,7 +2974,7 @@
       "file_type": "code",
       "norm_label": ".finddrivecurrentfoldertitle()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3896"
+      "source_location": "L3914"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findfirstscrollablenode",
@@ -2986,7 +2986,7 @@
       "file_type": "code",
       "norm_label": ".findfirstscrollablenode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2232"
+      "source_location": "L2250"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findhamburgernode",
@@ -3058,7 +3058,7 @@
       "file_type": "code",
       "norm_label": ".findnavigateupbutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3837"
+      "source_location": "L3855"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findnavigateupbuttoninternal",
@@ -3070,7 +3070,7 @@
       "file_type": "code",
       "norm_label": ".findnavigateupbuttoninternal()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3843"
+      "source_location": "L3861"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findnodecontainingtext",
@@ -3082,7 +3082,7 @@
       "file_type": "code",
       "norm_label": ".findnodecontainingtext()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3448"
+      "source_location": "L3466"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findoverflowmenubutton",
@@ -3094,7 +3094,7 @@
       "file_type": "code",
       "norm_label": ".findoverflowmenubutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3468"
+      "source_location": "L3486"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findreversesortbutton",
@@ -3106,7 +3106,7 @@
       "file_type": "code",
       "norm_label": ".findreversesortbutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3383"
+      "source_location": "L3401"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findselectednonsharedtab",
@@ -3118,7 +3118,7 @@
       "file_type": "code",
       "norm_label": ".findselectednonsharedtab()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2941"
+      "source_location": "L2959"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findselectednonsharedtabinternal",
@@ -3130,7 +3130,7 @@
       "file_type": "code",
       "norm_label": ".findselectednonsharedtabinternal()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2946"
+      "source_location": "L2964"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findsendcopynode",
@@ -3142,7 +3142,7 @@
       "file_type": "code",
       "norm_label": ".findsendcopynode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3529"
+      "source_location": "L3547"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findsharedtabnode",
@@ -3154,7 +3154,7 @@
       "file_type": "code",
       "norm_label": ".findsharedtabnode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3001"
+      "source_location": "L3019"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findsharedtabnodeinternal",
@@ -3166,7 +3166,7 @@
       "file_type": "code",
       "norm_label": ".findsharedtabnodeinternal()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3006"
+      "source_location": "L3024"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findsorttriggernode",
@@ -3178,7 +3178,7 @@
       "file_type": "code",
       "norm_label": ".findsorttriggernode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3250"
+      "source_location": "L3268"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findswitchtolistlayoutnode",
@@ -3190,7 +3190,7 @@
       "file_type": "code",
       "norm_label": ".findswitchtolistlayoutnode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3152"
+      "source_location": "L3170"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findtoprightactionbutton",
@@ -3202,7 +3202,7 @@
       "file_type": "code",
       "norm_label": ".findtoprightactionbutton()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3501"
+      "source_location": "L3519"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_getenrolledchildnames",
@@ -3214,7 +3214,7 @@
       "file_type": "code",
       "norm_label": ".getenrolledchildnames()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3553"
+      "source_location": "L3571"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_getpendinguncapturedattachments",
@@ -3226,7 +3226,7 @@
       "file_type": "code",
       "norm_label": ".getpendinguncapturedattachments()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2259"
+      "source_location": "L2277"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_handledrivechooserifpresent",
@@ -3238,7 +3238,7 @@
       "file_type": "code",
       "norm_label": ".handledrivechooserifpresent()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2555"
+      "source_location": "L2573"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_handledrivenetworkretryprompt",
@@ -3250,7 +3250,7 @@
       "file_type": "code",
       "norm_label": ".handledrivenetworkretryprompt()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2613"
+      "source_location": "L2631"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_handlestraydrivedialogifpresent",
@@ -3262,7 +3262,7 @@
       "file_type": "code",
       "norm_label": ".handlestraydrivedialogifpresent()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2585"
+      "source_location": "L2603"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_harvestcurrentopenfolder",
@@ -3274,7 +3274,7 @@
       "file_type": "code",
       "norm_label": ".harvestcurrentopenfolder()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3926"
+      "source_location": "L3944"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_harvestfolder",
@@ -3286,7 +3286,7 @@
       "file_type": "code",
       "norm_label": ".harvestfolder()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3634"
+      "source_location": "L3652"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_hasdrivesearchbar",
@@ -3298,7 +3298,7 @@
       "file_type": "code",
       "norm_label": ".hasdrivesearchbar()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2637"
+      "source_location": "L2655"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_hasdrivesearchbarinternal",
@@ -3310,7 +3310,7 @@
       "file_type": "code",
       "norm_label": ".hasdrivesearchbarinternal()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2643"
+      "source_location": "L2661"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_hasvisibledrivefilelist",
@@ -3322,7 +3322,7 @@
       "file_type": "code",
       "norm_label": ".hasvisibledrivefilelist()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2667"
+      "source_location": "L2685"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isclassroomdraweropen",
@@ -3346,7 +3346,7 @@
       "file_type": "code",
       "norm_label": ".iscurrentlyonsharedscreen()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2765"
+      "source_location": "L2783"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_iscurriculumresourcefile",
@@ -3370,7 +3370,7 @@
       "file_type": "code",
       "norm_label": ".isdisplacedfromsharedtab()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2802"
+      "source_location": "L2820"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isdrivevieweroreditorscreen",
@@ -3382,7 +3382,7 @@
       "file_type": "code",
       "norm_label": ".isdrivevieweroreditorscreen()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2681"
+      "source_location": "L2699"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isfolderitemrelevant",
@@ -3394,7 +3394,7 @@
       "file_type": "code",
       "norm_label": ".isfolderitemrelevant()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3591"
+      "source_location": "L3609"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isindrivenavigationrailorbar",
@@ -3406,7 +3406,7 @@
       "file_type": "code",
       "norm_label": ".isindrivenavigationrailorbar()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2833"
+      "source_location": "L2851"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isinsidefolderwithoutbottomnav",
@@ -3418,7 +3418,7 @@
       "file_type": "code",
       "norm_label": ".isinsidefolderwithoutbottomnav()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2757"
+      "source_location": "L2775"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isinsidescrollablelist",
@@ -3430,7 +3430,7 @@
       "file_type": "code",
       "norm_label": ".isinsidescrollablelist()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2868"
+      "source_location": "L2886"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_islikelyfileorfoldertitle",
@@ -3454,7 +3454,7 @@
       "file_type": "code",
       "norm_label": ".isnavigationtabelementtype()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2888"
+      "source_location": "L2906"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isnodemarkedselected",
@@ -3466,7 +3466,7 @@
       "file_type": "code",
       "norm_label": ".isnodemarkedselected()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2821"
+      "source_location": "L2839"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isstraydrivebottomsheet",
@@ -3478,7 +3478,7 @@
       "file_type": "code",
       "norm_label": ".isstraydrivebottomsheet()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2727"
+      "source_location": "L2745"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isstuckmultiselectmode",
@@ -3490,7 +3490,7 @@
       "file_type": "code",
       "norm_label": ".isstuckmultiselectmode()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2745"
+      "source_location": "L2763"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_issystemheadertitle",
@@ -3514,7 +3514,7 @@
       "file_type": "code",
       "norm_label": ".isteachercuratedfolder()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3573"
+      "source_location": "L3591"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_istopleveldrivetitle",
@@ -3526,7 +3526,7 @@
       "file_type": "code",
       "norm_label": ".istopleveldrivetitle()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3889"
+      "source_location": "L3907"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_logdrivenavigationdebugsnapshot",
@@ -3538,7 +3538,7 @@
       "file_type": "code",
       "norm_label": ".logdrivenavigationdebugsnapshot()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3072"
+      "source_location": "L3090"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_matchdriveitemtopendingattachment",
@@ -3598,7 +3598,7 @@
       "file_type": "code",
       "norm_label": ".performdriveautorecoveryifdisplaced()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2468"
+      "source_location": "L2486"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_returnonefolderup",
@@ -3610,7 +3610,7 @@
       "file_type": "code",
       "norm_label": ".returnonefolderup()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3808"
+      "source_location": "L3826"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_scanvisibledriveitems",
@@ -3634,7 +3634,7 @@
       "file_type": "code",
       "norm_label": ".scrollsharedlistforward()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2166"
+      "source_location": "L2184"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_selectanddispatchbatch",
@@ -3658,7 +3658,7 @@
       "file_type": "code",
       "norm_label": ".selectdatesharedoptioninbottomsheet()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3287"
+      "source_location": "L3305"
     },
     {
       "id": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_splittitleandextension",
@@ -3682,7 +3682,7 @@
       "file_type": "code",
       "norm_label": ".waitfordriveforeground()",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2151"
+      "source_location": "L2169"
     },
     {
       "id": "app_src_main_java_com_kids_collector_data_drive_safvaultmanager_safvaultmanager_appendtextfile",
@@ -15657,7 +15657,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2254",
+      "source_location": "L2272",
       "weight": 1.0
     },
     {
@@ -15681,7 +15681,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3100",
+      "source_location": "L3118",
       "weight": 1.0
     },
     {
@@ -15777,7 +15777,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3245",
+      "source_location": "L3263",
       "weight": 1.0
     },
     {
@@ -15789,7 +15789,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2299",
+      "source_location": "L2317",
       "weight": 1.0
     },
     {
@@ -15801,7 +15801,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2301",
+      "source_location": "L2319",
       "weight": 1.0
     },
     {
@@ -15813,7 +15813,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2302",
+      "source_location": "L2320",
       "weight": 1.0
     },
     {
@@ -15825,7 +15825,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2303",
+      "source_location": "L2321",
       "weight": 1.0
     },
     {
@@ -15837,7 +15837,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2304",
+      "source_location": "L2322",
       "weight": 1.0
     },
     {
@@ -15849,7 +15849,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2312",
+      "source_location": "L2330",
       "weight": 1.0
     },
     {
@@ -15861,7 +15861,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2338",
+      "source_location": "L2356",
       "weight": 1.0
     },
     {
@@ -15873,7 +15873,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2341",
+      "source_location": "L2359",
       "weight": 1.0
     },
     {
@@ -15885,7 +15885,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2343",
+      "source_location": "L2361",
       "weight": 1.0
     },
     {
@@ -15897,7 +15897,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2358",
+      "source_location": "L2376",
       "weight": 1.0
     },
     {
@@ -15945,7 +15945,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2061",
+      "source_location": "L2064",
       "weight": 1.0
     },
     {
@@ -15957,7 +15957,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2062",
+      "source_location": "L2065",
       "weight": 1.0
     },
     {
@@ -15969,7 +15969,19 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2064",
+      "source_location": "L2067",
+      "weight": 1.0
+    },
+    {
+      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dispatchsingleitemviarowmenu",
+      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findclickableancestor",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
+      "source_location": "L2070",
       "weight": 1.0
     },
     {
@@ -15981,7 +15993,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2110",
+      "source_location": "L2128",
       "weight": 1.0
     },
     {
@@ -15993,7 +16005,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2118",
+      "source_location": "L2136",
       "weight": 1.0
     },
     {
@@ -16005,7 +16017,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2119",
+      "source_location": "L2137",
       "weight": 1.0
     },
     {
@@ -16017,7 +16029,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2121",
+      "source_location": "L2139",
       "weight": 1.0
     },
     {
@@ -16029,7 +16041,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2147",
+      "source_location": "L2165",
       "weight": 1.0
     },
     {
@@ -16041,7 +16053,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2270",
+      "source_location": "L2288",
       "weight": 1.0
     },
     {
@@ -16101,7 +16113,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3183",
+      "source_location": "L3201",
       "weight": 1.0
     },
     {
@@ -16113,7 +16125,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3185",
+      "source_location": "L3203",
       "weight": 1.0
     },
     {
@@ -16125,7 +16137,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3191",
+      "source_location": "L3209",
       "weight": 1.0
     },
     {
@@ -16137,7 +16149,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3202",
+      "source_location": "L3220",
       "weight": 1.0
     },
     {
@@ -16149,7 +16161,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3219",
+      "source_location": "L3237",
       "weight": 1.0
     },
     {
@@ -16161,7 +16173,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3332",
+      "source_location": "L3350",
       "weight": 1.0
     },
     {
@@ -16173,7 +16185,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3334",
+      "source_location": "L3352",
       "weight": 1.0
     },
     {
@@ -16185,7 +16197,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3348",
+      "source_location": "L3366",
       "weight": 1.0
     },
     {
@@ -16197,7 +16209,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3356",
+      "source_location": "L3374",
       "weight": 1.0
     },
     {
@@ -16209,7 +16221,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3360",
+      "source_location": "L3378",
       "weight": 1.0
     },
     {
@@ -16305,7 +16317,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3124",
+      "source_location": "L3142",
       "weight": 1.0
     },
     {
@@ -16317,7 +16329,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3126",
+      "source_location": "L3144",
       "weight": 1.0
     },
     {
@@ -16329,7 +16341,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3130",
+      "source_location": "L3148",
       "weight": 1.0
     },
     {
@@ -16341,7 +16353,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3112",
+      "source_location": "L3130",
       "weight": 1.0
     },
     {
@@ -16353,7 +16365,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3113",
+      "source_location": "L3131",
       "weight": 1.0
     },
     {
@@ -16365,7 +16377,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3114",
+      "source_location": "L3132",
       "weight": 1.0
     },
     {
@@ -16605,7 +16617,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3438",
+      "source_location": "L3456",
       "weight": 1.0
     },
     {
@@ -16641,7 +16653,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2209",
+      "source_location": "L2227",
       "weight": 1.0
     },
     {
@@ -16653,7 +16665,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2386",
+      "source_location": "L2404",
       "weight": 1.0
     },
     {
@@ -16665,7 +16677,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2391",
+      "source_location": "L2409",
       "weight": 1.0
     },
     {
@@ -16677,7 +16689,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2405",
+      "source_location": "L2423",
       "weight": 1.0
     },
     {
@@ -16689,7 +16701,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2430",
+      "source_location": "L2448",
       "weight": 1.0
     },
     {
@@ -16701,7 +16713,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2446",
+      "source_location": "L2464",
       "weight": 1.0
     },
     {
@@ -16713,7 +16725,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2276",
+      "source_location": "L2294",
       "weight": 1.0
     },
     {
@@ -16809,7 +16821,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2852",
+      "source_location": "L2870",
       "weight": 1.0
     },
     {
@@ -16833,7 +16845,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3224",
+      "source_location": "L3242",
       "weight": 1.0
     },
     {
@@ -16845,7 +16857,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3899",
+      "source_location": "L3917",
       "weight": 1.0
     },
     {
@@ -16857,7 +16869,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3916",
+      "source_location": "L3934",
       "weight": 1.0
     },
     {
@@ -16869,7 +16881,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2238",
+      "source_location": "L2256",
       "weight": 1.0
     },
     {
@@ -17042,6 +17054,18 @@
     },
     {
       "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findmoreactionsnodeforitem",
+      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findclickableancestor",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
+      "source_location": "L2017",
+      "weight": 1.0
+    },
+    {
+      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findmoreactionsnodeforitem",
       "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_findmoreactionsnodeinrow",
       "relation": "calls",
       "_origin": "ast",
@@ -17049,7 +17073,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2031",
+      "source_location": "L2034",
       "weight": 1.0
     },
     {
@@ -17061,7 +17085,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2045",
+      "source_location": "L2048",
       "weight": 1.0
     },
     {
@@ -17097,7 +17121,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3840",
+      "source_location": "L3858",
       "weight": 1.0
     },
     {
@@ -17109,7 +17133,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3874",
+      "source_location": "L3892",
       "weight": 1.0
     },
     {
@@ -17121,7 +17145,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3879",
+      "source_location": "L3897",
       "weight": 1.0
     },
     {
@@ -17133,7 +17157,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3458",
+      "source_location": "L3476",
       "weight": 1.0
     },
     {
@@ -17145,7 +17169,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3486",
+      "source_location": "L3504",
       "weight": 1.0
     },
     {
@@ -17157,7 +17181,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3491",
+      "source_location": "L3509",
       "weight": 1.0
     },
     {
@@ -17169,7 +17193,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3399",
+      "source_location": "L3417",
       "weight": 1.0
     },
     {
@@ -17181,7 +17205,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3404",
+      "source_location": "L3422",
       "weight": 1.0
     },
     {
@@ -17193,7 +17217,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2943",
+      "source_location": "L2961",
       "weight": 1.0
     },
     {
@@ -17205,7 +17229,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2959",
+      "source_location": "L2977",
       "weight": 1.0
     },
     {
@@ -17217,7 +17241,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2960",
+      "source_location": "L2978",
       "weight": 1.0
     },
     {
@@ -17229,7 +17253,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2961",
+      "source_location": "L2979",
       "weight": 1.0
     },
     {
@@ -17241,7 +17265,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2984",
+      "source_location": "L3002",
       "weight": 1.0
     },
     {
@@ -17253,7 +17277,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2985",
+      "source_location": "L3003",
       "weight": 1.0
     },
     {
@@ -17265,7 +17289,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2991",
+      "source_location": "L3009",
       "weight": 1.0
     },
     {
@@ -17277,7 +17301,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3538",
+      "source_location": "L3556",
       "weight": 1.0
     },
     {
@@ -17289,7 +17313,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3543",
+      "source_location": "L3561",
       "weight": 1.0
     },
     {
@@ -17301,7 +17325,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3003",
+      "source_location": "L3021",
       "weight": 1.0
     },
     {
@@ -17313,7 +17337,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3028",
+      "source_location": "L3046",
       "weight": 1.0
     },
     {
@@ -17325,7 +17349,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3029",
+      "source_location": "L3047",
       "weight": 1.0
     },
     {
@@ -17337,7 +17361,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3030",
+      "source_location": "L3048",
       "weight": 1.0
     },
     {
@@ -17349,7 +17373,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3053",
+      "source_location": "L3071",
       "weight": 1.0
     },
     {
@@ -17361,7 +17385,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3062",
+      "source_location": "L3080",
       "weight": 1.0
     },
     {
@@ -17373,7 +17397,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3272",
+      "source_location": "L3290",
       "weight": 1.0
     },
     {
@@ -17385,7 +17409,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3277",
+      "source_location": "L3295",
       "weight": 1.0
     },
     {
@@ -17397,7 +17421,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3161",
+      "source_location": "L3179",
       "weight": 1.0
     },
     {
@@ -17409,7 +17433,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3166",
+      "source_location": "L3184",
       "weight": 1.0
     },
     {
@@ -17421,7 +17445,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3519",
+      "source_location": "L3537",
       "weight": 1.0
     },
     {
@@ -17433,7 +17457,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3555",
+      "source_location": "L3573",
       "weight": 1.0
     },
     {
@@ -17445,7 +17469,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2562",
+      "source_location": "L2580",
       "weight": 1.0
     },
     {
@@ -17457,7 +17481,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2565",
+      "source_location": "L2583",
       "weight": 1.0
     },
     {
@@ -17469,7 +17493,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2618",
+      "source_location": "L2636",
       "weight": 1.0
     },
     {
@@ -17481,7 +17505,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2620",
+      "source_location": "L2638",
       "weight": 1.0
     },
     {
@@ -17493,7 +17517,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2593",
+      "source_location": "L2611",
       "weight": 1.0
     },
     {
@@ -17505,7 +17529,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2595",
+      "source_location": "L2613",
       "weight": 1.0
     },
     {
@@ -17517,7 +17541,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3928",
+      "source_location": "L3946",
       "weight": 1.0
     },
     {
@@ -17529,7 +17553,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3930",
+      "source_location": "L3948",
       "weight": 1.0
     },
     {
@@ -17541,7 +17565,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3933",
+      "source_location": "L3951",
       "weight": 1.0
     },
     {
@@ -17553,7 +17577,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3934",
+      "source_location": "L3952",
       "weight": 1.0
     },
     {
@@ -17565,7 +17589,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3937",
+      "source_location": "L3955",
       "weight": 1.0
     },
     {
@@ -17577,7 +17601,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3944",
+      "source_location": "L3962",
       "weight": 1.0
     },
     {
@@ -17589,7 +17613,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3945",
+      "source_location": "L3963",
       "weight": 1.0
     },
     {
@@ -17601,7 +17625,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3639",
+      "source_location": "L3657",
       "weight": 1.0
     },
     {
@@ -17613,7 +17637,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3641",
+      "source_location": "L3659",
       "weight": 1.0
     },
     {
@@ -17625,7 +17649,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3650",
+      "source_location": "L3668",
       "weight": 1.0
     },
     {
@@ -17637,7 +17661,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3667",
+      "source_location": "L3685",
       "weight": 1.0
     },
     {
@@ -17649,7 +17673,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3674",
+      "source_location": "L3692",
       "weight": 1.0
     },
     {
@@ -17661,7 +17685,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3675",
+      "source_location": "L3693",
       "weight": 1.0
     },
     {
@@ -17673,7 +17697,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3676",
+      "source_location": "L3694",
       "weight": 1.0
     },
     {
@@ -17685,7 +17709,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3694",
+      "source_location": "L3712",
       "weight": 1.0
     },
     {
@@ -17697,7 +17721,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3700",
+      "source_location": "L3718",
       "weight": 1.0
     },
     {
@@ -17709,7 +17733,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3700",
+      "source_location": "L3718",
       "weight": 1.0
     },
     {
@@ -17721,7 +17745,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3700",
+      "source_location": "L3718",
       "weight": 1.0
     },
     {
@@ -17733,7 +17757,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3701",
+      "source_location": "L3719",
       "weight": 1.0
     },
     {
@@ -17745,7 +17769,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3707",
+      "source_location": "L3725",
       "weight": 1.0
     },
     {
@@ -17757,7 +17781,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3727",
+      "source_location": "L3745",
       "weight": 1.0
     },
     {
@@ -17769,7 +17793,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3744",
+      "source_location": "L3762",
       "weight": 1.0
     },
     {
@@ -17781,7 +17805,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3790",
+      "source_location": "L3808",
       "weight": 1.0
     },
     {
@@ -17793,7 +17817,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3797",
+      "source_location": "L3815",
       "weight": 1.0
     },
     {
@@ -17805,7 +17829,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3802",
+      "source_location": "L3820",
       "weight": 1.0
     },
     {
@@ -17817,7 +17841,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2640",
+      "source_location": "L2658",
       "weight": 1.0
     },
     {
@@ -17829,7 +17853,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2658",
+      "source_location": "L2676",
       "weight": 1.0
     },
     {
@@ -17841,7 +17865,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2668",
+      "source_location": "L2686",
       "weight": 1.0
     },
     {
@@ -17853,7 +17877,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2673",
+      "source_location": "L2691",
       "weight": 1.0
     },
     {
@@ -17877,7 +17901,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2767",
+      "source_location": "L2785",
       "weight": 1.0
     },
     {
@@ -17889,7 +17913,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2774",
+      "source_location": "L2792",
       "weight": 1.0
     },
     {
@@ -17901,7 +17925,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2781",
+      "source_location": "L2799",
       "weight": 1.0
     },
     {
@@ -17913,7 +17937,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2788",
+      "source_location": "L2806",
       "weight": 1.0
     },
     {
@@ -17949,7 +17973,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2804",
+      "source_location": "L2822",
       "weight": 1.0
     },
     {
@@ -17961,7 +17985,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2807",
+      "source_location": "L2825",
       "weight": 1.0
     },
     {
@@ -17973,7 +17997,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2813",
+      "source_location": "L2831",
       "weight": 1.0
     },
     {
@@ -17985,7 +18009,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2682",
+      "source_location": "L2700",
       "weight": 1.0
     },
     {
@@ -17997,7 +18021,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2687",
+      "source_location": "L2705",
       "weight": 1.0
     },
     {
@@ -18009,7 +18033,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2694",
+      "source_location": "L2712",
       "weight": 1.0
     },
     {
@@ -18021,7 +18045,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2694",
+      "source_location": "L2712",
       "weight": 1.0
     },
     {
@@ -18033,7 +18057,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2699",
+      "source_location": "L2717",
       "weight": 1.0
     },
     {
@@ -18045,7 +18069,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2706",
+      "source_location": "L2724",
       "weight": 1.0
     },
     {
@@ -18057,7 +18081,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2708",
+      "source_location": "L2726",
       "weight": 1.0
     },
     {
@@ -18069,7 +18093,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2709",
+      "source_location": "L2727",
       "weight": 1.0
     },
     {
@@ -18081,7 +18105,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2721",
+      "source_location": "L2739",
       "weight": 1.0
     },
     {
@@ -18093,7 +18117,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3600",
+      "source_location": "L3618",
       "weight": 1.0
     },
     {
@@ -18105,7 +18129,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3613",
+      "source_location": "L3631",
       "weight": 1.0
     },
     {
@@ -18117,7 +18141,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3620",
+      "source_location": "L3638",
       "weight": 1.0
     },
     {
@@ -18129,7 +18153,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3622",
+      "source_location": "L3640",
       "weight": 1.0
     },
     {
@@ -18141,7 +18165,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2758",
+      "source_location": "L2776",
       "weight": 1.0
     },
     {
@@ -18153,7 +18177,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2759",
+      "source_location": "L2777",
       "weight": 1.0
     },
     {
@@ -18177,7 +18201,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2729",
+      "source_location": "L2747",
       "weight": 1.0
     },
     {
@@ -18189,7 +18213,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2738",
+      "source_location": "L2756",
       "weight": 1.0
     },
     {
@@ -18201,7 +18225,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2746",
+      "source_location": "L2764",
       "weight": 1.0
     },
     {
@@ -18213,7 +18237,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2752",
+      "source_location": "L2770",
       "weight": 1.0
     },
     {
@@ -18225,7 +18249,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3076",
+      "source_location": "L3094",
       "weight": 1.0
     },
     {
@@ -18237,7 +18261,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3079",
+      "source_location": "L3097",
       "weight": 1.0
     },
     {
@@ -18489,7 +18513,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2470",
+      "source_location": "L2488",
       "weight": 1.0
     },
     {
@@ -18501,7 +18525,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2471",
+      "source_location": "L2489",
       "weight": 1.0
     },
     {
@@ -18513,7 +18537,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2472",
+      "source_location": "L2490",
       "weight": 1.0
     },
     {
@@ -18525,7 +18549,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2473",
+      "source_location": "L2491",
       "weight": 1.0
     },
     {
@@ -18537,7 +18561,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2478",
+      "source_location": "L2496",
       "weight": 1.0
     },
     {
@@ -18549,7 +18573,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2484",
+      "source_location": "L2502",
       "weight": 1.0
     },
     {
@@ -18561,7 +18585,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2494",
+      "source_location": "L2512",
       "weight": 1.0
     },
     {
@@ -18573,7 +18597,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2505",
+      "source_location": "L2523",
       "weight": 1.0
     },
     {
@@ -18585,7 +18609,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2510",
+      "source_location": "L2528",
       "weight": 1.0
     },
     {
@@ -18597,7 +18621,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2516",
+      "source_location": "L2534",
       "weight": 1.0
     },
     {
@@ -18609,7 +18633,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2522",
+      "source_location": "L2540",
       "weight": 1.0
     },
     {
@@ -18621,7 +18645,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2523",
+      "source_location": "L2541",
       "weight": 1.0
     },
     {
@@ -18633,7 +18657,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2529",
+      "source_location": "L2547",
       "weight": 1.0
     },
     {
@@ -18645,7 +18669,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2541",
+      "source_location": "L2559",
       "weight": 1.0
     },
     {
@@ -18657,7 +18681,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2547",
+      "source_location": "L2565",
       "weight": 1.0
     },
     {
@@ -18669,7 +18693,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3809",
+      "source_location": "L3827",
       "weight": 1.0
     },
     {
@@ -18681,7 +18705,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3813",
+      "source_location": "L3831",
       "weight": 1.0
     },
     {
@@ -18729,7 +18753,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2168",
+      "source_location": "L2186",
       "weight": 1.0
     },
     {
@@ -18741,7 +18765,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2175",
+      "source_location": "L2193",
       "weight": 1.0
     },
     {
@@ -18753,7 +18777,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2185",
+      "source_location": "L2203",
       "weight": 1.0
     },
     {
@@ -18801,7 +18825,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3289",
+      "source_location": "L3307",
       "weight": 1.0
     },
     {
@@ -18813,7 +18837,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3296",
+      "source_location": "L3314",
       "weight": 1.0
     },
     {
@@ -18825,7 +18849,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3300",
+      "source_location": "L3318",
       "weight": 1.0
     },
     {
@@ -23925,7 +23949,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2248",
+      "source_location": "L2266",
       "weight": 1.0
     },
     {
@@ -23973,7 +23997,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2259",
+      "source_location": "L2277",
       "weight": 1.0
     },
     {
@@ -23985,7 +24009,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3926",
+      "source_location": "L3944",
       "weight": 1.0
     },
     {
@@ -23997,7 +24021,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3634",
+      "source_location": "L3652",
       "weight": 1.0
     },
     {
@@ -24009,7 +24033,7 @@
       "confidence_score": 1.0,
       "context": "generic_arg",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3591",
+      "source_location": "L3609",
       "weight": 1.0
     },
     {
@@ -32532,7 +32556,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3083",
+      "source_location": "L3101",
       "weight": 1.0
     },
     {
@@ -32568,7 +32592,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3232",
+      "source_location": "L3250",
       "weight": 1.0
     },
     {
@@ -32580,7 +32604,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2336",
+      "source_location": "L2354",
       "weight": 1.0
     },
     {
@@ -32592,7 +32616,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2055",
+      "source_location": "L2058",
       "weight": 1.0
     },
     {
@@ -32604,7 +32628,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2268",
+      "source_location": "L2286",
       "weight": 1.0
     },
     {
@@ -32616,7 +32640,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2408",
+      "source_location": "L2426",
       "weight": 1.0
     },
     {
@@ -32628,7 +32652,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2274",
+      "source_location": "L2292",
       "weight": 1.0
     },
     {
@@ -32652,7 +32676,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2847",
+      "source_location": "L2865",
       "weight": 1.0
     },
     {
@@ -32664,7 +32688,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3222",
+      "source_location": "L3240",
       "weight": 1.0
     },
     {
@@ -32676,7 +32700,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3896",
+      "source_location": "L3914",
       "weight": 1.0
     },
     {
@@ -32712,7 +32736,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3843",
+      "source_location": "L3861",
       "weight": 1.0
     },
     {
@@ -32724,7 +32748,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2946",
+      "source_location": "L2964",
       "weight": 1.0
     },
     {
@@ -32736,7 +32760,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3006",
+      "source_location": "L3024",
       "weight": 1.0
     },
     {
@@ -32748,7 +32772,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2613",
+      "source_location": "L2631",
       "weight": 1.0
     },
     {
@@ -32760,7 +32784,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2585",
+      "source_location": "L2603",
       "weight": 1.0
     },
     {
@@ -32772,7 +32796,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3634",
+      "source_location": "L3652",
       "weight": 1.0
     },
     {
@@ -32784,7 +32808,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2637",
+      "source_location": "L2655",
       "weight": 1.0
     },
     {
@@ -32796,7 +32820,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2643",
+      "source_location": "L2661",
       "weight": 1.0
     },
     {
@@ -32808,7 +32832,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2667",
+      "source_location": "L2685",
       "weight": 1.0
     },
     {
@@ -32832,7 +32856,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2765",
+      "source_location": "L2783",
       "weight": 1.0
     },
     {
@@ -32844,7 +32868,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2802",
+      "source_location": "L2820",
       "weight": 1.0
     },
     {
@@ -32856,7 +32880,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2681",
+      "source_location": "L2699",
       "weight": 1.0
     },
     {
@@ -32868,7 +32892,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3591",
+      "source_location": "L3609",
       "weight": 1.0
     },
     {
@@ -32880,7 +32904,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2833",
+      "source_location": "L2851",
       "weight": 1.0
     },
     {
@@ -32892,7 +32916,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2833",
+      "source_location": "L2851",
       "weight": 1.0
     },
     {
@@ -32904,7 +32928,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2757",
+      "source_location": "L2775",
       "weight": 1.0
     },
     {
@@ -32916,7 +32940,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2868",
+      "source_location": "L2886",
       "weight": 1.0
     },
     {
@@ -32928,7 +32952,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2888",
+      "source_location": "L2906",
       "weight": 1.0
     },
     {
@@ -32940,7 +32964,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2821",
+      "source_location": "L2839",
       "weight": 1.0
     },
     {
@@ -32952,7 +32976,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2727",
+      "source_location": "L2745",
       "weight": 1.0
     },
     {
@@ -32964,7 +32988,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2745",
+      "source_location": "L2763",
       "weight": 1.0
     },
     {
@@ -32976,7 +33000,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3072",
+      "source_location": "L3090",
       "weight": 1.0
     },
     {
@@ -33000,7 +33024,7 @@
       "confidence_score": 1.0,
       "context": "parameter_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2468",
+      "source_location": "L2486",
       "weight": 1.0
     },
     {
@@ -34008,7 +34032,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3414",
+      "source_location": "L3432",
       "weight": 1.0
     },
     {
@@ -34032,7 +34056,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2207",
+      "source_location": "L2225",
       "weight": 1.0
     },
     {
@@ -34044,7 +34068,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2377",
+      "source_location": "L2395",
       "weight": 1.0
     },
     {
@@ -34056,7 +34080,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2401",
+      "source_location": "L2419",
       "weight": 1.0
     },
     {
@@ -34068,7 +34092,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2408",
+      "source_location": "L2426",
       "weight": 1.0
     },
     {
@@ -34104,7 +34128,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3962",
+      "source_location": "L3980",
       "weight": 1.0
     },
     {
@@ -34116,7 +34140,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2847",
+      "source_location": "L2865",
       "weight": 1.0
     },
     {
@@ -34140,7 +34164,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2232",
+      "source_location": "L2250",
       "weight": 1.0
     },
     {
@@ -34188,7 +34212,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3837",
+      "source_location": "L3855",
       "weight": 1.0
     },
     {
@@ -34200,7 +34224,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3843",
+      "source_location": "L3861",
       "weight": 1.0
     },
     {
@@ -34212,7 +34236,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3448",
+      "source_location": "L3466",
       "weight": 1.0
     },
     {
@@ -34224,7 +34248,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3468",
+      "source_location": "L3486",
       "weight": 1.0
     },
     {
@@ -34236,7 +34260,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3383",
+      "source_location": "L3401",
       "weight": 1.0
     },
     {
@@ -34248,7 +34272,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2941",
+      "source_location": "L2959",
       "weight": 1.0
     },
     {
@@ -34260,7 +34284,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2946",
+      "source_location": "L2964",
       "weight": 1.0
     },
     {
@@ -34272,7 +34296,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3529",
+      "source_location": "L3547",
       "weight": 1.0
     },
     {
@@ -34284,7 +34308,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3001",
+      "source_location": "L3019",
       "weight": 1.0
     },
     {
@@ -34296,7 +34320,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3006",
+      "source_location": "L3024",
       "weight": 1.0
     },
     {
@@ -34308,7 +34332,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3250",
+      "source_location": "L3268",
       "weight": 1.0
     },
     {
@@ -34320,7 +34344,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3152",
+      "source_location": "L3170",
       "weight": 1.0
     },
     {
@@ -34332,7 +34356,7 @@
       "confidence_score": 1.0,
       "context": "return_type",
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3501",
+      "source_location": "L3519",
       "weight": 1.0
     },
     {
@@ -39020,7 +39044,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2055",
+      "source_location": "L2058",
       "weight": 1.0
     },
     {
@@ -39031,7 +39055,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2151",
+      "source_location": "L2169",
       "weight": 1.0
     },
     {
@@ -39042,7 +39066,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2166",
+      "source_location": "L2184",
       "weight": 1.0
     },
     {
@@ -39053,7 +39077,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2207",
+      "source_location": "L2225",
       "weight": 1.0
     },
     {
@@ -39064,7 +39088,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2232",
+      "source_location": "L2250",
       "weight": 1.0
     },
     {
@@ -39075,7 +39099,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2248",
+      "source_location": "L2266",
       "weight": 1.0
     },
     {
@@ -39086,7 +39110,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2259",
+      "source_location": "L2277",
       "weight": 1.0
     },
     {
@@ -39097,7 +39121,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2268",
+      "source_location": "L2286",
       "weight": 1.0
     },
     {
@@ -39108,18 +39132,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2274",
-      "weight": 1.0
-    },
-    {
-      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
-      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissanyactiveviewer",
-      "relation": "method",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2295",
+      "source_location": "L2292",
       "weight": 1.0
     },
     {
@@ -39135,13 +39148,24 @@
     },
     {
       "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
+      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissanyactiveviewer",
+      "relation": "method",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
+      "source_location": "L2313",
+      "weight": 1.0
+    },
+    {
+      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
       "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_dismissaudioplayerifactive",
       "relation": "method",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2336",
+      "source_location": "L2354",
       "weight": 1.0
     },
     {
@@ -39152,7 +39176,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2377",
+      "source_location": "L2395",
       "weight": 1.0
     },
     {
@@ -39163,7 +39187,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2401",
+      "source_location": "L2419",
       "weight": 1.0
     },
     {
@@ -39174,7 +39198,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2408",
+      "source_location": "L2426",
       "weight": 1.0
     },
     {
@@ -39185,7 +39209,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2468",
+      "source_location": "L2486",
       "weight": 1.0
     },
     {
@@ -39196,7 +39220,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2555",
+      "source_location": "L2573",
       "weight": 1.0
     },
     {
@@ -39207,7 +39231,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2585",
+      "source_location": "L2603",
       "weight": 1.0
     },
     {
@@ -39218,7 +39242,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2613",
+      "source_location": "L2631",
       "weight": 1.0
     },
     {
@@ -39229,7 +39253,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2637",
+      "source_location": "L2655",
       "weight": 1.0
     },
     {
@@ -39240,18 +39264,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2643",
-      "weight": 1.0
-    },
-    {
-      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
-      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_hasvisibledrivefilelist",
-      "relation": "method",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2667",
+      "source_location": "L2661",
       "weight": 1.0
     },
     {
@@ -39267,13 +39280,24 @@
     },
     {
       "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
+      "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_hasvisibledrivefilelist",
+      "relation": "method",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
+      "source_location": "L2685",
+      "weight": 1.0
+    },
+    {
+      "source": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester",
       "target": "app_src_main_java_com_kids_collector_service_googledrivesharedharvester_googledrivesharedharvester_isdrivevieweroreditorscreen",
       "relation": "method",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2681",
+      "source_location": "L2699",
       "weight": 1.0
     },
     {
@@ -39284,7 +39308,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2727",
+      "source_location": "L2745",
       "weight": 1.0
     },
     {
@@ -39295,7 +39319,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2745",
+      "source_location": "L2763",
       "weight": 1.0
     },
     {
@@ -39306,7 +39330,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2757",
+      "source_location": "L2775",
       "weight": 1.0
     },
     {
@@ -39317,7 +39341,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2765",
+      "source_location": "L2783",
       "weight": 1.0
     },
     {
@@ -39328,7 +39352,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2802",
+      "source_location": "L2820",
       "weight": 1.0
     },
     {
@@ -39339,7 +39363,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2821",
+      "source_location": "L2839",
       "weight": 1.0
     },
     {
@@ -39350,7 +39374,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2833",
+      "source_location": "L2851",
       "weight": 1.0
     },
     {
@@ -39361,7 +39385,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2847",
+      "source_location": "L2865",
       "weight": 1.0
     },
     {
@@ -39372,7 +39396,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2868",
+      "source_location": "L2886",
       "weight": 1.0
     },
     {
@@ -39383,7 +39407,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2888",
+      "source_location": "L2906",
       "weight": 1.0
     },
     {
@@ -39405,7 +39429,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2941",
+      "source_location": "L2959",
       "weight": 1.0
     },
     {
@@ -39416,7 +39440,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L2946",
+      "source_location": "L2964",
       "weight": 1.0
     },
     {
@@ -39427,7 +39451,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3001",
+      "source_location": "L3019",
       "weight": 1.0
     },
     {
@@ -39438,7 +39462,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3006",
+      "source_location": "L3024",
       "weight": 1.0
     },
     {
@@ -39449,7 +39473,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3072",
+      "source_location": "L3090",
       "weight": 1.0
     },
     {
@@ -39460,7 +39484,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3083",
+      "source_location": "L3101",
       "weight": 1.0
     },
     {
@@ -39471,7 +39495,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3111",
+      "source_location": "L3129",
       "weight": 1.0
     },
     {
@@ -39482,7 +39506,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3122",
+      "source_location": "L3140",
       "weight": 1.0
     },
     {
@@ -39493,7 +39517,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3152",
+      "source_location": "L3170",
       "weight": 1.0
     },
     {
@@ -39504,7 +39528,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3179",
+      "source_location": "L3197",
       "weight": 1.0
     },
     {
@@ -39515,7 +39539,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3222",
+      "source_location": "L3240",
       "weight": 1.0
     },
     {
@@ -39526,7 +39550,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3232",
+      "source_location": "L3250",
       "weight": 1.0
     },
     {
@@ -39537,7 +39561,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3250",
+      "source_location": "L3268",
       "weight": 1.0
     },
     {
@@ -39548,7 +39572,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3287",
+      "source_location": "L3305",
       "weight": 1.0
     },
     {
@@ -39559,7 +39583,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3328",
+      "source_location": "L3346",
       "weight": 1.0
     },
     {
@@ -39570,7 +39594,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3383",
+      "source_location": "L3401",
       "weight": 1.0
     },
     {
@@ -39581,7 +39605,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3414",
+      "source_location": "L3432",
       "weight": 1.0
     },
     {
@@ -39592,7 +39616,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3448",
+      "source_location": "L3466",
       "weight": 1.0
     },
     {
@@ -39603,7 +39627,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3468",
+      "source_location": "L3486",
       "weight": 1.0
     },
     {
@@ -39614,7 +39638,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3501",
+      "source_location": "L3519",
       "weight": 1.0
     },
     {
@@ -39625,7 +39649,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3529",
+      "source_location": "L3547",
       "weight": 1.0
     },
     {
@@ -39636,7 +39660,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3553",
+      "source_location": "L3571",
       "weight": 1.0
     },
     {
@@ -39647,7 +39671,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3573",
+      "source_location": "L3591",
       "weight": 1.0
     },
     {
@@ -39658,7 +39682,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3591",
+      "source_location": "L3609",
       "weight": 1.0
     },
     {
@@ -39669,7 +39693,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3634",
+      "source_location": "L3652",
       "weight": 1.0
     },
     {
@@ -39680,7 +39704,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3808",
+      "source_location": "L3826",
       "weight": 1.0
     },
     {
@@ -39691,7 +39715,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3837",
+      "source_location": "L3855",
       "weight": 1.0
     },
     {
@@ -39702,7 +39726,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3843",
+      "source_location": "L3861",
       "weight": 1.0
     },
     {
@@ -39713,7 +39737,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3889",
+      "source_location": "L3907",
       "weight": 1.0
     },
     {
@@ -39724,7 +39748,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3896",
+      "source_location": "L3914",
       "weight": 1.0
     },
     {
@@ -39735,7 +39759,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3926",
+      "source_location": "L3944",
       "weight": 1.0
     },
     {
@@ -39746,7 +39770,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "app/src/main/java/com/kids/collector/service/GoogleDriveSharedHarvester.kt",
-      "source_location": "L3962",
+      "source_location": "L3980",
       "weight": 1.0
     },
     {
@@ -42530,5 +42554,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "f82b5628caf8f8e287d8f89e19099903a729db40"
+  "built_at_commit": "f354b2f3355bae6d5b567826594393e480cec591"
 }
