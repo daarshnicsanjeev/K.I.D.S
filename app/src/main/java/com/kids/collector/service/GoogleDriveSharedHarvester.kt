@@ -1261,6 +1261,18 @@ class GoogleDriveSharedHarvester(
         // Dismiss any full-screen viewer or media player that might be currently displayed
         dismissAnyActiveViewer()
 
+        // Fast check: verify if Google Drive is ALREADY on the Shared tab screen
+        val initialRoot = acquireDriveRootWithRetry(maxRetries = 4, intervalMs = 200L)
+        if (initialRoot != null) {
+            val pkg = initialRoot.packageName?.toString() ?: ""
+            if (pkg.contains(DRIVE_PACKAGE_NAME) && isCurrentlyOnSharedScreen(initialRoot)) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Google Drive is already on the Shared tab screen. Proceeding to harvest!")
+                initialRoot.recycle()
+                return true
+            }
+            initialRoot.recycle()
+        }
+
         // Step A: If bottom navigation bar is not visible (e.g. inside a folder), navigate up/back to root
         var attempts = 0
         while (attempts < MAX_NAV_UP_ATTEMPTS && serviceScope.isActive) {
@@ -1280,6 +1292,12 @@ class GoogleDriveSharedHarvester(
                 delay(SETTLING_DELAY_MS)
                 attempts++
                 continue
+            }
+
+            if (isCurrentlyOnSharedScreen(root)) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Confirmed on Shared tab screen (attempt ${attempts + 1}). Proceeding to harvest!")
+                root.recycle()
+                return true
             }
 
             val sharedTabNode = findSharedTabNode(root)
@@ -1305,6 +1323,7 @@ class GoogleDriveSharedHarvester(
                 } else false
 
                 if (!isStillDisplaced) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab active and verified. Proceeding to harvest!")
                     return true
                 }
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab click did not switch active tab; attempting positional fallback...")
@@ -1448,6 +1467,12 @@ class GoogleDriveSharedHarvester(
                 d
             } else false
             return !isStillDisplaced
+        }
+
+        if (isCurrentlyOnSharedScreen(finalRoot)) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Confirmed on Shared tab screen via active files/header. Proceeding to harvest!")
+            finalRoot.recycle()
+            return true
         }
 
         finalRoot.recycle()
@@ -2737,6 +2762,43 @@ class GoogleDriveSharedHarvester(
         return hasNavUp
     }
 
+    private fun isCurrentlyOnSharedScreen(root: AccessibilityNodeInfo): Boolean {
+        // 1. If any non-shared bottom tab is selected, we are NOT on Shared
+        val otherSelectedTab = findSelectedNonSharedTab(root)
+        if (otherSelectedTab != null) {
+            otherSelectedTab.recycle()
+            return false
+        }
+
+        // 2. If bottom bar is visible and Shared tab is found
+        val sharedTab = findSharedTabNode(root)
+        if (sharedTab != null) {
+            sharedTab.recycle()
+            return true
+        }
+
+        // 3. Check top header / toolbar / title
+        val title = findDriveCurrentFolderTitle(root)?.lowercase(Locale.US) ?: ""
+        if (title == "shared" || title == "shared with me") {
+            return true
+        }
+
+        // 4. Check all child descriptions / texts for Shared indicators
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        val combined = texts.joinToString(" ").lowercase(Locale.US)
+        if (combined.contains("shared with me") || combined.contains("search in shared")) {
+            return true
+        }
+
+        // 5. Check if visible files have "Shared by" indicators and NOT in full-screen viewer
+        if (combined.contains("shared by") && !isDriveViewerOrEditorScreen(root)) {
+            return true
+        }
+
+        return false
+    }
+
     private fun isDisplacedFromSharedTab(root: AccessibilityNodeInfo): Boolean {
         // 1. If any non-shared tab (Home, Starred, Files) is marked as selected, we are DEFINITELY displaced!
         val otherSelectedTab = findSelectedNonSharedTab(root)
@@ -2747,14 +2809,12 @@ class GoogleDriveSharedHarvester(
             return true
         }
 
-        // 2. If Shared tab is present and bottom navigation bar is visible, we are NOT displaced!
-        val sharedTab = findSharedTabNode(root)
-        if (sharedTab != null) {
-            sharedTab.recycle()
+        // 2. If we are currently on the Shared screen (via header, bottom tab, or visible shared files)
+        if (isCurrentlyOnSharedScreen(root)) {
             return false
         }
 
-        // 3. If neither tab is present (e.g. inside a folder or displaced viewer), we ARE displaced from Shared root!
+        // 3. If neither tab is present and not on shared screen (e.g. inside a folder or displaced viewer), we ARE displaced from Shared root!
         return true
     }
 
