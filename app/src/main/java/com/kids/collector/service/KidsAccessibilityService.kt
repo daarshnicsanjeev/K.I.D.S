@@ -1604,11 +1604,54 @@ class KidsAccessibilityService : AccessibilityService() {
                             } else {
                                 candidateCard.clickableNode.performVerifiedClick("Candidate Card Container #${nextItem.index} (\"${nextItem.title}\")")
                             }
-                            if (!clicked) {
-                                dispatchTap(candidateCard.bounds.centerX().toFloat(), candSafeTapY.toFloat(), "Candidate Card #${nextItem.index}")
+                            val enteredDetail = waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) {
+                                val active = rootInActiveWindow ?: return@waitForCondition false
+                                val isDetail = isPostDetailView(active)
+                                active.recycle()
+                                isDetail
                             }
                             candidateCard.clickableNode.recycle()
-                            delay(800)
+
+                            if (enteredDetail) {
+                                crawlerOverlay?.updateStatus("Reading Detail (${nextItem.index}/$total)...", nextItem.title)
+                                val detailRoot = rootInActiveWindow
+                                var savedAttCount = 0
+                                if (detailRoot != null) {
+                                    try {
+                                        savedAttCount = processPostDetailAndDownload(detailRoot, nextItem.title)
+                                    } catch (e: Exception) {
+                                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
+                                    } finally {
+                                        detailRoot.recycle()
+                                    }
+                                }
+
+                                crawlerOverlay?.updateStatus("Returning to Stream...")
+                                var returnAttempts = 0
+                                while (returnAttempts < 3) {
+                                    val active = rootInActiveWindow ?: break
+                                    if (isStreamOrClassworkView(active)) {
+                                        active.recycle()
+                                        break
+                                    }
+                                    performReturnToStream(active)
+                                    active.recycle()
+                                    delay(600)
+                                    returnAttempts++
+                                }
+
+                                manifest.markItemCompleted(nextItem.index, savedAttCount)
+                                manifest.markCompleted(nextItem.fingerprint, savedAttCount)
+                                visitedPostFingerprints.add(nextItem.fingerprint)
+                                crawlerOverlay?.incrementNoticeCount()
+                                CrawlerTraceLogger.logPostCompleted(nextItem.index, total, nextItem.title, savedAttCount)
+                                if (savedAttCount > 0) {
+                                    triggerDriveSync(applicationContext)
+                                }
+                                delay(INTER_POST_SETTLING_DELAY_MILLIS)
+                                continue
+                            }
+                            delay(400)
                             continue
                         }
                     }
