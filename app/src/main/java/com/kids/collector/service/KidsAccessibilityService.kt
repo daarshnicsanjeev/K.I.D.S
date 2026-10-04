@@ -75,7 +75,14 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val BASE_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 800L
         private const val HEAVY_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 1400L
         private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 2000L
-        private const val MAX_DETAIL_CHIP_SEARCH_SCROLL_ATTEMPTS = 3
+
+        fun calculateDynamicDetailDiscoveryScrollBudget(initialAttachmentCount: Int): Int {
+            return if (initialAttachmentCount == 0) 2 else (initialAttachmentCount / 2) + 2
+        }
+
+        fun calculateDynamicChipSearchScrollLimit(totalAttachmentCount: Int): Int {
+            return (totalAttachmentCount / 2) + 2
+        }
 
         fun calculateDynamicWakeViewerTimeoutMs(fileName: String): Long {
             val isHeavy = fileName.contains(Regex("""\.(pptx?|docx?|xlsx?|jpe?g|png|pdf)""", RegexOption.IGNORE_CASE))
@@ -1854,9 +1861,12 @@ class KidsAccessibilityService : AccessibilityService() {
         val initialAtts = extractDetailAttachments(detailRoot)
         allAttachments.addAll(initialAtts)
 
-        // Detail View Scrolling: scroll down within detail view to discover any below-the-fold attachments
+        // Detail View Scrolling: scroll down dynamically within detail view to discover all below-the-fold attachments
         var detailScrolls = 0
-        while (detailScrolls < 2) {
+        var isDetailBottomReached = false
+        val maxDiscoveryScrolls = calculateDynamicDetailDiscoveryScrollBudget(initialAtts.size)
+
+        while (!isDetailBottomReached && detailScrolls < maxDiscoveryScrolls && serviceScope.isActive) {
             var scrollDone = false
             crawlerOverlay?.performDetailScrollDown { scrollDone = true }
             waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDone }
@@ -1865,16 +1875,23 @@ class KidsAccessibilityService : AccessibilityService() {
             val scrolledRoot = rootInActiveWindow
             if (scrolledRoot != null) {
                 val scrolledAtts = extractDetailAttachments(scrolledRoot)
+                var newlyDiscoveredCount = 0
                 for (att in scrolledAtts) {
                     val sanitized = sanitizeAttachmentFileName(att.fileName)
                     if (allAttachments.none { sanitizeAttachmentFileName(it.fileName).equals(sanitized, ignoreCase = true) }) {
                         allAttachments.add(att.copy(fileName = sanitized))
+                        newlyDiscoveredCount++
                     } else {
                         att.downloadNode?.recycle()
                         att.clickableChip?.recycle()
                     }
                 }
                 scrolledRoot.recycle()
+                if (newlyDiscoveredCount == 0) {
+                    isDetailBottomReached = true
+                }
+            } else {
+                isDetailBottomReached = true
             }
             detailScrolls++
         }
@@ -1984,9 +2001,13 @@ class KidsAccessibilityService : AccessibilityService() {
                 matchesAttachmentChipText(att.fileName, it.fileName) || it.fileName.equals(att.fileName, ignoreCase = true)
             }
 
-            // 2. If target chip is not currently visible in viewport, scroll down progressively until found
+            // 2. If target chip is not currently visible in viewport, scroll down progressively until found or bottom reached
             var chipSearchScrollAttempts = 0
-            while (targetAtt == null && chipSearchScrollAttempts < MAX_DETAIL_CHIP_SEARCH_SCROLL_ATTEMPTS) {
+            var isSearchBottomReached = false
+            val maxSearchScrollAttempts = calculateDynamicChipSearchScrollLimit(attachments.size)
+
+            while (targetAtt == null && !isSearchBottomReached && chipSearchScrollAttempts < maxSearchScrollAttempts) {
+                val currentFingerprint = freshAtts.joinToString("|") { it.fileName }
                 for (f in freshAtts) {
                     f.downloadNode?.recycle()
                     f.clickableChip?.recycle()
@@ -2003,6 +2024,11 @@ class KidsAccessibilityService : AccessibilityService() {
                 if (!isPostDetailView(currentRoot)) break
 
                 freshAtts = extractDetailAttachments(currentRoot)
+                val newFingerprint = freshAtts.joinToString("|") { it.fileName }
+                if (newFingerprint.isNotBlank() && newFingerprint == currentFingerprint) {
+                    isSearchBottomReached = true
+                }
+
                 targetAtt = freshAtts.find {
                     matchesAttachmentChipText(att.fileName, it.fileName) || it.fileName.equals(att.fileName, ignoreCase = true)
                 }
