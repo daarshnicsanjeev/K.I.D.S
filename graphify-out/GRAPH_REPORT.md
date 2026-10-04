@@ -4,12 +4,12 @@
 - cluster-only mode — file stats not available
 
 ## Summary
-- 1069 nodes · 2772 edges · 63 communities (17 shown, 46 thin omitted)
+- 1069 nodes · 2772 edges · 64 communities (17 shown, 47 thin omitted)
 - Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 36 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `3b5bda1f`
+- Built from commit: `dfd2876f`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -25,21 +25,22 @@
 - CrawlerTraceLogger
 - GoogleDriveClient
 - KidsAccessibilityService.kt
+- InternalAppDiagnosticsMirror.kt
 - DriveAttachmentMatcherTest
 - OnboardingWizardScreen.kt
 - StreamManifest
 - .matchesAttachmentChipText
 - assertthat
 - Test
-- CrawlerTraceLogger.kt
+- K.I.D.S. Android Collector (PRD)
 - .parse
 - MainActivity.kt
 - GoogleDriveClient.kt
-- DiagnosticFeedScreen
 - DeduplicationEngine
 - WhatsAppChatExportParserTest.kt
 - log
-- K.I.D.S. Android Collector (PRD)
+- ChildProfile
+- Intent
 - WizardStep
 - ContentClassifierTest
 - GestureResultCallback
@@ -61,17 +62,17 @@
   app/src/main/java/com/kids/collector/service/KidsAccessibilityService.kt → app/src/main/java/com/kids/collector/domain/classifier/ContentClassifier.kt
 - `KidsAccessibilityService` --calls--> `DeduplicationEngine`  [INFERRED]
   app/src/main/java/com/kids/collector/service/KidsAccessibilityService.kt → app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt
-- `DiagnosticFeedScreen()` --calls--> `ProbeItem`  [INFERRED]
-  app/src/main/java/com/kids/collector/presentation/telemetry/DiagnosticFeedScreen.kt → app/src/main/java/com/kids/collector/domain/model/Models.kt
 - `ShareTargetActivity` --calls--> `DeduplicationEngine`  [INFERRED]
   app/src/main/java/com/kids/collector/presentation/share/ShareTargetActivity.kt → app/src/main/java/com/kids/collector/domain/dedupe/DeduplicationEngine.kt
+- `DiagnosticFeedScreen()` --calls--> `ProbeItem`  [INFERRED]
+  app/src/main/java/com/kids/collector/presentation/telemetry/DiagnosticFeedScreen.kt → app/src/main/java/com/kids/collector/domain/model/Models.kt
 - `OnboardingWizardScreen()` --calls--> `ChannelConfig`  [INFERRED]
   app/src/main/java/com/kids/collector/presentation/wizard/OnboardingWizardScreen.kt → app/src/main/java/com/kids/collector/domain/model/Models.kt
 
 ## Import Cycles
 - None detected.
 
-## Communities (63 total, 46 thin omitted)
+## Communities (64 total, 47 thin omitted)
 
 ### Community 0 - "KidsAccessibilityService"
 Cohesion: 0.06
@@ -82,8 +83,8 @@ Cohesion: 0.05
 Nodes (7): FloatingCrawlerOverlay, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback, GestureResultCallback
 
 ### Community 3 - "OnboardingWizardScreen"
-Cohesion: 0.09
-Nodes (11): DriveVaultManager, Failure, ProvisionStep1Result, Success, UserConsentRequired, PermissionHelper, PermissionSetupDialog(), OnboardingWizardScreen() (+3 more)
+Cohesion: 0.08
+Nodes (14): DriveVaultManager, Failure, ProvisionStep1Result, Success, UserConsentRequired, ProbeItem, PermissionHelper, PermissionSetupDialog() (+6 more)
 
 ### Community 4 - "Query"
 Cohesion: 0.06
@@ -105,6 +106,10 @@ Nodes (8): SafVaultFolders, SafVaultManager, MLKitOcrParser, OcrExtractionResult
 Cohesion: 0.07
 Nodes (4): CrawlerTraceLogger, DriveSyncWorker, DiagnosticSnapshot, DriveDeepLogger
 
+### Community 11 - "InternalAppDiagnosticsMirror.kt"
+Cohesion: 0.09
+Nodes (3): DeviceInfo, PipelineMetrics, StepStatus
+
 ### Community 13 - "OnboardingWizardScreen.kt"
 Cohesion: 0.10
 Nodes (3): getDefaultSchoolAppList(), launchAccountPicker(), queryInstalledLauncherApps()
@@ -113,9 +118,9 @@ Nodes (3): getDefaultSchoolAppList(), launchAccountPicker(), queryInstalledLaunc
 Cohesion: 0.14
 Nodes (8): StreamItemStatus, ALREADY_SYNCED, COMPLETED, FAILED_SKIPPED, IN_PROGRESS, PENDING, StreamManifest, StreamManifestItem
 
-### Community 20 - "CrawlerTraceLogger.kt"
+### Community 20 - "K.I.D.S. Android Collector (PRD)"
 Cohesion: 0.14
-Nodes (4): DeviceInfo, PipelineMetrics, StepStatus, Dual WhatsApp Catch-Up Engine
+Nodes (7): Dual WhatsApp Catch-Up Engine, 5-Point Cloud Health Probe, Google Credential Manager API, Memory Boundary Privacy Filter, K.I.D.S. Android Collector (PRD), Sequential 4-Step Onboarding, Streaming PdfRenderer OCR
 
 ### Community 21 - ".parse"
 Cohesion: 0.22
@@ -125,36 +130,32 @@ Nodes (3): ClassroomDateParser, ParsedDate, ClassroomDateParserTest
 Cohesion: 0.18
 Nodes (5): AppScreen, DASHBOARD, DIAGNOSTICS, WIZARD, MainActivity
 
-### Community 24 - "DiagnosticFeedScreen"
-Cohesion: 0.20
-Nodes (6): ProbeItem, ChildCard(), ChildrenGridDashboard(), DiagnosticFeedScreen(), LogLine, KidsTheme()
-
-### Community 26 - "WhatsAppChatExportParserTest.kt"
+### Community 25 - "WhatsAppChatExportParserTest.kt"
 Cohesion: 0.22
 Nodes (3): ImportedNoticeRecord, WhatsAppChatExportParser, WhatsAppChatExportParserTest
 
-### Community 29 - "K.I.D.S. Android Collector (PRD)"
-Cohesion: 0.22
-Nodes (6): 5-Point Cloud Health Probe, Google Credential Manager API, Memory Boundary Privacy Filter, K.I.D.S. Android Collector (PRD), Sequential 4-Step Onboarding, Streaming PdfRenderer OCR
+### Community 28 - "ChildProfile"
+Cohesion: 0.28
+Nodes (3): ChildCard(), ChildrenGridDashboard(), KidsTheme()
 
-### Community 31 - "WizardStep"
+### Community 32 - "WizardStep"
 Cohesion: 0.33
 Nodes (6): WizardStep, STEP_0_PERMISSIONS, STEP_1_VAULT, STEP_2_CLASSROOM, STEP_3_PORTALS, STEP_4_WHATSAPP
 
 ## Knowledge Gaps
 - **35 isolated node(s):** `DeviceInfo`, `PipelineMetrics`, `StepStatus`, `ChildProfileEntity`, `NoticeFtsEntity` (+30 more)
   These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 223 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **46 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **47 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `FloatingCrawlerOverlay`, `OnboardingWizardScreen`, `KidsAccessibilityService.kt`, `OnboardingWizardScreen.kt`, `.matchesAttachmentChipText`, `assertthat`, `MainActivity.kt`, `DeduplicationEngine`, `log`?**
-  _High betweenness centrality (0.251) - this node is a cross-community bridge._
+- **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `FloatingCrawlerOverlay`, `OnboardingWizardScreen`, `KidsAccessibilityService.kt`, `OnboardingWizardScreen.kt`, `.matchesAttachmentChipText`, `assertthat`, `MainActivity.kt`, `DeduplicationEngine`, `Intent`?**
+  _High betweenness centrality (0.249) - this node is a cross-community bridge._
 - **Why does `KidsDatabase` connect `Query` to `KidsAccessibilityService`?**
   _High betweenness centrality (0.122) - this node is a cross-community bridge._
-- **Why does `GoogleDriveSharedHarvester` connect `GoogleDriveSharedHarvester` to `DriveVaultManager.kt`, `KidsAccessibilityService`, `assertthat`, `DriveAttachmentMatcherTest`?**
-  _High betweenness centrality (0.121) - this node is a cross-community bridge._
+- **Why does `GoogleDriveSharedHarvester` connect `GoogleDriveSharedHarvester` to `KidsAccessibilityService`, `assertthat`, `DriveAttachmentMatcherTest`, `DriveVaultManager.kt`?**
+  _High betweenness centrality (0.119) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `KidsAccessibilityService` (e.g. with `ContentClassifier` and `DeduplicationEngine`) actually correct?**
   _`KidsAccessibilityService` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 2 inferred relationships involving `GoogleDriveSharedHarvester` (e.g. with `.runDeepCrawlLoop()` and `.startDirectDriveHarvest()`) actually correct?**
