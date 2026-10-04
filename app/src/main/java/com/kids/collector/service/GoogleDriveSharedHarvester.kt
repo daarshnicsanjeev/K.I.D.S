@@ -319,6 +319,52 @@ class GoogleDriveSharedHarvester(
         }
     }
 
+    private fun performVerifiedAccessibilityClick(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        if (node.isClickable) {
+            val success = node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            if (success) return true
+        }
+        var current: AccessibilityNodeInfo? = node.parent
+        var depth = 0
+        while (current != null && depth < 6) {
+            if (current.isClickable) {
+                val result = current.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                current.recycle()
+                if (result) return true
+            }
+            val parentNode = current.parent
+            current.recycle()
+            current = parentNode
+            depth++
+        }
+        current?.recycle()
+        return false
+    }
+
+    private fun performVerifiedAccessibilityLongClick(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        if (node.isLongClickable) {
+            val success = node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+            if (success) return true
+        }
+        var current: AccessibilityNodeInfo? = node.parent
+        var depth = 0
+        while (current != null && depth < 6) {
+            if (current.isLongClickable) {
+                val result = current.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+                current.recycle()
+                if (result) return true
+            }
+            val parentNode = current.parent
+            current.recycle()
+            current = parentNode
+            depth++
+        }
+        current?.recycle()
+        return false
+    }
+
     /**
      * Executes the full Google Drive Shared harvesting cycle.
      * Returns the total count of files successfully dispatched to K.I.D.S. Vault.
@@ -616,21 +662,22 @@ class GoogleDriveSharedHarvester(
                                 "DRIVE_HARVESTER",
                                 "Initiating multi-selection by long-pressing: \"${firstSelectable.title}\"..."
                             )
-                            firstSelectable.node.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+                            performVerifiedAccessibilityLongClick(firstSelectable.node)
                             delay(500L)
                             var rootCheck = rootInActiveWindowProvider()
                             isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
                             rootCheck?.recycle()
 
                             if (!isCurrentlyInMultiSelect) {
-                                dispatchLongPressAction(
-                                    firstSelectable.bounds.centerX().toFloat(),
-                                    firstSelectable.bounds.centerY().toFloat()
-                                )
-                                delay(800L)
-                                rootCheck = rootInActiveWindowProvider()
-                                isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
-                                rootCheck?.recycle()
+                                val clickableAncestor = findClickableAncestor(firstSelectable.node)
+                                if (clickableAncestor != null) {
+                                    performVerifiedAccessibilityLongClick(clickableAncestor)
+                                    clickableAncestor.recycle()
+                                    delay(500L)
+                                    rootCheck = rootInActiveWindowProvider()
+                                    isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
+                                    rootCheck?.recycle()
+                                }
                             }
 
                             if (isCurrentlyInMultiSelect) {
@@ -690,11 +737,15 @@ class GoogleDriveSharedHarvester(
                             }
                             consecutiveOlderThanCutoffCount = 0
 
-                            // 4. Select the file with a single click
+                            // 4. Select the file with pure accessibility click
                             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting file: \"${item.title}\"")
-                            val clicked = item.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                            val clicked = performVerifiedAccessibilityClick(item.node)
                             if (!clicked) {
-                                dispatchTapAction(item.bounds.centerX().toFloat(), item.bounds.centerY().toFloat())
+                                val clickableAncestor = findClickableAncestor(item.node)
+                                if (clickableAncestor != null) {
+                                    performVerifiedAccessibilityClick(clickableAncestor)
+                                    clickableAncestor.recycle()
+                                }
                             }
                             selectedDriveTitles.add(item.title)
                             crawlerOverlay?.updateStatus(
@@ -814,13 +865,8 @@ class GoogleDriveSharedHarvester(
             if (tabRoot != null) {
                 val sharedTab = findSharedTabNode(tabRoot)
                 if (sharedTab != null) {
-                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Tapping Shared tab to force top search bar uncollapse...")
-                    val clicked = sharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val tb = Rect()
-                        sharedTab.getBoundsInScreen(tb)
-                        if (tb.width() > 0) dispatchTapAction(tb.centerX().toFloat(), tb.centerY().toFloat())
-                    }
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Clicking Shared tab to force top search bar uncollapse...")
+                    performVerifiedAccessibilityClick(sharedTab)
                     sharedTab.recycle()
                     delay(800L)
                 }
@@ -854,13 +900,8 @@ class GoogleDriveSharedHarvester(
         )
         crawlerOverlay?.updateStatus("Switching Account...", "Selecting $cleanTarget")
 
-        // 3. Open OneGoogle Account switcher via direct physical touch coordinates
-        val rect = Rect()
-        avatarNode.getBoundsInScreen(rect)
-        val clickedAvatar = avatarNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        if (!clickedAvatar && rect.width() > 0) {
-            dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-        }
+        // 3. Open OneGoogle Account switcher via pure accessibility click
+        val clickedAvatar = performVerifiedAccessibilityClick(avatarNode)
         avatarNode.recycle()
 
         // Wait for OneGoogle bottom sheet to open
@@ -889,13 +930,10 @@ class GoogleDriveSharedHarvester(
                 if (targetRow != null) {
                     val r = Rect()
                     targetRow.getBoundsInScreen(r)
-                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Found target account row at $r. Dispatching click...")
-                    val clicked = targetRow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked && r.width() > 0) {
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                    }
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Found target account row at $r. Dispatching accessibility click...")
+                    val clicked = performVerifiedAccessibilityClick(targetRow)
                     targetRow.recycle()
-                    isAccountTapped = true
+                    isAccountTapped = clicked
                     dialogRoot.recycle()
                     break
                 }
@@ -1102,15 +1140,7 @@ class GoogleDriveSharedHarvester(
                 val upNode = findHamburgerNode(root)
                 var clickedUp = false
                 if (upNode != null) {
-                    clickedUp = upNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clickedUp) {
-                        val r = Rect()
-                        upNode.getBoundsInScreen(r)
-                        if (r.width() > 0) {
-                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                            clickedUp = true
-                        }
-                    }
+                    clickedUp = performVerifiedAccessibilityClick(upNode)
                     upNode.recycle()
                 }
                 if (!clickedUp) {
@@ -1122,14 +1152,7 @@ class GoogleDriveSharedHarvester(
                 val hamburgerNode = findHamburgerNode(root)
                 if (hamburgerNode != null) {
                     CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking Classroom main menu hamburger icon...")
-                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val r = Rect()
-                        hamburgerNode.getBoundsInScreen(r)
-                        if (r.width() > 0) {
-                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        }
-                    }
+                    performVerifiedAccessibilityClick(hamburgerNode)
                     hamburgerNode.recycle()
                     delay(1000L)
                 }
@@ -1147,14 +1170,7 @@ class GoogleDriveSharedHarvester(
                 val isNavUp = desc.contains("navigate up") || desc.contains("back")
                 if (hamburgerNode != null && !isNavUp) {
                     CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking main menu drawer button...")
-                    val clicked = hamburgerNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val r = Rect()
-                        hamburgerNode.getBoundsInScreen(r)
-                        if (r.width() > 0) {
-                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        }
-                    }
+                    performVerifiedAccessibilityClick(hamburgerNode)
                     hamburgerNode.recycle()
                     delay(1000L)
                 } else {
@@ -1202,20 +1218,7 @@ class GoogleDriveSharedHarvester(
         if (folderNode != null) {
             val label = folderNode.text ?: folderNode.contentDescription ?: "Classroom folders"
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Found '$label' in Classroom menu. Clicking to launch Google Drive...")
-            val clicked = if (folderNode.isClickable) {
-                folderNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            } else {
-                findClickableAncestor(folderNode)?.let {
-                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    it.recycle()
-                    ok
-                } ?: false
-            }
-            if (!clicked) {
-                val r = Rect()
-                folderNode.getBoundsInScreen(r)
-                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-            }
+            performVerifiedAccessibilityClick(folderNode)
             folderNode.recycle()
             drawerCheckRoot.recycle()
             return true
@@ -1387,12 +1390,7 @@ class GoogleDriveSharedHarvester(
             if (sharedTabNode != null) {
                 // Bottom navigation bar is visible! Select the Shared tab.
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected. Selecting Shared tab...")
-                val rect = Rect()
-                sharedTabNode.getBoundsInScreen(rect)
-                val clicked = sharedTabNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (rect.width() > 0 && rect.height() > 0) {
-                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-                }
+                performVerifiedAccessibilityClick(sharedTabNode)
                 sharedTabNode.recycle()
                 root.recycle()
                 delay(SETTLING_DELAY_MS + 200L)
@@ -1409,32 +1407,22 @@ class GoogleDriveSharedHarvester(
                     CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab active and verified. Proceeding to harvest!")
                     return true
                 }
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab click did not switch active tab; attempting positional fallback...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab click did not switch active tab; attempting retry...")
                 attempts++
                 continue
             }
 
-            // If Shared tab node was not matched by text, but another bottom tab is selected, bottom bar is confirmed visible
+            // If Shared tab node was not matched by text, but another bottom tab is selected, locate and click Shared tab directly
             val otherSelectedTab = findSelectedNonSharedTab(root)
             if (otherSelectedTab != null) {
-                val otherBounds = Rect()
-                otherSelectedTab.getBoundsInScreen(otherBounds)
                 otherSelectedTab.recycle()
+                val targetTab = findSharedTabNode(root) ?: findNodeContainingText(root, "shared")
                 root.recycle()
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar/rail detected via selected non-shared tab. Dispatching tap to Shared tab slot...")
-                val dm = context.resources.displayMetrics
-                val isLandscape = dm.widthPixels > dm.heightPixels
-                val tabX = if (isLandscape) {
-                    if (otherBounds.width() > 0) otherBounds.centerX().toFloat() else (dm.widthPixels * 0.10f)
-                } else {
-                    dm.widthPixels * 0.625f
+                if (targetTab != null) {
+                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Bottom navigation bar detected. Selecting Shared tab node...")
+                    performVerifiedAccessibilityClick(targetTab)
+                    targetTab.recycle()
                 }
-                val tabY = if (isLandscape) {
-                    dm.heightPixels * 0.70f
-                } else {
-                    if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
-                }
-                dispatchTapAction(tabX, tabY)
                 delay(SETTLING_DELAY_MS + 200L)
 
                 val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
@@ -1447,7 +1435,7 @@ class GoogleDriveSharedHarvester(
                 if (!isStillDisplaced) {
                     return true
                 }
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Positional tap did not switch active tab; retrying...")
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tab selection did not switch active tab; retrying...")
                 attempts++
                 continue
             }
@@ -1459,15 +1447,7 @@ class GoogleDriveSharedHarvester(
 
             if (navUp != null) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Inside folder (bottom bar hidden). Navigating up toward root (attempt ${attempts + 1})...")
-                var clickedNavUp = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clickedNavUp) {
-                    val r = Rect()
-                    navUp.getBoundsInScreen(r)
-                    if (r.width() > 0) {
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        clickedNavUp = true
-                    }
-                }
+                val clickedNavUp = performVerifiedAccessibilityClick(navUp)
                 navUp.recycle()
                 if (!clickedNavUp) {
                     dispatchBackAction()
@@ -1501,12 +1481,7 @@ class GoogleDriveSharedHarvester(
         val finalSharedTab = findSharedTabNode(finalRoot)
         if (finalSharedTab != null) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting Shared tab after exiting folder...")
-            val rect = Rect()
-            finalSharedTab.getBoundsInScreen(rect)
-            val clicked = finalSharedTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (rect.width() > 0 && rect.height() > 0) {
-                dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-            }
+            performVerifiedAccessibilityClick(finalSharedTab)
             finalSharedTab.recycle()
             finalRoot.recycle()
             delay(SETTLING_DELAY_MS + 200L)
@@ -1520,27 +1495,17 @@ class GoogleDriveSharedHarvester(
             return !isStillDisplaced
         }
 
-        // Positional fallback if non-shared tab is active on final check
+        // Final check: find Shared tab directly
         val finalOtherTab = findSelectedNonSharedTab(finalRoot)
         if (finalOtherTab != null) {
-            val otherBounds = Rect()
-            finalOtherTab.getBoundsInScreen(otherBounds)
             finalOtherTab.recycle()
+            val targetTab = findSharedTabNode(finalRoot) ?: findNodeContainingText(finalRoot, "shared")
             finalRoot.recycle()
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Shared tab text not matched, but non-shared tab is active. Dispatching positional tap to Shared tab slot...")
-            val dm = context.resources.displayMetrics
-            val isLandscape = dm.widthPixels > dm.heightPixels
-            val tabX = if (isLandscape) {
-                if (otherBounds.width() > 0) otherBounds.centerX().toFloat() else (dm.widthPixels * 0.10f)
-            } else {
-                dm.widthPixels * 0.625f
+            if (targetTab != null) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting Shared tab node on final check...")
+                performVerifiedAccessibilityClick(targetTab)
+                targetTab.recycle()
             }
-            val tabY = if (isLandscape) {
-                dm.heightPixels * 0.70f
-            } else {
-                if (otherBounds.height() > 0) otherBounds.centerY().toFloat() else (dm.heightPixels * 0.94f)
-            }
-            dispatchTapAction(tabX, tabY)
             delay(SETTLING_DELAY_MS + 200L)
 
             val checkRoot = acquireDriveRootWithRetry(maxRetries = 6, intervalMs = 200L)
@@ -2055,12 +2020,7 @@ class GoogleDriveSharedHarvester(
             val closeBtn = findCloseSelectionButton(root)
             if (closeBtn != null) {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing multi-select mode via Close button...")
-                val ok = closeBtn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!ok) {
-                    val r = Rect()
-                    closeBtn.getBoundsInScreen(r)
-                    dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                }
+                performVerifiedAccessibilityClick(closeBtn)
                 closeBtn.recycle()
             } else {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing multi-select mode via Back action...")
@@ -2147,54 +2107,11 @@ class GoogleDriveSharedHarvester(
             val moreActionsNode = findMoreActionsNodeForItem(root, item.title)
                 ?: findMoreActionsNodeInRow(item.node)
             if (moreActionsNode != null) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking dedicated 3-dots button for \"${item.title}\" (clickable=${moreActionsNode.isClickable})...")
-                var clicked = moreActionsNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked && !moreActionsNode.isClickable) {
-                    val clickableParent = findClickableAncestor(moreActionsNode)
-                    if (clickableParent != null) {
-                        clicked = clickableParent.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        clickableParent.recycle()
-                    }
-                }
-                if (!clicked) {
-                    val r = Rect()
-                    moreActionsNode.getBoundsInScreen(r)
-                    val dm = context.resources.displayMetrics
-                    val safeTop = (dm.density * 56).toInt()
-                    val safeBottom = dm.heightPixels - (dm.density * 48).toInt()
-                    if (r.width() > 0 && r.height() > 0 && r.centerY() in safeTop..safeBottom) {
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        openedActionSheet = true
-                    }
-                } else {
-                    openedActionSheet = true
-                }
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Clicking dedicated 3-dots button for \"${item.title}\"...")
+                openedActionSheet = performVerifiedAccessibilityClick(moreActionsNode)
                 moreActionsNode.recycle()
             }
             root.recycle()
-        }
-
-        // Strategy B: Use accurate recorded moreActionsBounds from row scanning
-        if (!openedActionSheet && item.moreActionsBounds != null && item.moreActionsBounds.width() > 0) {
-            val dm = context.resources.displayMetrics
-            val safeTop = (dm.density * 56).toInt()
-            val safeBottom = dm.heightPixels - (dm.density * 48).toInt()
-            if (item.moreActionsBounds.centerY() in safeTop..safeBottom) {
-                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping recorded 3-dots bounds for \"${item.title}\"...")
-                dispatchTapAction(item.moreActionsBounds.centerX().toFloat(), item.moreActionsBounds.centerY().toFloat())
-                openedActionSheet = true
-            }
-        }
-
-        // Strategy C: Physical 3-dots tap on far right edge (guaranteed NEVER to click the file body / thumbnail!)
-        if (!openedActionSheet && item.bounds.width() > 0 && item.bounds.height() > 0) {
-            val displayMetrics = context.resources.displayMetrics
-            val tapX = (item.bounds.right - (displayMetrics.density * 28f))
-                .coerceAtLeast(item.bounds.left.toFloat() + (item.bounds.width() * 0.85f))
-            val tapY = item.bounds.centerY().toFloat()
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping physical right-edge 3-dots coordinates ($tapX, $tapY) for \"${item.title}\"...")
-            dispatchTapAction(tapX, tapY)
-            openedActionSheet = true
         }
 
         if (!openedActionSheet) {
@@ -2231,14 +2148,7 @@ class GoogleDriveSharedHarvester(
             return false
         }
 
-        val clicked = sendCopyNode?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-        if (!clicked) {
-            val r = Rect()
-            sendCopyNode?.getBoundsInScreen(r)
-            if (r.width() > 0) {
-                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-            }
-        }
+        performVerifiedAccessibilityClick(sendCopyNode)
         sendCopyNode?.recycle()
 
         // Select K.I.D.S. Vault in the system share sheet
@@ -2273,22 +2183,12 @@ class GoogleDriveSharedHarvester(
             root.recycle()
         }
 
-        var clickedOverflow = overflowButton?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-        if (!clickedOverflow && overflowButton != null) {
-            val r = Rect()
-            overflowButton.getBoundsInScreen(r)
-            if (r.width() > 0 && r.height() > 0) {
-                clickedOverflow = dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-            }
-        }
+        var clickedOverflow = performVerifiedAccessibilityClick(overflowButton)
         overflowButton?.recycle()
 
         if (!clickedOverflow) {
-            val dm = context.resources.displayMetrics
-            val tapX = dm.widthPixels - (dm.density * 28f)
-            val tapY = dm.density * 36f
-            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Tapping physical top-right overflow at ($tapX, $tapY)...")
-            dispatchTapAction(tapX, tapY)
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Could not locate top overflow menu button.")
+            return false
         }
 
         delay(600L)
@@ -2307,14 +2207,7 @@ class GoogleDriveSharedHarvester(
             return false
         }
 
-        val clickedCopy = sendCopyNode?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-        if (!clickedCopy) {
-            val r = Rect()
-            sendCopyNode?.getBoundsInScreen(r)
-            if (r.width() > 0 && r.height() > 0) {
-                dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-            }
-        }
+        performVerifiedAccessibilityClick(sendCopyNode)
         sendCopyNode?.recycle()
 
         // 3. Select K.I.D.S. in the Android system share sheet
@@ -2478,15 +2371,7 @@ class GoogleDriveSharedHarvester(
                 }
 
                 val navUp = findNavigateUpButton(root)
-                var clickedNavUp = navUp?.performAction(AccessibilityNodeInfo.ACTION_CLICK) == true
-                if (!clickedNavUp && navUp != null) {
-                    val r = Rect()
-                    navUp.getBoundsInScreen(r)
-                    if (r.width() > 0) {
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        clickedNavUp = true
-                    }
-                }
+                val clickedNavUp = performVerifiedAccessibilityClick(navUp)
                 navUp?.recycle()
                 root.recycle()
                 if (!clickedNavUp) {
@@ -2509,14 +2394,7 @@ class GoogleDriveSharedHarvester(
         val pauseButton = findAudioPauseButton(root)
         if (pauseButton != null) {
             CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found active audio Pause button for \"${trackTitle ?: "Audio"}\". Halting playback...")
-            val clicked = pauseButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val rect = Rect()
-                pauseButton.getBoundsInScreen(rect)
-                if (rect.width() > 0 && rect.height() > 0) {
-                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-                }
-            }
+            performVerifiedAccessibilityClick(pauseButton)
             pauseButton.recycle()
             dismissed = true
             delay(250L)
@@ -2526,14 +2404,7 @@ class GoogleDriveSharedHarvester(
         val closeButton = findAudioPlayerDismissButton(root)
         if (closeButton != null) {
             CrawlerTraceLogger.log("AUDIO_RECOVERY", "Found audio player Close/Dismiss button for \"${trackTitle ?: "Audio"}\". Dismissing media player...")
-            val clicked = closeButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            if (!clicked) {
-                val rect = Rect()
-                closeButton.getBoundsInScreen(rect)
-                if (rect.width() > 0 && rect.height() > 0) {
-                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-                }
-            }
+            performVerifiedAccessibilityClick(closeButton)
             closeButton.recycle()
             dismissed = true
             delay(400L)
@@ -2733,12 +2604,7 @@ class GoogleDriveSharedHarvester(
             val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
             if (clickable != null) {
                 CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Found Drive option in app chooser. Selecting...")
-                val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clicked) {
-                    val r = Rect()
-                    clickable.getBoundsInScreen(r)
-                    dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                }
+                performVerifiedAccessibilityClick(clickable)
                 clickable.recycle()
                 for (other in driveNodes) { other.recycle() }
                 root.recycle()
@@ -2761,12 +2627,7 @@ class GoogleDriveSharedHarvester(
                     val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
                     if (clickable != null) {
                         CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Stray prompt detected with \"$txt\". Auto-dismissing...")
-                        val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                        if (!clicked) {
-                            val r = Rect()
-                            clickable.getBoundsInScreen(r)
-                            dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        }
+                        performVerifiedAccessibilityClick(clickable)
                         clickable.recycle()
                         for (other in nodes) { other.recycle() }
                         return true
@@ -2786,12 +2647,7 @@ class GoogleDriveSharedHarvester(
                 val clickable = if (node.isClickable) AccessibilityNodeInfo.obtain(node) else findClickableAncestor(node)
                 if (clickable != null) {
                     CrawlerTraceLogger.log("DRIVE_AUTO_RECOVERY", "Found network retry prompt: '$txt'. Clicking retry...")
-                    val clicked = clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    if (!clicked) {
-                        val r = Rect()
-                        clickable.getBoundsInScreen(r)
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                    }
+                    performVerifiedAccessibilityClick(clickable)
                     clickable.recycle()
                     for (other in nodes) { other.recycle() }
                     return true
@@ -3292,20 +3148,7 @@ class GoogleDriveSharedHarvester(
         val switchToListNode = findSwitchToListLayoutNode(root)
         if (switchToListNode != null) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Grid layout detected. Switching Google Drive to List layout...")
-            val clicked = if (switchToListNode.isClickable) {
-                switchToListNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            } else {
-                findClickableAncestor(switchToListNode)?.let {
-                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    it.recycle()
-                    ok
-                } ?: false
-            }
-            if (!clicked) {
-                val bounds = Rect()
-                switchToListNode.getBoundsInScreen(bounds)
-                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
-            }
+            performVerifiedAccessibilityClick(switchToListNode)
             switchToListNode.recycle()
             root.recycle()
             delay(SETTLING_DELAY_MS)
@@ -3364,20 +3207,7 @@ class GoogleDriveSharedHarvester(
         }
 
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Opening Google Drive sort options dialog...")
-        val clicked = if (sortButtonNode.isClickable) {
-            sortButtonNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        } else {
-            findClickableAncestor(sortButtonNode)?.let {
-                val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                it.recycle()
-                ok
-            } ?: false
-        }
-        if (!clicked) {
-            val bounds = Rect()
-            sortButtonNode.getBoundsInScreen(bounds)
-            dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
-        }
+        performVerifiedAccessibilityClick(sortButtonNode)
         sortButtonNode.recycle()
         root.recycle()
 
@@ -3462,20 +3292,7 @@ class GoogleDriveSharedHarvester(
         if (dateOptionNode != null) {
             val optionText = dateOptionNode.text?.toString() ?: dateOptionNode.contentDescription?.toString() ?: "Date shared"
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting sort option: \"$optionText\"")
-            val clicked = if (dateOptionNode.isClickable) {
-                dateOptionNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            } else {
-                findClickableAncestor(dateOptionNode)?.let {
-                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    it.recycle()
-                    ok
-                } ?: false
-            }
-            if (!clicked) {
-                val bounds = Rect()
-                dateOptionNode.getBoundsInScreen(bounds)
-                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
-            }
+            performVerifiedAccessibilityClick(dateOptionNode)
             dateOptionNode.recycle()
             sheetRoot.recycle()
             delay(SETTLING_DELAY_MS)
@@ -3522,20 +3339,7 @@ class GoogleDriveSharedHarvester(
 
         if (isChronologicallyAscending && reverseSortButton != null) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Ascending (oldest first) sort detected. Inverting sort direction to Newest first...")
-            val clicked = if (reverseSortButton.isClickable) {
-                reverseSortButton.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            } else {
-                findClickableAncestor(reverseSortButton)?.let {
-                    val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                    it.recycle()
-                    ok
-                } ?: false
-            }
-            if (!clicked) {
-                val bounds = Rect()
-                reverseSortButton.getBoundsInScreen(bounds)
-                dispatchTapAction(bounds.centerX().toFloat(), bounds.centerY().toFloat())
-            }
+            performVerifiedAccessibilityClick(reverseSortButton)
             reverseSortButton.recycle()
             root.recycle()
             delay(SETTLING_DELAY_MS)
@@ -3802,11 +3606,7 @@ class GoogleDriveSharedHarvester(
         if (root != null) {
             val sharedTab = findSharedTabNode(root)
             if (sharedTab != null) {
-                val rect = Rect()
-                sharedTab.getBoundsInScreen(rect)
-                if (rect.width() > 0 && rect.height() > 0) {
-                    dispatchTapAction(rect.centerX().toFloat(), rect.centerY().toFloat())
-                }
+                performVerifiedAccessibilityClick(sharedTab)
                 sharedTab.recycle()
             }
             root.recycle()
@@ -3951,20 +3751,7 @@ class GoogleDriveSharedHarvester(
         CrawlerTraceLogger.log("DRIVE_HARVESTER", "Entering folder (depth $folderDepth/$maxFolderDepth): \"${folderItem.title}\"")
         crawlerOverlay?.updateStatus("Entering Folder...", folderItem.title)
 
-        val clicked = if (folderItem.node.isClickable) {
-            folderItem.node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        } else {
-            findClickableAncestor(folderItem.node)?.let {
-                val ok = it.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                it.recycle()
-                ok
-            } ?: false
-        }
-
-        if (!clicked) {
-            dispatchTapAction(folderItem.bounds.centerX().toFloat(), folderItem.bounds.centerY().toFloat())
-        }
-
+        performVerifiedAccessibilityClick(folderItem.node)
         delay(SETTLING_DELAY_MS + 400L)
 
         var harvestedInFolder = 0
@@ -4119,15 +3906,7 @@ class GoogleDriveSharedHarvester(
         if (root != null) {
             val navUp = findNavigateUpButton(root)
             if (navUp != null) {
-                clickedNavigateUp = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                if (!clickedNavigateUp) {
-                    val r = Rect()
-                    navUp.getBoundsInScreen(r)
-                    if (r.width() > 0) {
-                        dispatchTapAction(r.centerX().toFloat(), r.centerY().toFloat())
-                        clickedNavigateUp = true
-                    }
-                }
+                clickedNavigateUp = performVerifiedAccessibilityClick(navUp)
                 navUp.recycle()
             }
             root.recycle()
