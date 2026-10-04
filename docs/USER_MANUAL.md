@@ -1139,6 +1139,25 @@ Unlike standard mobile apps that truncate logs to a few lines or lose history ac
    - `[CLASSROOM BATCH SYNC] Synced 5 notices into Google Classroom/ folder`
    - `[ATTACHMENT BATCH SYNC] Uploaded 3 physical files to attachments/ (plus 0 indexed references)`
 
+### Complete Internal App State & Diagnostics Mirror (`_system/diagnostics/`)
+
+To make troubleshooting effortless without needing direct ADB access or device extraction, K.I.D.S. autonomously mirrors all internal app data to your personal Google Drive Vault under `_system/diagnostics/`:
+
+| File Name | Format | How to Use for Troubleshooting |
+| :--- | :--- | :--- |
+| **`kids_vault.db`** | Binary SQLite | **Full Database Backup.** Download and open in [DB Browser for SQLite](https://sqlitebrowser.org/) to inspect all raw notice rows, attachments, local URIs, file hashes, and synchronization states. Flushed cleanly using SQLite WAL checkpointing. |
+| **`database_dump.json`** | JSON | **Structured Database Dump.** Viewable directly in Google Drive preview. Contains all enrolled child profiles, notices, attachments, counts, and OCR summaries. |
+| **`app_preferences.json`** | JSON | **App Preferences & Config.** Inspect all stored settings, selected accounts, wizard progression flags, and folder IDs (with tokens and credentials safely redacted). |
+| **`runtime_telemetry.json`** | JSON | **Environment & Hardware Metrics.** Device model, Android OS version, available RAM, free storage space, active network transport, and live permission status. |
+| **`app_logcat.log`** | Plain Text | **App Process Logcat Trace.** Live logcat trace of application components (`KidsCollector`, `KidsAccessibility`, `DriveSyncWorker`, `DownloadFolderObserver`). |
+| **`SYSTEM_STATUS.md`** | Markdown | **Executive Diagnostic Overview.** Instant health check dashboard viewable directly inside Google Drive. |
+
+#### How to Trigger an Immediate Transfer to Drive
+1. Open K.I.D.S. and tap the **Diagnostics** icon (pulse icon on the Children Grid Dashboard).
+2. Under **Internal App State & Diagnostics Mirror**, tap **"Transfer App Data to Google Drive Now"**.
+3. The app will immediately flush the SQLite database, package all diagnostics, and upload them to `_system/diagnostics/` in real time.
+*(Note: Diagnostics are also autonomously updated in the background on every regular sync cycle).*
+
 ### Xiaomi / MIUI / HyperOS Specific Setup
 Devices running Xiaomi MIUI or HyperOS enforce aggressive background restrictions. To ensure seamless operation:
 1. Go to **Settings** → **Apps** → **Manage Apps** → **K.I.D.S.**.

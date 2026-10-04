@@ -3853,6 +3853,36 @@ During each `DriveSyncWorker` cycle:
 
 ---
 
+#### 6. Autonomous Internal App Data & Diagnostics Mirroring System (`InternalAppDiagnosticsMirror.kt`)
+
+To guarantee 100% transparency, rapid root-cause troubleshooting, and zero-guesswork support, `InternalAppDiagnosticsMirror` autonomously exports and maintains a comprehensive reflection of all internal application state directly in the parent's Google Drive Vault (`_system/diagnostics/` and `_system/logs/`).
+
+##### Key Mirrored Artifacts:
+1. **Physical SQLite Database Snapshot (`_system/diagnostics/kids_vault.db`):**
+   - Automatically flushes SQLite write-ahead log (WAL) transactions using `PRAGMA wal_checkpoint(FULL)`.
+   - Copies the binary database file into a self-contained snapshot and streams it to Google Drive.
+   - Developers and parents can open `kids_vault.db` directly in *DB Browser for SQLite* to query raw notices, attachments, and child profiles.
+2. **Structured Database Dump (`_system/diagnostics/database_dump.json`):**
+   - Human- and AI-readable JSON export of all `child_profiles`, `notices`, and `attachments`.
+   - Includes real-time synchronization statistics, hashes, byte sizes, and OCR preview snippets.
+3. **Application Preferences Dump (`_system/diagnostics/app_preferences.json`):**
+   - Complete export of `SharedPreferences` (e.g. `kids_vault_prefs`).
+   - Strict Privacy Invariant: Automatically redacts auth tokens, OAuth keys, and passwords.
+4. **Runtime Environment & Device Telemetry (`_system/diagnostics/runtime_telemetry.json`):**
+   - Captures device hardware model, Android SDK/OS version, app version code.
+   - System memory stats (`availMem`, `totalMem`, `isLowMemory`), device flash storage (`freeSpace`, `totalSpace`), and transient staging folder size.
+   - Live status of Accessibility Service, Notification Access, and Battery Optimization.
+5. **Application Process Logcat Trace (`_system/logs/app_logcat.log`):**
+   - Captures recent logcat lines for the app package (`com.kids.collector`) and critical service tags.
+6. **Executive Diagnostic Overview (`_system/SYSTEM_STATUS.md`):**
+   - Formatted Markdown report viewable in Google Drive preview summarizing overall health, database statistics, and guide to all diagnostic files.
+
+##### Execution Triggers:
+- **Autonomous Background Sync:** Runs at the conclusion of every `DriveSyncWorker` cycle after attachments and notices are uploaded.
+- **On-Demand UI Transfer:** Accessible via a 1-tap "Transfer App Data to Google Drive Now" button in `DiagnosticFeedScreen.kt`.
+
+---
+
 ## 📱 Presentation Architecture & Onboarding State Machine
 
 The presentation tier is implemented in Jetpack Compose adhering to Single-Activity Architecture (`MainActivity.kt`) and unidirectional data flow. The onboarding experience for configuring children profiles is driven by a sequential finite state machine in `OnboardingWizardScreen.kt`.

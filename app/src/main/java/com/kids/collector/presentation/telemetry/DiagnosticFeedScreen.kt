@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.kids.collector.domain.model.ProbeItem
 import com.kids.collector.presentation.permission.PermissionHelper
 import com.kids.collector.presentation.theme.*
+import kotlinx.coroutines.launch
 
 data class LogLine(
     val timestamp: String,
@@ -32,8 +33,11 @@ fun DiagnosticFeedScreen(
     onShareBundle: () -> Unit
 ) {
     val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     val nlsActive = remember { PermissionHelper.isNotificationAccessGranted(context) }
     var isProbing by remember { mutableStateOf(false) }
+    var isMirroring by remember { mutableStateOf(false) }
+    var mirrorStatusMessage by remember { mutableStateOf<String?>(null) }
     var probeResults by remember {
         mutableStateOf(
             listOf(
@@ -181,6 +185,107 @@ fun DiagnosticFeedScreen(
                                 modifier = Modifier.defaultMinSize(minHeight = 48.dp)
                             ) {
                                 Text(probe.remediationAction)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Google Drive Diagnostics & Internal State Mirror Section
+            item {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    text = "Internal App State & Diagnostics Mirror",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = DeepNavy,
+                    modifier = Modifier.semantics { heading() }
+                )
+            }
+
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = SurfaceWhite),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Text(
+                            text = "Cloud Diagnostics Vault (_system/diagnostics/)",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = DeepNavy
+                        )
+                        Text(
+                            text = "Transfers the physical SQLite database (kids_vault.db), full JSON table dump, app preferences, runtime telemetry, and app logcat directly to your Google Drive vault for instant troubleshooting.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = TextSecondary
+                        )
+
+                        if (mirrorStatusMessage != null) {
+                            Text(
+                                text = mirrorStatusMessage.orEmpty(),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (mirrorStatusMessage?.contains("failed", ignoreCase = true) == true) ErrorRed else SuccessGreen
+                            )
+                        }
+
+                        Button(
+                            onClick = {
+                                coroutineScope.launch {
+                                    isMirroring = true
+                                    mirrorStatusMessage = "Transferring database, preferences & logs to Drive..."
+                                    try {
+                                        val (email, year, child) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(context)
+                                        if (email.isNullOrBlank() || child.isBlank()) {
+                                            mirrorStatusMessage = "Configure Child Profile and Google Drive first."
+                                        } else {
+                                            val db = com.kids.collector.data.db.KidsDatabase.getInstance(context)
+                                            val driveService = com.kids.collector.data.drive.DriveVaultManager.getDriveService(context, email)
+                                            val driveClient = com.kids.collector.data.drive.GoogleDriveClient(driveService)
+                                            val vault = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultFolders(context, email, year, child)
+                                                ?: driveClient.provisionChildVault(year, child)
+                                            val childEntity = db.childProfileDao().getAllChildrenDirect().firstOrNull { it.firstName.equals(child, ignoreCase = true) }
+                                            val allNotices = db.noticeDao().getAllNoticesDirect()
+                                            val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+
+                                            val summary = com.kids.collector.telemetry.InternalAppDiagnosticsMirror.mirrorAllInternalDataToDrive(
+                                                context = context,
+                                                db = db,
+                                                driveClient = driveClient,
+                                                vault = vault,
+                                                childProfile = childEntity,
+                                                allNotices = allNotices,
+                                                allAttachments = allAttachments
+                                            )
+                                            mirrorStatusMessage = if (summary.errorDetails.isEmpty()) {
+                                                "Successfully transferred all app data to Google Drive (_system/diagnostics/)!"
+                                            } else {
+                                                "Transferred with note: ${summary.errorDetails.first()}"
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        mirrorStatusMessage = "Transfer failed: ${e.message}"
+                                    } finally {
+                                        isMirroring = false
+                                    }
+                                }
+                            },
+                            enabled = !isMirroring,
+                            modifier = Modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = DeepNavy)
+                        ) {
+                            if (isMirroring) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(20.dp),
+                                    color = SurfaceWhite,
+                                    strokeWidth = 2.dp
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Transferring to Drive...", color = SurfaceWhite)
+                            } else {
+                                Text("Transfer App Data to Google Drive Now", color = SurfaceWhite)
                             }
                         }
                     }

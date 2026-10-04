@@ -507,7 +507,7 @@ class GoogleDriveClient(
         throw lastException ?: IOException("Operation $operationName failed after $maxRetries attempts")
     }
 
-    private suspend fun uploadOrUpdateTextFile(
+    suspend fun uploadOrUpdateTextFile(
         parentFolderId: String,
         fileName: String,
         mimeType: String,
@@ -529,6 +529,33 @@ class GoogleDriveClient(
             createdId
         } else {
             val updated = driveService.files().update(existingFileId, File(), mediaContent).setFields("id").execute()
+            val updatedId = updated.id
+            fileIdCache["$parentFolderId/$fileName"] = updatedId
+            updatedId
+        }
+    }
+
+    suspend fun uploadOrUpdateBinaryFile(
+        parentFolderId: String,
+        fileName: String,
+        mimeType: String,
+        file: java.io.File
+    ): String = executeWithRetry("uploadOrUpdateBinaryFile($fileName)") {
+        val existingFileId = findFileIdByName(fileName, parentFolderId)
+        val fileContent = FileContent(mimeType, file)
+
+        if (existingFileId == null) {
+            val fileMetadata = File().apply {
+                this.name = fileName
+                this.parents = listOf(parentFolderId)
+                this.mimeType = mimeType
+            }
+            val created = driveService.files().create(fileMetadata, fileContent).setFields("id").execute()
+            val createdId = created.id
+            fileIdCache["$parentFolderId/$fileName"] = createdId
+            createdId
+        } else {
+            val updated = driveService.files().update(existingFileId, File(), fileContent).setFields("id").execute()
             val updatedId = updated.id
             fileIdCache["$parentFolderId/$fileName"] = updatedId
             updatedId

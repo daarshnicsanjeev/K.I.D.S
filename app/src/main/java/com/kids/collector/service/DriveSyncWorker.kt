@@ -406,7 +406,25 @@ class DriveSyncWorker(
                     CrawlerTraceLogger.log("GRAPHIFY_WARN", "Digest generation warning: ${graphEx.message}")
                 }
 
-                // 5. Autonomous self-healing: purge stray folders at end of cycle (never blocks critical upload path)
+                // 5. Autonomous Internal App Data & Diagnostics Mirroring
+                try {
+                    val mirrorNotices = db.noticeDao().getAllNoticesDirect()
+                    val mirrorAttachments = db.attachmentDao().getAllAttachmentsDirect()
+                    com.kids.collector.telemetry.InternalAppDiagnosticsMirror.mirrorAllInternalDataToDrive(
+                        context = applicationContext,
+                        db = db,
+                        driveClient = driveClient,
+                        vault = vault,
+                        childProfile = primaryChildEntity,
+                        allNotices = mirrorNotices,
+                        allAttachments = mirrorAttachments
+                    )
+                } catch (diagEx: Throwable) {
+                    Log.w(TAG, "Non-fatal error mirroring internal app data to Drive: ${diagEx.message}", diagEx)
+                    CrawlerTraceLogger.log("DIAGNOSTICS_WARN", "Diagnostics mirror warning: ${diagEx.message}")
+                }
+
+                // 6. Autonomous self-healing: purge stray folders at end of cycle (never blocks critical upload path)
                 purgeStrayLegacyFolders(driveService, vault.yearFolderId, vault.childFolderId, classroomVault.attachmentsFolderId)
 
                 CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
