@@ -343,4 +343,35 @@ class StreamManifestAndCardTest {
         val cardHeight = 600 - 200
         assertThat(isValidCourseCardBounds(cardWidth, cardHeight)).isTrue()
     }
+
+    @Test
+    fun `stream manifest with 172 live classroom posts indexes and reverses deterministically`() {
+        val testManifest = StreamManifest()
+        val streamFile = java.io.File("classroom_full_stream.json")
+        if (streamFile.exists()) {
+            val content = streamFile.readText()
+            val posts = org.json.JSONArray(content)
+            for (i in 0 until posts.length()) {
+                val obj = posts.getJSONObject(i)
+                val title = obj.getString("title")
+                val date = obj.getString("date")
+                val fp = "${title.trim().lowercase().take(60)}|${date.trim().lowercase().take(30)}"
+                testManifest.addItem(fp, title, title, false)
+            }
+            assertThat(testManifest.totalCount).isEqualTo(172)
+            assertThat(testManifest.pendingCount).isEqualTo(172)
+
+            // Test reverse traversal from bottom (172) to top (1)
+            var expectedIndex = 172
+            while (testManifest.pendingCount > 0) {
+                val nextItem = testManifest.getNextPendingItemReverse()
+                assertThat(nextItem).isNotNull()
+                assertThat(nextItem?.index).isEqualTo(expectedIndex)
+                testManifest.markItemCompleted(nextItem!!.index)
+                expectedIndex--
+            }
+            assertThat(expectedIndex).isEqualTo(0)
+            assertThat(testManifest.isAllFinished()).isTrue()
+        }
+    }
 }
