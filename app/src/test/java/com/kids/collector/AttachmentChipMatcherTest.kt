@@ -145,4 +145,23 @@ class AttachmentChipMatcherTest {
         )
         assertThat(matches).isTrue()
     }
+
+    @Test
+    fun `scales wake timeout and settle delay dynamically for heavy documents and images`() {
+        // Heavy documents (PPT, PDF, JPG) receive longer timeout budget and settle delay
+        val heavyPdfTimeout = KidsAccessibilityService.calculateDynamicWakeViewerTimeoutMs("Grade 3 Bones and Muscles PPT (3).pdf")
+        val heavyJpgTimeout = KidsAccessibilityService.calculateDynamicWakeViewerTimeoutMs("Division by 10 and 100.jpg")
+        val simpleTextTimeout = KidsAccessibilityService.calculateDynamicWakeViewerTimeoutMs("notes.txt")
+
+        assertThat(heavyPdfTimeout).isEqualTo(6500L)
+        assertThat(heavyJpgTimeout).isEqualTo(6500L)
+        assertThat(simpleTextTimeout).isEqualTo(4000L)
+
+        val heavySettle = KidsAccessibilityService.calculateDynamicWakeSettleDelayMs("Multiplication by 100 sheet.jpeg")
+        val simpleSettle = KidsAccessibilityService.calculateDynamicWakeSettleDelayMs("readme.txt")
+
+        assertThat(heavySettle).isEqualTo(1400L)
+        assertThat(simpleSettle).isEqualTo(800L)
+    }
 }
+

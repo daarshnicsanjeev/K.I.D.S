@@ -70,9 +70,21 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val INTER_POST_SETTLING_DELAY_MILLIS = 600L
         private const val ANR_RESOLUTION_WAIT_DELAY_MILLIS = 1_000L
         private const val MAX_STEADY_INGESTION_CYCLES = 5
-        private const val ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS = 1200L
-        private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 1500L
-        private const val ATTACHMENT_WAKE_SETTLE_DELAY_MS = 350L
+        private const val BASE_ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS = 4000L
+        private const val HEAVY_ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS = 6500L
+        private const val BASE_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 800L
+        private const val HEAVY_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 1400L
+        private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 2000L
+
+        fun calculateDynamicWakeViewerTimeoutMs(fileName: String): Long {
+            val isHeavy = fileName.contains(Regex("""\.(pptx?|docx?|xlsx?|jpe?g|png|pdf)""", RegexOption.IGNORE_CASE))
+            return if (isHeavy) HEAVY_ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS else BASE_ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS
+        }
+
+        fun calculateDynamicWakeSettleDelayMs(fileName: String): Long {
+            val isHeavy = fileName.contains(Regex("""\.(pptx?|docx?|xlsx?|jpe?g|png|pdf)""", RegexOption.IGNORE_CASE))
+            return if (isHeavy) HEAVY_ATTACHMENT_WAKE_SETTLE_DELAY_MS else BASE_ATTACHMENT_WAKE_SETTLE_DELAY_MS
+        }
 
         fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
             val normalizedTarget = java.text.Normalizer.normalize(targetFileName, java.text.Normalizer.Form.NFC)
@@ -1956,7 +1968,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
 
                 if (clicked) {
-                    val viewerOpened = waitForCondition(timeoutMs = ATTACHMENT_WAKE_VIEWER_TIMEOUT_MS, pollIntervalMs = 150L) {
+                    val dynamicWakeTimeoutMs = calculateDynamicWakeViewerTimeoutMs(att.fileName)
+                    val viewerOpened = waitForCondition(timeoutMs = dynamicWakeTimeoutMs, pollIntervalMs = 150L) {
                         val active = rootInActiveWindow ?: return@waitForCondition false
                         val isExternal = !isPostDetailView(active) && !isStreamOrClassworkView(active)
                         active.recycle()
@@ -1964,15 +1977,24 @@ class KidsAccessibilityService : AccessibilityService() {
                     }
 
                     if (viewerOpened) {
-                        delay(ATTACHMENT_WAKE_SETTLE_DELAY_MS)
+                        val dynamicSettleMs = calculateDynamicWakeSettleDelayMs(att.fileName)
+                        delay(dynamicSettleMs)
                         performGlobalAction(GLOBAL_ACTION_BACK)
-                        waitForCondition(timeoutMs = ATTACHMENT_WAKE_RETURN_TIMEOUT_MS, pollIntervalMs = 150L) {
+                        val returnedToDetail = waitForCondition(timeoutMs = ATTACHMENT_WAKE_RETURN_TIMEOUT_MS, pollIntervalMs = 150L) {
                             val active = rootInActiveWindow ?: return@waitForCondition false
                             val isBack = isPostDetailView(active)
                             active.recycle()
                             isBack
                         }
-                        delay(200L)
+                        if (!returnedToDetail) {
+                            performGlobalAction(GLOBAL_ACTION_BACK)
+                        }
+                        delay(POST_RETURN_PACING_DELAY_MILLIS)
+                    } else {
+                        CrawlerTraceLogger.log(
+                            "FAST_WAKE",
+                            "Viewer did not open for \"${att.fileName}\" within ${dynamicWakeTimeoutMs}ms (skipping to next chip)"
+                        )
                     }
                 }
             }
