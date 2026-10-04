@@ -1292,14 +1292,6 @@ class KidsAccessibilityService : AccessibilityService() {
             val unvisitedCard = findCardForTarget(root, targetItem)
             root.recycle()
 
-            val isMaterialOrAssignment = targetItem.title.contains("material", ignoreCase = true) ||
-                    targetItem.title.contains("assignment", ignoreCase = true) ||
-                    targetItem.title.contains("question", ignoreCase = true) ||
-                    targetItem.title.contains("quiz", ignoreCase = true) ||
-                    targetItem.previewText.contains("new material", ignoreCase = true) ||
-                    targetItem.previewText.contains("new assignment", ignoreCase = true) ||
-                    targetItem.previewText.contains("new question", ignoreCase = true)
-
             if (unvisitedCard != null) {
                 // Target card found! Reset recovery tracking
                 lastRecoveryMinIndex = null
@@ -1312,38 +1304,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 val clickableNode = unvisitedCard.clickableNode
                 val fullText = unvisitedCard.fullText
 
-                val cardIsMaterial = isMaterialOrAssignment ||
-                        title.contains("material", ignoreCase = true) ||
-                        title.contains("assignment", ignoreCase = true) ||
-                        title.contains("question", ignoreCase = true) ||
-                        fullText.contains("new material", ignoreCase = true) ||
-                        fullText.contains("new assignment", ignoreCase = true) ||
-                        fullText.contains("new question", ignoreCase = true)
-
-                if (!cardIsMaterial) {
-                    // ANNOUNCEMENT / CIRCULAR: In Google Classroom, announcements have no separate detail screen.
-                    // The announcement body is directly on the stream card. Tapping the card either does nothing or opens comments.
-                    CrawlerTraceLogger.log(
-                        "STREAM_SURVEY",
-                        "Notice #${targetItem.index} (\"$title\") is a stream announcement (no detail screen). Ingesting directly from stream card."
-                    )
-                    ingestNoticeDirect(title, fullText, fingerprint)
-                    manifest.markItemCompleted(targetItem.index)
-                    manifest.markCompleted(fingerprint)
-                    manifest.markCompleted(targetItem.fingerprint)
-                    visitedPostFingerprints.add(fingerprint)
-                    visitedPostFingerprints.add(targetItem.fingerprint)
-                    crawlerOverlay?.incrementNoticeCount()
-                    crawlerOverlay?.updateStatus(
-                        "Captured (${targetItem.index}/$total - ${manifest.progressPercent}%)...",
-                        title
-                    )
-                    clickableNode.recycle()
-                    delay(300)
-                    continue
-                }
-
-                // If this material post is already fully captured and ALL its attachments are physically verified in Drive, skip detail view!
+                // If this post is already fully captured and ALL its attachments are physically verified in Drive, skip detail view!
                 if (isNoticeFullyCapturedInDb(title)) {
                     CrawlerTraceLogger.log(
                         "STREAM_SURVEY",
@@ -1576,28 +1537,6 @@ class KidsAccessibilityService : AccessibilityService() {
                             }
                         }
                         if (candidateCard != null) {
-                            val isCandidateMaterial = nextItem.title.contains("material", ignoreCase = true) ||
-                                    nextItem.title.contains("assignment", ignoreCase = true) ||
-                                    nextItem.title.contains("question", ignoreCase = true) ||
-                                    nextItem.previewText.contains("new material", ignoreCase = true) ||
-                                    nextItem.previewText.contains("new assignment", ignoreCase = true) ||
-                                    nextItem.previewText.contains("new question", ignoreCase = true)
-
-                            if (!isCandidateMaterial) {
-                                CrawlerTraceLogger.log(
-                                    "AUTO_RECOVERY",
-                                    "Target #${nextItem.index} (\"${nextItem.title}\") is a stream announcement (no detail screen). Ingesting directly from stream card."
-                                )
-                                ingestNoticeDirect(nextItem.title, candidateCard.fullText, nextItem.fingerprint)
-                                manifest.markItemCompleted(nextItem.index)
-                                manifest.markCompleted(nextItem.fingerprint)
-                                visitedPostFingerprints.add(nextItem.fingerprint)
-                                crawlerOverlay?.incrementNoticeCount()
-                                candidateCard.clickableNode.recycle()
-                                delay(300)
-                                continue
-                            }
-
                             val displayMetrics = resources.displayMetrics
                             val minTopSafeZone = getMinTopSafeZonePx()
                             val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
