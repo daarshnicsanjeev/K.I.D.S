@@ -63,7 +63,9 @@ class StreamManifestAndCardTest {
                 lowerCombined.contains("class comments") ||
                 lowerCombined.contains("add class comment")
 
-        if (!hasPostCategory && !hasDatePattern && !hasComments) {
+        // Invariant: Between 2 comment elements, there is strictly and only 1 post.
+        // Every legitimate Stream post card must contain a comment element.
+        if (!hasComments) {
             return false
         }
         return true
@@ -87,6 +89,15 @@ class StreamManifestAndCardTest {
         // Class 10 CBSE
         val banner3 = "Class 10-D English Literature Section D"
         assertThat(isStreamPostCardSimulated(banner3)).isFalse()
+    }
+
+    @Test
+    fun `author header chips and detached date labels without comments are strictly rejected`() {
+        // Standalone author header chips observed in Classroom Stream
+        assertThat(isStreamPostCardSimulated("Bhumika Parmar Jul 8")).isFalse()
+        assertThat(isStreamPostCardSimulated("Ruchi Mittal Jun 18")).isFalse()
+        assertThat(isStreamPostCardSimulated("Kamaljit Kaunsal Sep 25")).isFalse()
+        assertThat(isStreamPostCardSimulated("Teacher Name Oct 1")).isFalse()
     }
 
     @Test

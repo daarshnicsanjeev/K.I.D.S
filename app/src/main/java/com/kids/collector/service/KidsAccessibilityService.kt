@@ -1576,6 +1576,28 @@ class KidsAccessibilityService : AccessibilityService() {
                             }
                         }
                         if (candidateCard != null) {
+                            val isCandidateMaterial = nextItem.title.contains("material", ignoreCase = true) ||
+                                    nextItem.title.contains("assignment", ignoreCase = true) ||
+                                    nextItem.title.contains("question", ignoreCase = true) ||
+                                    nextItem.previewText.contains("new material", ignoreCase = true) ||
+                                    nextItem.previewText.contains("new assignment", ignoreCase = true) ||
+                                    nextItem.previewText.contains("new question", ignoreCase = true)
+
+                            if (!isCandidateMaterial) {
+                                CrawlerTraceLogger.log(
+                                    "AUTO_RECOVERY",
+                                    "Target #${nextItem.index} (\"${nextItem.title}\") is a stream announcement (no detail screen). Ingesting directly from stream card."
+                                )
+                                ingestNoticeDirect(nextItem.title, candidateCard.fullText, nextItem.fingerprint)
+                                manifest.markItemCompleted(nextItem.index)
+                                manifest.markCompleted(nextItem.fingerprint)
+                                visitedPostFingerprints.add(nextItem.fingerprint)
+                                crawlerOverlay?.incrementNoticeCount()
+                                candidateCard.clickableNode.recycle()
+                                delay(300)
+                                continue
+                            }
+
                             val displayMetrics = resources.displayMetrics
                             val minTopSafeZone = getMinTopSafeZonePx()
                             val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
@@ -3363,15 +3385,16 @@ class KidsAccessibilityService : AccessibilityService() {
             for (match in fastMatches) {
                 val clickable = findClickableAncestor(match)
                 if (clickable != null) {
+                    val isPostCard = isStreamPostCard(clickable)
                     val cardItems = mutableListOf<String>()
                     collectQuickText(clickable, cardItems)
                     val combinedText = cardItems.joinToString(" ")
                     val fingerprint = computeCardFingerprint(cardItems)
 
                     val cleanCardTitle = cardItems.firstOrNull { it.trim().length > 3 }?.take(80) ?: targetItem.title
-                    val isMatch = fingerprint == targetItem.fingerprint ||
+                    val isMatch = isPostCard && (fingerprint == targetItem.fingerprint ||
                             cleanCardTitle.contains(searchQuery, ignoreCase = true) ||
-                            combinedText.contains(searchQuery, ignoreCase = true)
+                            combinedText.contains(searchQuery, ignoreCase = true))
 
                     if (isMatch) {
                         CrawlerTraceLogger.log("CARD_MATCH", "Matched target #${targetItem.index} via Fast-Path Native Search (\"$searchQuery\")")
@@ -3633,7 +3656,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         !lower.startsWith("signed in as") &&
                         !lower.startsWith("tasks due") &&
                         !lower.startsWith("class options for") &&
-                        !lower.contains("class comments") &&
+                        !lower.contains("class comment") &&
                         item.trim().length > 3
             }
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
@@ -4469,32 +4492,15 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // 4. Positive Post Indicators:
-        // Category A: Comment element or indicator (in Google Classroom Stream, every post card has a comment element)
+        // 4. Invariant: Between 2 comment elements, there is strictly and only 1 post.
+        // Every legitimate Stream post card in Google Classroom terminates in / contains a comment element.
+        // Standalone author header chips, detached timestamps, and banners do NOT have comment elements.
         val hasCommentElement = hasStreamCommentElement(node)
         val hasComments = lowerCombined.contains("class comment") ||
                 lowerCombined.contains("class comments") ||
                 lowerCombined.contains("add class comment")
 
-        // Category B: Activity post type prefix
-        val hasPostCategory = lowerCombined.contains("new material:") ||
-                lowerCombined.contains("new material") ||
-                lowerCombined.contains("new assignment:") ||
-                lowerCombined.contains("new assignment") ||
-                lowerCombined.contains("new question:") ||
-                lowerCombined.contains("new question") ||
-                lowerCombined.contains("new quiz:") ||
-                lowerCombined.contains("assignment:") ||
-                lowerCombined.contains("material:")
-
-        // Category C: Date or relative timestamp
-        val hasDatePattern = hasPostDateOrTimestamp(lowerCombined)
-
-        // 5. Header Banner vs. Post Invariant:
-        // A course header banner contains ONLY class name and year (e.g. "Grade 3B CAIE 2026-27").
-        // It has NO date/timestamp, NO post category, and NO comments element.
-        // A valid stream post MUST satisfy at least one post indicator:
-        if (!hasCommentElement && !hasComments && !hasPostCategory && !hasDatePattern) {
+        if (!hasCommentElement && !hasComments) {
             return false
         }
 
