@@ -84,47 +84,71 @@ class StreamManifest {
     /**
      * Resilient Multi-Factor Matching:
      * 1. Exact Fingerprint SHA-256 match
-     * 2. Exact Title match (case-insensitive)
-     * 3. Normalized Title prefix match (>= 20 chars)
-     * 4. Content overlap (card text contains manifest title, or manifest preview contains card title)
+     * 2. Normalized Title match (stripping 'New material:', timestamps, and dates)
+     * 3. Raw Title match (case-insensitive)
+     * 4. Normalized Title prefix or containment match
+     * 5. Word / Token overlap
+     * 6. Body content overlap
      */
     fun findMatchingItem(fingerprint: String, title: String, cardText: String): StreamManifestItem? {
         // Tier 1: Exact fingerprint SHA-256 match
         findByFingerprint(fingerprint)?.let { return it }
 
+        val normTitle = normalizeTitle(title)
         val cleanTitle = title.trim().lowercase()
-        if (cleanTitle.length >= 8 && !cleanTitle.equals("classroom notice", ignoreCase = true)) {
-            // Tier 2: Exact title match (case-insensitive)
+
+        // Tier 2: Normalized exact title match (handles "New material: The Articles" vs "The Articles")
+        if (normTitle.isNotBlank() && !normTitle.equals("classroom notice", ignoreCase = true)) {
+            _items.firstOrNull { normalizeTitle(it.title) == normTitle }?.let { return it }
+        }
+
+        if (cleanTitle.length >= 6 && !cleanTitle.equals("classroom notice", ignoreCase = true)) {
+            // Tier 3: Raw exact title match (case-insensitive)
             _items.firstOrNull { it.title.trim().equals(cleanTitle, ignoreCase = true) }?.let { return it }
 
-            // Tier 3: Substantial prefix match (first 25 characters)
-            val prefix = cleanTitle.take(25)
-            _items.firstOrNull {
-                val itemTitle = it.title.trim().lowercase()
-                itemTitle.startsWith(prefix) || cleanTitle.startsWith(itemTitle.take(25))
-            }?.let { return it }
+            // Tier 4: Substantial prefix or containment match
+            val prefix = normTitle.take(25)
+            if (prefix.length >= 6) {
+                _items.firstOrNull {
+                    val itemNorm = normalizeTitle(it.title)
+                    itemNorm.startsWith(prefix) || normTitle.startsWith(itemNorm.take(25)) ||
+                            (itemNorm.length >= 6 && normTitle.contains(itemNorm)) ||
+                            (normTitle.length >= 6 && itemNorm.contains(normTitle))
+                }?.let { return it }
+            }
 
-            // Tier 4: Word / Token overlap (for titles with punctuation, dates appended, or localized script)
-            val titleTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
-            if (titleTokens.size >= 2) {
+            // Tier 5: Word / Token overlap (for titles with punctuation, dates appended, or localized script)
+            val titleTokens = normTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
+            if (titleTokens.isNotEmpty()) {
                 _items.firstOrNull { item ->
-                    val itemTokens = item.title.lowercase().split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                    val itemTokens = normalizeTitle(item.title).split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
                     val common = titleTokens.intersect(itemTokens)
                     val overlap = common.size.toFloat() / maxOf(titleTokens.size, itemTokens.size)
-                    overlap >= 0.6f
+                    overlap >= 0.5f || (common.isNotEmpty() && common.size == minOf(titleTokens.size, itemTokens.size))
                 }?.let { return it }
             }
         }
 
-        // Tier 5: Body content overlap
+        // Tier 6: Body content overlap
         if (cardText.length > 30) {
             _items.firstOrNull { item ->
-                val itemTitle = item.title.trim()
-                itemTitle.length >= 15 && cardText.contains(itemTitle, ignoreCase = true)
+                val normItemTitle = normalizeTitle(item.title)
+                normItemTitle.length >= 6 && cardText.contains(normItemTitle, ignoreCase = true)
             }?.let { return it }
         }
 
         return null
+    }
+
+    companion object {
+        fun normalizeTitle(raw: String): String {
+            return raw
+                .replace(Regex("""^(?:new\s+material|new\s+assignment|new\s+question|announcement|material|assignment)\s*:\s*""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\b(?:posted\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}(?:\s*\(edited[^\)]*\))?.*""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""[\r\n]+"""), " ")
+                .trim()
+                .lowercase()
+        }
     }
 
     fun isTargetBounded(targetIndex: Int, visibleIndices: List<Int>): Boolean {

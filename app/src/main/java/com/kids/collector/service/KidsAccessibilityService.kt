@@ -1161,6 +1161,7 @@ class KidsAccessibilityService : AccessibilityService() {
         var lastTargetIndex = -1
         var consecutiveTargetAttempts = 0
         var consecutiveTransientCount = 0
+        var lastKnownScrollDirection: Boolean? = null
         val recentScrollDirections = ArrayDeque<Boolean>(6)
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
@@ -1172,6 +1173,13 @@ class KidsAccessibilityService : AccessibilityService() {
                     "All Classroom notices processed (${manifest.completedCount} notices indexed)! Exiting Classroom stream pass to launch Phase 3: Google Drive Shared Batch Harvester..."
                 )
                 break
+            }
+
+            if (nextItem.index != lastTargetIndex) {
+                lastTargetIndex = nextItem.index
+                consecutiveTargetAttempts = 0
+                recentScrollDirections.clear()
+                lastKnownScrollDirection = null
             }
 
             val root = rootInActiveWindow
@@ -1296,7 +1304,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 // Target card found! Reset recovery tracking
                 lastRecoveryMinIndex = null
                 consecutiveStaticRecoveryCount = 0
+                consecutiveTargetAttempts = 0
                 recentScrollDirections.clear()
+                lastKnownScrollDirection = null
 
                 val title = unvisitedCard.title
                 val fingerprint = unvisitedCard.fingerprint
@@ -1605,13 +1615,18 @@ class KidsAccessibilityService : AccessibilityService() {
                     // In Pass 2 reverse crawl, we are traversing bottom-to-top towards post #1 (top of stream).
                     // If at the stream top banner, target can NEVER be backward (upward).
                     // If target index is greater than maxVisibleIndex, target is further down (forward).
-                    // Otherwise, target is towards the top (backward).
+                    // If target index is less than minVisibleIndex, target is further up (backward).
+                    // When indices are null (during settling), retain the previous seek direction!
                     val targetAhead = when {
                         isAtStreamTop -> true
                         maxVisibleIndex != null && nextItem.index > maxVisibleIndex -> true
-                        else -> false // Default in bottom-to-top pass: scroll backward towards the top!
+                        minVisibleIndex != null && nextItem.index < minVisibleIndex -> false
+                        else -> lastKnownScrollDirection ?: false
                     }
-                    val distance = if (minVisibleIndex != null) Math.abs(nextItem.index - minVisibleIndex) else 5
+                    lastKnownScrollDirection = targetAhead
+
+                    consecutiveTargetAttempts++
+                    val currentAttempts = manifest.incrementAttempt(nextItem.fingerprint)
 
                     recentScrollDirections.addLast(targetAhead)
                     if (recentScrollDirections.size > 6) recentScrollDirections.removeFirst()
@@ -1624,36 +1639,24 @@ class KidsAccessibilityService : AccessibilityService() {
                             "AUTO_RECOVERY",
                             "Oscillation detected around target #${nextItem.index}! Engaging micro-nudge."
                         )
-                        manifest.incrementAttempt(nextItem.fingerprint)
                     }
 
-                    // Viewport static tracking
-                    val isStatic = (minVisibleIndex != null && minVisibleIndex == lastRecoveryMinIndex)
-                    lastRecoveryMinIndex = minVisibleIndex
-
-                    if (isStatic) {
-                        consecutiveStaticRecoveryCount++
-                    } else {
-                        consecutiveStaticRecoveryCount = 0
-                    }
-
-                    val attempts = if (isStatic && consecutiveStaticRecoveryCount >= 3) {
-                        manifest.incrementAttempt(nextItem.fingerprint)
-                    } else {
-                        manifest.findByFingerprint(nextItem.fingerprint)?.attemptCount ?: 0
-                    }
-
-                    if (attempts >= 4) {
+                    if (consecutiveTargetAttempts >= 5 || currentAttempts >= 5) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($attempts attempts)."
+                            "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($consecutiveTargetAttempts attempts)."
                         )
+                        if (nextItem.previewText.isNotBlank()) {
+                            ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                        }
                         manifest.markItemCompleted(nextItem.index)
                         manifest.markSkipped(nextItem.fingerprint)
                         visitedPostFingerprints.add(nextItem.fingerprint)
                         lastRecoveryMinIndex = null
                         consecutiveStaticRecoveryCount = 0
+                        consecutiveTargetAttempts = 0
                         recentScrollDirections.clear()
+                        lastKnownScrollDirection = null
                         continue
                     }
 
@@ -1679,6 +1682,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         crawlerOverlay?.updateStatus(statusTitle, statusDetail)
                         stepScrollStream(isScrollForward = true)
                     }
+                    delay(300)
                 } else {
                     delay(500)
                 }
@@ -3315,9 +3319,9 @@ class KidsAccessibilityService : AccessibilityService() {
         val rect = Rect()
 
         // Fast-path: Native Accessibility text search for target title (finds partially clipped and pre-fetched cards!)
-        val cleanTargetTitle = targetItem.title.trim()
-        val queryCandidate = cleanTargetTitle.substringAfter(":").trim().take(30)
-        val searchQuery = if (queryCandidate.length >= 6) queryCandidate else cleanTargetTitle.take(30)
+        val normTargetTitle = StreamManifest.normalizeTitle(targetItem.title)
+        val queryCandidate = normTargetTitle.substringAfter(":").trim().take(30)
+        val searchQuery = if (queryCandidate.length >= 6) queryCandidate else normTargetTitle.take(30)
 
         if (searchQuery.length >= 6) {
             val fastMatches = rootNode.findAccessibilityNodeInfosByText(searchQuery)
@@ -3330,9 +3334,12 @@ class KidsAccessibilityService : AccessibilityService() {
                     val combinedText = cardItems.joinToString(" ")
                     val fingerprint = computeCardFingerprint(cardItems)
 
-                    val cleanCardTitle = cardItems.firstOrNull { it.trim().length > 3 }?.take(80) ?: targetItem.title
+                    val normCardTitle = StreamManifest.normalizeTitle(
+                        cardItems.firstOrNull { it.trim().length > 3 } ?: targetItem.title
+                    )
                     val isMatch = isPostCard && (fingerprint == targetItem.fingerprint ||
-                            cleanCardTitle.contains(searchQuery, ignoreCase = true) ||
+                            normCardTitle == normTargetTitle ||
+                            normCardTitle.contains(searchQuery, ignoreCase = true) ||
                             combinedText.contains(searchQuery, ignoreCase = true))
 
                     if (isMatch) {
@@ -3379,21 +3386,34 @@ class KidsAccessibilityService : AccessibilityService() {
                     val title = titleCandidate?.take(80) ?: "Classroom Notice"
                     val fingerprint = computeCardFingerprint(cardItems)
 
-                    // Resilient Multi-Factor Matching: Fingerprint -> Title -> Content Overlap
+                    // Resilient Multi-Factor Matching: Fingerprint -> Normalized Title -> Token Overlap -> Content Overlap
                     val isFingerprintMatch = (fingerprint == targetItem.fingerprint)
-                    val cleanCardTitle = title.trim().lowercase()
-                    val targetLower = cleanTargetTitle.lowercase()
-                    val isTitleMatch = targetLower.isNotBlank() && (
-                            cleanCardTitle == targetLower ||
-                            (cleanCardTitle.length >= 15 && targetLower.startsWith(cleanCardTitle.take(25))) ||
-                            (targetLower.length >= 15 && cleanCardTitle.startsWith(targetLower.take(25)))
-                    )
-                    val isContentMatch = targetLower.length >= 20 && combinedText.contains(targetLower.take(25), ignoreCase = true)
+                    val normCardTitle = StreamManifest.normalizeTitle(title)
 
-                    if (isFingerprintMatch || isTitleMatch || isContentMatch) {
-                        val matchReason = if (isFingerprintMatch) "Fingerprint ($fingerprint)"
-                        else if (isTitleMatch) "Title (\"${title.take(35)}\")"
-                        else "Content Overlap"
+                    val isTitleMatch = normTargetTitle.isNotBlank() && (
+                            normCardTitle == normTargetTitle ||
+                            (normCardTitle.length >= 6 && normTargetTitle.contains(normCardTitle)) ||
+                            (normTargetTitle.length >= 6 && normCardTitle.contains(normTargetTitle))
+                    )
+
+                    val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
+                    val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
+                    val isTokenMatch = cardTokens.isNotEmpty() && targetTokens.isNotEmpty() && (
+                            cardTokens.intersect(targetTokens).isNotEmpty() && (
+                                    cardTokens.intersect(targetTokens).size == minOf(cardTokens.size, targetTokens.size) ||
+                                    (cardTokens.intersect(targetTokens).size.toFloat() / maxOf(cardTokens.size, targetTokens.size) >= 0.5f)
+                            )
+                    )
+
+                    val isContentMatch = normTargetTitle.length >= 10 && combinedText.contains(normTargetTitle, ignoreCase = true)
+
+                    if (isFingerprintMatch || isTitleMatch || isTokenMatch || isContentMatch) {
+                        val matchReason = when {
+                            isFingerprintMatch -> "Fingerprint ($fingerprint)"
+                            isTitleMatch -> "Title (\"${title.take(35)}\")"
+                            isTokenMatch -> "Token Overlap"
+                            else -> "Content Overlap"
+                        }
 
                         CrawlerTraceLogger.log(
                             "CARD_MATCH",
@@ -3426,8 +3446,8 @@ class KidsAccessibilityService : AccessibilityService() {
         var bestCard: UnvisitedCard? = null
         var bestScore = -1f
 
-        val cleanTargetTitle = targetItem.title.trim().lowercase()
-        val targetTokens = cleanTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+        val normTargetTitle = StreamManifest.normalizeTitle(targetItem.title)
+        val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
 
         val rect = Rect()
         for (card in postCards) {
@@ -3449,12 +3469,13 @@ class KidsAccessibilityService : AccessibilityService() {
             // Multi-factor candidate scoring
             var score = 0f
             if (fp == targetItem.fingerprint) score += 100f
-            val cleanTitle = title.trim().lowercase()
-            if (cleanTitle == cleanTargetTitle) score += 80f
-            else if (cleanTargetTitle.startsWith(cleanTitle.take(20)) || cleanTitle.startsWith(cleanTargetTitle.take(20))) score += 50f
+            val normCardTitle = StreamManifest.normalizeTitle(title)
+            if (normCardTitle == normTargetTitle) score += 80f
+            else if (normTargetTitle.contains(normCardTitle) || normCardTitle.contains(normTargetTitle)) score += 60f
+            else if (normTargetTitle.startsWith(normCardTitle.take(15)) || normCardTitle.startsWith(normTargetTitle.take(15))) score += 40f
 
             if (targetTokens.isNotEmpty()) {
-                val cardTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
                 val commonTokens = targetTokens.intersect(cardTokens)
                 val tokenRatio = commonTokens.size.toFloat() / maxOf(targetTokens.size, 1)
                 score += tokenRatio * 40f
