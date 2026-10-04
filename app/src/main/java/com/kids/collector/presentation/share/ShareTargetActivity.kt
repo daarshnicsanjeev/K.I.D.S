@@ -131,7 +131,8 @@ class ShareTargetActivity : Activity() {
     ) {
             try {
                 val resolvedFileName = queryFileName(uri) ?: "attachment_${System.currentTimeMillis()}.pdf"
-                val safeFileName = resolvedFileName.replace(FILENAME_SANITIZATION_REGEX, "_")
+                val sanitizedFileName = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(resolvedFileName)
+                val safeFileName = sanitizedFileName.replace(FILENAME_SANITIZATION_REGEX, "_")
 
                 val stagingDir = File(appContext.getExternalFilesDir(null), "vault_attachments").apply {
                     if (!exists()) mkdirs()
@@ -203,9 +204,41 @@ class ShareTargetActivity : Activity() {
                                     "SHARE_INGEST",
                                     "Skipping duplicate shared file \"$safeFileName\": identical hash already present in attachment ${existingByHash.attachmentId.take(8)}"
                                 )
-                                if (stagedFile.exists()) {
-                                    stagedFile.delete()
+                            }
+
+                            // Propagate to any other unlinked 0-byte stubs waiting for this file or hash
+                            val pendingStubs = db.attachmentDao().getPendingAttachments()
+                            for (otherStub in pendingStubs) {
+                                if (otherStub.attachmentId != existingByHash.attachmentId && otherStub.sizeBytes == 0L) {
+                                    val otherNorm = normalizeForMatching(otherStub.fileName)
+                                    val safeNorm = normalizeForMatching(safeFileName)
+                                    if (otherNorm == safeNorm || (otherStub.fileHash.isNotBlank() && otherStub.fileHash == fileHash)) {
+                                        if (otherStub.noticeId == existingByHash.noticeId) {
+                                            db.attachmentDao().deleteAttachmentById(otherStub.attachmentId)
+                                        } else {
+                                            val targetUri = existingByHash.localUri.ifBlank { stagedFile.absolutePath }
+                                            val targetSize = if (existingByHash.sizeBytes > 0) existingByHash.sizeBytes else stagedFile.length()
+                                            db.attachmentDao().updateLocalFileWithFileName(
+                                                attachmentId = otherStub.attachmentId,
+                                                fileName = existingByHash.fileName,
+                                                localUri = targetUri,
+                                                sizeBytes = targetSize,
+                                                fileHash = fileHash
+                                            )
+                                            if (existingByHash.syncStatus == SyncStatus.SYNCED.name && existingByHash.driveFileId != null) {
+                                                db.attachmentDao().updateSyncStatus(
+                                                    otherStub.attachmentId,
+                                                    SyncStatus.SYNCED.name,
+                                                    existingByHash.driveFileId
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
+                            }
+
+                            if (existingByHash.localUri.isNotBlank() && stagedFile.exists()) {
+                                stagedFile.delete()
                             }
                             return
                         }
@@ -309,6 +342,36 @@ class ShareTargetActivity : Activity() {
                             "SHARE_INGEST",
                             "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAttachment.attachmentId.take(8)} (saved as \"$resolvedFileName\")"
                         )
+
+                        // Clean up duplicate stubs in same notice and link re-posted attachments across other notices
+                        val pendingStubs = db.attachmentDao().getPendingAttachments()
+                        for (otherStub in pendingStubs) {
+                            if (otherStub.attachmentId != matchingAttachment.attachmentId && otherStub.sizeBytes == 0L) {
+                                val otherNorm = normalizeForMatching(otherStub.fileName)
+                                val matchNorm = normalizeForMatching(resolvedFileName)
+                                if (otherNorm == matchNorm) {
+                                    if (otherStub.noticeId == matchingAttachment.noticeId) {
+                                        db.attachmentDao().deleteAttachmentById(otherStub.attachmentId)
+                                        CrawlerTraceLogger.log(
+                                            "SHARE_INGEST",
+                                            "Deleted duplicate stub \"${otherStub.fileName}\" under notice ${matchingAttachment.noticeId}"
+                                        )
+                                    } else {
+                                        db.attachmentDao().updateLocalFileWithFileName(
+                                            attachmentId = otherStub.attachmentId,
+                                            fileName = resolvedFileName,
+                                            localUri = stagedFile.absolutePath,
+                                            sizeBytes = stagedFile.length(),
+                                            fileHash = fileHash
+                                        )
+                                        CrawlerTraceLogger.log(
+                                            "SHARE_INGEST",
+                                            "Auto-linked re-posted attachment \"$resolvedFileName\" under notice ${otherStub.noticeId}"
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     } else {
                         // File does not match pre-indexed attachment:
                         // Represents a file inside a shared Google Drive folder or linked announcement across any platform

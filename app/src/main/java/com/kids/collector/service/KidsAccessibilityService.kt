@@ -153,6 +153,15 @@ class KidsAccessibilityService : AccessibilityService() {
             val minRequired = (targetWords.size * 0.70).toInt().coerceAtLeast(1)
             return matchedWords.size >= minRequired
         }
+
+        fun sanitizeAttachmentFileName(rawName: String): String {
+            if (rawName.isBlank()) return rawName
+            val trimmed = rawName.trim()
+            // Collapse multiple consecutive dots before extension (e.g. "Addition Level 1..pdf" -> "Addition Level 1.pdf")
+            val collapsedDots = trimmed.replace(Regex("""\.+(\w+)$"""), ".$1")
+            return collapsedDots.trim()
+        }
+
         private const val APP_EXIT_DEBOUNCE_MILLIS = 3_000L
         private const val APP_RELAUNCH_RECOVERY_DELAY_MILLIS = 2_000L
         private const val MIN_COURSE_CARD_WIDTH_PX = 300
@@ -1815,6 +1824,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val postTimestamp = parsedDate?.timestampMs ?: System.currentTimeMillis()
 
         var noticeEntity = db.noticeDao().findByHash(hash)
+            ?: db.noticeDao().findByChildAndTitle(targetChildId, title)
         val noticeId = noticeEntity?.noticeId ?: UUID.randomUUID().toString()
         if (noticeEntity == null) {
             noticeEntity = NoticeEntity(
@@ -1855,8 +1865,9 @@ class KidsAccessibilityService : AccessibilityService() {
             if (scrolledRoot != null) {
                 val scrolledAtts = extractDetailAttachments(scrolledRoot)
                 for (att in scrolledAtts) {
-                    if (allAttachments.none { it.fileName == att.fileName }) {
-                        allAttachments.add(att)
+                    val sanitized = sanitizeAttachmentFileName(att.fileName)
+                    if (allAttachments.none { sanitizeAttachmentFileName(it.fileName).equals(sanitized, ignoreCase = true) }) {
+                        allAttachments.add(att.copy(fileName = sanitized))
                     } else {
                         att.downloadNode?.recycle()
                         att.clickableChip?.recycle()
@@ -1873,13 +1884,17 @@ class KidsAccessibilityService : AccessibilityService() {
         )
 
         for (att in allAttachments) {
-            val existingAtt = db.attachmentDao().findByNoticeAndFileName(noticeId, att.fileName)
+            val sanitizedName = sanitizeAttachmentFileName(att.fileName)
+            val existingAtt = db.attachmentDao().findByNoticeAndFileName(noticeId, sanitizedName)
+                ?: db.attachmentDao().getAttachmentsForNotice(noticeId).firstOrNull {
+                    sanitizeAttachmentFileName(it.fileName).equals(sanitizedName, ignoreCase = true)
+                }
             if (existingAtt == null) {
-                val fileHash = "${noticeId}_${att.fileName}".hashCode().toString()
+                val fileHash = "${noticeId}_${sanitizedName}".hashCode().toString()
                 val attEntity = AttachmentEntity(
                     attachmentId = UUID.randomUUID().toString(),
                     noticeId = noticeId,
-                    fileName = att.fileName.take(200),
+                    fileName = sanitizedName.take(200),
                     localUri = "",
                     mimeType = when {
                         att.fileName.contains(".pdf", true) -> "application/pdf"
@@ -3704,7 +3719,12 @@ class KidsAccessibilityService : AccessibilityService() {
         val filenameNodes = mutableListOf<Pair<String, AccessibilityNodeInfo>>()
         findNodesWithExtensions(root, attachmentExts, filenameNodes)
 
-        for ((fileName, nameNode) in filenameNodes) {
+        for ((rawFileName, nameNode) in filenameNodes) {
+            val fileName = sanitizeAttachmentFileName(rawFileName)
+            if (results.any { sanitizeAttachmentFileName(it.fileName).equals(fileName, ignoreCase = true) }) {
+                nameNode.recycle()
+                continue
+            }
             val container = findAttachmentContainer(nameNode)
             val downloadBtn = if (container != null) {
                 findDownloadButtonNode(container)

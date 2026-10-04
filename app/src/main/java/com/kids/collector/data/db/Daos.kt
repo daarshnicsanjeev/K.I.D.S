@@ -47,6 +47,9 @@ interface NoticeDao {
     @Query("SELECT * FROM notices WHERE noticeId = :noticeId LIMIT 1")
     suspend fun findById(noticeId: String): NoticeEntity?
 
+    @Query("SELECT * FROM notices WHERE childId = :childId AND title = :title LIMIT 1")
+    suspend fun findByChildAndTitle(childId: String, title: String): NoticeEntity?
+
     @Query("SELECT * FROM notices WHERE syncStatus = 'PENDING'")
     suspend fun getPendingNotices(): List<NoticeEntity>
 

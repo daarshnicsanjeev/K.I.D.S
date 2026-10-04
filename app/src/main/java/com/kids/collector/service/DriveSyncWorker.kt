@@ -91,6 +91,7 @@ class DriveSyncWorker(
             }
 
             consolidateDuplicateChildProfiles(db, effectiveChildId)
+            consolidateDuplicateNoticesAndStaleStubs(db, effectiveChildId)
 
             val pendingNotices = db.noticeDao().getPendingNotices()
             val pendingAttachments = db.attachmentDao().getPendingAttachments()
@@ -494,6 +495,145 @@ class DriveSyncWorker(
             CrawlerTraceLogger.log("DATABASE_HEAL", "Consolidated ${nonCanonicalNotices.size} notices into canonical child '$canonicalId'")
         } catch (e: Exception) {
             Log.w(TAG, "Consolidation notice check: ${e.message}")
+        }
+    }
+
+    private suspend fun consolidateDuplicateNoticesAndStaleStubs(db: KidsDatabase, canonicalId: String) {
+        try {
+            val allNotices = db.noticeDao().getAllNoticesDirect().filter {
+                it.childId.equals(canonicalId, ignoreCase = true)
+            }
+            if (allNotices.isEmpty()) return
+
+            // 1. Consolidate duplicate notices with identical normalized title under the child
+            val noticesByTitle = allNotices.groupBy {
+                it.title.trim().lowercase().replace(Regex("""\s+"""), " ")
+            }
+
+            for ((_, noticesGroup) in noticesByTitle) {
+                if (noticesGroup.size > 1) {
+                    // Pick the primary notice: prefer the one with physical/synced attachments or earlier timestamp
+                    val primaryNotice = noticesGroup.maxByOrNull { notice ->
+                        val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
+                        atts.count { it.sizeBytes > 0 } * 100 + atts.size
+                    } ?: noticesGroup.first()
+
+                    val secondaryNotices = noticesGroup.filter { it.noticeId != primaryNotice.noticeId }
+                    val primaryAtts = db.attachmentDao().getAttachmentsForNotice(primaryNotice.noticeId).toMutableList()
+
+                    for (secNotice in secondaryNotices) {
+                        val secAtts = db.attachmentDao().getAttachmentsForNotice(secNotice.noticeId)
+                        for (secAtt in secAtts) {
+                            val secClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(secAtt.fileName)
+                            val matchInPrimary = primaryAtts.firstOrNull { prim ->
+                                val primClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(prim.fileName)
+                                primClean.equals(secClean, ignoreCase = true)
+                            }
+
+                            if (matchInPrimary != null) {
+                                if (secAtt.sizeBytes > 0 && matchInPrimary.sizeBytes == 0L) {
+                                    db.attachmentDao().updateLocalFile(
+                                        attachmentId = matchInPrimary.attachmentId,
+                                        localUri = secAtt.localUri,
+                                        sizeBytes = secAtt.sizeBytes,
+                                        fileHash = secAtt.fileHash
+                                    )
+                                    if (secAtt.syncStatus == SyncStatus.SYNCED.name && secAtt.driveFileId != null) {
+                                        db.attachmentDao().updateSyncStatus(
+                                            attachmentId = matchInPrimary.attachmentId,
+                                            newStatus = SyncStatus.SYNCED.name,
+                                            driveFileId = secAtt.driveFileId
+                                        )
+                                    }
+                                }
+                            } else {
+                                db.attachmentDao().insertAttachment(secAtt.copy(noticeId = primaryNotice.noticeId))
+                                primaryAtts.add(secAtt.copy(noticeId = primaryNotice.noticeId))
+                            }
+                        }
+                        db.attachmentDao().deleteAttachmentsForNotice(secNotice.noticeId)
+                        db.noticeDao().deleteNoticeById(secNotice.noticeId)
+                        CrawlerTraceLogger.log(
+                            "DATABASE_HEAL",
+                            "Consolidated duplicate notice \"${secNotice.title.take(40)}\" (${secNotice.noticeId.take(8)}) into ${primaryNotice.noticeId.take(8)}"
+                        )
+                    }
+
+                    val updatedCount = db.attachmentDao().getAttachmentsForNotice(primaryNotice.noticeId).size
+                    db.noticeDao().update(primaryNotice.copy(attachmentCount = updatedCount))
+                }
+            }
+
+            // 2. Heal duplicate 0-byte stubs inside the same notice (e.g. "Addition Level 1.pdf" when "Addition Level 1..pdf" is synced)
+            val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
+            val attachmentsByNotice = allAttachments.groupBy { it.noticeId }
+
+            for ((noticeId, noticeAtts) in attachmentsByNotice) {
+                if (noticeAtts.size > 1) {
+                    val syncedAtts = noticeAtts.filter { it.sizeBytes > 0 || it.syncStatus == SyncStatus.SYNCED.name }
+                    val zeroByteStubs = noticeAtts.filter { it.sizeBytes == 0L && it.localUri.isBlank() && it.syncStatus == SyncStatus.PENDING.name }
+
+                    for (stub in zeroByteStubs) {
+                        val stubClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(stub.fileName)
+                        val matchingSynced = syncedAtts.firstOrNull { syn ->
+                            val synClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(syn.fileName)
+                            synClean.equals(stubClean, ignoreCase = true)
+                        }
+
+                        if (matchingSynced != null) {
+                            db.attachmentDao().deleteAttachmentById(stub.attachmentId)
+                            CrawlerTraceLogger.log(
+                                "DATABASE_HEAL",
+                                "Removed redundant 0-byte stub \"${stub.fileName}\" under notice $noticeId (synced counterpart: \"${matchingSynced.fileName}\")"
+                            )
+                        }
+                    }
+
+                    val currentNotice = db.noticeDao().findById(noticeId)
+                    if (currentNotice != null) {
+                        val freshCount = db.attachmentDao().getAttachmentsForNotice(noticeId).size
+                        if (currentNotice.attachmentCount != freshCount) {
+                            db.noticeDao().update(currentNotice.copy(attachmentCount = freshCount))
+                        }
+                    }
+                }
+            }
+
+            // 3. Heal re-posted notices where the same physical file exists and is SYNCED in another notice (e.g. "The-Articles.pdf")
+            val freshPending = db.attachmentDao().getPendingAttachments().filter { it.sizeBytes == 0L }
+            if (freshPending.isNotEmpty()) {
+                val freshAll = db.attachmentDao().getAllAttachmentsDirect()
+                val syncedPool = freshAll.filter { it.syncStatus == SyncStatus.SYNCED.name && it.driveFileId != null && it.sizeBytes > 0 }
+
+                for (pendingStub in freshPending) {
+                    val stubClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(pendingStub.fileName)
+                    val matchingSynced = syncedPool.firstOrNull { syn ->
+                        val synClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(syn.fileName)
+                        synClean.equals(stubClean, ignoreCase = true)
+                    }
+
+                    if (matchingSynced != null) {
+                        db.attachmentDao().updateLocalFileWithFileName(
+                            attachmentId = pendingStub.attachmentId,
+                            fileName = matchingSynced.fileName,
+                            localUri = matchingSynced.localUri,
+                            sizeBytes = matchingSynced.sizeBytes,
+                            fileHash = matchingSynced.fileHash
+                        )
+                        db.attachmentDao().updateSyncStatus(
+                            attachmentId = pendingStub.attachmentId,
+                            newStatus = SyncStatus.SYNCED.name,
+                            driveFileId = matchingSynced.driveFileId
+                        )
+                        CrawlerTraceLogger.log(
+                            "DATABASE_HEAL",
+                            "Auto-healed re-posted attachment \"${pendingStub.fileName}\" under notice ${pendingStub.noticeId} using Drive file ID ${matchingSynced.driveFileId}"
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Consolidation error: ${e.message}")
         }
     }
 
