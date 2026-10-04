@@ -1025,7 +1025,7 @@ class KidsAccessibilityService : AccessibilityService() {
         var isFirstCardLogged = false
 
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
-            val root = rootInActiveWindow
+            val root = findClassroomRootNode()
             if (root == null) {
                 delay(300)
                 continue
@@ -1174,7 +1174,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 break
             }
 
-            val root = rootInActiveWindow
+            val root = findClassroomRootNode()
             if (root == null) {
                 delay(300)
                 continue
@@ -2673,7 +2673,19 @@ class KidsAccessibilityService : AccessibilityService() {
             navUp.recycle()
         } else {
             val pkg = root.packageName?.toString() ?: ""
-            if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
+            if (pkg == "com.google.android.apps.classroom") {
+                // If in Classroom and no Navigate Up button is visible, verify we are not already on Stream!
+                // Never send blind Back gesture from within Classroom, as Back from Stream exits to the Classes List!
+                val freshRoot = findClassroomRootNode()
+                if (freshRoot != null) {
+                    val onStream = isStreamOrClassworkView(freshRoot)
+                    freshRoot.recycle()
+                    if (onStream) {
+                        CrawlerTraceLogger.log("DEEP_CRAWLER", "Verified already on Stream. Suppressing Back gesture to prevent exit to Classes List.")
+                        return
+                    }
+                }
+            } else if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
                 CrawlerTraceLogger.log("DEEP_CRAWLER", "Outside school app ($pkg), restoring Classroom instead of dispatching BACK")
                 relaunchSchoolApp()
                 return
@@ -2800,6 +2812,29 @@ class KidsAccessibilityService : AccessibilityService() {
                     return root
                 }
                 root.recycle()
+            }
+        } catch (_: Exception) {
+            // Ignore windows inspection failure
+        }
+        return active
+    }
+
+    private fun findClassroomRootNode(): AccessibilityNodeInfo? {
+        val active = rootInActiveWindow
+        if (active != null && isAuthorizedSchoolApp(active.packageName?.toString().orEmpty())) {
+            return active
+        }
+        try {
+            val windowList = windows
+            if (windowList != null) {
+                for (window in windowList) {
+                    val root = window.root ?: continue
+                    if (isAuthorizedSchoolApp(root.packageName?.toString().orEmpty())) {
+                        active?.recycle()
+                        return root
+                    }
+                    root.recycle()
+                }
             }
         } catch (_: Exception) {
             // Ignore windows inspection failure
@@ -4056,8 +4091,8 @@ class KidsAccessibilityService : AccessibilityService() {
             current?.recycle()
         }
 
-        // Case B: Direct clickable CardView or class item container
-        if (node.isClickable && (className.contains("CardView") || className.contains("ViewGroup") || className.contains("FrameLayout"))) {
+        // Case B: Direct clickable Button, CardView or class item container
+        if (node.isClickable && (className.contains("Button") || className.contains("CardView") || className.contains("ViewGroup") || className.contains("FrameLayout") || className.contains("View"))) {
             val rect = Rect()
             node.getBoundsInScreen(rect)
             if (rect.width() > MIN_COURSE_CARD_WIDTH_PX && rect.height() > MIN_COURSE_CARD_HEIGHT_PX) {
@@ -4089,14 +4124,17 @@ class KidsAccessibilityService : AccessibilityService() {
 
         if (candidates.isEmpty()) return null
 
-        // 1. Exact or prefix match against targetCourseTitle
+        // 1. Exact, tokenized, or prefix match against targetCourseTitle
         if (!targetCourseTitle.isNullOrBlank()) {
             val cleanTarget = targetCourseTitle.trim().lowercase()
+            val targetTokens = cleanTarget.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 2 }
             val matched = candidates.firstOrNull { card ->
                 val textList = mutableListOf<String>()
                 collectQuickText(card, textList)
                 val combined = textList.joinToString(" ").lowercase()
-                combined.contains(cleanTarget) || (cleanTarget.length >= 6 && combined.contains(cleanTarget.take(10)))
+                combined.contains(cleanTarget) ||
+                        (targetTokens.isNotEmpty() && targetTokens.all { combined.contains(it) }) ||
+                        (cleanTarget.length >= 6 && combined.contains(cleanTarget.take(10)))
             }
             if (matched != null) {
                 candidates.filter { it != matched }.forEach { it.recycle() }
