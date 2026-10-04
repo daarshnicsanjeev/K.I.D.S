@@ -227,6 +227,37 @@ class DriveSyncWorker(
                         db.noticeDao().markNoticePending(pendingAttachment.noticeId)
                         physicalUploadCount++
 
+                        // Propagate uploaded Drive ID to any sibling pending attachments referencing this file or name
+                        val pendingCleanName = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(pendingAttachment.fileName)
+                        val siblingAttachments = refreshedPendingAttachments.filter { sibling ->
+                            sibling.attachmentId != pendingAttachment.attachmentId && (
+                                sibling.localUri == pendingAttachment.localUri ||
+                                (sibling.fileHash.isNotBlank() && sibling.fileHash == pendingAttachment.fileHash) ||
+                                com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(sibling.fileName).equals(pendingCleanName, ignoreCase = true)
+                            )
+                        }
+                        for (sibling in siblingAttachments) {
+                            db.attachmentDao().updateSyncStatus(
+                                attachmentId = sibling.attachmentId,
+                                newStatus = SyncStatus.SYNCED.name,
+                                driveFileId = uploadedAttId
+                            )
+                            if (sibling.sizeBytes == 0L && pendingAttachment.sizeBytes > 0) {
+                                db.attachmentDao().updateLocalFileWithFileName(
+                                    attachmentId = sibling.attachmentId,
+                                    fileName = targetUploadName,
+                                    localUri = pendingAttachment.localUri,
+                                    sizeBytes = pendingAttachment.sizeBytes,
+                                    fileHash = pendingAttachment.fileHash
+                                )
+                            }
+                            db.noticeDao().markNoticePending(sibling.noticeId)
+                            CrawlerTraceLogger.log(
+                                "ATTACHMENT_SYNC",
+                                "Propagated Drive file $uploadedAttId to sibling attachment \"${sibling.fileName}\" under notice ${sibling.noticeId.take(8)}"
+                            )
+                        }
+
                         val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
                         if (localFile.parentFile == stagingDir) {
                             try {
@@ -600,7 +631,11 @@ class DriveSyncWorker(
             }
 
             // 3. Heal re-posted notices where the same physical file exists and is SYNCED in another notice (e.g. "The-Articles.pdf")
-            val freshPending = db.attachmentDao().getPendingAttachments().filter { it.sizeBytes == 0L }
+            // 3. Heal re-posted notices where the same physical file exists and is SYNCED in another notice (e.g. "The-Articles.pdf", "Grade 3 Bones and Muscles PPT (3).pdf")
+            val freshPending = db.attachmentDao().getPendingAttachments().filter { pending ->
+                val localFile = if (pending.localUri.isNotBlank()) File(pending.localUri) else null
+                pending.sizeBytes == 0L || localFile == null || !localFile.exists()
+            }
             if (freshPending.isNotEmpty()) {
                 val freshAll = db.attachmentDao().getAllAttachmentsDirect()
                 val syncedPool = freshAll.filter { it.syncStatus == SyncStatus.SYNCED.name && it.driveFileId != null && it.sizeBytes > 0 }
@@ -609,7 +644,8 @@ class DriveSyncWorker(
                     val stubClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(pendingStub.fileName)
                     val matchingSynced = syncedPool.firstOrNull { syn ->
                         val synClean = com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName(syn.fileName)
-                        synClean.equals(stubClean, ignoreCase = true)
+                        synClean.equals(stubClean, ignoreCase = true) ||
+                        (pendingStub.fileHash.isNotBlank() && pendingStub.fileHash == syn.fileHash)
                     }
 
                     if (matchingSynced != null) {
@@ -625,9 +661,10 @@ class DriveSyncWorker(
                             newStatus = SyncStatus.SYNCED.name,
                             driveFileId = matchingSynced.driveFileId
                         )
+                        db.noticeDao().markNoticePending(pendingStub.noticeId)
                         CrawlerTraceLogger.log(
                             "DATABASE_HEAL",
-                            "Auto-healed re-posted attachment \"${pendingStub.fileName}\" under notice ${pendingStub.noticeId} using Drive file ID ${matchingSynced.driveFileId}"
+                            "Auto-healed re-posted attachment \"${pendingStub.fileName}\" under notice ${pendingStub.noticeId.take(8)} using Drive file ID ${matchingSynced.driveFileId}"
                         )
                     }
                 }

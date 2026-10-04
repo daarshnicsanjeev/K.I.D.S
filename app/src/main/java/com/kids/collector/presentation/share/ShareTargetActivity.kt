@@ -209,7 +209,9 @@ class ShareTargetActivity : Activity() {
                             // Propagate to any other unlinked 0-byte stubs waiting for this file or hash
                             val pendingStubs = db.attachmentDao().getPendingAttachments()
                             for (otherStub in pendingStubs) {
-                                if (otherStub.attachmentId != existingByHash.attachmentId && otherStub.sizeBytes == 0L) {
+                                val stubFile = if (otherStub.localUri.isNotBlank()) File(otherStub.localUri) else null
+                                val isStubMissingOrZero = otherStub.sizeBytes == 0L || stubFile == null || !stubFile.exists()
+                                if (otherStub.attachmentId != existingByHash.attachmentId && isStubMissingOrZero) {
                                     val otherNorm = normalizeForMatching(otherStub.fileName)
                                     val safeNorm = normalizeForMatching(safeFileName)
                                     if (otherNorm == safeNorm || (otherStub.fileHash.isNotBlank() && otherStub.fileHash == fileHash)) {
@@ -231,6 +233,7 @@ class ShareTargetActivity : Activity() {
                                                     SyncStatus.SYNCED.name,
                                                     existingByHash.driveFileId
                                                 )
+                                                db.noticeDao().markNoticePending(otherStub.noticeId)
                                             }
                                         }
                                     }
@@ -346,7 +349,9 @@ class ShareTargetActivity : Activity() {
                         // Clean up duplicate stubs in same notice and link re-posted attachments across other notices
                         val pendingStubs = db.attachmentDao().getPendingAttachments()
                         for (otherStub in pendingStubs) {
-                            if (otherStub.attachmentId != matchingAttachment.attachmentId && otherStub.sizeBytes == 0L) {
+                            val stubFile = if (otherStub.localUri.isNotBlank()) File(otherStub.localUri) else null
+                            val isStubMissingOrZero = otherStub.sizeBytes == 0L || stubFile == null || !stubFile.exists()
+                            if (otherStub.attachmentId != matchingAttachment.attachmentId && isStubMissingOrZero) {
                                 val otherNorm = normalizeForMatching(otherStub.fileName)
                                 val matchNorm = normalizeForMatching(resolvedFileName)
                                 if (otherNorm == matchNorm) {
@@ -364,6 +369,14 @@ class ShareTargetActivity : Activity() {
                                             sizeBytes = stagedFile.length(),
                                             fileHash = fileHash
                                         )
+                                        if (matchingAttachment.syncStatus == SyncStatus.SYNCED.name && matchingAttachment.driveFileId != null) {
+                                            db.attachmentDao().updateSyncStatus(
+                                                attachmentId = otherStub.attachmentId,
+                                                newStatus = SyncStatus.SYNCED.name,
+                                                driveFileId = matchingAttachment.driveFileId
+                                            )
+                                            db.noticeDao().markNoticePending(otherStub.noticeId)
+                                        }
                                         CrawlerTraceLogger.log(
                                             "SHARE_INGEST",
                                             "Auto-linked re-posted attachment \"$resolvedFileName\" under notice ${otherStub.noticeId}"
