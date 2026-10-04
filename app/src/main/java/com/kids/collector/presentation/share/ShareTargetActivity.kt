@@ -105,6 +105,18 @@ class ShareTargetActivity : Activity() {
                     processSingleUri(uri, appContext, resolver)
                 }
             } finally {
+                // Trigger immediate Drive sync ONCE for the entire batch
+                val constraints = Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+                val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
+                    .setConstraints(constraints)
+                    .build()
+                WorkManager.getInstance(appContext).enqueueUniqueWork(
+                    "DriveVaultSyncWork",
+                    ExistingWorkPolicy.KEEP,
+                    syncRequest
+                )
                 withContext(Dispatchers.Main) {
                     finishAndRemoveTask()
                 }
@@ -410,19 +422,6 @@ class ShareTargetActivity : Activity() {
                             )
                         }
                     }
-
-                    // Trigger immediate Drive sync
-                    val constraints = Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .build()
-                    val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
-                        .setConstraints(constraints)
-                        .build()
-                    WorkManager.getInstance(appContext).enqueueUniqueWork(
-                        "DriveVaultSyncWork",
-                        ExistingWorkPolicy.APPEND_OR_REPLACE,
-                        syncRequest
-                    )
                 }
             } catch (e: Exception) {
                 CrawlerTraceLogger.log("SHARE_INGEST", "Failed processing shared URI: ${e.message}")
