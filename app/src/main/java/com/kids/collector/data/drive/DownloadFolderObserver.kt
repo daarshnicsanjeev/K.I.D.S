@@ -234,6 +234,9 @@ object DownloadFolderObserver {
                 }
             }
             CrawlerTraceLogger.log("DOWNLOAD_SCAN", "Scan finished: Staged $matchedCount local files.")
+            if (matchedCount > 0) {
+                com.kids.collector.service.KidsAccessibilityService.triggerDriveSync(context)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error scanning local attachment folders", e)
             CrawlerTraceLogger.log("DOWNLOAD_SCAN_ERROR", "Error scanning local folders: ${e.message}")

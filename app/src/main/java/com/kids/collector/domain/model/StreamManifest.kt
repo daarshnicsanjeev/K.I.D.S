@@ -89,12 +89,12 @@ class StreamManifest {
      * 4. Content overlap (card text contains manifest title, or manifest preview contains card title)
      */
     fun findMatchingItem(fingerprint: String, title: String, cardText: String): StreamManifestItem? {
-        // Tier 1: Exact fingerprint
+        // Tier 1: Exact fingerprint SHA-256 match
         findByFingerprint(fingerprint)?.let { return it }
 
         val cleanTitle = title.trim().lowercase()
-        if (cleanTitle.length >= 8) {
-            // Tier 2: Exact title match
+        if (cleanTitle.length >= 8 && !cleanTitle.equals("classroom notice", ignoreCase = true)) {
+            // Tier 2: Exact title match (case-insensitive)
             _items.firstOrNull { it.title.trim().equals(cleanTitle, ignoreCase = true) }?.let { return it }
 
             // Tier 3: Substantial prefix match (first 25 characters)
@@ -103,18 +103,8 @@ class StreamManifest {
                 val itemTitle = it.title.trim().lowercase()
                 itemTitle.startsWith(prefix) || cleanTitle.startsWith(itemTitle.take(25))
             }?.let { return it }
-        }
 
-        // Tier 4: Body content overlap
-        if (cardText.length > 30) {
-            _items.firstOrNull { item ->
-                val itemTitle = item.title.trim()
-                itemTitle.length >= 15 && cardText.contains(itemTitle, ignoreCase = true)
-            }?.let { return it }
-        }
-
-        // Tier 5: Word / Token overlap (for titles with punctuation or localized script differences)
-        if (cleanTitle.length >= 8) {
+            // Tier 4: Word / Token overlap (for titles with punctuation, dates appended, or localized script)
             val titleTokens = cleanTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
             if (titleTokens.size >= 2) {
                 _items.firstOrNull { item ->
@@ -124,6 +114,14 @@ class StreamManifest {
                     overlap >= 0.6f
                 }?.let { return it }
             }
+        }
+
+        // Tier 5: Body content overlap
+        if (cardText.length > 30) {
+            _items.firstOrNull { item ->
+                val itemTitle = item.title.trim()
+                itemTitle.length >= 15 && cardText.contains(itemTitle, ignoreCase = true)
+            }?.let { return it }
         }
 
         return null

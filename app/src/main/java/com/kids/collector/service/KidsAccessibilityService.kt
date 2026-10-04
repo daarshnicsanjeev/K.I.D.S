@@ -23,6 +23,7 @@ import androidx.work.Constraints
 import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import com.kids.collector.data.db.AttachmentEntity
 import com.kids.collector.data.db.ChildProfileEntity
@@ -206,11 +207,12 @@ class KidsAccessibilityService : AccessibilityService() {
 
             val syncRequest = OneTimeWorkRequestBuilder<DriveSyncWorker>()
                 .setConstraints(constraints)
+                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .build()
 
             WorkManager.getInstance(context).enqueueUniqueWork(
                 "DriveVaultSyncWork",
-                ExistingWorkPolicy.APPEND_OR_REPLACE,
+                ExistingWorkPolicy.REPLACE,
                 syncRequest
             )
         }
@@ -1097,6 +1099,12 @@ class KidsAccessibilityService : AccessibilityService() {
             // Only conclude bottom if the screen is PHYSICALLY STATIC across multiple scrolls,
             // with a network pagination grace delay. Never terminate while the viewport is actively moving!
             if (identicalScreenCount >= 5) {
+                // Final bottom sweep: capture any remaining cards at the physical bottom of the feed
+                val finalRoot = rootInActiveWindow
+                if (finalRoot != null) {
+                    surveyVisibleCards(finalRoot, manifest, isStreamBottomSettled = true)
+                    finalRoot.recycle()
+                }
                 val surveyDuration = System.currentTimeMillis() - surveyStartTime
                 CrawlerTraceLogger.logSurveyEnd(
                     manifest.totalCount,
@@ -1270,10 +1278,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
             }
 
-            // Look for target card on screen: first check opportunistic visible pending, then targetItem
-            val visiblePendingCard = findAnyPendingCardOnScreen(root, manifest)
-            val targetItem = visiblePendingCard?.item ?: nextItem
-            val unvisitedCard = visiblePendingCard?.card ?: findCardForTarget(root, targetItem)
+            // Strict reverse loop: strictly target nextItem from highest index down to index 1
+            val targetItem = nextItem
+            val unvisitedCard = findCardForTarget(root, targetItem)
             root.recycle()
 
             val isMaterialOrAssignment = targetItem.title.contains("material", ignoreCase = true) ||
@@ -1536,6 +1543,9 @@ class KidsAccessibilityService : AccessibilityService() {
                 visitedPostFingerprints.add(targetItem.fingerprint)
                 crawlerOverlay?.incrementNoticeCount()
                 CrawlerTraceLogger.logPostCompleted(targetItem.index, total, title, savedAttCount)
+                if (savedAttCount > 0) {
+                    triggerDriveSync(applicationContext)
+                }
                 delay(INTER_POST_SETTLING_DELAY_MILLIS)
             } else {
                 // =====================================================================
@@ -3649,12 +3659,50 @@ class KidsAccessibilityService : AccessibilityService() {
         return notice.body.isNotBlank()
     }
 
-    private suspend fun surveyVisibleCards(rootNode: AccessibilityNodeInfo, manifest: StreamManifest): Int {
+    private suspend fun surveyVisibleCards(
+        rootNode: AccessibilityNodeInfo,
+        manifest: StreamManifest,
+        isStreamBottomSettled: Boolean = false
+    ): Int {
         val postCards = findPostCards(rootNode)
         var addedCount = 0
         val db = KidsDatabase.getInstance(applicationContext)
+        val displayMetrics = resources.displayMetrics
+        val minTopSafeZone = getMinTopSafeZonePx()
+        val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
 
         for (card in postCards) {
+            val cardRect = Rect()
+            card.getBoundsInScreen(cardRect)
+            val cardHeight = cardRect.height().coerceAtLeast(1)
+            val isCardTallerThanViewport = cardHeight > (maxBottom - minTopSafeZone) * 0.85f
+
+            // Viewport Integrity Invariant:
+            // 1. If card top is above the safe top zone, its text was already surveyed on previous screens.
+            // 2. If card bottom is below the bottom nav bar, it is clipped at the screen edge and MUST NOT
+            //    be surveyed with partial text. It will be surveyed on the subsequent swipe when fully in view!
+            // Exception: When isStreamBottomSettled is true (reached physical end of classroom stream),
+            // any card whose header is visible in the viewport is captured so the final post is never missed.
+            if (!isStreamBottomSettled) {
+                if (!isCardTallerThanViewport) {
+                    if (cardRect.top < (minTopSafeZone - 20) || cardRect.bottom > (maxBottom + 20)) {
+                        card.recycle()
+                        continue
+                    }
+                } else {
+                    // For unusually tall cards, ensure the header is comfortably positioned in the upper safe zone
+                    if (cardRect.top < minTopSafeZone || cardRect.top > (minTopSafeZone + 350)) {
+                        card.recycle()
+                        continue
+                    }
+                }
+            } else {
+                if (cardRect.top < minTopSafeZone || cardRect.top > maxBottom) {
+                    card.recycle()
+                    continue
+                }
+            }
+
             val cardItems = mutableListOf<String>()
             collectQuickText(card, cardItems)
             val combinedText = cardItems.joinToString(" ")
@@ -3741,6 +3789,7 @@ class KidsAccessibilityService : AccessibilityService() {
         )
 
         val existing = db.noticeDao().findByHash(hash)
+            ?: db.noticeDao().findByChildAndTitle(targetChildId, title)
         if (existing == null) {
             val noticeEntity = NoticeEntity(
                 noticeId = UUID.randomUUID().toString(),
@@ -3762,21 +3811,22 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun computeCardFingerprint(cardItems: List<String>): String {
-        val commentPattern = Regex("""\b\d+\s+class\s+comments?.*""", RegexOption.IGNORE_CASE)
+        val commentPattern = Regex("""\b(?:\d+\s+)?class\s+comments?.*|add\s+class\s+comment.*""", RegexOption.IGNORE_CASE)
         val content = cardItems
             .map { it.replace(commentPattern, "").trim() }
             .filter { item ->
                 val lower = item.lowercase().trim()
                 !excludedChrome.contains(lower) &&
                         !excludedChrome.any { lower.startsWith(it) } &&
-                        !lower.contains("class comments for") &&
+                        !lower.contains("class comments") &&
+                        !lower.contains("class comment") &&
                         item.isNotBlank()
             }
             .joinToString("|")
         return try {
             val md = MessageDigest.getInstance("SHA-256")
             val digest = md.digest(content.toByteArray(Charsets.UTF_8))
-            digest.take(8).joinToString("") { "%02x".format(it) }
+            digest.take(16).joinToString("") { "%02x".format(it) }
         } catch (e: Exception) {
             content.hashCode().toString()
         }

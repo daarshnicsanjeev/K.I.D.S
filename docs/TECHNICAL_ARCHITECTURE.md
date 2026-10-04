@@ -3600,7 +3600,7 @@ sequenceDiagram
    The move executes via atomic `file.renameTo(destFile)` (with automatic fallback to `copyTo(destFile, overwrite = true)` followed by `file.delete()`). The public `Downloads` and `Documents` folders are sanitized immediately, keeping the parent's filesystem clean.
 4. **Hashing & Database Persistence:** `DeduplicationEngine.computeFileHash(targetFile)` computes the file's SHA-256 hash. Room's `AttachmentDao` is updated with `localUri`, `sizeBytes`, and `fileHash`.
 5. **Drive Vault Upload & Phone Storage Clearance:**
-   - During the background synchronization cycle, `DriveSyncWorker` reads the staged file, runs streaming ML Kit OCR, and uploads it to Google Drive under `attachments/`.
+   - During the background synchronization cycle, `DriveSyncWorker` uploads the physical binary to Google Drive under `attachments/` immediately so files appear on Drive without delay, marks the attachment `SYNCED`, cleans up the transient staging copy, and subsequently executes streaming ML Kit OCR in the background.
    - Upon successful upload (HTTP 200), `DriveSyncWorker` checks the parent path and permanently deletes the staged copy:
      ```kotlin
      val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")

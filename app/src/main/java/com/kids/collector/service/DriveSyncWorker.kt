@@ -2,7 +2,12 @@ package com.kids.collector.service
 
 import android.content.Context
 import android.util.Log
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
+import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
 import androidx.room.withTransaction
 import com.kids.collector.data.db.KidsDatabase
@@ -37,6 +42,33 @@ class DriveSyncWorker(
     private val graphifyEngine = KotlinGraphifyEngine()
     private val localLogDir = File(applicationContext.filesDir, "logs")
     private val deepLogger = DriveDeepLogger(localLogDir)
+
+    override suspend fun getForegroundInfo(): ForegroundInfo {
+        createSyncNotificationChannel()
+        val notification = NotificationCompat.Builder(applicationContext, NOTIFICATION_CHANNEL_ID_SYNC)
+            .setContentTitle("K.I.D.S. Cloud Vault Sync")
+            .setContentText("Syncing notices and attachments to Google Drive...")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .build()
+        return ForegroundInfo(SYNC_NOTIFICATION_ID, notification)
+    }
+
+    private fun createSyncNotificationChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID_SYNC,
+                "K.I.D.S. Vault Sync",
+                NotificationManager.IMPORTANCE_LOW
+            ).apply {
+                description = "Background synchronization of school notices to Google Drive"
+                setShowBadge(false)
+            }
+            val nm = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+            nm?.createNotificationChannel(channel)
+        }
+    }
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         Log.i(TAG, "Starting DriveSyncWorker execution cycle...")
@@ -106,63 +138,15 @@ class DriveSyncWorker(
                     com.kids.collector.data.drive.DriveVaultManager.saveVaultFolderPrefs(applicationContext, savedEmail, academicYear, childName, it)
                 }
 
-            // Autonomous self-healing: Purge any stray legacy "New Folder" on Drive if present
-            try {
-                val strayFolders = driveService.files().list()
-                    .setQ("'${vault.yearFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and (name = 'New Folder' or name contains 'New Folder (') and trashed = false")
-                    .setFields("files(id, name)")
-                    .execute()
-                for (stray in strayFolders.files.orEmpty()) {
-                    try {
-                        driveService.files().delete(stray.id).execute()
-                        Log.i(TAG, "Purged stray empty folder from Google Drive: ${stray.name}")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not purge stray folder: ${stray.name}")
-                    }
-                }
-            } catch (folderListingException: Exception) {
-                Log.w(TAG, "Non-fatal error listing stray folders: ${folderListingException.message}")
-            }
-
             // 1. Guaranteed Google Classroom channel vault provisioning
             val classroomVault = driveClient.provisionChannelVault(vault.childFolderId, CHANNEL_NAME_CLASSROOM)
-
-            // Autonomous self-healing: Purge stray child-level "attachments" folder if present from legacy runs
-            try {
-                val strayChildAttachments = driveService.files().list()
-                    .setQ("'${vault.childFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and name = 'attachments' and trashed = false")
-                    .setFields("files(id, name)")
-                    .execute()
-                for (stray in strayChildAttachments.files.orEmpty()) {
-                    try {
-                        val filesInside = driveService.files().list()
-                            .setQ("'${stray.id}' in parents and trashed = false")
-                            .setFields("files(id, name)")
-                            .execute()
-                        for (strayFile in filesInside.files.orEmpty()) {
-                            driveService.files().update(strayFile.id, null)
-                                .setAddParents(classroomVault.attachmentsFolderId)
-                                .setRemoveParents(stray.id)
-                                .setFields("id, parents")
-                                .execute()
-                            Log.i(TAG, "Relocated stray attachment '${strayFile.name}' to Google Classroom/attachments/")
-                        }
-                        driveService.files().delete(stray.id).execute()
-                        Log.i(TAG, "Purged legacy child-level attachments folder from Google Drive: ${stray.name}")
-                    } catch (e: Exception) {
-                        Log.w(TAG, "Could not purge child-level attachments folder: ${e.message}")
-                    }
-                }
-            } catch (attachmentListingException: Exception) {
-                Log.w(TAG, "Non-fatal error listing stray child attachments: ${attachmentListingException.message}")
-            }
-
 
             val virtualResetCount = db.attachmentDao().resetVirtualAttachmentsToPending()
             if (virtualResetCount > 0) {
                 CrawlerTraceLogger.log("SYNC_WORKER", "Reset $virtualResetCount virtual attachment references back to PENDING for physical capture & sync.")
             }
 
+            // 2. IMMEDIATE PHYSICAL ATTACHMENT UPLOADS (Zero latency reflection in Drive!)
             val refreshedPendingAttachments = db.attachmentDao().getPendingAttachments()
             if (refreshedPendingAttachments.isNotEmpty()) {
                 var physicalUploadCount = 0
@@ -174,26 +158,6 @@ class DriveSyncWorker(
                     val targetFolderId = classroomVault.attachmentsFolderId
 
                     if (localFile != null && localFile.exists()) {
-                        if (pendingAttachment.ocrText.isNullOrBlank()) {
-                            try {
-                                val ocrResult = if (pendingAttachment.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
-                                    ocrParser.extractTextFromPdfFile(localFile)
-                                } else if (pendingAttachment.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
-                                    ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
-                                } else null
-
-                                if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
-                                    db.attachmentDao().updateOcrText(
-                                        attachmentId = pendingAttachment.attachmentId,
-                                        ocrText = ocrResult.fullText,
-                                        pageCount = ocrResult.pageCount
-                                    )
-                                }
-                            } catch (e: Exception) {
-                                Log.w(TAG, "OCR extraction skipped for ${localFile.name}: ${e.message}")
-                            }
-                        }
-
                         val cleanPhysicalName = if (localFile.name.startsWith("shared_")) {
                             localFile.name.replace(Regex("^shared_\\d+_"), "")
                         } else localFile.name
@@ -208,6 +172,7 @@ class DriveSyncWorker(
                             pendingAttachment.fileName
                         }
 
+                        // STEP 1: PHYSICAL UPLOAD FIRST! File immediately reflects on Google Drive!
                         val uploadedAttId = driveClient.uploadAttachment(
                             parentFolderId = targetFolderId,
                             file = localFile,
@@ -256,6 +221,27 @@ class DriveSyncWorker(
                                 "ATTACHMENT_SYNC",
                                 "Propagated Drive file $uploadedAttId to sibling attachment \"${sibling.fileName}\" under notice ${sibling.noticeId.take(8)}"
                             )
+                        }
+
+                        // STEP 2: OCR runs AFTER physical file is safely on Drive (does not delay Drive appearance)
+                        if (pendingAttachment.ocrText.isNullOrBlank()) {
+                            try {
+                                val ocrResult = if (pendingAttachment.mimeType == "application/pdf" || localFile.name.endsWith(".pdf", ignoreCase = true)) {
+                                    ocrParser.extractTextFromPdfFile(localFile)
+                                } else if (pendingAttachment.mimeType.startsWith("image/") || localFile.name.matches(Regex(".*\\.(jpg|jpeg|png)$", RegexOption.IGNORE_CASE))) {
+                                    ocrParser.extractTextFromImageUri(android.net.Uri.fromFile(localFile))
+                                } else null
+
+                                if (ocrResult != null && ocrResult.fullText.isNotBlank()) {
+                                    db.attachmentDao().updateOcrText(
+                                        attachmentId = pendingAttachment.attachmentId,
+                                        ocrText = ocrResult.fullText,
+                                        pageCount = ocrResult.pageCount
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "OCR extraction skipped for ${localFile.name}: ${e.message}")
+                            }
                         }
 
                         val stagingDir = File(applicationContext.getExternalFilesDir(null), "vault_attachments")
@@ -419,6 +405,9 @@ class DriveSyncWorker(
                     Log.w(TAG, "Non-fatal error generating Knowledge Graph and digests", graphEx)
                     CrawlerTraceLogger.log("GRAPHIFY_WARN", "Digest generation warning: ${graphEx.message}")
                 }
+
+                // 5. Autonomous self-healing: purge stray folders at end of cycle (never blocks critical upload path)
+                purgeStrayLegacyFolders(driveService, vault.yearFolderId, vault.childFolderId, classroomVault.attachmentsFolderId)
 
                 CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
                 val finalLogs = CrawlerTraceLogger.drainPendingLogs()
@@ -674,6 +663,61 @@ class DriveSyncWorker(
         }
     }
 
+    private fun purgeStrayLegacyFolders(
+        driveService: com.google.api.services.drive.Drive,
+        yearFolderId: String,
+        childFolderId: String,
+        targetAttachmentsFolderId: String
+    ) {
+        // Autonomous self-healing: Purge any stray legacy "New Folder" on Drive if present
+        try {
+            val strayFolders = driveService.files().list()
+                .setQ("'$yearFolderId' in parents and mimeType = 'application/vnd.google-apps.folder' and (name = 'New Folder' or name contains 'New Folder (') and trashed = false")
+                .setFields("files(id, name)")
+                .execute()
+            for (stray in strayFolders.files.orEmpty()) {
+                try {
+                    driveService.files().delete(stray.id).execute()
+                    Log.i(TAG, "Purged stray empty folder from Google Drive: ${stray.name}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not purge stray folder: ${stray.name}")
+                }
+            }
+        } catch (folderListingException: Exception) {
+            Log.w(TAG, "Non-fatal error listing stray folders: ${folderListingException.message}")
+        }
+
+        // Autonomous self-healing: Purge stray child-level "attachments" folder if present from legacy runs
+        try {
+            val strayChildAttachments = driveService.files().list()
+                .setQ("'$childFolderId' in parents and mimeType = 'application/vnd.google-apps.folder' and name = 'attachments' and trashed = false")
+                .setFields("files(id, name)")
+                .execute()
+            for (stray in strayChildAttachments.files.orEmpty()) {
+                try {
+                    val filesInside = driveService.files().list()
+                        .setQ("'${stray.id}' in parents and trashed = false")
+                        .setFields("files(id, name)")
+                        .execute()
+                    for (strayFile in filesInside.files.orEmpty()) {
+                        driveService.files().update(strayFile.id, null)
+                            .setAddParents(targetAttachmentsFolderId)
+                            .setRemoveParents(stray.id)
+                            .setFields("id, parents")
+                            .execute()
+                        Log.i(TAG, "Relocated stray attachment '${strayFile.name}' to Google Classroom/attachments/")
+                    }
+                    driveService.files().delete(stray.id).execute()
+                    Log.i(TAG, "Purged legacy child-level attachments folder from Google Drive: ${stray.name}")
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not purge child-level attachments folder: ${e.message}")
+                }
+            }
+        } catch (attachmentListingException: Exception) {
+            Log.w(TAG, "Non-fatal error listing stray child attachments: ${attachmentListingException.message}")
+        }
+    }
+
     companion object {
         private const val TAG = "DriveSyncWorker"
         private const val APP_KEYWORD_CLASSROOM = "classroom"
@@ -681,6 +725,8 @@ class DriveSyncWorker(
         private const val VIRTUAL_DRIVE_ID_PREFIX = "virtual_"
         private const val MAX_OCR_SUMMARY_PREVIEW_LENGTH = 120
         private const val GOOGLE_DRIVE_FILE_VIEW_URL_TEMPLATE = "https://drive.google.com/file/d/%s/view"
+        private const val SYNC_NOTIFICATION_ID = 4001
+        private const val NOTIFICATION_CHANNEL_ID_SYNC = "kids_drive_vault_sync"
         private const val DEFAULT_FALLBACK_GRADE = "General"
         private const val DEFAULT_FALLBACK_SCHOOL_NAME = "School Vault"
     }
