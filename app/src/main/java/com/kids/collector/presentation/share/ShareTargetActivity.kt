@@ -38,8 +38,8 @@ class ShareTargetActivity : Activity() {
 
     companion object {
         private const val TAG = "ShareTargetActivity"
-        private val NON_ALPHANUMERIC_REGEX = Regex("[^a-z0-9]")
-        private val FILENAME_SANITIZATION_REGEX = Regex("[^a-zA-Z0-9._-]")
+        private val NON_ALPHANUMERIC_REGEX = Regex("""[^\p{L}\p{N}]""")
+        private val FILENAME_SANITIZATION_REGEX = Regex("""[/\\:*?"<>|\x00-\x1F]""")
         private const val MIN_PREFIX_MATCH_LENGTH = 6
         private const val PREFIX_SLICE_LENGTH = 12
         private val stagingScope = CoroutineScope(kotlinx.coroutines.SupervisorJob() + Dispatchers.IO)
@@ -58,16 +58,31 @@ class ShareTargetActivity : Activity() {
             when (intent?.action) {
                 Intent.ACTION_SEND -> {
                     val uri = intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM)
+                        ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
                     if (uri != null) {
+                        CrawlerTraceLogger.log("SHARE_INGEST", "ShareTargetActivity received ACTION_SEND with 1 URI")
                         processIncomingUris(listOf(uri))
                     } else {
                         finishAndRemoveTask()
                     }
                 }
                 Intent.ACTION_SEND_MULTIPLE -> {
-                    val uris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)
-                    if (!uris.isNullOrEmpty()) {
-                        processIncomingUris(uris)
+                    val extraUris = intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
+                    val clipDataUris = mutableListOf<Uri>()
+                    val clipData = intent.clipData
+                    if (clipData != null) {
+                        for (i in 0 until clipData.itemCount) {
+                            val uri = clipData.getItemAt(i)?.uri
+                            if (uri != null) clipDataUris.add(uri)
+                        }
+                    }
+                    val combinedUris = (extraUris + clipDataUris).distinct()
+                    if (combinedUris.isNotEmpty()) {
+                        CrawlerTraceLogger.log(
+                            "SHARE_INGEST",
+                            "ShareTargetActivity received ACTION_SEND_MULTIPLE with ${combinedUris.size} URIs (${extraUris.size} in EXTRA_STREAM, ${clipDataUris.size} in ClipData)"
+                        )
+                        processIncomingUris(combinedUris)
                     } else {
                         finishAndRemoveTask()
                     }
@@ -192,11 +207,16 @@ class ShareTargetActivity : Activity() {
                         val unlinkedAttachments = allAttachments.filter { it.localUri.isBlank() }
                         val candidatePool = if (unlinkedAttachments.isNotEmpty()) unlinkedAttachments else allAttachments
 
+                        val isTargetAnswerKey = isAnswerKeyDocument(targetBaseName)
+
                         val matchingCandidates = candidatePool.filter { attachmentEntity ->
                             val cleanExpected = attachmentEntity.fileName.replace("...", "").trim().lowercase()
                             val expectedBaseName = cleanExpected.substringBeforeLast('.')
                             val expectedExtension = cleanExpected.substringAfterLast('.', "")
                             val normalizedExpectedBaseName = normalizeForMatching(expectedBaseName)
+
+                            val isExpectedAnswerKey = isAnswerKeyDocument(expectedBaseName)
+                            if (isTargetAnswerKey != isExpectedAnswerKey) return@filter false
 
                             val isExtensionCompatible = expectedExtension.isBlank() || targetExtension.isBlank() || expectedExtension == targetExtension
                             if (!isExtensionCompatible) return@filter false
@@ -204,17 +224,24 @@ class ShareTargetActivity : Activity() {
                             val targetDigits = Regex("\\d+").findAll(normalizedTargetBaseName).map { it.value }.toList()
                             val expectedDigits = Regex("\\d+").findAll(normalizedExpectedBaseName).map { it.value }.toList()
                             val isDigitsCompatible = targetDigits == expectedDigits
+                            if (!isDigitsCompatible) return@filter false
 
                             // 1. Direct or normalized match
                             if (expectedBaseName == targetBaseName || normalizedExpectedBaseName == normalizedTargetBaseName) return@filter true
 
-                            // 2. Substantial prefix match (strictly requiring matching digits)
-                            if (isDigitsCompatible && normalizedExpectedBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName)) return@filter true
-                            if (isDigitsCompatible && normalizedTargetBaseName.length >= MIN_PREFIX_MATCH_LENGTH && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName)) return@filter true
+                            // 2. Reject generic grade prefix matches (e.g. "grade3" matching "grade3bonesandmuscles")
+                            val lengthDelta = Math.abs(normalizedTargetBaseName.length - normalizedExpectedBaseName.length)
+                            val genericPrefixes = setOf("grade3", "grade", "class3", "std3", "sheet", "worksheet", "unit", "hw", "cw")
+                            if (lengthDelta > 6 || genericPrefixes.contains(normalizedExpectedBaseName) || genericPrefixes.contains(normalizedTargetBaseName)) {
+                                return@filter false
+                            }
 
-                            // 3. Substring containment (strictly requiring matching digits and tight length bounds)
-                            if (isDigitsCompatible && Math.abs(normalizedTargetBaseName.length - normalizedExpectedBaseName.length) <= 4 &&
-                                (normalizedTargetBaseName.contains(normalizedExpectedBaseName) || normalizedExpectedBaseName.contains(normalizedTargetBaseName))) return@filter true
+                            // 3. Substantial prefix match (strictly within tight length delta)
+                            if (normalizedExpectedBaseName.length >= 8 && normalizedTargetBaseName.startsWith(normalizedExpectedBaseName)) return@filter true
+                            if (normalizedTargetBaseName.length >= 8 && normalizedExpectedBaseName.startsWith(normalizedTargetBaseName)) return@filter true
+
+                            // 4. Substring containment
+                            if (lengthDelta <= 4 && (normalizedTargetBaseName.contains(normalizedExpectedBaseName) || normalizedExpectedBaseName.contains(normalizedTargetBaseName))) return@filter true
 
                             false
                         }
@@ -251,15 +278,24 @@ class ShareTargetActivity : Activity() {
                     }
 
                     if (matchingAttachment != null) {
-                        db.attachmentDao().updateLocalFile(
+                        val resolvedFileName = if (safeFileName.isNotBlank() &&
+                            (safeFileName.contains('.') || matchingAttachment.fileName.endsWith("...") || matchingAttachment.fileName.length < safeFileName.length)
+                        ) {
+                            safeFileName
+                        } else {
+                            matchingAttachment.fileName
+                        }
+
+                        db.attachmentDao().updateLocalFileWithFileName(
                             attachmentId = matchingAttachment.attachmentId,
+                            fileName = resolvedFileName,
                             localUri = stagedFile.absolutePath,
                             sizeBytes = stagedFile.length(),
                             fileHash = fileHash
                         )
                         CrawlerTraceLogger.log(
                             "SHARE_INGEST",
-                            "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAttachment.attachmentId.take(8)}"
+                            "Linked shared attachment \"$safeFileName\" (${stagedFile.length()} bytes) to attachment ${matchingAttachment.attachmentId.take(8)} (saved as \"$resolvedFileName\")"
                         )
                     } else {
                         // File does not match pre-indexed attachment:
@@ -276,7 +312,7 @@ class ShareTargetActivity : Activity() {
                         } else null
 
                         val child = db.childProfileDao().getAllChildrenDirect().firstOrNull()
-                        val childId = child?.childId ?: "child_default"
+                        val childId = child?.let { com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(it.firstName) } ?: "child_default"
 
                         val finalNoticeId = if (targetNotice != null) {
                             targetNotice.noticeId
@@ -431,5 +467,13 @@ class ShareTargetActivity : Activity() {
 
     private fun normalizeForMatching(input: String): String {
         return input.lowercase().replace(NON_ALPHANUMERIC_REGEX, "")
+    }
+
+    private fun isAnswerKeyDocument(name: String): Boolean {
+        val lower = name.lowercase(java.util.Locale.ROOT)
+        return lower.contains("answer key") || lower.contains("answerkey") ||
+               lower.contains("ans key") || lower.contains("anskey") ||
+               lower.contains("_ak") || lower.contains("-ak") ||
+               lower.contains(" ak") || lower.contains("ans.")
     }
 }

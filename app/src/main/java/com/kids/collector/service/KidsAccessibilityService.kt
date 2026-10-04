@@ -1789,7 +1789,8 @@ class KidsAccessibilityService : AccessibilityService() {
         val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
         val router = MultiChildRouter(children)
         val targetChild = router.route("com.google.android.apps.classroom", title, combinedText)
-        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+        val rawChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: savedChildName
+        val targetChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(rawChildId)
 
         val hash = deduplicationEngine.computeNoticeHash(
             childId = targetChildId,
@@ -3618,7 +3619,8 @@ class KidsAccessibilityService : AccessibilityService() {
         val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
         val router = MultiChildRouter(children)
         val targetChild = router.route("com.google.android.apps.classroom", title, fullText)
-        val targetChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: "child_$savedChildName"
+        val rawChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: savedChildName
+        val targetChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(rawChildId)
 
         val hash = deduplicationEngine.computeNoticeHash(
             childId = targetChildId,

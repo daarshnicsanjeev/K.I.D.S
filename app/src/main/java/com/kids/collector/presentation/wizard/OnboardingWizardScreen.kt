@@ -1626,7 +1626,7 @@ fun OnboardingWizardScreen(
                         }
 
                         val childProfile = ChildProfile(
-                            childId = UUID.randomUUID().toString(),
+                            childId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(childName.trim()),
                             firstName = childName.trim(),
                             academicYear = selectedYear,
                             accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },

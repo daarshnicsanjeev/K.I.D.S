@@ -50,8 +50,7 @@ class DriveSyncWorker(
             val primaryChildEntity = dbChildren.firstOrNull()
             val childName = primaryChildEntity?.firstName?.trim()
                 ?: prefChildName.trim()
-            val effectiveChildId = primaryChildEntity?.childId
-                ?: "child_${childName.lowercase(Locale.US).replace(" ", "_")}"
+            val effectiveChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(childName)
 
             if (savedEmail.isNullOrBlank() || childName.isBlank()) {
                 Log.w(TAG, "Sync deferred: Neither child profile nor vault preferences established.")
@@ -90,6 +89,8 @@ class DriveSyncWorker(
                     Log.w(TAG, "Could not auto-seed child profile: ${dbEx.message}")
                 }
             }
+
+            consolidateDuplicateChildProfiles(db, effectiveChildId)
 
             val pendingNotices = db.noticeDao().getPendingNotices()
             val pendingAttachments = db.attachmentDao().getPendingAttachments()
@@ -192,12 +193,30 @@ class DriveSyncWorker(
                             }
                         }
 
+                        val cleanPhysicalName = if (localFile.name.startsWith("shared_")) {
+                            localFile.name.replace(Regex("^shared_\\d+_"), "")
+                        } else localFile.name
+
+                        val targetUploadName = if (cleanPhysicalName.isNotBlank() &&
+                            (pendingAttachment.fileName.endsWith("...") ||
+                             pendingAttachment.fileName.length < 8 && cleanPhysicalName.length >= 8 ||
+                             cleanPhysicalName.contains(pendingAttachment.fileName.substringBeforeLast('.')))
+                        ) {
+                            cleanPhysicalName
+                        } else {
+                            pendingAttachment.fileName
+                        }
+
                         val uploadedAttId = driveClient.uploadAttachment(
                             parentFolderId = targetFolderId,
                             file = localFile,
                             mimeType = pendingAttachment.mimeType,
-                            customName = pendingAttachment.fileName
+                            customName = targetUploadName
                         )
+
+                        if (targetUploadName != pendingAttachment.fileName) {
+                            db.attachmentDao().insertAttachment(pendingAttachment.copy(fileName = targetUploadName))
+                        }
 
                         db.attachmentDao().updateSyncStatus(
                             attachmentId = pendingAttachment.attachmentId,
@@ -373,7 +392,6 @@ class DriveSyncWorker(
                 val finalLogs = CrawlerTraceLogger.drainPendingLogs()
                 if (finalLogs.isNotEmpty()) {
                     driveClient.appendCrawlerTraceLog(vault.logsFolderId, finalLogs)
-                    CrawlerTraceLogger.appendToLocalFile(applicationContext, finalLogs)
                 }
 
             Result.success()
@@ -381,7 +399,6 @@ class DriveSyncWorker(
         } catch (t: Throwable) {
             Log.e(TAG, "Error during Drive sync worker execution", t)
             CrawlerTraceLogger.log("SYNC_WORKER", "Sync failed: ${t.message}")
-            CrawlerTraceLogger.appendToLocalFile(applicationContext, CrawlerTraceLogger.drainPendingLogs())
             Result.retry()
         }
     }
@@ -427,6 +444,58 @@ class DriveSyncWorker(
 
     private fun formatDriveFileUrl(driveFileId: String): String =
         GOOGLE_DRIVE_FILE_VIEW_URL_TEMPLATE.format(driveFileId)
+
+    private suspend fun consolidateDuplicateChildProfiles(db: KidsDatabase, canonicalId: String) {
+        try {
+            val allNotices = db.noticeDao().getAllNoticesDirect()
+            val nonCanonicalNotices = allNotices.filter {
+                it.childId.equals(canonicalId, ignoreCase = true) && it.childId != canonicalId
+            }
+            if (nonCanonicalNotices.isEmpty()) return
+
+            val canonicalNotices = allNotices.filter { it.childId == canonicalId }
+            val canonicalByTitle = canonicalNotices.associateBy { it.title }
+
+            for (nonCan in nonCanonicalNotices) {
+                val matchingCan = canonicalByTitle[nonCan.title]
+                if (matchingCan != null) {
+                    val nonCanAtts = db.attachmentDao().getAttachmentsForNotice(nonCan.noticeId)
+                    val canAtts = db.attachmentDao().getAttachmentsForNotice(matchingCan.noticeId)
+                    val canAttsByName = canAtts.associateBy { it.fileName }
+
+                    for (att in nonCanAtts) {
+                        val matchingCanAtt = canAttsByName[att.fileName]
+                        if (matchingCanAtt != null) {
+                            if (att.sizeBytes > 0 && matchingCanAtt.sizeBytes == 0L) {
+                                db.attachmentDao().updateLocalFile(
+                                    attachmentId = matchingCanAtt.attachmentId,
+                                    localUri = att.localUri,
+                                    sizeBytes = att.sizeBytes,
+                                    fileHash = att.fileHash
+                                )
+                                if (att.syncStatus == SyncStatus.SYNCED.name) {
+                                    db.attachmentDao().updateSyncStatus(
+                                        attachmentId = matchingCanAtt.attachmentId,
+                                        newStatus = SyncStatus.SYNCED.name,
+                                        driveFileId = att.driveFileId
+                                    )
+                                }
+                            }
+                        } else {
+                            db.attachmentDao().insertAttachment(att.copy(noticeId = matchingCan.noticeId))
+                        }
+                    }
+                    db.attachmentDao().deleteAttachmentsForNotice(nonCan.noticeId)
+                    db.noticeDao().deleteNoticeById(nonCan.noticeId)
+                } else {
+                    db.noticeDao().updateChildId(nonCan.noticeId, canonicalId)
+                }
+            }
+            CrawlerTraceLogger.log("DATABASE_HEAL", "Consolidated ${nonCanonicalNotices.size} notices into canonical child '$canonicalId'")
+        } catch (e: Exception) {
+            Log.w(TAG, "Consolidation notice check: ${e.message}")
+        }
+    }
 
     companion object {
         private const val TAG = "DriveSyncWorker"

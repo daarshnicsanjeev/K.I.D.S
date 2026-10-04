@@ -128,6 +128,11 @@ object DriveVaultManager {
             .apply()
     }
 
+    fun canonicalChildId(name: String): String {
+        val clean = name.trim().lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "_")
+        return if (clean.startsWith("child_")) clean else "child_$clean"
+    }
+
     fun getSavedVaultPrefs(context: Context): Triple<String?, String, String> {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val email = prefs.getString("account_email", null) ?: currentAccountEmail

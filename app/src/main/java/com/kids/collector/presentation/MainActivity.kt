@@ -69,8 +69,22 @@ class MainActivity : ComponentActivity() {
                         childrenList = domainList
                         if (isFirstLoad) {
                             currentScreen = if (domainList.isEmpty()) AppScreen.WIZARD else AppScreen.DASHBOARD
-                            if (domainList.isNotEmpty() && !PermissionHelper.isNotificationAccessGranted(this@MainActivity)) {
-                                showPermissionDialog = true
+                            if (domainList.isNotEmpty()) {
+                                val syncRequest = androidx.work.OneTimeWorkRequestBuilder<com.kids.collector.service.DriveSyncWorker>()
+                                    .setConstraints(
+                                        androidx.work.Constraints.Builder()
+                                            .setRequiredNetworkType(androidx.work.NetworkType.CONNECTED)
+                                            .build()
+                                    )
+                                    .build()
+                                androidx.work.WorkManager.getInstance(this@MainActivity).enqueueUniqueWork(
+                                    "DriveVaultSyncWork",
+                                    androidx.work.ExistingWorkPolicy.KEEP,
+                                    syncRequest
+                                )
+                                if (!PermissionHelper.isNotificationAccessGranted(this@MainActivity)) {
+                                    showPermissionDialog = true
+                                }
                             }
                             isFirstLoad = false
                         }

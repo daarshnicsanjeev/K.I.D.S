@@ -3816,7 +3816,7 @@ class GoogleDriveSharedHarvester(
         var previousTitles = listOf<String>()
         var staticTopCount = 0
         var scrollSteps = 0
-        val maxScrollSteps = 15
+        val maxScrollSteps = 3
         while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && scrollSteps < maxScrollSteps) {
             val checkRoot = rootInActiveWindowProvider() ?: break
             val items = scanVisibleDriveItems(checkRoot)

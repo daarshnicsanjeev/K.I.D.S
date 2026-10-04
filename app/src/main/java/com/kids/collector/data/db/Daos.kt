@@ -82,6 +82,12 @@ interface NoticeDao {
 
     @Query("UPDATE notices SET syncStatus = 'PENDING' WHERE noticeId = :noticeId")
     suspend fun markNoticePending(noticeId: String)
+
+    @Query("DELETE FROM notices WHERE noticeId = :noticeId")
+    suspend fun deleteNoticeById(noticeId: String)
+
+    @Query("UPDATE notices SET childId = :newChildId WHERE noticeId = :noticeId")
+    suspend fun updateChildId(noticeId: String, newChildId: String)
 }
 
 @Dao
@@ -125,6 +131,18 @@ interface AttachmentDao {
     @Query("UPDATE attachments SET localUri = :localUri, sizeBytes = :sizeBytes, fileHash = :fileHash, syncStatus = 'PENDING' WHERE attachmentId = :attachmentId")
     suspend fun updateLocalFile(attachmentId: String, localUri: String, sizeBytes: Long, fileHash: String)
 
+    @Query("UPDATE attachments SET fileName = :fileName, localUri = :localUri, sizeBytes = :sizeBytes, fileHash = :fileHash, syncStatus = 'PENDING' WHERE attachmentId = :attachmentId")
+    suspend fun updateLocalFileWithFileName(attachmentId: String, fileName: String, localUri: String, sizeBytes: Long, fileHash: String)
+
     @Query("UPDATE attachments SET syncStatus = 'PENDING', driveFileId = null WHERE driveFileId LIKE 'virtual_%'")
     suspend fun resetVirtualAttachmentsToPending(): Int
+
+    @Query("DELETE FROM attachments WHERE noticeId = :noticeId")
+    suspend fun deleteAttachmentsForNotice(noticeId: String)
+
+    @Query("DELETE FROM attachments WHERE attachmentId = :attachmentId")
+    suspend fun deleteAttachmentById(attachmentId: String)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAttachment(attachment: AttachmentEntity): Long
 }
