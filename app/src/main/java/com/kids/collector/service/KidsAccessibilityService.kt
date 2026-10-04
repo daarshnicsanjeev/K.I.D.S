@@ -75,6 +75,7 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val BASE_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 800L
         private const val HEAVY_ATTACHMENT_WAKE_SETTLE_DELAY_MS = 1400L
         private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 2000L
+        private const val MAX_DETAIL_CHIP_SEARCH_SCROLL_ATTEMPTS = 3
 
         fun calculateDynamicWakeViewerTimeoutMs(fileName: String): Long {
             val isHeavy = fileName.contains(Regex("""\.(pptx?|docx?|xlsx?|jpe?g|png|pdf)""", RegexOption.IGNORE_CASE))
@@ -1922,7 +1923,7 @@ class KidsAccessibilityService : AccessibilityService() {
         db.noticeDao().update(noticeEntity.copy(attachmentCount = totalAttCount))
 
         if (allAttachments.isNotEmpty() && crawlerOverlay?.isAutoScrollingActive() == true) {
-            fastWakeAttachmentsInDrive(allAttachments, title)
+            fastWakeAttachmentsInDrive(allAttachments, title, initialDetailScrolls = detailScrolls)
         }
 
         for (att in allAttachments) {
@@ -1943,8 +1944,22 @@ class KidsAccessibilityService : AccessibilityService() {
      * This registers the student's access with Google's backend, prompting Google Drive to
      * immediately populate the file in "Shared with me" where the single-pass multi-selector harvests it.
      */
-    private suspend fun fastWakeAttachmentsInDrive(attachments: List<ExtractedAttachmentDetail>, postTitle: String) {
+    private suspend fun fastWakeAttachmentsInDrive(
+        attachments: List<ExtractedAttachmentDetail>,
+        postTitle: String,
+        initialDetailScrolls: Int = 0
+    ) {
         val db = KidsDatabase.getInstance(applicationContext)
+
+        // 1. Reset detail view scroll to the very top so initial chips are in the viewport
+        if (initialDetailScrolls > 0) {
+            repeat(initialDetailScrolls) {
+                var scrollUpDone = false
+                crawlerOverlay?.performDetailScrollUp { scrollUpDone = true }
+                waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollUpDone }
+                delay(350)
+            }
+        }
 
         for (i in attachments.indices) {
             if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) break
@@ -1958,14 +1973,42 @@ class KidsAccessibilityService : AccessibilityService() {
                 continue
             }
 
-            val currentRoot = rootInActiveWindow ?: continue
+            var currentRoot = rootInActiveWindow ?: continue
             if (!isPostDetailView(currentRoot)) {
                 currentRoot.recycle()
                 break
             }
 
-            val freshAtts = extractDetailAttachments(currentRoot)
-            val targetAtt = freshAtts.find { it.fileName.equals(att.fileName, ignoreCase = true) } ?: freshAtts.getOrNull(i)
+            var freshAtts = extractDetailAttachments(currentRoot)
+            var targetAtt = freshAtts.find {
+                matchesAttachmentChipText(att.fileName, it.fileName) || it.fileName.equals(att.fileName, ignoreCase = true)
+            }
+
+            // 2. If target chip is not currently visible in viewport, scroll down progressively until found
+            var chipSearchScrollAttempts = 0
+            while (targetAtt == null && chipSearchScrollAttempts < MAX_DETAIL_CHIP_SEARCH_SCROLL_ATTEMPTS) {
+                for (f in freshAtts) {
+                    f.downloadNode?.recycle()
+                    f.clickableChip?.recycle()
+                }
+                currentRoot.recycle()
+
+                var scrollDownDone = false
+                crawlerOverlay?.performDetailScrollDown { scrollDownDone = true }
+                waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { scrollDownDone }
+                delay(350)
+
+                val scrolledRoot = rootInActiveWindow ?: break
+                currentRoot = scrolledRoot
+                if (!isPostDetailView(currentRoot)) break
+
+                freshAtts = extractDetailAttachments(currentRoot)
+                targetAtt = freshAtts.find {
+                    matchesAttachmentChipText(att.fileName, it.fileName) || it.fileName.equals(att.fileName, ignoreCase = true)
+                }
+                chipSearchScrollAttempts++
+            }
+
             val chip = targetAtt?.clickableChip
 
             if (chip != null) {
@@ -2012,6 +2055,11 @@ class KidsAccessibilityService : AccessibilityService() {
                         )
                     }
                 }
+            } else {
+                CrawlerTraceLogger.log(
+                    "FAST_WAKE",
+                    "Chip for \"${att.fileName}\" was not visible in detail view after $chipSearchScrollAttempts scroll passes (skipping)"
+                )
             }
 
             for (f in freshAtts) {
