@@ -2729,15 +2729,14 @@ class KidsAccessibilityService : AccessibilityService() {
             recoverToStreamFromClassesList(root, lockedCourseTitle, lockedCourseGrade)
             return
         }
-            val pkg = root.packageName?.toString() ?: ""
-            if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
-                CrawlerTraceLogger.log("DEEP_CRAWLER", "Outside school app ($pkg), restoring Classroom instead of dispatching BACK")
-                relaunchSchoolApp()
-                return
-            }
-            CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
-            performGlobalAction(GLOBAL_ACTION_BACK)
+        val pkg = root.packageName?.toString() ?: ""
+        if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Outside school app ($pkg), restoring Classroom instead of dispatching BACK")
+            relaunchSchoolApp()
+            return
         }
+        CrawlerTraceLogger.log("DEEP_CRAWLER", "Dispatching GLOBAL_ACTION_BACK to return to stream")
+        performGlobalAction(GLOBAL_ACTION_BACK)
         delay(POST_RETURN_PACING_DELAY_MILLIS)
     }
 
