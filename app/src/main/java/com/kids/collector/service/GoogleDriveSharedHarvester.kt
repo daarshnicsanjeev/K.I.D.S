@@ -2375,9 +2375,9 @@ class GoogleDriveSharedHarvester(
 
         val displayMetrics = context.resources.displayMetrics
         val swipeX = if (containerBounds.width() > 0) containerBounds.centerX().toFloat() else (displayMetrics.widthPixels * 0.5f)
-        val startY = if (containerBounds.height() > 0) (containerBounds.top + containerBounds.height() * 0.70f) else (displayMetrics.heightPixels * 0.65f)
-        val endY = if (containerBounds.height() > 0) (containerBounds.top + containerBounds.height() * 0.20f) else (displayMetrics.heightPixels * 0.22f)
-        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched forward swipe on Shared list (Y: ${startY.toInt()} -> ${endY.toInt()})...")
+        val startY = if (containerBounds.height() > 0) (containerBounds.top + containerBounds.height() * 0.60f) else (displayMetrics.heightPixels * 0.60f)
+        val endY = if (containerBounds.height() > 0) (containerBounds.top + containerBounds.height() * 0.36f) else (displayMetrics.heightPixels * 0.36f)
+        CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dispatched forward controlled step on Shared list (Y: ${startY.toInt()} -> ${endY.toInt()})...")
 
         // Physical touch drag is universally reliable across both Compose and View hierarchies
         dispatchSwipeAction(
@@ -3770,8 +3770,8 @@ class GoogleDriveSharedHarvester(
             if (!scrolled) {
                 val dm = context.resources.displayMetrics
                 val swipeX = dm.widthPixels * 0.5f
-                val swipeStartY = dm.heightPixels * 0.35f
-                val swipeEndY = dm.heightPixels * 0.75f
+                val swipeStartY = dm.heightPixels * 0.38f
+                val swipeEndY = dm.heightPixels * 0.62f
                 dispatchSwipeAction(swipeX, swipeStartY, swipeX, swipeEndY, 450L)
             }
             delay(SETTLING_DELAY_MS)

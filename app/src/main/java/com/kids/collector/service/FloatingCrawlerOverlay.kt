@@ -628,7 +628,7 @@ class FloatingCrawlerOverlay(
 
     fun performScroll(onComplete: () -> Unit) {
         handler.post {
-            performScrollGesture(onComplete)
+            performControlledDragGesture(isScrollForward = true, onComplete)
         }
     }
 
@@ -691,7 +691,7 @@ class FloatingCrawlerOverlay(
 
     fun performScrollBackward(onComplete: () -> Unit) {
         handler.post {
-            performScrollBackwardGesture(onComplete)
+            performControlledDragGesture(isScrollForward = false, onComplete)
         }
     }
 

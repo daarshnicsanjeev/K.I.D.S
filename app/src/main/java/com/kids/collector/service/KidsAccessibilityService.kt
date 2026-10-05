@@ -1154,10 +1154,8 @@ class KidsAccessibilityService : AccessibilityService() {
                 break
             }
 
-            // Kinetic scroll forward to reveal next batch
-            var scrollDone = false
-            crawlerOverlay?.performScroll { scrollDone = true }
-            waitForCondition(timeoutMs = 1500, pollIntervalMs = 150) { scrollDone }
+            // Controlled step scroll forward to reveal next batch without kinetic fling
+            stepScrollStream(isScrollForward = true)
             // If the screen appeared static on this swipe, give Classroom 1,200ms to fetch older posts from network
             val postScrollDelay = if (identicalScreenCount > 0) 1200L else if (surveyZeroCount > 0) 700L else 450L
             delay(postScrollDelay)
@@ -4547,8 +4545,14 @@ class KidsAccessibilityService : AccessibilityService() {
         val hasComments = lowerCombined.contains("class comment") ||
                 lowerCombined.contains("class comments") ||
                 lowerCombined.contains("add class comment")
+        val hasPostHeader = lowerCombined.contains("new material:") ||
+                lowerCombined.contains("new assignment:") ||
+                lowerCombined.contains("new question:") ||
+                lowerCombined.contains("dear students") ||
+                lowerCombined.contains("dear parents") ||
+                lowerCombined.contains("good afternoon")
 
-        if (!hasCommentElement && !hasComments) {
+        if (!hasCommentElement && !hasComments && !hasPostHeader) {
             return false
         }
 
