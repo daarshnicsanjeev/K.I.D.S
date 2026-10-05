@@ -373,6 +373,7 @@ class KidsAccessibilityService : AccessibilityService() {
     private var crawlerOverlay: FloatingCrawlerOverlay? = null
     private var lastActiveSchoolPackage: String? = null
     private var exitDebounceJob: Job? = null
+    private val screenWakeLockManager = ScreenWakeLockManager()
 
     private var crawlerJob: Job? = null
     private var lockedCourseTitle: String? = null
@@ -820,6 +821,7 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun startDeepCrawl() {
         crawlerJob?.cancel()
+        screenWakeLockManager.acquireWakeLock(this)
         crawlerJob = serviceScope.launch(Dispatchers.Default) {
             val db = KidsDatabase.getInstance(applicationContext)
             val (_, targetEmail) = resolveTargetChildAndEmail(db)
@@ -828,6 +830,7 @@ class KidsAccessibilityService : AccessibilityService() {
             try {
                 runDeepCrawlLoop()
             } finally {
+                screenWakeLockManager.releaseWakeLock()
                 CrawlerTraceLogger.flushRemainingToCloud(applicationContext, targetEmail)
                 CrawlerTraceLogger.stopCloudStreaming()
                 triggerDriveSync(applicationContext)
@@ -836,6 +839,7 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun stopDeepCrawl() {
+        screenWakeLockManager.releaseWakeLock()
         crawlerJob?.cancel()
         crawlerJob = null
         CrawlerTraceLogger.stopCloudStreaming()
