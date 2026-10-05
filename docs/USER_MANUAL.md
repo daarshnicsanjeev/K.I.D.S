@@ -652,6 +652,15 @@ Once the Classroom fast metadata sweep finishes, K.I.D.S. automatically transiti
   6. **Stuck Multi-Select Mode Recovery:** If selection mode gets stuck without completing a batch action, K.I.D.S. taps the selection close button or dispatches Back to restore normal scrolling.
   7. **Subfolder Orphan Displacement Recovery:** If the harvester finds itself trapped inside an unprompted subfolder outside active folder harvesting, it automatically presses Navigate Up to return to the root Shared tab.
   8. **Tab Displacement Recovery:** If Drive accidentally switches to the "Home", "Starred", or "Files" tab, K.I.D.S. detects the wrong tab selection and taps the "Shared" bottom navigation tab to restore the harvest view.
+
+#### 4. Phase 4: Google Drive Search Harvester (Missing File Recovery)
+If any worksheets, answer keys, or resources mentioned in Classroom announcements or classwork tasks were absent from the Google Drive "Shared with me" feed during Phase 3, K.I.D.S. launches **Phase 4**:
+- **Automatic Missing File Identification:** Discovers all attachments in the local database that remain uncaptured.
+- **Deep Drive Search via Top Search Bar:** Uses Google Drive's built-in search bar to search for each uncaptured file by its full file name, base title, and normalized variants.
+- **Autocomplete & Full Search Traversal:** Scans instant autocomplete suggestions and full search results for matching items.
+- **Direct Vault Sharing:** Taps the 3-dots "More actions" button on the search result $\rightarrow$ "Send a copy" $\rightarrow$ "K.I.D.S. Vault" to stage, verify, and upload the file.
+- **Full-Screen Viewer Recovery:** If tapping a search result opens the Drive viewer, K.I.D.S. accesses "Send a copy" via the top viewer toolbar, shares the file, and returns cleanly to search.
+
 - **Announcement Discrimination & Zero-Click Direct Stream Ingestion:**
   In Google Classroom, teacher communications fall into two fundamentally different structural types:
   1. **Announcements & Circulars:** Teacher notices, daily announcements, holiday greetings, and circular texts posted directly into the stream feed. In Google Classroom, **announcements do NOT have a separate detail activity or screen**. Their full message is already visible right on the stream card. Tapping an announcement card either does nothing or inadvertently pops up the class comments dialog.

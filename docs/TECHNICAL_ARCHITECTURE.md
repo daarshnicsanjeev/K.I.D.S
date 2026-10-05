@@ -3258,6 +3258,36 @@ Once Classroom metadata extraction finishes, if any attachments remain in `PENDI
       - **Stray Bottom Sheet / Context Menu Dismissal (`isStrayDriveBottomSheet`):** If an accidental 3-dot tap opens a file options bottom sheet or context menu ("Make available offline", "Details & activity", "Copy link", "Add shortcut"), dispatches Back to dismiss the overlay.
       - **Stuck Multi-Select Mode Recovery (`isStuckMultiSelectMode`):** If long-press multi-select remains active without completing a batch action (detected by "selected" action bar header and close button), taps the close button or executes Back to clear selection mode.
       - **Subfolder Orphan Displacement Recovery (`isInsideFolderWithoutBottomNav`):** If the crawler is displaced inside a subfolder while root harvesting is expected (`activeHarvestingFolderName == null`), detects the absence of bottom navigation and pops back via `findNavigateUpButton()` to the root Shared tab.
+
+#### Phase 4: Google Drive Search Harvester (`GoogleDriveSearchHarvester`)
+When Classroom notice metadata extraction and Phase 3 Shared tab harvesting conclude, if any attachments mentioned in Classroom announcements or classwork assignments remain in `PENDING` status (e.g. files not indexed into the "Shared with me" feed by Google Drive), `KidsAccessibilityService` autonomously launches **Phase 4**:
+
+1. **Target Identification & Query Generation (`buildSearchQueries`):**
+   - Automatically queries `KidsDatabase.attachmentDao()` for all attachments where `localUri.isBlank()`.
+   - Generates prioritized, multi-tier search queries for each uncaptured file:
+     - **Exact Full Filename:** `att.fileName.trim()` (e.g. `"Division by 10 and 100-Ans.jpg"`).
+     - **Base Title Without Extension:** Extracted via `splitTitleAndExtension` (e.g. `"Division by 10 and 100-Ans"`).
+     - **Normalized Punctuation & Separator Variant:** Replaces underscores, hyphens, and multi-spaces with single spaces (e.g. `"Division by 10 and 100 Ans"`).
+2. **Top Search Bar Discovery & Dynamic Uncollapse (`prepareSearchInputField`):**
+   - Locates Google Drive's top search bar (`findDriveSearchBarNode`), scanning within density-scaled top boundaries (`bounds.bottom <= displayMetrics.density * 130`).
+   - If scrolled down, executes an adaptive swipe downwards from $20\%$ to $70\%$ of screen height to uncollapse the top app bar.
+   - Dispatches a verified accessibility click (with physical center coordinate tap fallback) to enter search mode.
+3. **Automated Search Input & Query Submission (`enterSearchQuery` & `submitSearchQuery`):**
+   - Focuses the search input `EditText` (`ACTION_FOCUS`) and sets the query string via `AccessibilityNodeInfo.ACTION_SET_TEXT`.
+   - Checks autocomplete suggestions for instant file matches; if not immediately displayed, locates the suggestion row (`"Search in Drive for [query]"`) or search action button to load the full search results view.
+4. **Result Matching & Multi-Criteria File Verification (`scanForMatchingItem`):**
+   - Evaluates search results using `GoogleDriveSharedHarvester.matchesDriveItem` against the target attachment filename, supporting extensions mismatch, truncation ellipsis, and normalized titles.
+5. **Bulk Sharing to Vault Target (`dispatchSearchResultItem`):**
+   - Clicks the item's dedicated 3-dots "More actions for [filename]" button.
+   - Locates **"Send a copy"** in the options sheet using `findSendCopyNode()` and taps it.
+   - Autonomously selects **"K.I.D.S. Vault"** in Android's system share sheet chooser (`selectKidsInChooserAction()`).
+   - `ShareTargetActivity` stages the incoming binary into `vault_attachments/`, updates the database record, and queues it for Google Drive synchronization.
+6. **Full-Screen Viewer Recovery (`handleActiveViewerIfPresent`):**
+   - If tapping a search result opens Google Drive's full-screen document viewer rather than the action sheet, autonomously locates the top toolbar options menu (`More options`), clicks **"Send a copy"** $\rightarrow$ **"K.I.D.S. Vault"**, and dispatches Back navigation to return cleanly to search.
+7. **Clean Search Teardown & Transition (`clearSearchQueryOrDismiss` & `exitSearchModeToDriveRoot`):**
+   - Taps the clear button (`Clear query` / `X`) between search queries.
+   - Pops back to Google Drive's main root screen upon completion, allowing steady-state ingestion verification and final Drive vault synchronization.
+
       - **Bottom Navigation Tab Displacement Recovery (`isDisplacedFromSharedTab`, `findSelectedNonSharedTab`):** If the active tab shifts to "Home", "Starred", or "Files", locates the "Shared" bottom navigation tab and re-selects it via center-point touch dispatch.
       - **Stray System / Drive Dialog Dismissal (`handleStrayDriveDialogIfPresent`):** Autonomously detects and dismisses Drive popups ("Storage full", "Not now", "Cancel", "Got it", "Dismiss").
       - **Network Retry Recovery (`handleDriveNetworkRetryPrompt`):** Detects Drive transient connection retry prompts ("Tap to retry", "Try again") and clicks them to recover list connectivity.

@@ -104,6 +104,9 @@ interface AttachmentDao {
     @Query("SELECT * FROM attachments")
     suspend fun getAllAttachmentsDirect(): List<AttachmentEntity>
 
+    @Query("SELECT * FROM attachments WHERE attachmentId = :attachmentId LIMIT 1")
+    suspend fun getAttachmentById(attachmentId: String): AttachmentEntity?
+
     @Query("SELECT * FROM attachments WHERE fileHash = :fileHash LIMIT 1")
     suspend fun findByFileHash(fileHash: String): AttachmentEntity?
 

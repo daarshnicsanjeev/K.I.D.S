@@ -266,6 +266,92 @@ class GoogleDriveSharedHarvester(
         return combined.contains("selected") || combined.contains("clear selection") || combined.contains("close selection")
     }
 
+    private fun getSelectedCountFromToolbar(root: AccessibilityNodeInfo?): Int {
+        if (root == null) return 0
+        val texts = mutableListOf<String>()
+        collectAllChildDescriptions(root, texts)
+        for (t in texts) {
+            val match = Regex("""(\d+)\s+selected""", RegexOption.IGNORE_CASE).find(t)
+            if (match != null) {
+                return match.groupValues[1].toIntOrNull() ?: 0
+            }
+        }
+        return 0
+    }
+
+    private suspend fun activateMultiSelect(firstSelectable: DriveSharedItem): Boolean {
+        CrawlerTraceLogger.log(
+            "DRIVE_HARVESTER",
+            "Initiating multi-selection by long-pressing: \"${firstSelectable.title}\"..."
+        )
+        var activated = performVerifiedAccessibilityLongClick(firstSelectable.node)
+        if (!activated) {
+            val clickableAncestor = findClickableAncestor(firstSelectable.node)
+            if (clickableAncestor != null) {
+                activated = performVerifiedAccessibilityLongClick(clickableAncestor)
+                clickableAncestor.recycle()
+            }
+        }
+
+        delay(500L)
+        var rootCheck = rootInActiveWindowProvider()
+        var isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
+        rootCheck?.recycle()
+
+        if (!isCurrentlyInMultiSelect) {
+            val centerX = firstSelectable.bounds.centerX().toFloat()
+            val centerY = firstSelectable.bounds.centerY().toFloat()
+            CrawlerTraceLogger.log(
+                "DRIVE_HARVESTER",
+                "Accessibility long-click did not activate multi-select for \"${firstSelectable.title}\". Falling back to physical long-press at ($centerX, $centerY)..."
+            )
+            dispatchLongPressAction(centerX, centerY)
+            delay(700L)
+            rootCheck = rootInActiveWindowProvider()
+            isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
+            rootCheck?.recycle()
+        }
+
+        return isCurrentlyInMultiSelect
+    }
+
+    private suspend fun toggleItemSelection(item: DriveSharedItem, currentSelectionCount: Int): Boolean {
+        // Strategy A: Accessibility click on item.node or clickable ancestor
+        var clicked = performVerifiedAccessibilityClick(item.node)
+        if (!clicked) {
+            val clickableAncestor = findClickableAncestor(item.node)
+            if (clickableAncestor != null) {
+                clicked = performVerifiedAccessibilityClick(clickableAncestor)
+                clickableAncestor.recycle()
+            }
+        }
+
+        delay(180L)
+        var root = rootInActiveWindowProvider()
+        var newCount = getSelectedCountFromToolbar(root)
+        root?.recycle()
+
+        if (newCount > currentSelectionCount) {
+            return true
+        }
+
+        // Strategy B: Physical coordinate tap at item center
+        val centerX = item.bounds.centerX().toFloat()
+        val centerY = item.bounds.centerY().toFloat()
+        CrawlerTraceLogger.log(
+            "DRIVE_HARVESTER",
+            "Accessibility click did not increment selection for \"${item.title}\" ($currentSelectionCount -> $newCount). Falling back to physical tap at ($centerX, $centerY)..."
+        )
+        dispatchTapAction(centerX, centerY)
+        delay(250L)
+
+        root = rootInActiveWindowProvider()
+        newCount = getSelectedCountFromToolbar(root)
+        root?.recycle()
+
+        return newCount > currentSelectionCount
+    }
+
     private suspend fun resolveDynamicAcademicCutoffMs(): Long {
         val dbOldest = database.noticeDao().getOldestNoticeTimestamp()
         if (dbOldest != null && dbOldest > 0L) {
@@ -516,16 +602,16 @@ class GoogleDriveSharedHarvester(
             ensureProperViewAndSorting()
             delay(SETTLING_DELAY_MS)
 
-            // Step 4: Continuous Multi-Selection Harvest Loop across Shared tab
+            // Step 4: Batch-by-Batch Multi-Selection Harvest Loop across Shared tab
             val dynamicCutoffMs = resolveDynamicAcademicCutoffMs()
             CrawlerTraceLogger.log(
                 "DRIVE_HARVESTER",
-                "Commencing single-pass multi-selection sweep. Dynamic academic cutoff: timestamp $dynamicCutoffMs."
+                "Commencing batch-by-batch multi-selection sweep. Dynamic academic cutoff: timestamp $dynamicCutoffMs."
             )
 
-            isContinuousMultiSelecting = true
-            var isMultiSelectInitialized = false
-            val selectedDriveTitles = mutableSetOf<String>()
+            isContinuousMultiSelecting = false
+            val processedDriveTitles = mutableSetOf<String>()
+            val currentBatchTitles = mutableListOf<String>()
             val processedFolderNames = mutableSetOf<String>()
             var reachedCutoffDate = false
             var consecutiveOlderThanCutoffCount = 0
@@ -544,8 +630,8 @@ class GoogleDriveSharedHarvester(
             try {
                 while (serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true && scrollPageCount < dynamicMaxScrollPages) {
                     crawlerOverlay?.updateStatus(
-                        "Selecting Files (Page ${scrollPageCount + 1})...",
-                        "${selectedDriveTitles.size} selected so far"
+                        "Scanning Shared (Page ${scrollPageCount + 1})...",
+                        "Harvested $totalHarvestedCount files so far"
                     )
 
                     // Resiliently acquire active window with retries to prevent premature termination during activity switches
@@ -596,7 +682,7 @@ class GoogleDriveSharedHarvester(
                     }
                     consecutiveWindowFailures = 0
 
-                    // Check displacement (ignoring stuck multi-select because continuous multi-selection is active)
+                    // Check displacement (ignoring stuck multi-select because deliberate multi-selection is managed per batch)
                     if (performDriveAutoRecoveryIfDisplaced(currentRoot)) {
                         currentRoot.recycle()
                         delay(SETTLING_DELAY_MS)
@@ -638,6 +724,16 @@ class GoogleDriveSharedHarvester(
                                 "DRIVE_HARVESTER",
                                 "Drive list reached the bottom (same items across $consecutiveStaticPages swipes). Concluding selection pass."
                             )
+                            if (currentBatchTitles.isNotEmpty()) {
+                                val dispatched = dispatchCurrentMultiSelectionAsCopy()
+                                if (dispatched) {
+                                    totalHarvestedCount += currentBatchTitles.size
+                                    processedDriveTitles.addAll(currentBatchTitles)
+                                    currentBatchTitles.clear()
+                                    KidsAccessibilityService.triggerDriveSync(context)
+                                    delay(POST_BATCH_SETTLING_DELAY_MS)
+                                }
+                            }
                             for (item in visibleItems) {
                                 item.node.recycle()
                             }
@@ -651,108 +747,104 @@ class GoogleDriveSharedHarvester(
                         }
                     }
 
-                    // Multi-Select Activation Check
-                    var isCurrentlyInMultiSelect = isMultiSelectActive(currentRoot)
+                    // Process visible items on this page
+                    for (item in visibleItems) {
+                        if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) {
+                            break
+                        }
 
-                    // If not yet in multi-select mode, activate it by long-pressing the first non-folder item
-                    if (!isCurrentlyInMultiSelect) {
-                        val firstSelectable = visibleItems.firstOrNull { !it.isFolder }
-                        if (firstSelectable != null) {
+                        // 1. Exclude folders completely, but record for folder pass
+                        if (item.isFolder) {
+                            if (!processedFolderNames.contains(item.title)) {
+                                processedFolderNames.add(item.title)
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Excluding folder from selection: \"${item.title}\"")
+                            }
+                            continue
+                        }
+
+                        // 2. Avoid re-tapping items already processed or in current batch
+                        if (processedDriveTitles.contains(item.title) || currentBatchTitles.contains(item.title)) {
+                            continue
+                        }
+
+                        // 3. Evaluate cutoff date from subtitle
+                        val parsedDate = ClassroomDateParser.parse(item.subtitle)
+                        if (parsedDate != null && parsedDate.timestampMs < dynamicCutoffMs) {
                             CrawlerTraceLogger.log(
                                 "DRIVE_HARVESTER",
-                                "Initiating multi-selection by long-pressing: \"${firstSelectable.title}\"..."
+                                "Item \"${item.title}\" date (${parsedDate.canonicalDate}, ${parsedDate.timestampMs}) is older than cutoff ($dynamicCutoffMs). Skipping."
                             )
-                            performVerifiedAccessibilityLongClick(firstSelectable.node)
-                            delay(500L)
-                            var rootCheck = rootInActiveWindowProvider()
-                            isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
-                            rootCheck?.recycle()
-
-                            if (!isCurrentlyInMultiSelect) {
-                                val clickableAncestor = findClickableAncestor(firstSelectable.node)
-                                if (clickableAncestor != null) {
-                                    performVerifiedAccessibilityLongClick(clickableAncestor)
-                                    clickableAncestor.recycle()
-                                    delay(500L)
-                                    rootCheck = rootInActiveWindowProvider()
-                                    isCurrentlyInMultiSelect = rootCheck?.let { isMultiSelectActive(it) } == true
-                                    rootCheck?.recycle()
-                                }
-                            }
-
-                            if (isCurrentlyInMultiSelect) {
-                                isMultiSelectInitialized = true
-                                selectedDriveTitles.add(firstSelectable.title)
-                                crawlerOverlay?.updateStatus("Multi-Select Active", "Selected 1 file...")
+                            consecutiveOlderThanCutoffCount++
+                            if (consecutiveOlderThanCutoffCount >= 3) {
+                                reachedCutoffDate = true
                                 CrawlerTraceLogger.log(
                                     "DRIVE_HARVESTER",
-                                    "✓ Multi-selection activated via long-press on \"${firstSelectable.title}\"!"
+                                    "Academic cutoff date reached (3 consecutive older items). Concluding selection pass."
                                 )
-                            } else {
-                                CrawlerTraceLogger.log(
-                                    "DRIVE_HARVESTER",
-                                    "Warning: Long press did not activate multi-select mode. Retrying next iteration..."
-                                )
-                            }
-                        }
-                    }
-
-                    // If multi-select is active, single-click to select all eligible non-folder files
-                    if (isCurrentlyInMultiSelect) {
-                        for (item in visibleItems) {
-                            if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) {
                                 break
                             }
+                            continue
+                        }
+                        consecutiveOlderThanCutoffCount = 0
 
-                            // 1. Exclude folders completely
-                            if (item.isFolder) {
-                                if (!processedFolderNames.contains(item.title)) {
-                                    processedFolderNames.add(item.title)
-                                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "Excluding folder from selection: \"${item.title}\"")
-                                }
-                                continue
+                        // 4. Select the file
+                        isContinuousMultiSelecting = true
+                        val isCurrentlyInMultiSelect = isMultiSelectActive(currentRoot)
+                        if (!isCurrentlyInMultiSelect) {
+                            val activated = activateMultiSelect(item)
+                            if (activated) {
+                                currentBatchTitles.add(item.title)
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "✓ Multi-selection activated with: \"${item.title}\"")
+                                crawlerOverlay?.updateStatus(
+                                    "Batch: ${currentBatchTitles.size}/$MAX_BATCH_SELECTION_SIZE",
+                                    item.title
+                                )
+                            } else {
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Warning: Failed to activate multi-select on \"${item.title}\".")
                             }
+                        } else {
+                            val rootCheck = rootInActiveWindowProvider()
+                            val currentCount = getSelectedCountFromToolbar(rootCheck)
+                            rootCheck?.recycle()
 
-                            // 2. Avoid re-tapping items already selected (which would unselect them)
-                            if (selectedDriveTitles.contains(item.title)) {
-                                continue
+                            val selected = toggleItemSelection(item, currentCount)
+                            if (selected) {
+                                currentBatchTitles.add(item.title)
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "✓ Selected file: \"${item.title}\" (batch: ${currentBatchTitles.size}/$MAX_BATCH_SELECTION_SIZE)")
+                                crawlerOverlay?.updateStatus(
+                                    "Batch: ${currentBatchTitles.size}/$MAX_BATCH_SELECTION_SIZE",
+                                    item.title
+                                )
+                            } else {
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Could not toggle selection for: \"${item.title}\"")
                             }
+                        }
 
-                            // 3. Evaluate cutoff date from subtitle
-                            val parsedDate = ClassroomDateParser.parse(item.subtitle)
-                            if (parsedDate != null && parsedDate.timestampMs < dynamicCutoffMs) {
+                        // 5. If batch reaches MAX_BATCH_SELECTION_SIZE, dispatch immediately
+                        if (currentBatchTitles.size >= MAX_BATCH_SELECTION_SIZE) {
+                            CrawlerTraceLogger.log(
+                                "DRIVE_HARVESTER",
+                                "Batch limit reached (${currentBatchTitles.size} files). Dispatching to K.I.D.S. Vault..."
+                            )
+                            crawlerOverlay?.updateStatus("Dispatching Batch", "Sending ${currentBatchTitles.size} files to Vault...")
+                            val dispatched = dispatchCurrentMultiSelectionAsCopy()
+                            if (dispatched) {
+                                totalHarvestedCount += currentBatchTitles.size
+                                processedDriveTitles.addAll(currentBatchTitles)
                                 CrawlerTraceLogger.log(
                                     "DRIVE_HARVESTER",
-                                    "Item \"${item.title}\" date (${parsedDate.canonicalDate}, ${parsedDate.timestampMs}) is older than cutoff ($dynamicCutoffMs). Skipping."
+                                    "✓ Successfully dispatched batch of ${currentBatchTitles.size} files (total: $totalHarvestedCount)."
                                 )
-                                consecutiveOlderThanCutoffCount++
-                                if (consecutiveOlderThanCutoffCount >= 3) {
-                                    reachedCutoffDate = true
-                                    CrawlerTraceLogger.log(
-                                        "DRIVE_HARVESTER",
-                                        "Academic cutoff date reached (3 consecutive older items). Concluding selection pass."
-                                    )
-                                }
-                                continue
+                                currentBatchTitles.clear()
+                                delay(POST_BATCH_SETTLING_DELAY_MS)
+                                KidsAccessibilityService.triggerDriveSync(context)
+                            } else {
+                                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to dispatch batch. Clearing selection...")
+                                dismissMultiSelectMode()
+                                currentBatchTitles.clear()
                             }
-                            consecutiveOlderThanCutoffCount = 0
-
-                            // 4. Select the file with pure accessibility click
-                            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Selecting file: \"${item.title}\"")
-                            val clicked = performVerifiedAccessibilityClick(item.node)
-                            if (!clicked) {
-                                val clickableAncestor = findClickableAncestor(item.node)
-                                if (clickableAncestor != null) {
-                                    performVerifiedAccessibilityClick(clickableAncestor)
-                                    clickableAncestor.recycle()
-                                }
-                            }
-                            selectedDriveTitles.add(item.title)
-                            crawlerOverlay?.updateStatus(
-                                "Selected ${selectedDriveTitles.size} Files",
-                                item.title
-                            )
-                            delay(120L)
+                            isContinuousMultiSelecting = false
+                            break
                         }
                     }
 
@@ -766,43 +858,58 @@ class GoogleDriveSharedHarvester(
                         break
                     }
 
-                    // Scroll down to reveal older items while preserving current multi-selection
+                    // Dispatch any remaining items selected from this page before scrolling
+                    if (currentBatchTitles.isNotEmpty()) {
+                        CrawlerTraceLogger.log(
+                            "DRIVE_HARVESTER",
+                            "Dispatching page batch (${currentBatchTitles.size} files) before scrolling to next page..."
+                        )
+                        crawlerOverlay?.updateStatus("Dispatching Batch", "Sending ${currentBatchTitles.size} files to Vault...")
+                        val dispatched = dispatchCurrentMultiSelectionAsCopy()
+                        if (dispatched) {
+                            totalHarvestedCount += currentBatchTitles.size
+                            processedDriveTitles.addAll(currentBatchTitles)
+                            CrawlerTraceLogger.log(
+                                "DRIVE_HARVESTER",
+                                "✓ Page batch dispatched: ${currentBatchTitles.size} files (total: $totalHarvestedCount)."
+                            )
+                            currentBatchTitles.clear()
+                            delay(POST_BATCH_SETTLING_DELAY_MS)
+                            KidsAccessibilityService.triggerDriveSync(context)
+                        } else {
+                            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to dispatch page batch. Clearing selection...")
+                            dismissMultiSelectMode()
+                            currentBatchTitles.clear()
+                        }
+                    } else {
+                        dismissMultiSelectMode()
+                    }
+                    isContinuousMultiSelecting = false
+
+                    // Scroll down cleanly without selection to reveal older items
                     scrollPageCount++
-                    scrollSharedListForward(preserveSelection = true)
+                    scrollSharedListForward(preserveSelection = false)
                     delay(SETTLING_DELAY_MS)
                 }
 
-                // Step 5: Dispatch the multi-selection as a copy to K.I.D.S. Vault
-                CrawlerTraceLogger.log(
-                    "DRIVE_HARVESTER",
-                    "Selection pass completed. Total files selected: ${selectedDriveTitles.size}."
-                )
-
-                if (selectedDriveTitles.isNotEmpty()) {
-                    crawlerOverlay?.updateStatus("Dispatching Files", "Sending ${selectedDriveTitles.size} files to K.I.D.S. Vault...")
+                // Final check: if any un-dispatched batch remains
+                if (currentBatchTitles.isNotEmpty()) {
+                    CrawlerTraceLogger.log(
+                        "DRIVE_HARVESTER",
+                        "Dispatching final remaining batch of ${currentBatchTitles.size} files..."
+                    )
                     val dispatched = dispatchCurrentMultiSelectionAsCopy()
                     if (dispatched) {
-                        totalHarvestedCount = selectedDriveTitles.size
-                        CrawlerTraceLogger.log(
-                            "DRIVE_HARVESTER",
-                            "✓ Successfully dispatched $totalHarvestedCount files to K.I.D.S. Vault in a single operation!"
-                        )
-                        crawlerOverlay?.updateStatus(
-                            "✓ Dispatched to Vault",
-                            "Sent $totalHarvestedCount files to Vault."
-                        )
-                        delay(POST_BATCH_SETTLING_DELAY_MS)
-                        // Trigger vault sync worker to upload received files
+                        totalHarvestedCount += currentBatchTitles.size
+                        processedDriveTitles.addAll(currentBatchTitles)
+                        currentBatchTitles.clear()
                         KidsAccessibilityService.triggerDriveSync(context)
+                        delay(POST_BATCH_SETTLING_DELAY_MS)
                     } else {
-                        CrawlerTraceLogger.log(
-                            "DRIVE_HARVESTER",
-                            "Failed to dispatch selected files via top overflow menu. Clearing selection..."
-                        )
                         dismissMultiSelectMode()
+                        currentBatchTitles.clear()
                     }
                 } else {
-                    CrawlerTraceLogger.log("DRIVE_HARVESTER", "No files were selected during harvest pass.")
                     dismissMultiSelectMode()
                 }
             } finally {
@@ -1690,7 +1797,8 @@ class GoogleDriveSharedHarvester(
         val desc = node.contentDescription?.toString() ?: ""
 
         if (isRow && !rid.contains("navigation") && !rid.contains("search") && !desc.contains("tab,")) {
-            outList.add(AccessibilityNodeInfo.obtain(node))
+            val interactiveNode = findClickableDescendantOrSelf(node)
+            outList.add(interactiveNode)
             return
         }
 
@@ -1699,6 +1807,23 @@ class GoogleDriveSharedHarvester(
             collectListViewRowNodes(child, outList)
             child.recycle()
         }
+    }
+
+    private fun findClickableDescendantOrSelf(root: AccessibilityNodeInfo): AccessibilityNodeInfo {
+        if (root.isClickable) return AccessibilityNodeInfo.obtain(root)
+        for (i in 0 until root.childCount) {
+            val child = root.getChild(i) ?: continue
+            if (child.isClickable) {
+                return child
+            }
+            val descendant = findClickableDescendantOrSelf(child)
+            if (descendant !== child) {
+                child.recycle()
+                return descendant
+            }
+            child.recycle()
+        }
+        return AccessibilityNodeInfo.obtain(root)
     }
 
     private fun isLikelyFileOrFolderTitle(t: String): Boolean {
@@ -2036,7 +2161,7 @@ class GoogleDriveSharedHarvester(
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         if (desc.contains("clear selection") || desc.contains("close selection") ||
             desc.contains("cancel selection") || (desc == "close" && root.isClickable)) {
-            return AccessibilityNodeInfo.obtain(root)
+            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else (findClickableAncestor(root) ?: AccessibilityNodeInfo.obtain(root))
         }
         for (i in 0 until root.childCount) {
             val child = root.getChild(i) ?: continue

@@ -925,7 +925,38 @@ class KidsAccessibilityService : AccessibilityService() {
             try {
                 val harvestedCount = driveHarvester.executeHarvest(targetAccountEmail = targetEmail ?: targetChild?.accountEmail)
                 CrawlerTraceLogger.log("DEEP_CRAWLER", "Direct Google Drive Shared Harvest concluded. Files dispatched: $harvestedCount")
-                overlay.stopAutoScroll(isUserInitiated = false, reason = "Harvest complete ($harvestedCount files)")
+
+                val pendingAfterSharedPass = db.attachmentDao().getAllAttachmentsDirect().filter { att ->
+                    att.localUri.isBlank() &&
+                    (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
+                    att.driveFileId?.startsWith("restricted_") != true
+                }
+                var searchHarvestedCount = 0
+                if (pendingAfterSharedPass.isNotEmpty() && overlay.isAutoScrollingActive()) {
+                    CrawlerTraceLogger.log(
+                        "DEEP_CRAWLER",
+                        "Direct harvest Phase 3 complete with ${pendingAfterSharedPass.size} uncaptured attachments. Launching Phase 4 Search Harvester..."
+                    )
+                    val searchHarvester = GoogleDriveSearchHarvester(
+                        context = this@KidsAccessibilityService,
+                        serviceScope = serviceScope,
+                        database = db,
+                        crawlerOverlay = overlay,
+                        rootInActiveWindowProvider = { findDriveRootNode() },
+                        dispatchTapAction = { x, y -> dispatchTap(x, y, "Drive Search Harvester Tap") },
+                        dispatchSwipeAction = { startX, startY, endX, endY, duration ->
+                            dispatchSwipe(startX, startY, endX, endY, duration)
+                        },
+                        selectKidsInChooserAction = { selectKidsInSystemChooser() },
+                        waitForConditionAction = { timeoutMs, pollIntervalMs, condition ->
+                            waitForCondition(timeoutMs, pollIntervalMs, condition)
+                        },
+                        dispatchBackAction = { performGlobalAction(GLOBAL_ACTION_BACK) }
+                    )
+                    searchHarvestedCount = searchHarvester.executeSearchHarvest(pendingAfterSharedPass)
+                }
+
+                overlay.stopAutoScroll(isUserInitiated = false, reason = "Harvest complete (${harvestedCount + searchHarvestedCount} files)")
                 triggerDriveSync(applicationContext)
             } finally {
                 GoogleDriveSharedHarvester.isDriveHarvestingActive = false
@@ -1729,6 +1760,63 @@ class KidsAccessibilityService : AccessibilityService() {
 
             if (harvestedCount > 0 && crawlerOverlay?.isAutoScrollingActive() == true) {
                 crawlerOverlay?.updateStatus("Saving to Vault...", "Ingesting $harvestedCount dispatched files...")
+                var previousSavedCount = -1
+                var steadyCheckCount = 0
+                while (serviceScope.isActive && steadyCheckCount < MAX_STEADY_INGESTION_CYCLES) {
+                    delay(1200L)
+                    val currentSavedCount = db.attachmentDao().getAllAttachmentsDirect().count {
+                        it.localUri.isNotBlank() || (!it.driveFileId.isNullOrBlank() && !it.driveFileId.startsWith("virtual_"))
+                    }
+                    crawlerOverlay?.updateStatus(
+                        "Saving to Vault ($currentSavedCount files)...",
+                        "Processing background stream..."
+                    )
+                    if (currentSavedCount == previousSavedCount) {
+                        steadyCheckCount++
+                    } else {
+                        steadyCheckCount = 0
+                        previousSavedCount = currentSavedCount
+                    }
+                }
+            }
+        }
+
+        // Phase 4: Google Drive Search Harvester for uncaptured attachments absent from Shared tab
+        val pendingAfterSharedPass = db.attachmentDao().getAllAttachmentsDirect().filter { att ->
+            att.localUri.isBlank() &&
+            (att.driveFileId.isNullOrBlank() || att.driveFileId.startsWith("virtual_")) &&
+            att.driveFileId?.startsWith("restricted_") != true
+        }
+
+        if (pendingAfterSharedPass.isNotEmpty() && crawlerOverlay?.isAutoScrollingActive() == true) {
+            CrawlerTraceLogger.log(
+                "DEEP_CRAWLER",
+                "Phase 3 complete with ${pendingAfterSharedPass.size} uncaptured attachments. Launching Phase 4: Google Drive Search Harvester..."
+            )
+            crawlerOverlay?.updateStatus("Phase 4: Drive Search", "Searching Drive for ${pendingAfterSharedPass.size} missing files...")
+
+            val searchHarvester = GoogleDriveSearchHarvester(
+                context = this,
+                serviceScope = serviceScope,
+                database = db,
+                crawlerOverlay = crawlerOverlay,
+                rootInActiveWindowProvider = { findDriveRootNode() },
+                dispatchTapAction = { x, y -> dispatchTap(x, y, "Phase 4 Drive Search Harvester Tap") },
+                dispatchSwipeAction = { startX, startY, endX, endY, duration ->
+                    dispatchSwipe(startX, startY, endX, endY, duration)
+                },
+                selectKidsInChooserAction = { selectKidsInSystemChooser() },
+                waitForConditionAction = { timeoutMs, pollIntervalMs, condition ->
+                    waitForCondition(timeoutMs, pollIntervalMs, condition)
+                },
+                dispatchBackAction = { performGlobalAction(GLOBAL_ACTION_BACK) }
+            )
+
+            val searchHarvestedCount = searchHarvester.executeSearchHarvest(pendingAfterSharedPass)
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Google Drive Search Harvest concluded. Files dispatched: $searchHarvestedCount")
+
+            if (searchHarvestedCount > 0 && crawlerOverlay?.isAutoScrollingActive() == true) {
+                crawlerOverlay?.updateStatus("Saving to Vault...", "Ingesting $searchHarvestedCount searched files...")
                 var previousSavedCount = -1
                 var steadyCheckCount = 0
                 while (serviceScope.isActive && steadyCheckCount < MAX_STEADY_INGESTION_CYCLES) {
