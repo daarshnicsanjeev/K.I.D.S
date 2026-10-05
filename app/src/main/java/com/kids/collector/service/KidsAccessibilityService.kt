@@ -2753,6 +2753,7 @@ class KidsAccessibilityService : AccessibilityService() {
             }
             root.recycle()
             if (scrolledNatively) {
+                CrawlerTraceLogger.log("SCROLLER", "Native step scroll ${if (isScrollForward) "FORWARD" else "BACKWARD"} executed successfully")
                 delay(400)
                 return
             }
@@ -2768,6 +2769,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
             }
         }
+        CrawlerTraceLogger.log("SCROLLER", "Native scroll unavailable or declined. Engaging zero-fling controlled drag (${if (isScrollForward) "FORWARD" else "BACKWARD"}).")
         // Controlled zero-fling drag fallback (moves ~1 card height with zero kinetic inertia)
         var scrollDone = false
         crawlerOverlay?.performControlledDrag(isScrollForward) { scrollDone = true }

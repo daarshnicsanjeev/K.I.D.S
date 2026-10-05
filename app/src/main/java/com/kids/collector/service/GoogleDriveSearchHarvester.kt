@@ -482,6 +482,7 @@ class GoogleDriveSearchHarvester(
             return false
         }
 
+        CrawlerTraceLogger.log("DRIVE_SEARCH", "Clicked 'Send a copy' for \"${item.title}\". Dispatching to K.I.D.S. Vault via chooser...")
         // Select K.I.D.S. in the system share sheet
         val isDispatchedToKids = selectKidsInChooserAction()
         if (!isDispatchedToKids) {
