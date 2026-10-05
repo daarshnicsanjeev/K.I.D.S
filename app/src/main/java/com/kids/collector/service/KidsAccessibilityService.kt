@@ -2716,17 +2716,19 @@ class KidsAccessibilityService : AccessibilityService() {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Already on Stream/Classwork view. Skipping return action.")
             return
         }
-        if (isClassesListScreen(root)) {
-            CrawlerTraceLogger.log("DEEP_CRAWLER", "On Classes list screen. Re-entering stream instead of dispatching Back.")
-            recoverToStreamFromClassesList(root, lockedCourseTitle, lockedCourseGrade)
-            return
-        }
         val navUp = findNavigateUpButton(root)
         if (navUp != null) {
             CrawlerTraceLogger.log("DEEP_CRAWLER", "Clicking Navigate Up to return to stream")
             navUp.performVerifiedClick("Navigate Up Button")
             navUp.recycle()
-        } else {
+            delay(POST_RETURN_PACING_DELAY_MILLIS)
+            return
+        }
+        if (isClassesListScreen(root)) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "On Classes list screen. Re-entering stream instead of dispatching Back.")
+            recoverToStreamFromClassesList(root, lockedCourseTitle, lockedCourseGrade)
+            return
+        }
             val pkg = root.packageName?.toString() ?: ""
             if (!isAuthorizedSchoolApp(pkg) && !isTransientOrSystemPackage(pkg)) {
                 CrawlerTraceLogger.log("DEEP_CRAWLER", "Outside school app ($pkg), restoring Classroom instead of dispatching BACK")
@@ -4056,12 +4058,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private fun isClassesListScreen(root: AccessibilityNodeInfo): Boolean {
         if (isStreamOrClassworkView(root) || isPostDetailView(root)) return false
+        if (hasNavigateUpButton(root)) return false // Root home screen NEVER has a back button!
+
         val textList = mutableListOf<String>()
         collectQuickText(root, textList)
         val combined = textList.joinToString(" ").lowercase()
         val hasTextIndicators = combined.contains("class options for") ||
-                (combined.contains("google classroom") && !combined.contains("tab 1 of") && !combined.contains("stream")) ||
-                (combined.contains("classes") && (combined.contains("grade") || combined.contains("enrolled") || combined.contains("teaching") || combined.contains("joined") || combined.contains("all classes")))
+                (combined.contains("google classroom") && !combined.contains("tab 1 of") && !combined.contains("stream"))
 
         if (hasTextIndicators) return true
 
@@ -4320,24 +4323,9 @@ class KidsAccessibilityService : AccessibilityService() {
             return false
         }
 
-        val hasDetailIndicators = combined.contains("your work") ||
-                combined.contains("assigned") ||
-                combined.contains("attachments") ||
-                combined.contains("attachment") ||
-                combined.contains("save all files offline") ||
-                combined.contains("save all") ||
-                combined.contains("save offline") ||
-                combined.contains("for your reference") ||
-                combined.contains("points") ||
-                combined.contains("new material") ||
-                combined.contains("new assignment") ||
-                combined.contains("new question") ||
-                combined.contains("class comment") ||
-                combined.contains("add class comment")
-
-        // A Post Detail screen in Google Classroom strictly requires at least one structural post detail indicator.
-        // Document preview screens displaying PDF contents (without post indicators) must never be identified as post detail.
-        return hasDetailIndicators
+        // When a screen has a Navigate Up arrow, no bottom tabs, and is neither a document viewer nor comments dialog,
+        // it is a Post Detail screen (including text-only announcements and circulars).
+        return true
     }
 
     private fun hasNavigateUpButton(node: AccessibilityNodeInfo): Boolean {
