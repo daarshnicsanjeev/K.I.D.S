@@ -9,7 +9,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `61fdb733`
+- Built from commit: `084fdeed`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -177,7 +177,7 @@ Nodes (6): WizardStep, STEP_0_PERMISSIONS, STEP_1_VAULT, STEP_2_CLASSROOM, STEP_
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `KidsAccessibilityService` connect `KidsAccessibilityService` to `assertthat`, `DeduplicationEngine`, `Intent`, `KidsAccessibilityService.kt`, `FloatingCrawlerOverlay`, `OnboardingWizardScreen.kt`, `MainActivity.kt`, `FloatingCrawlerOverlay.kt`, `ContentCategory`?**
-  _High betweenness centrality (0.267) - this node is a cross-community bridge._
+  _High betweenness centrality (0.264) - this node is a cross-community bridge._
 - **Are the 2 inferred relationships involving `GoogleDriveSharedHarvester` (e.g. with `.runDeepCrawlLoop()` and `.startDirectDriveHarvest()`) actually correct?**
   _`GoogleDriveSharedHarvester` has 2 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `AttachmentEntity`, `ChildProfileEntity`, `NoticeFtsEntity` to the rest of the system?**
