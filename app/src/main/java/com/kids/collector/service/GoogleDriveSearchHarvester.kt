@@ -152,12 +152,14 @@ class GoogleDriveSearchHarvester(
         crawlerOverlay?.updateStatus("Phase 4: Drive Search", "Searching Drive for ${pendingList.size} missing files...")
 
         ensureDriveForeground()
+        waitForDriveForeground(FOREGROUND_WAIT_TIMEOUT_MILLISECONDS)
+        delay(SETTLING_DELAY_MILLISECONDS)
         var totalDispatchedCount = 0
 
         GoogleDriveSharedHarvester.isDriveHarvestingActive = true
         try {
             for ((itemIndex, attachment) in pendingList.withIndex()) {
-                if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) {
+                if (!serviceScope.isActive || (crawlerOverlay != null && !crawlerOverlay.isAutoScrollingActive())) {
                     CrawlerTraceLogger.log("DRIVE_SEARCH", "Search harvest interrupted by user or cancellation.")
                     break
                 }
@@ -194,7 +196,6 @@ class GoogleDriveSearchHarvester(
                 delay(SETTLING_DELAY_MILLISECONDS)
             }
         } finally {
-            GoogleDriveSharedHarvester.isDriveHarvestingActive = false
             exitSearchModeToDriveRoot()
         }
 
@@ -216,7 +217,7 @@ class GoogleDriveSearchHarvester(
         )
 
         for (query in searchQueries) {
-            if (!serviceScope.isActive || crawlerOverlay?.isAutoScrollingActive() == false) return false
+            if (!serviceScope.isActive || (crawlerOverlay != null && !crawlerOverlay.isAutoScrollingActive())) return false
 
             val isInputReady = prepareSearchInputField()
             if (!isInputReady) {

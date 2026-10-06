@@ -3292,6 +3292,11 @@ When Classroom notice metadata extraction and Phase 3 Shared tab harvesting conc
    - Taps the clear button (`Clear query` / `X`) between search queries.
    - Pops back to Google Drive's main root screen upon completion, allowing steady-state ingestion verification and final Drive vault synchronization.
 
+8. **Unified Harvesting Pipeline Lifecycle & Continuous Session Governance:**
+   - Both Phase 3 (Shared Tab Harvester) and Phase 4 (Search Harvester) are governed within a single unified `GoogleDriveSharedHarvester.isDriveHarvestingActive = true` session block.
+   - Prevents premature session teardown, premature log streaming shutdown, or false-positive foreign app window detection (`isAuthorizedSchoolApp` recognizes Google Drive throughout all harvest phases).
+   - Real-time cloud log streaming (`CrawlerTraceLogger.flushRemainingToCloud`) remains active until the entire crawl and steady-state ingestion loops complete.
+
       - **Bottom Navigation Tab Displacement Recovery (`isDisplacedFromSharedTab`, `findSelectedNonSharedTab`):** If the active tab shifts to "Home", "Starred", or "Files", locates the "Shared" bottom navigation tab and re-selects it via center-point touch dispatch.
       - **Stray System / Drive Dialog Dismissal (`handleStrayDriveDialogIfPresent`):** Autonomously detects and dismisses Drive popups ("Storage full", "Not now", "Cancel", "Got it", "Dismiss").
       - **Network Retry Recovery (`handleDriveNetworkRetryPrompt`):** Detects Drive transient connection retry prompts ("Tap to retry", "Try again") and clicks them to recover list connectivity.

@@ -930,9 +930,11 @@ class GoogleDriveSharedHarvester(
             )
             return totalHarvestedCount
         } finally {
-            isDriveHarvestingActive = false
-            CrawlerTraceLogger.flushRemainingToCloud(context, targetAccountEmail)
-            CrawlerTraceLogger.stopCloudStreaming()
+            try {
+                CrawlerTraceLogger.flushRemainingToCloud(context, targetAccountEmail)
+            } catch (flushEx: Exception) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Non-fatal log flush warning during harvest finalize: ${flushEx.message}")
+            }
         }
     }
 
