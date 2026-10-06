@@ -424,8 +424,17 @@ class DriveSyncWorker(
                     CrawlerTraceLogger.log("DIAGNOSTICS_WARN", "Diagnostics mirror warning: ${diagEx.message}")
                 }
 
-                // 6. Autonomous self-healing: purge stray folders at end of cycle (never blocks critical upload path)
+                // 6. Autonomous self-healing: purge stray folders and reconcile any duplicate files across vault folders
                 purgeStrayLegacyFolders(driveService, vault.yearFolderId, vault.childFolderId, classroomVault.attachmentsFolderId)
+                reconcileAndDeduplicateVaultFolders(
+                    driveService,
+                    classroomVault.channelFolderId to "Google Classroom",
+                    classroomVault.attachmentsFolderId to "Google Classroom/attachments",
+                    vault.childFolderId to "Child Vault",
+                    vault.yearFolderId to "Academic Year Vault",
+                    vault.systemFolderId to "System Vault",
+                    vault.logsFolderId to "Logs Vault"
+                )
 
                 CrawlerTraceLogger.log("SYNC_WORKER", "Drive sync cycle completed successfully.")
                 val finalLogs = CrawlerTraceLogger.drainPendingLogs()
@@ -718,12 +727,24 @@ class DriveSyncWorker(
                         .setFields("files(id, name)")
                         .execute()
                     for (strayFile in filesInside.files.orEmpty()) {
-                        driveService.files().update(strayFile.id, null)
-                            .setAddParents(targetAttachmentsFolderId)
-                            .setRemoveParents(stray.id)
-                            .setFields("id, parents")
-                            .execute()
-                        Log.i(TAG, "Relocated stray attachment '${strayFile.name}' to Google Classroom/attachments/")
+                        val cleanName = strayFile.name.replace("\\", "\\\\").replace("'", "\\'")
+                        val existingInTarget = driveService.files().list()
+                            .setQ("'$targetAttachmentsFolderId' in parents and name = '$cleanName' and trashed = false")
+                            .setFields("files(id)")
+                            .execute().files.orEmpty()
+
+                        if (existingInTarget.isNotEmpty()) {
+                            // Target folder already contains this file! Delete stray copy to prevent duplicate
+                            driveService.files().delete(strayFile.id).execute()
+                            Log.i(TAG, "Autonomous deduplication: deleted stray attachment '${strayFile.name}' as it already exists in target folder.")
+                        } else {
+                            driveService.files().update(strayFile.id, null)
+                                .setAddParents(targetAttachmentsFolderId)
+                                .setRemoveParents(stray.id)
+                                .setFields("id, parents")
+                                .execute()
+                            Log.i(TAG, "Relocated stray attachment '${strayFile.name}' to Google Classroom/attachments/")
+                        }
                     }
                     driveService.files().delete(stray.id).execute()
                     Log.i(TAG, "Purged legacy child-level attachments folder from Google Drive: ${stray.name}")
@@ -733,6 +754,46 @@ class DriveSyncWorker(
             }
         } catch (attachmentListingException: Exception) {
             Log.w(TAG, "Non-fatal error listing stray child attachments: ${attachmentListingException.message}")
+        }
+    }
+
+    private fun reconcileAndDeduplicateVaultFolders(
+        driveService: com.google.api.services.drive.Drive,
+        vararg folders: Pair<String, String>
+    ) {
+        for ((folderId, folderLabel) in folders) {
+            if (folderId.isBlank()) continue
+            try {
+                val fileListResponse = driveService.files().list()
+                    .setQ("'$folderId' in parents and mimeType != 'application/vnd.google-apps.folder' and trashed = false")
+                    .setFields("files(id, name, size, md5Checksum, modifiedTime)")
+                    .setPageSize(500)
+                    .execute()
+
+                val files = fileListResponse.files.orEmpty()
+                val filesByName = files.groupBy { it.name }
+                for ((name, duplicateList) in filesByName) {
+                    if (duplicateList.size > 1) {
+                        Log.i(TAG, "Reconciliation: found ${duplicateList.size} duplicate entries for '$name' in $folderLabel ($folderId). Deduplicating...")
+                        val sorted = duplicateList.sortedWith(
+                            compareByDescending<com.google.api.services.drive.model.File> { it.modifiedTime?.value ?: 0L }
+                                .thenByDescending { it.size?.toLong() ?: 0L }
+                        )
+                        val keeper = sorted.first()
+                        for (redundant in sorted.drop(1)) {
+                            try {
+                                driveService.files().delete(redundant.id).execute()
+                                Log.i(TAG, "Autonomous deduplication: purged redundant duplicate '$name' (id: ${redundant.id}, size: ${redundant.size}) from $folderLabel (retained id: ${keeper.id}, size: ${keeper.size})")
+                                CrawlerTraceLogger.log("DEDUPE", "Purged redundant duplicate file '$name' (${redundant.id}) from $folderLabel")
+                            } catch (delEx: Exception) {
+                                Log.w(TAG, "Could not delete redundant duplicate ${redundant.id}: ${delEx.message}")
+                            }
+                        }
+                    }
+                }
+            } catch (folderEx: Exception) {
+                Log.w(TAG, "Non-fatal error reconciling duplicates in $folderLabel: ${folderEx.message}")
+            }
         }
     }
 

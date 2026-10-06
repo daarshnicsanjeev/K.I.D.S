@@ -155,11 +155,11 @@ class GoogleDriveClient(
      */
     suspend fun appendNoticeToJsonl(childFolderId: String, jsonLine: String): String = withContext(Dispatchers.IO) {
         val fileName = "notices.jsonl"
-        val existingFileId = findFileIdByName(fileName, childFolderId)
+        val matchingFiles = findFilesByName(fileName, childFolderId)
 
         val newLineBytes = (jsonLine.trim() + "\n").toByteArray(StandardCharsets.UTF_8)
 
-        if (existingFileId == null) {
+        if (matchingFiles.isEmpty()) {
             // Create new notices.jsonl
             val fileMetadata = File().apply {
                 name = fileName
@@ -171,12 +171,24 @@ class GoogleDriveClient(
             created.id
         } else {
             // Upsert by reading existing content and replacing matching notice IDs or appending new ones
+            val primaryFile = matchingFiles[0]
             val outputStream = ByteArrayOutputStream()
-            driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
+            driveService.files().get(primaryFile.id).executeMediaAndDownloadTo(outputStream)
             val combinedBytes = mergeNoticeJsonl(outputStream.toByteArray(), newLineBytes)
 
             val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
-            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
+            val updated = driveService.files().update(primaryFile.id, File(), updateContent).setFields("id").execute()
+
+            if (matchingFiles.size > 1) {
+                for (duplicate in matchingFiles.drop(1)) {
+                    try {
+                        driveService.files().delete(duplicate.id).execute()
+                        Log.i(TAG, "Autonomous deduplication: purged redundant duplicate notices.jsonl (${duplicate.id}) from $childFolderId")
+                    } catch (dupEx: Exception) {
+                        Log.w(TAG, "Could not purge duplicate notices.jsonl: ${dupEx.message}")
+                    }
+                }
+            }
             updated.id
         }
     }
@@ -266,6 +278,21 @@ class GoogleDriveClient(
         if (identicalFile != null) {
             // Truly identical file content! Reuse file ID without creating a duplicate.
             fileIdCache["$parentFolderId/$targetFileName"] = identicalFile.id
+
+            // Autonomous self-healing: Purge any redundant older duplicate copies of this exact attachment
+            if (existingFiles.size > 1) {
+                for (duplicate in existingFiles.filter { it.id != identicalFile.id }) {
+                    if ((duplicate.md5Checksum != null && duplicate.md5Checksum.equals(localMd5, ignoreCase = true)) ||
+                        (duplicate.size?.toLong() == localSize && duplicate.md5Checksum == null)) {
+                        try {
+                            driveService.files().delete(duplicate.id).execute()
+                            Log.i(TAG, "Autonomous deduplication: purged redundant duplicate attachment '$targetFileName' (${duplicate.id})")
+                        } catch (dupEx: Exception) {
+                            Log.w(TAG, "Could not purge duplicate attachment ${duplicate.id}: ${dupEx.message}")
+                        }
+                    }
+                }
+            }
             return@withContext identicalFile.id
         }
 
@@ -293,14 +320,14 @@ class GoogleDriveClient(
         uploadedId
     }
 
-    private fun findFilesByName(name: String, parentFolderId: String): List<File> {
+    fun findFilesByName(name: String, parentFolderId: String): List<File> {
         val escapedName = escapeDriveQueryValue(name)
         val query = "name = '$escapedName' and '$parentFolderId' in parents and trashed = false"
         return try {
             val list = driveService.files().list()
                 .setQ(query)
                 .setOrderBy("modifiedTime desc")
-                .setFields("files(id, name, size, md5Checksum)")
+                .setFields("files(id, name, size, md5Checksum, modifiedTime)")
                 .execute()
             list.files ?: emptyList()
         } catch (_: Exception) {
@@ -356,10 +383,10 @@ class GoogleDriveClient(
      */
     suspend fun appendNoticeToChannelJsonl(channelFolderId: String, jsonLine: String): String = withContext(Dispatchers.IO) {
         val fileName = "notices.jsonl"
-        val existingFileId = findFileIdByName(fileName, channelFolderId)
+        val matchingFiles = findFilesByName(fileName, channelFolderId)
         val newLineBytes = (jsonLine.trim() + "\n").toByteArray(StandardCharsets.UTF_8)
 
-        if (existingFileId == null) {
+        if (matchingFiles.isEmpty()) {
             val fileMetadata = File().apply {
                 name = fileName
                 parents = listOf(channelFolderId)
@@ -369,11 +396,23 @@ class GoogleDriveClient(
             val created = driveService.files().create(fileMetadata, content).setFields("id").execute()
             created.id
         } else {
+            val primaryFile = matchingFiles[0]
             val outputStream = ByteArrayOutputStream()
-            driveService.files().get(existingFileId).executeMediaAndDownloadTo(outputStream)
+            driveService.files().get(primaryFile.id).executeMediaAndDownloadTo(outputStream)
             val combinedBytes = mergeNoticeJsonl(outputStream.toByteArray(), newLineBytes)
             val updateContent = ByteArrayContent("application/x-ndjson", combinedBytes)
-            val updated = driveService.files().update(existingFileId, File(), updateContent).setFields("id").execute()
+            val updated = driveService.files().update(primaryFile.id, File(), updateContent).setFields("id").execute()
+
+            if (matchingFiles.size > 1) {
+                for (duplicate in matchingFiles.drop(1)) {
+                    try {
+                        driveService.files().delete(duplicate.id).execute()
+                        Log.i(TAG, "Autonomous deduplication: purged redundant duplicate notices.jsonl (${duplicate.id}) from $channelFolderId")
+                    } catch (dupEx: Exception) {
+                        Log.w(TAG, "Could not purge duplicate notices.jsonl: ${dupEx.message}")
+                    }
+                }
+            }
             updated.id
         }
     }
@@ -475,10 +514,7 @@ class GoogleDriveClient(
         val cacheKey = "$parentFolderId/$name"
         fileIdCache[cacheKey]?.let { return it }
 
-        val escapedName = escapeDriveQueryValue(name)
-        val query = "name = '$escapedName' and '$parentFolderId' in parents and trashed = false"
-        val list = driveService.files().list().setQ(query).setOrderBy("modifiedTime desc").setFields("files(id)").execute()
-        val foundId = list.files?.firstOrNull()?.id
+        val foundId = findFilesByName(name, parentFolderId).firstOrNull()?.id
         if (foundId != null) {
             fileIdCache[cacheKey] = foundId
         }
@@ -513,11 +549,11 @@ class GoogleDriveClient(
         mimeType: String,
         content: String
     ): String = executeWithRetry("uploadOrUpdateTextFile($fileName)") {
-        val existingFileId = findFileIdByName(fileName, parentFolderId)
+        val matchingFiles = findFilesByName(fileName, parentFolderId)
         val contentBytes = content.toByteArray(StandardCharsets.UTF_8)
         val mediaContent = ByteArrayContent(mimeType, contentBytes)
 
-        if (existingFileId == null) {
+        if (matchingFiles.isEmpty()) {
             val fileMetadata = File().apply {
                 this.name = fileName
                 this.parents = listOf(parentFolderId)
@@ -528,9 +564,22 @@ class GoogleDriveClient(
             fileIdCache["$parentFolderId/$fileName"] = createdId
             createdId
         } else {
-            val updated = driveService.files().update(existingFileId, File(), mediaContent).setFields("id").execute()
+            val primaryFile = matchingFiles[0]
+            val updated = driveService.files().update(primaryFile.id, File(), mediaContent).setFields("id").execute()
             val updatedId = updated.id
             fileIdCache["$parentFolderId/$fileName"] = updatedId
+
+            // Autonomous self-healing: purge any redundant older duplicate copies of this file
+            if (matchingFiles.size > 1) {
+                for (duplicate in matchingFiles.drop(1)) {
+                    try {
+                        driveService.files().delete(duplicate.id).execute()
+                        Log.i(TAG, "Autonomous deduplication: purged redundant duplicate '$fileName' (${duplicate.id}) from folder $parentFolderId")
+                    } catch (dupEx: Exception) {
+                        Log.w(TAG, "Could not purge duplicate file ${duplicate.id}: ${dupEx.message}")
+                    }
+                }
+            }
             updatedId
         }
     }
@@ -541,10 +590,10 @@ class GoogleDriveClient(
         mimeType: String,
         file: java.io.File
     ): String = executeWithRetry("uploadOrUpdateBinaryFile($fileName)") {
-        val existingFileId = findFileIdByName(fileName, parentFolderId)
+        val matchingFiles = findFilesByName(fileName, parentFolderId)
         val fileContent = FileContent(mimeType, file)
 
-        if (existingFileId == null) {
+        if (matchingFiles.isEmpty()) {
             val fileMetadata = File().apply {
                 this.name = fileName
                 this.parents = listOf(parentFolderId)
@@ -555,9 +604,22 @@ class GoogleDriveClient(
             fileIdCache["$parentFolderId/$fileName"] = createdId
             createdId
         } else {
-            val updated = driveService.files().update(existingFileId, File(), fileContent).setFields("id").execute()
+            val primaryFile = matchingFiles[0]
+            val updated = driveService.files().update(primaryFile.id, File(), fileContent).setFields("id").execute()
             val updatedId = updated.id
             fileIdCache["$parentFolderId/$fileName"] = updatedId
+
+            // Autonomous self-healing: purge any redundant older duplicate copies of this binary file
+            if (matchingFiles.size > 1) {
+                for (duplicate in matchingFiles.drop(1)) {
+                    try {
+                        driveService.files().delete(duplicate.id).execute()
+                        Log.i(TAG, "Autonomous deduplication: purged redundant duplicate binary file '$fileName' (${duplicate.id}) from folder $parentFolderId")
+                    } catch (dupEx: Exception) {
+                        Log.w(TAG, "Could not purge duplicate binary file ${duplicate.id}: ${dupEx.message}")
+                    }
+                }
+            }
             updatedId
         }
     }
