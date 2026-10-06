@@ -1052,6 +1052,13 @@ class KidsAccessibilityService : AccessibilityService() {
         val activeCourseGrade = activeTargetChildGrade ?: targetChild?.grade
         var activeCourseTitle: String? = null
 
+        // Autonomous pre-crawl database reconciliation & cleanup
+        try {
+            com.kids.collector.domain.router.NoticeReconciliationEngine.reconcile(db)
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Notice reconciliation warning: ${e.message}")
+        }
+
         // =========================================================================
         // PRE-FLIGHT 0: Wait for Classroom to be active window
         // =========================================================================
@@ -1539,6 +1546,17 @@ class KidsAccessibilityService : AccessibilityService() {
                 var savedAttCount = 0
                 if (detailRoot != null) {
                     try {
+                        val isPostMatching = validateOpenedPostMatchesTarget(detailRoot, targetItem)
+                        if (!isPostMatching) {
+                            CrawlerTraceLogger.log(
+                                "POST_VALIDATION_FAILED",
+                                "Opened detail post does not match target #${targetItem.index} (\"$title\"). Rejecting mis-clicked post and navigating back to stream..."
+                            )
+                            performReturnToStream(detailRoot)
+                            delay(600)
+                            manifest.incrementAttempt(targetItem.fingerprint)
+                            continue
+                        }
                         savedAttCount = processPostDetailAndDownload(detailRoot, title)
                     } catch (e: Exception) {
                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
@@ -1651,6 +1669,17 @@ class KidsAccessibilityService : AccessibilityService() {
                                 var savedAttCount = 0
                                 if (detailRoot != null) {
                                     try {
+                                        val isPostMatching = validateOpenedPostMatchesTarget(detailRoot, nextItem)
+                                        if (!isPostMatching) {
+                                            CrawlerTraceLogger.log(
+                                                "POST_VALIDATION_FAILED",
+                                                "Candidate detail post does not match target #${nextItem.index} (\"${nextItem.title}\"). Rejecting mis-clicked post and navigating back to stream..."
+                                            )
+                                            performReturnToStream(detailRoot)
+                                            delay(600)
+                                            manifest.incrementAttempt(nextItem.fingerprint)
+                                            continue
+                                        }
                                         savedAttCount = processPostDetailAndDownload(detailRoot, nextItem.title)
                                     } catch (e: Exception) {
                                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
@@ -1695,11 +1724,11 @@ class KidsAccessibilityService : AccessibilityService() {
                     // If target index is greater than maxVisibleIndex, target is further down (forward).
                     // If target index is less than minVisibleIndex, target is further up (backward).
                     // When indices are null (during settling), retain the previous seek direction!
-                    val targetAhead = when {
+                    var targetAhead = when {
                         isAtStreamTop -> true
                         maxVisibleIndex != null && nextItem.index > maxVisibleIndex -> true
                         minVisibleIndex != null && nextItem.index < minVisibleIndex -> false
-                        else -> lastKnownScrollDirection ?: false
+                        else -> lastKnownScrollDirection ?: true
                     }
                     lastKnownScrollDirection = targetAhead
 
@@ -1709,17 +1738,19 @@ class KidsAccessibilityService : AccessibilityService() {
                     recentScrollDirections.addLast(targetAhead)
                     if (recentScrollDirections.size > 6) recentScrollDirections.removeFirst()
 
-                    val isOscillating = recentScrollDirections.size >= 4 &&
+                    val isOscillating = recentScrollDirections.size >= 3 &&
                             recentScrollDirections.zipWithNext().all { (a, b) -> a != b }
 
                     if (isOscillating) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Oscillation detected around target #${nextItem.index}! Engaging micro-nudge."
+                            "Oscillation detected around target #${nextItem.index}! Breaking oscillation by advancing forward towards older posts..."
                         )
+                        targetAhead = true
+                        lastKnownScrollDirection = true
                     }
 
-                    if (consecutiveTargetAttempts >= 5 || currentAttempts >= 5) {
+                    if (consecutiveTargetAttempts >= 4 || currentAttempts >= 4) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
                             "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($consecutiveTargetAttempts attempts)."
@@ -1769,6 +1800,17 @@ class KidsAccessibilityService : AccessibilityService() {
 
         // Cycle Completion Verification & Phase 3 Drive Harvester Transition
         val finalCompleted = manifest.completedCount
+
+        // Pre-harvest reconciliation: re-link existing shared attachments to newly captured notices
+        try {
+            val preReconciled = com.kids.collector.domain.router.NoticeReconciliationEngine.reconcile(db)
+            if (preReconciled > 0) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Pre-harvest reconciled $preReconciled attachments to Classroom notices.")
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Pre-harvest reconciliation warning: ${e.message}")
+        }
+
         val allAttachmentsDirect = db.attachmentDao().getAllAttachmentsDirect()
         val remainingPending = allAttachmentsDirect.filter { att ->
             att.localUri.isBlank() &&
@@ -1889,6 +1931,16 @@ class KidsAccessibilityService : AccessibilityService() {
             } finally {
                 GoogleDriveSharedHarvester.isDriveHarvestingActive = false
             }
+        }
+
+        // Post-harvest reconciliation: ensure newly downloaded shared resources are linked to notices
+        try {
+            val postReconciled = com.kids.collector.domain.router.NoticeReconciliationEngine.reconcile(db)
+            if (postReconciled > 0) {
+                CrawlerTraceLogger.log("DEEP_CRAWLER", "Post-harvest reconciled $postReconciled attachments to Classroom notices.")
+            }
+        } catch (e: Exception) {
+            CrawlerTraceLogger.log("DEEP_CRAWLER", "Post-harvest reconciliation warning: ${e.message}")
         }
 
         val allAttachments = db.attachmentDao().getAllAttachmentsDirect()
@@ -3471,7 +3523,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val queryCandidate = normTargetTitle.substringAfter(":").trim().take(30)
         val searchQuery = if (queryCandidate.length >= 6) queryCandidate else normTargetTitle.take(30)
 
-        if (searchQuery.length >= 6) {
+        if (searchQuery.length >= 6 && !isGenericStopWord(searchQuery)) {
             val fastMatches = rootNode.findAccessibilityNodeInfosByText(searchQuery)
             for (match in fastMatches) {
                 val clickable = findClickableAncestor(match)
@@ -3487,8 +3539,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     )
                     val isMatch = isPostCard && (fingerprint == targetItem.fingerprint ||
                             normCardTitle == normTargetTitle ||
-                            normCardTitle.contains(searchQuery, ignoreCase = true) ||
-                            combinedText.contains(searchQuery, ignoreCase = true))
+                            (normCardTitle.length >= 6 && normCardTitle.contains(searchQuery, ignoreCase = true)))
 
                     if (isMatch) {
                         CrawlerTraceLogger.log("CARD_MATCH", "Matched target #${targetItem.index} via Fast-Path Native Search (\"$searchQuery\")")
@@ -3544,12 +3595,12 @@ class KidsAccessibilityService : AccessibilityService() {
                             (normTargetTitle.length >= 6 && normCardTitle.contains(normTargetTitle))
                     )
 
-                    val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
-                    val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 }.toSet()
+                    val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 && !isGenericStopWord(it) }.toSet()
+                    val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length >= 3 && !isGenericStopWord(it) }.toSet()
                     val isTokenMatch = cardTokens.isNotEmpty() && targetTokens.isNotEmpty() && (
                             cardTokens.intersect(targetTokens).isNotEmpty() && (
-                                    cardTokens.intersect(targetTokens).size == minOf(cardTokens.size, targetTokens.size) ||
-                                    (cardTokens.intersect(targetTokens).size.toFloat() / maxOf(cardTokens.size, targetTokens.size) >= 0.5f)
+                                    (cardTokens.intersect(targetTokens).size.toFloat() / maxOf(cardTokens.size, targetTokens.size) >= 0.6f) ||
+                                    (cardTokens.intersect(targetTokens).size >= 2 && cardTokens.intersect(targetTokens).size.toFloat() / maxOf(cardTokens.size, targetTokens.size) >= 0.5f)
                             )
                     )
 
@@ -3595,7 +3646,7 @@ class KidsAccessibilityService : AccessibilityService() {
         var bestScore = -1f
 
         val normTargetTitle = StreamManifest.normalizeTitle(targetItem.title)
-        val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+        val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 && !isGenericStopWord(it) }.toSet()
 
         val rect = Rect()
         for (card in postCards) {
@@ -3623,7 +3674,7 @@ class KidsAccessibilityService : AccessibilityService() {
             else if (normTargetTitle.startsWith(normCardTitle.take(15)) || normCardTitle.startsWith(normTargetTitle.take(15))) score += 40f
 
             if (targetTokens.isNotEmpty()) {
-                val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 }.toSet()
+                val cardTokens = normCardTitle.split(Regex("""[\s\p{Punct}]+""")).filter { it.length > 2 && !isGenericStopWord(it) }.toSet()
                 val commonTokens = targetTokens.intersect(cardTokens)
                 val tokenRatio = commonTokens.size.toFloat() / maxOf(targetTokens.size, 1)
                 score += tokenRatio * 40f
@@ -3633,7 +3684,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 score += 10f
             }
 
-            if (score > bestScore || bestCard == null) {
+            if (score >= 30f && (score > bestScore || bestCard == null)) {
                 bestCard?.clickableNode?.recycle()
                 val clickable = findClickableAncestor(card) ?: AccessibilityNodeInfo.obtain(card)
                 val safeCenterY = rect.centerY().coerceIn(minTopSafeZone + 40, maxBottom - 40)
@@ -3728,6 +3779,7 @@ class KidsAccessibilityService : AccessibilityService() {
         val displayMetrics = resources.displayMetrics
         val minTopSafeZone = getMinTopSafeZonePx()
         val maxBottom = displayMetrics.heightPixels - BOTTOM_NAV_BAR_MARGIN_PX
+        val seenCardsInScreen = mutableMapOf<String, Int>()
 
         for (card in postCards) {
             val cardRect = Rect()
@@ -3768,7 +3820,10 @@ class KidsAccessibilityService : AccessibilityService() {
                         item.trim().length > 3
             }
             val title = titleCandidate?.take(80) ?: "Classroom Notice"
-            val fingerprint = computeCardFingerprint(cardItems)
+            val baseFingerprint = computeCardFingerprint(cardItems, 0)
+            val occurrence = seenCardsInScreen.getOrDefault(baseFingerprint, 0) + 1
+            seenCardsInScreen[baseFingerprint] = occurrence
+            val fingerprint = if (occurrence > 1) computeCardFingerprint(cardItems, occurrence) else baseFingerprint
 
             val existingNotice = db.noticeDao().findByHash(fingerprint)
             val isAlreadyCaptured = (visitedPostFingerprints.contains(fingerprint) || existingNotice != null) && isNoticeFullyCapturedInDb(title)
@@ -3848,7 +3903,74 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun computeCardFingerprint(cardItems: List<String>): String {
+    private fun isGenericStopWord(token: String): Boolean {
+        val stopWords = setOf(
+            "new", "material", "assignment", "question", "announcement",
+            "sheet", "sheets", "notes", "grade", "homework", "pdf", "ws",
+            "ch", "chapter", "lesson", "unit", "term", "class", "answer",
+            "key", "work", "part", "page", "dear", "parents", "students",
+            "reference", "circular", "date", "aug", "jul", "jun", "sep",
+            "oct", "nov", "dec", "jan", "feb", "mar", "apr", "may"
+        )
+        return stopWords.contains(token.lowercase().trim())
+    }
+
+    private fun validateOpenedPostMatchesTarget(
+        detailRoot: AccessibilityNodeInfo,
+        targetItem: StreamManifestItem
+    ): Boolean {
+        val detailTexts = mutableListOf<String>()
+        collectAllText(detailRoot, detailTexts)
+        val combinedDetail = detailTexts.joinToString(" ").lowercase()
+        val normTargetTitle = StreamManifest.normalizeTitle(targetItem.title)
+
+        // 1. Exact or containment match of normalized title in detail view
+        if (normTargetTitle.length >= 6 && combinedDetail.contains(normTargetTitle)) {
+            return true
+        }
+
+        // 2. Target title candidate in detail view
+        val detailTitleCandidate = detailTexts.firstOrNull { item ->
+            val lower = item.trim().lowercase()
+            !excludedChrome.contains(lower) &&
+                    !excludedChrome.any { lower.startsWith(it) } &&
+                    !lower.startsWith("tab ") &&
+                    !lower.startsWith("add class comment") &&
+                    !lower.contains("class comments") &&
+                    !lower.startsWith("back to ") &&
+                    item.trim().length > 3
+        }
+        val normDetailTitle = detailTitleCandidate?.let { StreamManifest.normalizeTitle(it) }.orEmpty()
+        if (normDetailTitle.isNotBlank() && (
+            normDetailTitle == normTargetTitle ||
+            (normDetailTitle.length >= 6 && normTargetTitle.contains(normDetailTitle)) ||
+            (normTargetTitle.length >= 6 && normDetailTitle.contains(normTargetTitle))
+        )) {
+            return true
+        }
+
+        // 3. Substantive token overlap (excluding educational stop words)
+        val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+"""))
+            .filter { it.length >= 3 && !isGenericStopWord(it) }
+            .toSet()
+        if (targetTokens.isNotEmpty()) {
+            val matchingTokens = targetTokens.filter { combinedDetail.contains(it) }
+            val overlapRatio = matchingTokens.size.toFloat() / targetTokens.size
+            if (overlapRatio >= 0.5f || (targetTokens.size == 1 && matchingTokens.isNotEmpty())) {
+                return true
+            }
+        }
+
+        // 4. Stream Announcement preview match (if announcement without separate title)
+        val preview = targetItem.previewText.trim().lowercase().take(40)
+        if (preview.length >= 15 && combinedDetail.contains(preview)) {
+            return true
+        }
+
+        return false
+    }
+
+    private fun computeCardFingerprint(cardItems: List<String>, occurrenceIndex: Int = 0): String {
         val commentPattern = Regex("""\b(?:\d+\s+)?class\s+comments?.*|add\s+class\s+comment.*""", RegexOption.IGNORE_CASE)
         val filtered = cardItems
             .map { it.replace(commentPattern, "").trim() }
@@ -3878,7 +4000,8 @@ class KidsAccessibilityService : AccessibilityService() {
             .lowercase()
             .trim()
 
-        val canonicalContent = "$header|$dateItem|$bodySnippet"
+        val occSuffix = if (occurrenceIndex > 0) "|occ_$occurrenceIndex" else ""
+        val canonicalContent = "$header|$dateItem|$bodySnippet$occSuffix"
         return try {
             val md = MessageDigest.getInstance("SHA-256")
             val digest = md.digest(canonicalContent.toByteArray(Charsets.UTF_8))

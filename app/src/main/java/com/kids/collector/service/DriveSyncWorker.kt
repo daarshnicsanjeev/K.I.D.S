@@ -125,6 +125,13 @@ class DriveSyncWorker(
             consolidateDuplicateChildProfiles(db, effectiveChildId)
             consolidateDuplicateNoticesAndStaleStubs(db, effectiveChildId)
 
+            // Autonomous notice & attachment reconciliation
+            try {
+                com.kids.collector.domain.router.NoticeReconciliationEngine.reconcile(db)
+            } catch (e: Exception) {
+                Log.w(TAG, "Reconciliation warning in sync worker: ${e.message}")
+            }
+
             val pendingNotices = db.noticeDao().getPendingNotices()
             val pendingAttachments = db.attachmentDao().getPendingAttachments()
             val pendingLogs = CrawlerTraceLogger.drainPendingLogs()

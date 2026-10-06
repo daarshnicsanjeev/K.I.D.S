@@ -620,6 +620,18 @@ Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically c
 #### 2. Pass 2: Classroom Reverse Fast Metadata Sweep (Bottom-to-Top)
 - **Elimination of the Upward Rewind Pass:** In previous generation screen crawlers, reaching the stream bottom required an artificial "Pass 1.5 Rewind" consisting of 30 to 45 backward swipes just to return to the top, only to scroll all the way back down again during ingestion. K.I.D.S. eliminates this redundant rewind pass completely!
 - **Bottom-to-Top Reverse Traversal (`getNextPendingItemReverse()`):** Because the assistant is already resting at the chronological bottom of the stream when Pass 1 completes, it immediately begins deep capture right where it stopped. It retrieves pending items in reverse order—from the oldest post at the stream bottom (highest manifest index) upwards to the newest post at the top (index 1).
+- **Same-Day Occurrence Disambiguation:**
+  In active school streams, teachers frequently post multiple distinct announcements or study materials on the exact same date (for example, a study PowerPoint presentation and a homework worksheet). If teachers post with identical or near-identical header banners, naive fingerprinting would collapse them into a single item. K.I.D.S. implements **Occurrence Disambiguation**:
+  - During Pass 1, screen-level card occurrences are tracked (`seenCardsInScreen`).
+  - Distinct cards sharing the same author, text, or date receive unique occurrence fingerprints (`${baseFp}|occ_$occurrence`).
+  - `StreamManifest` resolves sequential posts cleanly, ensuring all same-day lessons are audited without skipping duplicate items.
+- **Post-Open Validation Gate (Mis-Click & Circular Bleed Prevention):**
+  When scrolling rapidly or when Google Classroom's feed layout shifts dynamically, physical tap coordinates could occasionally hit an adjacent post or circular banner (such as a "Heavy Rainfall Alert" notice adjacent to a "Math Homework" card). Naive crawlers would overwrite the curriculum notice with the circular's body and fail to capture attachments.
+  K.I.D.S. introduces a strict **Post-Open Validation Gate (`validateOpenedPostMatchesTarget`)**:
+  - The instant a card opens into detail view, K.I.D.S. immediately inspects the header, announcement title, and text content against the targeted notice in `StreamManifest`.
+  - Educational stop words (e.g., "notes", "worksheet", "page", "grade") are filtered out to prevent single-token false matches.
+  - Substantive title containment or $\ge 60\%$ clean token overlap is enforced.
+  - If a mismatch is detected (mis-clicked card), the crawler **instantly rejects the screen**, navigates back up to the stream (`performReturnToStream`), and re-seeks the authentic notice card, preventing circular bleed and preserving curriculum content.
 - **Fast Metadata Sweep (Zero In-Viewer Delays):** Rather than opening hundreds of individual attachment viewers in Classroom (which previously took 2+ hours and caused app freezes), K.I.D.S. performs an ultra-fast metadata pass:
   1. Taps each post to open its detail view.
   2. Extracts 100% full post body text and author details.
@@ -627,6 +639,15 @@ Before surveying the Google Classroom stream in Pass 1, K.I.D.S. automatically c
   4. Discovers all attachment chips and registers them directly in local SQLite Room storage as `SyncStatus.PENDING`.
   5. Instantly taps `"Navigate up"` back to the stream feed in ~1.2 seconds!
   An entire stream of 100+ notices is indexed in **under 3 minutes**!
+
+#### Autonomous Notice & Attachment Reconciliation Engine
+Whenever files are harvested from Google Drive (Phase 3) or received via the native Android Share sheet (`ShareTargetActivity`), K.I.D.S. runs the **Notice Reconciliation Engine (`NoticeReconciliationEngine`)**:
+- **Automatic Orphan Attachment Re-Linking:**
+  If any attachments were originally routed to fallback notices (such as `"Google Drive Shared Resources"`) due to mis-clicks or missing stubs, the engine scans all notices across the SQLite Room database. Using substantive token overlap, direct containment, and multilingual stem matching (e.g. Spanish *Los pronombres* $\leftrightarrow$ *The Pronouns*, *la hora* $\leftrightarrow$ *time*), it maps orphaned attachments back to their authentic Classroom notices.
+- **Self-Healing Notice Body Recovery:**
+  If a notice body was corrupted or overwritten by an accidental circular mis-click during earlier crawls, the reconciliation engine detects the discrepancy against known curriculum keywords and resets the body to clean curriculum summaries.
+- **Automatic Placeholder Purge:**
+  Once all files are re-linked to their legitimate parent notices, any empty `"Google Drive Shared Resources"` placeholder notices are purged from the database, keeping your K.I.D.S. Vault dashboard and Google Drive digests 100% clean and pristine.
 
 #### 3. Phase 3: Google Drive Shared Tab Batch Harvester
 Once the Classroom fast metadata sweep finishes, K.I.D.S. automatically transitions to Google Drive for binary attachment collection:

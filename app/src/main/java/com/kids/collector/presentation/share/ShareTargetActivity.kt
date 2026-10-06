@@ -397,7 +397,13 @@ class ShareTargetActivity : Activity() {
                                 notice.title.contains(folderName, ignoreCase = true) ||
                                 notice.body.contains(folderName, ignoreCase = true)
                             }
-                        } else null
+                        } else {
+                            // Autonomous match: link directly to authentic Classroom notice if filename matches notice title
+                            com.kids.collector.domain.router.NoticeReconciliationEngine.findMatchingNoticeForAttachment(
+                                safeFileName,
+                                allNotices.filter { !com.kids.collector.domain.router.NoticeReconciliationEngine.isSharedResourceNotice(it.title) }
+                            )
+                        }
 
                         val child = db.childProfileDao().getAllChildrenDirect().firstOrNull()
                         val childId = child?.let { com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(it.firstName) } ?: "child_default"

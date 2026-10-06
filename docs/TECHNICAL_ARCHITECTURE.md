@@ -141,7 +141,8 @@ app/src/main/java/com/kids/collector/
 │   ├── parser/
 │   │   └── NotificationParser.kt      # StatusBarNotification unwrapper & extractor
 │   └── router/
-│       └── MultiChildRouter.kt        # Multi-child disambiguation routing engine
+│       ├── MultiChildRouter.kt        # Multi-child disambiguation routing engine
+│       └── NoticeReconciliationEngine.kt # Autonomous orphan attachment & notice body reconciler
 ├── presentation/                      # Jetpack Compose UI (Single-Activity Architecture)
 │   ├── MainActivity.kt                # Root activity & navigation coordinator
 │   ├── theme/                         # KidsTheme, Color tokens, Kanit & Poppins typography
@@ -2370,6 +2371,37 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
    - **100% Notice Ingestion:** Successfully captured **176 out of 176 notices** across a full academic year feed without dropped records or stalled loops.
    - **36 Attachments Staged & Synced:** Autonomously downloaded and routed **36 multi-page PDF circulars, worksheets, and syllabus documents** into private vault staging, fingerprinted them with SHA-256, and uploaded them to Google Drive Vault (`attachments/`), followed by automated private staging cleanup.
    - **Zero User Touch Intervention:** All self-healing paths (tab drift recovery, classes list re-entry, viewer exit, and comments sheet dismissal) executed autonomously with zero human intervention.
+
+7. **Autonomous Notice & Attachment Reconciliation Engine (`NoticeReconciliationEngine.kt`):**
+   To resolve data attribution discrepancies between Classroom stream passes (Pass 1 survey & Pass 2 metadata sweep) and Drive batch harvesting (Pass 3 & ShareTargetActivity), K.I.D.S. implements a dedicated, self-healing reconciliation engine:
+   - **Problem Context:**
+     During Drive harvesting or Share Target ingestion, attachments may arrive before their authentic Classroom post stub is created or after an adjacent post mis-click deposited files into a fallback `"Google Drive Shared Resources"` placeholder notice.
+   - **Token Normalization & Educational Stop-Word Filtering:**
+     Extracts alphanumeric tokens ($\ge 3$ characters), filtering out common generic words (`"worksheet"`, `"notes"`, `"sheet"`, `"lesson"`, `"chapter"`, `"study"`, `"homework"`, `"circular"`, `"page"`, `"grade"`).
+   - **Cross-Lingual Stem Equivalence:**
+     Normalizes multilingual stems across Spanish and English (e.g. `pronoun` $\leftrightarrow$ `pronombres`, `time` $\leftrightarrow$ `hora`), ensuring that teacher posts written in Spanish (e.g. *Los pronombres- The Pronouns*) match shared Drive filenames (e.g. `Pronoun worksheet.pdf`, `Pronouns notes.pdf`).
+   - **Match Scoring Heuristics (`findMatchingNoticeForAttachment`):**
+     1. Exact normalized title match.
+     2. Clean direct substring containment ($\ge 4$ characters).
+     3. High-confidence token overlap: requires $\ge 60\%$ clean token overlap, or $\ge 2$ matching tokens with $\ge 50\%$ overlap.
+   - **Automatic Placeholder Purge & Body Healing:**
+     `reconcile(db)` automatically migrates attachments from `"Google Drive Shared Resources"` notices to their authentic parent notices, increments the parent's `attachmentCount`, and deletes empty placeholder notices. It also detects curriculum notices whose bodies were corrupted by circular mis-clicks and restores clean curriculum text.
+   - **Trigger Points:**
+     Invoked deterministically:
+     1. In `KidsAccessibilityService` prior to starting Phase 1/Pass 2 and immediately upon concluding crawls.
+     2. In `ShareTargetActivity` dynamically when resolving parent notices for inbound shared files.
+     3. In `DriveSyncWorker` prior to querying pending entities for Google Drive cloud synchronization.
+
+8. **Stream Crawler Reliability & Anti-Corruption Invariants:**
+   - **Same-Day Occurrence Disambiguation (`surveyVisibleCards`):**
+     Tracks on-screen card occurrences (`seenCardsInScreen`) in Pass 1. When teachers post multiple announcements or resources on the exact same date (e.g. PPT presentation + worksheet), distinct occurrences receive deterministic unique fingerprints (`${baseFp}|occ_$occurrence`), preventing duplicate deduplication drops.
+   - **Post-Open Validation Gate (`validateOpenedPostMatchesTarget`):**
+     Whenever Pass 2 taps a card to open its detail view, it immediately validates the opened screen before extracting body or registering attachments:
+     1. Extracts detail header and body text.
+     2. Compares against `targetItem` in `StreamManifest` using substantive containment or $\ge 60\%$ clean token overlap (excluding stop words).
+     3. If an adjacent circular or unrelated card was opened due to list layout shift, the gate rejects the screen, logs a diagnostic warning, calls `performReturnToStream`, and re-targets the authentic card.
+   - **Monotonic Directional Seek Recovery:**
+     Fixes auto-recovery oscillation loops by tracking direction flips (`directionChanges`). If the seeker alternates between backward and forward seeks $\ge 3$ times, it forces forward progression towards the target, clamps max seek retries to 4, and prevents infinite bouncing when on-screen card indices are indeterminate.
 
 ---
 
