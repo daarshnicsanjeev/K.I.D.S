@@ -2139,7 +2139,7 @@ class GoogleDriveSharedHarvester(
         val root = rootInActiveWindowProvider()
         val pkg = root?.packageName?.toString() ?: ""
         root?.recycle()
-        if (pkg.contains("intentresolver") || pkg.contains("chooser")) {
+        if (pkg.contains("intentresolver") || pkg.contains("chooser") || pkg.contains("resolver") || pkg == "android") {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing dangling system share sheet ($pkg) via Back action...")
             dispatchBackAction()
             delay(500L)
@@ -2310,7 +2310,7 @@ class GoogleDriveSharedHarvester(
                 delay(300L)
                 return
             }
-            if (pkg.contains("intentresolver") || pkg.contains("chooser")) {
+            if (pkg.contains("intentresolver") || pkg.contains("chooser") || pkg.contains("resolver") || pkg == "android") {
                 CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dangling share sheet detected while waiting for Drive. Dismissing via Back...")
                 dispatchBackAction()
                 delay(400L)

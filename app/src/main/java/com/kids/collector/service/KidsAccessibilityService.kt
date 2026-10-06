@@ -912,7 +912,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = overlay,
-                rootInActiveWindowProvider = { findDriveRootNode() },
+                rootInActiveWindowProvider = { rootInActiveWindow ?: findDriveRootNode() },
                 dispatchTapAction = { x, y -> dispatchTap(x, y, "Drive Harvester Tap") },
                 dispatchLongPressAction = { x, y -> dispatchLongPress(x, y, 800L, "Drive Harvester Long Press") },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
@@ -946,7 +946,7 @@ class KidsAccessibilityService : AccessibilityService() {
                         serviceScope = serviceScope,
                         database = db,
                         crawlerOverlay = overlay,
-                        rootInActiveWindowProvider = { findDriveRootNode() },
+                        rootInActiveWindowProvider = { rootInActiveWindow ?: findDriveRootNode() },
                         dispatchTapAction = { x, y -> dispatchTap(x, y, "Drive Search Harvester Tap") },
                         dispatchSwipeAction = { startX, startY, endX, endY, duration ->
                             dispatchSwipe(startX, startY, endX, endY, duration)
@@ -1743,7 +1743,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = crawlerOverlay,
-                rootInActiveWindowProvider = { findDriveRootNode() },
+                rootInActiveWindowProvider = { rootInActiveWindow ?: findDriveRootNode() },
                 dispatchTapAction = { x, y -> dispatchTap(x, y, "Phase 3 Drive Harvester Tap") },
                 dispatchLongPressAction = { x, y -> dispatchLongPress(x, y, 800L, "Phase 3 Drive Harvester Long Press") },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
@@ -1802,7 +1802,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 serviceScope = serviceScope,
                 database = db,
                 crawlerOverlay = crawlerOverlay,
-                rootInActiveWindowProvider = { findDriveRootNode() },
+                rootInActiveWindowProvider = { rootInActiveWindow ?: findDriveRootNode() },
                 dispatchTapAction = { x, y -> dispatchTap(x, y, "Phase 4 Drive Search Harvester Tap") },
                 dispatchSwipeAction = { startX, startY, endX, endY, duration ->
                     dispatchSwipe(startX, startY, endX, endY, duration)
@@ -2671,7 +2671,8 @@ class KidsAccessibilityService : AccessibilityService() {
             while (target == null && scrollAttempts < 5 && serviceScope.isActive && crawlerOverlay?.isAutoScrollingActive() == true) {
                 val currentCheck = rootInActiveWindow
                 if (currentCheck != null) {
-                    val inClassroom = isPostDetailView(currentCheck) || isStreamOrClassworkView(currentCheck) || isClassesListScreen(currentCheck)
+                    val pkg = currentCheck.packageName?.toString() ?: ""
+                    val inClassroom = pkg.contains(CLASSROOM_PACKAGE_NAME) && (isPostDetailView(currentCheck) || isStreamOrClassworkView(currentCheck) || isClassesListScreen(currentCheck))
                     currentCheck.recycle()
                     if (inClassroom) {
                         CrawlerTraceLogger.log("ATTACHMENT_SHARE", "Returned to Classroom during share sheet search. Halting scroll search.")
@@ -2701,7 +2702,8 @@ class KidsAccessibilityService : AccessibilityService() {
             // CRITICAL: Only dismiss if we are genuinely on the share sheet, NEVER if already on post detail, stream, or classes list!
             val currentWindow = rootInActiveWindow
             if (currentWindow != null) {
-                val isClassroomView = isPostDetailView(currentWindow) || isStreamOrClassworkView(currentWindow) || isClassesListScreen(currentWindow)
+                val currentPkg = currentWindow.packageName?.toString() ?: ""
+                val isClassroomView = currentPkg.contains(CLASSROOM_PACKAGE_NAME) && (isPostDetailView(currentWindow) || isStreamOrClassworkView(currentWindow) || isClassesListScreen(currentWindow))
                 currentWindow.recycle()
                 if (!isClassroomView) {
                     CrawlerTraceLogger.log("ATTACHMENT_SHARE", "K.I.D.S. not found in system share sheet after full expansion. Dismissing share sheet.")
