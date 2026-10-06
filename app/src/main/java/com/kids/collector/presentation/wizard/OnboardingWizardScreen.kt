@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.kids.collector.presentation.permission.PermissionHelper
+import com.kids.collector.data.db.ChildProfileEntity
+import com.kids.collector.data.db.KidsDatabase
 import com.kids.collector.data.drive.DriveVaultManager
 import com.kids.collector.data.drive.ProvisionStep1Result
 import com.kids.collector.data.drive.SafVaultManager
