@@ -385,4 +385,33 @@ class StreamManifestAndCardTest {
             assertThat(testManifest.isAllFinished()).isTrue()
         }
     }
+
+    @Test
+    fun `stream manifest normalizeTitle strips relative dates and timestamps cleanly`() {
+        // Real case from device trace log: Post #12
+        val post12Raw = "New material: Grade 3 Hindi WS 4 PDF & Answer key\nYesterday"
+        val normalized12 = StreamManifest.normalizeTitle(post12Raw)
+        assertThat(normalized12).isEqualTo("grade 3 hindi ws 4 pdf & answer key")
+
+        // Relative dates with prefix
+        assertThat(StreamManifest.normalizeTitle("Announcement: Field Trip Notice\nPosted yesterday")).isEqualTo("field trip notice")
+        assertThat(StreamManifest.normalizeTitle("New assignment: Math Quiz\nToday")).isEqualTo("math quiz")
+        assertThat(StreamManifest.normalizeTitle("Material: Science Notes\nEdited today")).isEqualTo("science notes")
+
+        // Inverted dates like 5 Oct
+        assertThat(StreamManifest.normalizeTitle("New material: History Chapter 1\n5 Oct")).isEqualTo("history chapter 1")
+    }
+
+    @Test
+    fun `stream manifest matches target card with relative date against clean detail title`() {
+        val testManifest = StreamManifest()
+        val streamCardTitle = "New material: Grade 3 Hindi WS 4 PDF & Answer key\nYesterday"
+        val streamFp = "hindi_ws_4_fp"
+        testManifest.addItem(streamFp, streamCardTitle, streamCardTitle, isAlreadyCaptured = false)
+
+        val detailTitle = "Grade 3 Hindi WS 4 PDF & Answer key"
+        val matched = testManifest.findMatchingItem("unknown_fp", detailTitle, detailTitle)
+        assertThat(matched).isNotNull()
+        assertThat(matched?.index).isEqualTo(1)
+    }
 }

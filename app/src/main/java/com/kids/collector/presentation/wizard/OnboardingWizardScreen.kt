@@ -270,9 +270,8 @@ fun OnboardingWizardScreen(
     }
 
     // Step 2 State (Classroom: System Account Picker, No Typing, No Auto Rules)
-    val savedStudentEmail = remember { prefs.getString("wizard_student_email", "") ?: "" }
     var enableClassroom by rememberSaveable { mutableStateOf(true) }
-    var studentEmail by rememberSaveable { mutableStateOf(if (isNewChildSession) "" else savedStudentEmail) }
+    var studentEmail by rememberSaveable { mutableStateOf("") }
 
     LaunchedEffect(studentEmail) {
         if (studentEmail.isNotBlank()) {
@@ -287,6 +286,31 @@ fun OnboardingWizardScreen(
         if (!selected.isNullOrBlank()) {
             studentEmail = selected
             prefs.edit().putString("wizard_student_email", selected).apply()
+
+            // Update child profile in local Room database with selected student account email
+            scope.launch(Dispatchers.IO) {
+                try {
+                    val db = KidsDatabase.getInstance(context)
+                    val effectiveName = childName.trim().ifBlank { "Child" }
+                    val effectiveId = DriveVaultManager.currentChildVault?.childFolderId ?: "child_${effectiveName.lowercase()}"
+                    val existing = db.childProfileDao().getChildById(effectiveId)
+                    if (existing != null) {
+                        db.childProfileDao().insert(existing.copy(accountEmail = selected))
+                    } else {
+                        db.childProfileDao().insert(
+                            ChildProfileEntity(
+                                childId = effectiveId,
+                                firstName = effectiveName,
+                                academicYear = selectedYear,
+                                accountEmail = selected,
+                                createdAtMs = System.currentTimeMillis()
+                            )
+                        )
+                    }
+                } catch (e: Exception) {
+                    Log.w("OnboardingWizardScreen", "Updating child profile email: ${e.message}")
+                }
+            }
 
             // Create Google Classroom vault folder on Google Drive immediately on school account selection
             scope.launch {
@@ -1043,6 +1067,26 @@ fun OnboardingWizardScreen(
 
                                 // 1. Save profile & vault preferences locally immediately (< 10ms)
                                 DriveVaultManager.saveVaultPrefs(context, driveAccountEmail, selectedYear, cleanChildName)
+                                scope.launch(Dispatchers.IO) {
+                                    try {
+                                        val db = KidsDatabase.getInstance(context)
+                                        val childId = DriveVaultManager.currentChildVault?.childFolderId ?: "child_${cleanChildName.lowercase()}"
+                                        val existing = db.childProfileDao().getChildById(childId)
+                                        if (existing == null) {
+                                            db.childProfileDao().insert(
+                                                ChildProfileEntity(
+                                                    childId = childId,
+                                                    firstName = cleanChildName,
+                                                    academicYear = selectedYear,
+                                                    photoUri = photoUri?.toString(),
+                                                    createdAtMs = System.currentTimeMillis()
+                                                )
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w("OnboardingWizardScreen", "Pre-inserting child profile note: ${e.message}")
+                                    }
+                                }
 
                                 // 2. Optimistic instant UI transition to Step 2 (0ms lag!)
                                 currentStep = WizardStep.STEP_2_CLASSROOM
@@ -1189,6 +1233,9 @@ fun OnboardingWizardScreen(
                                                         if (!PermissionHelper.isAccessibilityGranted(context)) {
                                                             Toast.makeText(context, "Please enable K.I.D.S. Accessibility Service first", Toast.LENGTH_LONG).show()
                                                             PermissionHelper.openAccessibilitySettings(context)
+                                                        } else if (enableClassroom && studentEmail.isBlank()) {
+                                                            Toast.makeText(context, "Please select the student account before starting Auto-Capture", Toast.LENGTH_LONG).show()
+                                                            launchAccountPicker(classroomAccountLauncher)
                                                         } else {
                                                             val classroomPkg = KidsAccessibilityService.CLASSROOM_PACKAGE_NAME
                                                             val launchIntent = context.packageManager.getLaunchIntentForPackage(classroomPkg)?.apply {
@@ -1197,7 +1244,29 @@ fun OnboardingWizardScreen(
                                                             if (launchIntent == null) {
                                                                 Toast.makeText(context, "Google Classroom app is not installed", Toast.LENGTH_LONG).show()
                                                             } else {
-                                                                 val effectiveChildName = childName.trim().ifBlank { "Child" }
+                                                                val effectiveChildName = childName.trim().ifBlank { "Child" }
+                                                                val effectiveChildId = DriveVaultManager.currentChildVault?.childFolderId ?: "child_${effectiveChildName.lowercase()}"
+                                                                scope.launch(Dispatchers.IO) {
+                                                                    try {
+                                                                        val db = KidsDatabase.getInstance(context)
+                                                                        val existing = db.childProfileDao().getChildById(effectiveChildId)
+                                                                        if (existing != null) {
+                                                                            db.childProfileDao().insert(existing.copy(accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() }))
+                                                                        } else {
+                                                                            db.childProfileDao().insert(
+                                                                                ChildProfileEntity(
+                                                                                    childId = effectiveChildId,
+                                                                                    firstName = effectiveChildName,
+                                                                                    academicYear = selectedYear,
+                                                                                    accountEmail = studentEmail.trim().takeIf { enableClassroom && it.isNotBlank() },
+                                                                                    createdAtMs = System.currentTimeMillis()
+                                                                                )
+                                                                            )
+                                                                        }
+                                                                    } catch (e: Exception) {
+                                                                        Log.w("OnboardingWizardScreen", "Pre-saving child for Auto-Capture: ${e.message}")
+                                                                    }
+                                                                }
                                                                 if (studentEmail.isNotBlank()) {
                                                                     scope.launch(Dispatchers.IO) {
                                                                         DriveVaultManager.provisionStep2Classroom(
@@ -1213,7 +1282,7 @@ fun OnboardingWizardScreen(
                                                                 context.startActivity(launchIntent)
                                                                 val captureIntent = Intent(KidsAccessibilityService.ACTION_START_FULL_AUTO_CAPTURE).apply {
                                                                     setPackage(context.packageName)
-                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_ID, DriveVaultManager.currentChildVault?.childFolderId ?: "child_$effectiveChildName")
+                                                                    putExtra(KidsAccessibilityService.EXTRA_CHILD_ID, effectiveChildId)
                                                                     putExtra(KidsAccessibilityService.EXTRA_CHILD_EMAIL, studentEmail.trim())
                                                                     putExtra(KidsAccessibilityService.EXTRA_CHILD_GRADE, "")
                                                                     putExtra(KidsAccessibilityService.EXTRA_CHILD_NAME, effectiveChildName)

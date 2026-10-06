@@ -172,13 +172,16 @@ class StreamManifest {
         private val GENERIC_TITLE_STOP_WORDS = setOf(
             "sheet", "sheets", "notes", "grade", "homework", "pdf", "ws", "ch", "chapter",
             "lesson", "unit", "term", "class", "answer", "key", "work", "part", "page",
-            "dear", "parents", "students", "material", "assignment", "circular", "reference"
+            "dear", "parents", "students", "material", "assignment", "circular", "reference",
+            "yesterday", "today", "tomorrow", "posted", "edited"
         )
 
         fun normalizeTitle(raw: String): String {
             return raw
                 .replace(Regex("""^(?:new\s+material|new\s+assignment|new\s+question|announcement|material|assignment)\s*:\s*""", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("""\b(?:posted\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}(?:\s*\(edited[^\)]*\))?.*""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\b(?:posted\s+|edited\s+)?(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\s+\d{1,2}(?:\s*\(edited[^\)]*\))?.*""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\b(?:posted\s+|edited\s+)?\d{1,2}\s+(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)(?:\s*\(edited[^\)]*\))?.*""", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("""\b(?:posted\s+|edited\s+)?(?:yesterday|today|tomorrow)\b.*""", RegexOption.IGNORE_CASE), "")
                 .replace(Regex("""[\r\n]+"""), " ")
                 .trim()
                 .lowercase()

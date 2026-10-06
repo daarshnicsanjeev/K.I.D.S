@@ -850,14 +850,22 @@ class KidsAccessibilityService : AccessibilityService() {
     private suspend fun resolveTargetChildAndEmail(db: KidsDatabase): Pair<ChildProfileEntity?, String?> {
         val targetChild = if (!activeTargetChildId.isNullOrBlank()) {
             db.childProfileDao().getChildById(activeTargetChildId!!)
+                ?: db.childProfileDao().getAllChildrenDirect().firstOrNull {
+                    !activeTargetChildName.isNullOrBlank() && it.firstName.equals(activeTargetChildName, ignoreCase = true)
+                }
+        } else if (!activeTargetChildName.isNullOrBlank()) {
+            db.childProfileDao().getAllChildrenDirect().firstOrNull {
+                it.firstName.equals(activeTargetChildName, ignoreCase = true)
+            }
         } else {
             db.childProfileDao().getAllChildrenDirect().firstOrNull()
         }
-        var targetEmail = activeTargetChildEmail ?: targetChild?.accountEmail
-        if (targetEmail.isNullOrBlank()) {
+        val cleanIntentEmail = activeTargetChildEmail?.trim()?.takeIf { it.isNotBlank() }
+        var targetEmail = cleanIntentEmail ?: targetChild?.accountEmail?.takeIf { it.isNotBlank() }
+        if (targetEmail.isNullOrBlank() && targetChild != null) {
             targetEmail = db.noticeDao().getAllNoticesDirect()
                 .mapNotNull { it.sender }
-                .firstOrNull { it.contains("@") && (it.contains(".school") || it.contains("caie") || it.contains("atharva")) }
+                .firstOrNull { it.contains("@") && (it.contains(".school") || it.contains("caie")) }
         }
         return Pair(targetChild, targetEmail)
     }
@@ -1552,19 +1560,34 @@ class KidsAccessibilityService : AccessibilityService() {
 
                 // In detail view: Extract details and download attachments
                 crawlerOverlay?.updateStatus("Reading Detail (${targetItem.index}/$total)...", title)
-                val detailRoot = rootInActiveWindow
+                val detailRoot = waitForSubstantiveDetailRoot(timeoutMs = 1200L)
                 var savedAttCount = 0
                 if (detailRoot != null) {
                     try {
                         val isPostMatching = validateOpenedPostMatchesTarget(detailRoot, targetItem)
                         if (!isPostMatching) {
+                            val attempts = manifest.incrementAttempt(targetItem.fingerprint)
                             CrawlerTraceLogger.log(
                                 "POST_VALIDATION_FAILED",
-                                "Opened detail post does not match target #${targetItem.index} (\"$title\"). Rejecting mis-clicked post and navigating back to stream..."
+                                "Opened detail post does not match target #${targetItem.index} (\"$title\") (Attempt $attempts/3). Rejecting mis-clicked post and navigating back to stream..."
                             )
                             performReturnToStream(detailRoot)
                             delay(600)
-                            manifest.incrementAttempt(targetItem.fingerprint)
+
+                            if (attempts >= 3) {
+                                CrawlerTraceLogger.log(
+                                    "POST_VALIDATION_LOOP_BREAKOUT",
+                                    "Target #${targetItem.index} (\"$title\") reached max validation attempts ($attempts/3). Ingesting directly from stream to break loop and preserve notice."
+                                )
+                                ingestNoticeDirect(title, fullText, fingerprint)
+                                manifest.markItemCompleted(targetItem.index)
+                                manifest.markCompleted(fingerprint)
+                                manifest.markCompleted(targetItem.fingerprint)
+                                visitedPostFingerprints.add(fingerprint)
+                                visitedPostFingerprints.add(targetItem.fingerprint)
+                                crawlerOverlay?.incrementNoticeCount()
+                                delay(300)
+                            }
                             continue
                         }
                         savedAttCount = processPostDetailAndDownload(detailRoot, title)
@@ -1675,19 +1698,32 @@ class KidsAccessibilityService : AccessibilityService() {
 
                             if (enteredDetail) {
                                 crawlerOverlay?.updateStatus("Reading Detail (${nextItem.index}/$total)...", nextItem.title)
-                                val detailRoot = rootInActiveWindow
+                                val detailRoot = waitForSubstantiveDetailRoot(timeoutMs = 1200L)
                                 var savedAttCount = 0
                                 if (detailRoot != null) {
                                     try {
                                         val isPostMatching = validateOpenedPostMatchesTarget(detailRoot, nextItem)
                                         if (!isPostMatching) {
+                                            val attempts = manifest.incrementAttempt(nextItem.fingerprint)
                                             CrawlerTraceLogger.log(
                                                 "POST_VALIDATION_FAILED",
-                                                "Candidate detail post does not match target #${nextItem.index} (\"${nextItem.title}\"). Rejecting mis-clicked post and navigating back to stream..."
+                                                "Candidate detail post does not match target #${nextItem.index} (\"${nextItem.title}\") (Attempt $attempts/3). Rejecting mis-clicked post and navigating back to stream..."
                                             )
                                             performReturnToStream(detailRoot)
                                             delay(600)
-                                            manifest.incrementAttempt(nextItem.fingerprint)
+
+                                            if (attempts >= 3) {
+                                                CrawlerTraceLogger.log(
+                                                    "POST_VALIDATION_LOOP_BREAKOUT",
+                                                    "Candidate target #${nextItem.index} (\"${nextItem.title}\") reached max validation attempts ($attempts/3). Ingesting directly from stream to break loop."
+                                                )
+                                                ingestNoticeDirect(nextItem.title, nextItem.previewText, nextItem.fingerprint)
+                                                manifest.markItemCompleted(nextItem.index)
+                                                manifest.markCompleted(nextItem.fingerprint)
+                                                visitedPostFingerprints.add(nextItem.fingerprint)
+                                                crawlerOverlay?.incrementNoticeCount()
+                                                delay(300)
+                                            }
                                             continue
                                         }
                                         savedAttCount = processPostDetailAndDownload(detailRoot, nextItem.title)
@@ -4115,7 +4151,8 @@ class KidsAccessibilityService : AccessibilityService() {
             "ch", "chapter", "lesson", "unit", "term", "class", "answer",
             "key", "work", "part", "page", "dear", "parents", "students",
             "reference", "circular", "date", "aug", "jul", "jun", "sep",
-            "oct", "nov", "dec", "jan", "feb", "mar", "apr", "may"
+            "oct", "nov", "dec", "jan", "feb", "mar", "apr", "may",
+            "yesterday", "today", "tomorrow", "posted", "edited"
         )
         return stopWords.contains(token.lowercase().trim())
     }
@@ -4134,8 +4171,8 @@ class KidsAccessibilityService : AccessibilityService() {
             return true
         }
 
-        // 2. Target title candidate in detail view
-        val detailTitleCandidate = detailTexts.firstOrNull { item ->
+        // 2. Check all substantive text candidates in detail view
+        val substantiveDetailTexts = detailTexts.filter { item ->
             val lower = item.trim().lowercase()
             !excludedChrome.contains(lower) &&
                     !excludedChrome.any { lower.startsWith(it) } &&
@@ -4145,13 +4182,16 @@ class KidsAccessibilityService : AccessibilityService() {
                     !lower.startsWith("back to ") &&
                     item.trim().length > 3
         }
-        val normDetailTitle = detailTitleCandidate?.let { StreamManifest.normalizeTitle(it) }.orEmpty()
-        if (normDetailTitle.isNotBlank() && (
-            normDetailTitle == normTargetTitle ||
-            (normDetailTitle.length >= 6 && normTargetTitle.contains(normDetailTitle)) ||
-            (normTargetTitle.length >= 6 && normDetailTitle.contains(normTargetTitle))
-        )) {
-            return true
+
+        for (item in substantiveDetailTexts) {
+            val normDetailTitle = StreamManifest.normalizeTitle(item)
+            if (normDetailTitle.isNotBlank() && (
+                normDetailTitle == normTargetTitle ||
+                (normDetailTitle.length >= 6 && normTargetTitle.contains(normDetailTitle)) ||
+                (normTargetTitle.length >= 6 && normDetailTitle.contains(normTargetTitle))
+            )) {
+                return true
+            }
         }
 
         // 3. Substantive token overlap (excluding educational stop words)
@@ -4172,6 +4212,10 @@ class KidsAccessibilityService : AccessibilityService() {
             return true
         }
 
+        CrawlerTraceLogger.log(
+            "POST_VALIDATION_DEBUG",
+            "Target #${targetItem.index} mismatch debug: normTarget=\"$normTargetTitle\", substantive=${substantiveDetailTexts.take(3)}, detailSample=\"${combinedDetail.take(120)}\""
+        )
         return false
     }
 
@@ -4721,6 +4765,35 @@ class KidsAccessibilityService : AccessibilityService() {
         val exists = btn != null
         btn?.recycle()
         return exists
+    }
+
+    private suspend fun waitForSubstantiveDetailRoot(timeoutMs: Long = 1200L): AccessibilityNodeInfo? {
+        val startTime = System.currentTimeMillis()
+        while (serviceScope.isActive && (System.currentTimeMillis() - startTime) < timeoutMs) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                if (isPostDetailView(root)) {
+                    val texts = mutableListOf<String>()
+                    collectQuickText(root, texts)
+                    val substantive = texts.filter { text ->
+                        val lower = text.trim().lowercase()
+                        !excludedChrome.contains(lower) &&
+                                !excludedChrome.any { lower.startsWith(it) } &&
+                                !lower.startsWith("tab ") &&
+                                !lower.startsWith("add class comment") &&
+                                !lower.contains("class comments") &&
+                                !lower.startsWith("back to ") &&
+                                text.trim().length > 3
+                    }
+                    if (substantive.isNotEmpty()) {
+                        return root
+                    }
+                }
+                root.recycle()
+            }
+            delay(150L)
+        }
+        return rootInActiveWindow
     }
 
     private fun findNavigateUpButton(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {

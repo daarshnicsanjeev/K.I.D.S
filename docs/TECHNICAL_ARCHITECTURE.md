@@ -2396,10 +2396,11 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
    - **Same-Day Occurrence Disambiguation (`surveyVisibleCards`):**
      Tracks on-screen card occurrences (`seenCardsInScreen`) in Pass 1. When teachers post multiple announcements or resources on the exact same date (e.g. PPT presentation + worksheet), distinct occurrences receive deterministic unique fingerprints (`${baseFp}|occ_$occurrence`), preventing duplicate deduplication drops.
    - **Post-Open Validation Gate (`validateOpenedPostMatchesTarget`):**
-     Whenever Pass 2 taps a card to open its detail view, it immediately validates the opened screen before extracting body or registering attachments:
-     1. Extracts detail header and body text.
-     2. Compares against `targetItem` in `StreamManifest` using substantive containment or $\ge 60\%$ clean token overlap (excluding stop words).
-     3. If an adjacent circular or unrelated card was opened due to list layout shift, the gate rejects the screen, logs a diagnostic warning, calls `performReturnToStream`, and re-targets the authentic card.
+     Whenever Pass 2 taps a card to open its detail view, it validates the opened screen before extracting body or registering attachments:
+     1. **Adaptive Substantive Settling (`waitForSubstantiveDetailRoot`):** Rather than evaluating `rootInActiveWindow` immediately during fragment transition animations (which can execute in $\le 60\text{ms}$ before detail views bind), the crawler adaptively polls up to 1,200ms (150ms intervals) until substantive content (post title, body, or attachments) settles.
+     2. **Relative Date Stripping (`StreamManifest.normalizeTitle`):** Robustly strips relative timestamps (`"yesterday"`, `"today"`, `"tomorrow"`, `"posted"`, `"edited"`) and inverted date patterns (`"5 Oct"`) from stream card headers to eliminate date leakage into post titles and token sets.
+     3. **Multi-Candidate Detail Inspection:** Inspects all substantive text views across the detail screen rather than solely the first toolbar element.
+     4. **Clamped Retries & Loop Breakout Fallback:** If an adjacent card was opened due to list layout shift, the gate rejects the screen, navigates back to the stream, and increments the attempt count. If attempts reach 3, the crawler automatically triggers loop breakout: it ingests the notice directly from the stream card to preserve content, marks the item completed, and advances monotonically, completely preventing infinite loops.
    - **Monotonic Directional Seek Recovery:**
      Fixes auto-recovery oscillation loops by tracking direction flips (`directionChanges`). If the seeker alternates between backward and forward seeks $\ge 3$ times, it forces forward progression towards the target, clamps max seek retries to 4, and prevents infinite bouncing when on-screen card indices are indeterminate.
    - **Pre-Flight Classroom Root Navigation & OneGoogle Multi-Account Verification (`ensureClassroomAccount`):**

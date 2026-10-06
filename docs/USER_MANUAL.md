@@ -1238,6 +1238,9 @@ For advanced diagnostics, continuous integration (CI) automation, and automated 
 **Q: Can I set up multiple children in different schools?**
 *A: Yes! After completing the setup for Child #1, tap **Add Another Child** on the Children Grid Dashboard. Each child gets their own isolated Google Drive vault folder and tailored channel configurations.*
 
+**Q: How does K.I.D.S. switch accounts between siblings in Google Classroom?**
+*A: When you configure each child in Step 2, you select their school account from Android's system account picker (by default, it remains blank until chosen to avoid accidental mix-ups). When 1-Click Auto-Capture runs, K.I.D.S. automatically checks the active Google Classroom account on device. If Classroom is signed into a sibling's account or rests inside another class, the assistant navigates to the root Classes list, taps the account avatar disc, switches to the child's school email, and enters the correct class stream—completely autonomous with zero parent intervention.*
+
 **Q: What happens if I lose internet connection?**
 *A: All captured notices and local files are safely stored in your smartphone's encrypted offline SQLite Room database. Once your device reconnects to Wi-Fi or mobile data, WorkManager automatically resumes synchronization to Google Drive.*
 
