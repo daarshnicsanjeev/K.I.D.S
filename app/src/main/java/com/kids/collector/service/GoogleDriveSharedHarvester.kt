@@ -383,7 +383,8 @@ class GoogleDriveSharedHarvester(
     /**
      * Brings Google Drive to the foreground using an explicit system intent with RESET_TASK_IF_NEEDED.
      */
-    private fun bringDriveToForeground(): Boolean {
+    private suspend fun bringDriveToForeground(): Boolean {
+        dismissDanglingShareSheetIfVisible()
         return try {
             var launchIntent = context.packageManager.getLaunchIntentForPackage(DRIVE_PACKAGE_NAME)
             if (launchIntent == null) {
@@ -2134,8 +2135,22 @@ class GoogleDriveSharedHarvester(
         return successCount
     }
 
+    private suspend fun dismissDanglingShareSheetIfVisible(): Boolean {
+        val root = rootInActiveWindowProvider()
+        val pkg = root?.packageName?.toString() ?: ""
+        root?.recycle()
+        if (pkg.contains("intentresolver") || pkg.contains("chooser")) {
+            CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dismissing dangling system share sheet ($pkg) via Back action...")
+            dispatchBackAction()
+            delay(500L)
+            return true
+        }
+        return false
+    }
+
     private suspend fun dismissMultiSelectMode() {
         delay(300L)
+        dismissDanglingShareSheetIfVisible()
         val root = rootInActiveWindowProvider() ?: return
         val texts = mutableListOf<String>()
         collectAllChildDescriptions(root, texts)
@@ -2295,6 +2310,11 @@ class GoogleDriveSharedHarvester(
                 delay(300L)
                 return
             }
+            if (pkg.contains("intentresolver") || pkg.contains("chooser")) {
+                CrawlerTraceLogger.log("DRIVE_HARVESTER", "Dangling share sheet detected while waiting for Drive. Dismissing via Back...")
+                dispatchBackAction()
+                delay(400L)
+            }
             delay(250L)
         }
     }
@@ -2339,6 +2359,7 @@ class GoogleDriveSharedHarvester(
         val dispatched = selectKidsInChooserAction()
         if (!dispatched) {
             CrawlerTraceLogger.log("DRIVE_HARVESTER", "Failed to select K.I.D.S. in system chooser.")
+            dismissDanglingShareSheetIfVisible()
             return false
         }
 

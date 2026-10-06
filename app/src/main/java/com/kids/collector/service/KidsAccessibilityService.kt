@@ -2621,8 +2621,9 @@ class KidsAccessibilityService : AccessibilityService() {
         // Check if Google Drive's collaborator invite screen ("Add people") appeared instead of the system chooser
         val activeRoot = rootInActiveWindow
         if (activeRoot != null) {
-            // Guard: If already back in Post Detail view, do nothing and return immediately!
-            if (isPostDetailView(activeRoot)) {
+            val activePkg = activeRoot.packageName?.toString() ?: ""
+            // Guard: If already back in Post Detail view inside Classroom, do nothing and return immediately!
+            if (activePkg.contains(CLASSROOM_PACKAGE_NAME) && isPostDetailView(activeRoot)) {
                 activeRoot.recycle()
                 return false
             }
@@ -2649,7 +2650,8 @@ class KidsAccessibilityService : AccessibilityService() {
         if (target == null) {
             val checkDetail = rootInActiveWindow
             if (checkDetail != null) {
-                val inDetail = isPostDetailView(checkDetail)
+                val checkPkg = checkDetail.packageName?.toString() ?: ""
+                val inDetail = checkPkg.contains(CLASSROOM_PACKAGE_NAME) && isPostDetailView(checkDetail)
                 checkDetail.recycle()
                 if (inDetail) return false
             }
@@ -4296,6 +4298,12 @@ class KidsAccessibilityService : AccessibilityService() {
     }
 
     private fun isPostDetailView(rootNode: AccessibilityNodeInfo): Boolean {
+        // Enforce strict package verification: Only Google Classroom screens can be Post Detail views
+        val packageName = rootNode.packageName?.toString() ?: ""
+        if (!packageName.contains(CLASSROOM_PACKAGE_NAME)) {
+            return false
+        }
+
         val textList = mutableListOf<String>()
         collectQuickText(rootNode, textList)
         val combined = textList.joinToString(" ").lowercase()

@@ -3238,17 +3238,21 @@ Once Classroom metadata extraction finishes, if any attachments remain in `PENDI
    - `ShareTargetActivity` receives the batch, disambiguates each file by matching its `last_modified` timestamp closest to `NoticeEntity.timestampMs`, stages binaries into `vault_attachments/`, and triggers `DriveSyncWorker`.
 10. **Material 3 / Compose Resilient Tab & Avatar Acquisition:**
     - Resolves Google Drive's non-clickable Material 3 bottom navigation tabs (`Shared`, `Files`, `Home`) and OneGoogle account avatar via fallback physical tap dispatch at center bounds when Compose accessibility click is unhandled.
-11. **Dual-Engine Continuous List Scrolling:**
+11. **System Chooser Non-Classroom Package Guard & Dangling Share Sheet Recovery:**
+    - `isPostDetailView()` enforces strict package verification (`packageName.contains("com.google.android.apps.classroom")`). This guarantees that Google Drive multi-selection action bars (which feature a Close / 'X' button and lack Classroom bottom tabs) are never falsely classified as Classroom Post Detail screens.
+    - `selectKidsInSystemChooser()` restricts Post Detail bail-out exclusively to the Classroom package, eliminating premature aborts during Google Drive batch dispatches.
+    - If an Android system share sheet (`com.android.intentresolver`) lingers after dispatch or on chooser failure, `dismissDanglingShareSheetIfVisible()` immediately dispatches `GLOBAL_ACTION_BACK`, ensuring Google Drive promptly regains foreground focus and continues uninterrupted multi-page harvesting.
+12. **Dual-Engine Continuous List Scrolling:**
     - Dynamically targets the internal `scrollList` / `RecyclerView` container.
     - **Engine 1 (Native):** Directly dispatches `AccessibilityNodeInfo.ACTION_SCROLL_FORWARD` to the list container.
     - **Engine 2 (Physical Drag Fallback):** Dispatches a deliberate 450ms physical gesture drag (`Y: 65% -> 22%`), passing Android's touch slop threshold with 100% completion across Compose and View hierarchies.
-12. **Folder Return State Reset:**
+13. **Folder Return State Reset:**
     - Resets `lastVisibleTitles = emptyList()` and `consecutiveStaticPages = 0` whenever returning from nested subfolders, preventing false exit detection and enabling uninterrupted multi-page harvesting.
-13. **Bit-for-Bit Content-Aware Cloud Deduplication (`GoogleDriveClient.uploadAttachment`):**
+14. **Bit-for-Bit Content-Aware Cloud Deduplication (`GoogleDriveClient.uploadAttachment`):**
     - Verifies both filename and cryptographic MD5 content checksum (`driveFile.md5Checksum` and byte size) against Google Drive.
     - If filename and content match $\rightarrow$ Reuses existing Google Drive `fileId` ($0 wasted storage and bandwidth).
     - If filename matches but content differs across notices (e.g. generic `Worksheet.pdf` with different homework questions) $\rightarrow$ Automatically disambiguates filename with deterministic short content hash (`Worksheet (a1b2c3).pdf`), guaranteeing zero collision, zero overwriting, and 100% preservation of all student assignments.
-14. **Autonomous Pass 3 Auto-Recovery Pipeline (`performDriveAutoRecoveryIfDisplaced`):**
+15. **Autonomous Pass 3 Auto-Recovery Pipeline (`performDriveAutoRecoveryIfDisplaced`):**
     - Comprehensive 8-point self-healing engine dedicated to Google Drive harvesting:
       - **Drive Launch Auto-Recovery:** Retries up to 3 times, foregrounding Classroom, handling app choosers, and falling back to direct launcher intent.
       - **Foreign Package / External App Displacement Recovery:** Detects displacement to external applications (YouTube, web browsers, media viewers) and dispatches Back gestures to return to Drive. YouTube and MIUI system UI overlays are registered as transient surfaces in `isTransientOrSystemPackage`, preventing accidental session terminations.
