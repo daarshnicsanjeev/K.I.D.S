@@ -2402,6 +2402,12 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
      3. If an adjacent circular or unrelated card was opened due to list layout shift, the gate rejects the screen, logs a diagnostic warning, calls `performReturnToStream`, and re-targets the authentic card.
    - **Monotonic Directional Seek Recovery:**
      Fixes auto-recovery oscillation loops by tracking direction flips (`directionChanges`). If the seeker alternates between backward and forward seeks $\ge 3$ times, it forces forward progression towards the target, clamps max seek retries to 4, and prevents infinite bouncing when on-screen card indices are indeterminate.
+   - **Pre-Flight Classroom Root Navigation & OneGoogle Multi-Account Verification (`ensureClassroomAccount`):**
+     In multi-child environments, siblings frequently share devices with distinct school accounts:
+     1. *Classes List Navigation (`ensureAtClassroomClassesList`):* In Google Classroom, the OneGoogle account avatar disc is exclusively hosted on the root Classes List screen (and never inside individual course feeds or post detail views). If Classroom is resting inside a class, the service automatically presses Navigate Up (`<-`) to return to the Classes List home screen.
+     2. *Avatar Polling & Token Normalization:* Polls up to 3,000ms for the OneGoogle toolbar avatar to inflate, checking `selected_account_disc`, `og_apd_ring_view`, `og_apd_internal_image_view`, `account_avatar`, and `google account` descriptors.
+     3. *Dialog Navigation & Swiping:* If the active avatar does not match `targetEmail`, it taps the avatar, waits up to 5,000ms for the OneGoogle sheet, and swipes vertically through the account list (up to 4 attempts) to discover `targetEmail`.
+     4. *Post-Switch Validation & Hard Halt:* Validates the newly loaded avatar on the refreshed Classes List. If the account cannot be confirmed, it immediately halts capture with an `"Account Mismatch"` status pill, preventing accidental cross-account stream ingestion.
 
 ---
 

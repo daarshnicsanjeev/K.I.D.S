@@ -1089,14 +1089,24 @@ class KidsAccessibilityService : AccessibilityService() {
         // PRE-FLIGHT 1: Verify Classroom account matches target child
         // =========================================================================
         if (!targetEmail.isNullOrBlank()) {
-            ensureClassroomAccount(targetEmail)
+            val isAccountVerified = ensureClassroomAccount(targetEmail)
+            if (!isAccountVerified) {
+                CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Cannot verify target Classroom account ($targetEmail). Halting capture to prevent crawling wrong account.")
+                crawlerOverlay?.updateStatus("Account Mismatch", "Expected $targetEmail")
+                return
+            }
             delay(1000)
         }
 
         // =========================================================================
         // PRE-FLIGHT 2: Automatically enter Class Stream if on Classes List screen
         // =========================================================================
-        ensureInClassStream(activeCourseTitle, activeCourseGrade)
+        val isStreamEntered = ensureInClassStream(activeCourseTitle, activeCourseGrade)
+        if (!isStreamEntered) {
+            CrawlerTraceLogger.log("STREAM_SURVEY", "Could not enter class stream for grade '${activeCourseGrade ?: "All"}'. Halting capture.")
+            crawlerOverlay?.updateStatus("Class Not Found", "Check course enrollment")
+            return
+        }
         delay(800)
 
         // =========================================================================
@@ -3245,12 +3255,22 @@ class KidsAccessibilityService : AccessibilityService() {
         val text = root.text?.toString()?.lowercase(Locale.US) ?: ""
         val viewId = root.viewIdResourceName?.lowercase(Locale.US) ?: ""
 
-        val isAvatar = desc.contains("google account") || desc.contains("signed in as") ||
-                desc.contains("account and settings") || viewId.contains("og_apd_ring_view") ||
-                viewId.contains("account_avatar")
+        val isAvatar = (desc.contains("google account") || desc.contains("signed in as") ||
+                desc.contains("account and settings") || viewId.contains("selected_account_disc") ||
+                viewId.contains("og_apd_ring_view") || viewId.contains("og_apd_internal_image_view") ||
+                viewId.contains("og_header_avatar") || viewId.contains("account_avatar")) &&
+                !desc.contains("collapse account list") && !desc.contains("account list expanded")
 
         if (isAvatar) {
-            return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+            val r = Rect()
+            root.getBoundsInScreen(r)
+            val dm = resources.displayMetrics
+            val minSize = (dm.density * 24).toInt()
+            val maxSize = (dm.density * 96).toInt()
+            val maxTop = (dm.heightPixels * 0.25f).toInt()
+            if (r.width() in minSize..maxSize && r.height() in minSize..maxSize && r.top < maxTop) {
+                return if (root.isClickable) AccessibilityNodeInfo.obtain(root) else findClickableAncestor(root)
+            }
         }
 
         for (i in 0 until root.childCount) {
@@ -3263,6 +3283,95 @@ class KidsAccessibilityService : AccessibilityService() {
             child.recycle()
         }
         return null
+    }
+
+    private suspend fun ensureAtClassroomClassesList(): Boolean {
+        var attempts = 0
+        while (serviceScope.isActive && attempts < 5) {
+            val root = rootInActiveWindow ?: break
+            val isClasses = isClassesListScreen(root)
+            val navUp = findNavigateUpButton(root)
+            val isDetail = isPostDetailView(root)
+            val isStream = isStreamOrClassworkView(root)
+            root.recycle()
+
+            if (isClasses) {
+                return true
+            }
+
+            if (isDetail || isStream || navUp != null) {
+                CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Classroom is inside class stream or detail view. Navigating up to Classes list...")
+                if (navUp != null) {
+                    val clicked = navUp.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    navUp.recycle()
+                    if (!clicked) {
+                        performGlobalAction(GLOBAL_ACTION_BACK)
+                    }
+                } else {
+                    performGlobalAction(GLOBAL_ACTION_BACK)
+                }
+                delay(800L)
+            } else {
+                break
+            }
+            attempts++
+        }
+        return false
+    }
+
+    private fun findAccountRowInDialog(root: AccessibilityNodeInfo, targetEmail: String): AccessibilityNodeInfo? {
+        val cleanTarget = targetEmail.trim().lowercase(Locale.US)
+        val userPrefix = if (cleanTarget.contains("@")) cleanTarget.substringBefore('@') else cleanTarget
+
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectAvailableAccountRows(root, candidates)
+
+        for (row in candidates) {
+            val texts = mutableListOf<String>()
+            collectNodeTexts(row, texts)
+            val combined = texts.joinToString(" ").lowercase(Locale.US)
+            val matchesTarget = combined.contains(cleanTarget) ||
+                    (userPrefix.length >= 3 && combined.contains(userPrefix))
+
+            if (matchesTarget) {
+                for (other in candidates) {
+                    if (other != row) other.recycle()
+                }
+                return row
+            }
+        }
+
+        for (c in candidates) {
+            c.recycle()
+        }
+        return null
+    }
+
+    private fun collectAvailableAccountRows(node: AccessibilityNodeInfo, outList: MutableList<AccessibilityNodeInfo>) {
+        val viewId = node.viewIdResourceName?.lowercase(Locale.US) ?: ""
+        if (viewId.contains("og_bento_available_account_root") || viewId.contains("available_account")) {
+            outList.add(AccessibilityNodeInfo.obtain(node))
+            return
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectAvailableAccountRows(child, outList)
+            child.recycle()
+        }
+    }
+
+    private fun collectNodeTexts(node: AccessibilityNodeInfo, outList: MutableList<String>) {
+        val text = node.text?.toString()?.trim() ?: ""
+        val desc = node.contentDescription?.toString()?.trim() ?: ""
+        if (text.isNotBlank()) outList.add(text)
+        if (desc.isNotBlank()) outList.add(desc)
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            collectNodeTexts(child, outList)
+            child.recycle()
+        }
     }
 
     private fun findNodeContainingText(node: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
@@ -3287,59 +3396,155 @@ class KidsAccessibilityService : AccessibilityService() {
 
     private suspend fun ensureClassroomAccount(targetEmail: String): Boolean {
         val cleanTarget = targetEmail.trim().lowercase(Locale.US)
-        val root = rootInActiveWindow ?: return false
-        val avatarNode = findAccountAvatarNode(root)
+        CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Verifying Google Classroom active account for target: $cleanTarget")
+        crawlerOverlay?.updateStatus("Verifying Account...", cleanTarget)
+
+        // 1. Ensure Classroom is at the root Classes List screen (where the OneGoogle avatar exists)
+        ensureAtClassroomClassesList()
+
+        // 2. Poll for the avatar node with retries (allow top bar to inflate)
+        var avatarNode: AccessibilityNodeInfo? = null
+        for (attempt in 0..5) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                avatarNode = findAccountAvatarNode(root)
+                root.recycle()
+            }
+            if (avatarNode != null) break
+            delay(500L)
+        }
+
         if (avatarNode == null) {
-            root.recycle()
-            return true
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Warning: Classroom account avatar not visible on screen after polling. Cannot verify account.")
+            return false
         }
 
         val avatarDesc = avatarNode.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
         val avatarText = avatarNode.text?.toString()?.lowercase(Locale.US) ?: ""
 
         if (avatarDesc.contains(cleanTarget) || avatarText.contains(cleanTarget)) {
-            CrawlerTraceLogger.log("ACCOUNT_VERIFY", "Classroom account verified: $cleanTarget")
+            CrawlerTraceLogger.log("ACCOUNT_VERIFY", "✓ Classroom account verified: $cleanTarget")
+            crawlerOverlay?.updateStatus("Account Verified", "Active: $cleanTarget")
             avatarNode.recycle()
-            root.recycle()
             return true
         }
 
         CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Classroom account is not $cleanTarget (found: \"$avatarDesc\"). Switching...")
         crawlerOverlay?.updateStatus("Switching Account...", "Selecting $cleanTarget in Classroom")
 
-        avatarNode.performVerifiedClick("Classroom Account Avatar")
+        // 3. Click avatar disc to open OneGoogle account picker
+        val clickedAvatar = avatarNode.performVerifiedClick("Classroom Account Avatar")
         avatarNode.recycle()
-        root.recycle()
-
-        delay(800L)
-        var accountSwitched = false
-        val dialogAppeared = waitForCondition(4000L, 250L) {
-            val dialogRoot = rootInActiveWindow ?: return@waitForCondition false
-            val hasNode = findNodeContainingText(dialogRoot, cleanTarget) != null
-            dialogRoot.recycle()
-            hasNode
+        if (!clickedAvatar) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Could not click Classroom account avatar disc.")
+            return false
         }
 
-        if (dialogAppeared) {
+        // 4. Wait for OneGoogle bottom sheet/dialog to appear
+        val dialogAppeared = waitForCondition(5000L, 250L) {
+            val dialogRoot = rootInActiveWindow ?: return@waitForCondition false
+            val hasSheet = findNodeContainingText(dialogRoot, "manage accounts") != null ||
+                    findNodeContainingText(dialogRoot, "add another account") != null ||
+                    findNodeContainingText(dialogRoot, "google account") != null ||
+                    findNodeContainingText(dialogRoot, cleanTarget) != null
+            dialogRoot.recycle()
+            hasSheet
+        }
+
+        if (!dialogAppeared) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Classroom account picker dialog did not appear after tapping avatar.")
+            return false
+        }
+
+        delay(600L)
+
+        // 5. Search for target account with scrolling support (up to 4 swipe attempts)
+        var accountSwitched = false
+        for (attempt in 0..4) {
             val dialogRoot = rootInActiveWindow
             if (dialogRoot != null) {
-                val targetNode = findNodeContainingText(dialogRoot, cleanTarget)
-                if (targetNode != null) {
-                    accountSwitched = targetNode.performVerifiedClick("Account Entry $cleanTarget")
-                    targetNode.recycle()
+                val targetRow = findAccountRowInDialog(dialogRoot, cleanTarget) ?: findNodeContainingText(dialogRoot, cleanTarget)
+                if (targetRow != null) {
+                    val rowClickable = if (targetRow.isClickable) targetRow else (findClickableAncestor(targetRow) ?: targetRow)
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Found Classroom account entry for $cleanTarget. Clicking...")
+                    accountSwitched = rowClickable.performVerifiedClick("Account Entry $cleanTarget")
+                    if (rowClickable != targetRow) rowClickable.recycle()
+                    targetRow.recycle()
+                    dialogRoot.recycle()
+                    break
+                }
+
+                // If not visible on screen, scroll down in the accounts bottom sheet
+                val sheetBounds = Rect()
+                val scrollableSheet = findScrollableNode(dialogRoot)
+                if (scrollableSheet != null) {
+                    scrollableSheet.getBoundsInScreen(sheetBounds)
+                    scrollableSheet.recycle()
+                } else {
+                    dialogRoot.getBoundsInScreen(sheetBounds)
                 }
                 dialogRoot.recycle()
+
+                if (attempt < 4) {
+                    CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not visible on attempt ${attempt + 1}. Swiping up in account list...")
+                    val dm = resources.displayMetrics
+                    val swipeX = if (sheetBounds.width() > 0) sheetBounds.centerX().toFloat() else (dm.widthPixels / 2f)
+                    val startY = if (sheetBounds.height() > 0) (sheetBounds.top + sheetBounds.height() * 0.80f) else (dm.heightPixels * 0.75f)
+                    val endY = if (sheetBounds.height() > 0) (sheetBounds.top + sheetBounds.height() * 0.25f) else (dm.heightPixels * 0.35f)
+                    dispatchSwipe(swipeX, startY, swipeX, endY, 350L)
+                    delay(800L)
+                }
             }
         }
 
-        if (accountSwitched) {
-            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Successfully switched Classroom account to $cleanTarget")
-            delay(1500L)
-            return true
-        } else {
-            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in Classroom account picker.")
+        if (!accountSwitched) {
+            CrawlerTraceLogger.log("ACCOUNT_SWITCH", "Target account $cleanTarget not found in Classroom account list.")
+            performGlobalAction(GLOBAL_ACTION_BACK)
+            delay(500L)
             return false
         }
+
+        // 6. Wait for dialog to dismiss and Classroom to reload its Classes list
+        CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "Validating Classroom account switch to $cleanTarget...")
+        crawlerOverlay?.updateStatus("Validating Account...", cleanTarget)
+
+        waitForCondition(6000L, 300L) {
+            val root = rootInActiveWindow ?: return@waitForCondition true
+            val hasSheet = findNodeContainingText(root, "manage accounts") != null ||
+                    findNodeContainingText(root, "add another account") != null
+            root.recycle()
+            !hasSheet
+        }
+        delay(1500L)
+
+        // 7. Rigorous Post-Switch Avatar Validation
+        var validatedAvatar: AccessibilityNodeInfo? = null
+        for (checkAttempt in 0..2) {
+            val root = rootInActiveWindow
+            if (root != null) {
+                validatedAvatar = findAccountAvatarNode(root)
+                root.recycle()
+            }
+            if (validatedAvatar != null) break
+            delay(600L)
+        }
+
+        if (validatedAvatar != null) {
+            val newDesc = validatedAvatar.contentDescription?.toString()?.lowercase(Locale.US) ?: ""
+            val newText = validatedAvatar.text?.toString()?.lowercase(Locale.US) ?: ""
+            validatedAvatar.recycle()
+            if (newDesc.contains(cleanTarget) || newText.contains(cleanTarget)) {
+                CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✓ Classroom account validation PASSED: Successfully switched to $cleanTarget!")
+                crawlerOverlay?.updateStatus("Account Verified", "Active: $cleanTarget")
+                return true
+            } else {
+                CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✗ Classroom account validation FAILED: Active account is \"$newDesc\", expected $cleanTarget.")
+                return false
+            }
+        }
+
+        CrawlerTraceLogger.log("ACCOUNT_VALIDATION", "✓ Classroom account switch completed for $cleanTarget (avatar reloading).")
+        return true
     }
 
     private suspend fun dispatchSwipe(startX: Float, startY: Float, endX: Float, endY: Float, durationMs: Long = 350): Boolean {

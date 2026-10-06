@@ -580,11 +580,14 @@ In everyday use, parents don't need to manually switch apps, hunt for class card
 1. **Tap `▶ 1-Click Auto-Capture` on Child Card:**
    - On the K.I.D.S. Vault Dashboard, each child profile features a dedicated **"▶ 1-Click Auto-Capture"** button.
    - Tapping this button activates the accessibility engine and automatically foregrounds the **Google Classroom** app.
-2. **Autonomous Classes List Navigation (`ensureInClassStream`):**
-   - If Google Classroom launches onto the **Classes List screen** (displaying all enrolled class cards and course banners), K.I.D.S. automatically seeks the child's class card matching their grade or course name (`findCourseCardInClassesList`).
-   - Automatically taps the card in the safe center area (avoiding the 3-dots card menu) and navigates into the class Stream feed hands-free.
-3. **Automated Account Switching (`ensureClassroomAccount`):**
-   - Inspects the OneGoogle avatar in Google Classroom. If the active account does not match the child's school email, K.I.D.S. switches to the school profile automatically.
+2. **Automated Account Switching & Verification (`ensureClassroomAccount`):**
+   - Before entering any class, K.I.D.S. checks Google Classroom's active profile.
+   - If Classroom is currently resting inside another class or stream feed, K.I.D.S. automatically presses Navigate Up (`<-`) to return to the root **Classes List** home screen where the OneGoogle avatar lives.
+   - It polls the top app bar for the avatar disc, verifies if the active email matches the target child, and if not, opens the OneGoogle account picker dialog.
+   - Scrolls smoothly through the account list, taps the child's account, waits for Classroom to reload its courses, and rigorously validates the new active account avatar.
+3. **Autonomous Classes List Navigation (`ensureInClassStream`):**
+   - Once on the verified Classes List screen, K.I.D.S. automatically seeks the child's course card matching their grade or course name (`findCourseCardInClassesList`).
+   - Automatically taps the card in the safe center area (avoiding the 3-dots card menu) and navigates into the child's class Stream feed hands-free.
 4. **Seamless Two-Pass Stream Sweep & Google Drive Harvest:**
    - Executes the pre-flight top alignment, Pass 1 survey, and Pass 2 bottom-to-top fast metadata sweep.
    - Automatically pivots to Google Drive, forces List layout, verifies "Date shared" descending sort, filters out previous academic years, and batch-shares attachments.

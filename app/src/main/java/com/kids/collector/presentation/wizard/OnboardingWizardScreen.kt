@@ -272,7 +272,7 @@ fun OnboardingWizardScreen(
     // Step 2 State (Classroom: System Account Picker, No Typing, No Auto Rules)
     val savedStudentEmail = remember { prefs.getString("wizard_student_email", "") ?: "" }
     var enableClassroom by rememberSaveable { mutableStateOf(true) }
-    var studentEmail by rememberSaveable { mutableStateOf(savedStudentEmail) }
+    var studentEmail by rememberSaveable { mutableStateOf(if (isNewChildSession) "" else savedStudentEmail) }
 
     LaunchedEffect(studentEmail) {
         if (studentEmail.isNotBlank()) {
