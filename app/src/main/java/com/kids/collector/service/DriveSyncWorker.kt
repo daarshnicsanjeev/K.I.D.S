@@ -559,12 +559,13 @@ class DriveSyncWorker(
             }
             if (allNotices.isEmpty()) return
 
-            // 1. Consolidate duplicate notices with identical normalized title under the child
-            val noticesByTitle = allNotices.groupBy {
-                it.title.trim().lowercase().replace(Regex("""\s+"""), " ")
+            // 1. Consolidate true duplicate notice stubs that share identical content hash and timestamp
+            val noticesByContentKey = allNotices.groupBy { notice ->
+                val normTitle = notice.title.trim().lowercase().replace(Regex("""\s+"""), " ")
+                "$normTitle|${notice.timestampMs}|${notice.hashSha256}"
             }
 
-            for ((_, noticesGroup) in noticesByTitle) {
+            for ((_, noticesGroup) in noticesByContentKey) {
                 if (noticesGroup.size > 1) {
                     // Pick the primary notice: prefer the one with physical/synced attachments or earlier timestamp
                     val primaryNotice = noticesGroup.maxByOrNull { notice ->

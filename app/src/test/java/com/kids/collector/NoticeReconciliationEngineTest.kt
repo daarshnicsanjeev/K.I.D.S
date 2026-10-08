@@ -172,4 +172,83 @@ class NoticeReconciliationEngineTest {
         assertThat(match2?.index).isEqualTo(2)
         assertThat(match2?.status).isEqualTo(StreamItemStatus.PENDING)
     }
+
+    @Test
+    fun `findMatchingNoticeForAttachment matches Even Number maze and Colouring to Addition and Subtraction Practice sheets`() {
+        val candidates = listOf(
+            NoticeEntity(
+                noticeId = "notice_math_practice",
+                childId = "child_1",
+                sourceApp = "com.google.android.apps.classroom",
+                category = "HOMEWORK",
+                title = "New material: Addition and Subtraction Practice sheets \nJul 1",
+                body = "Practice worksheets for addition and subtraction.",
+                sender = "Math Teacher",
+                timestampMs = 1723000000000L,
+                hashSha256 = "hash_math_practice",
+                syncStatus = "PENDING",
+                driveFileId = null,
+                attachmentCount = 0
+            ),
+            NoticeEntity(
+                noticeId = "notice_science",
+                childId = "child_1",
+                sourceApp = "com.google.android.apps.classroom",
+                category = "HOMEWORK",
+                title = "New material: Electrical Circuits - Notes \nAug 25",
+                body = "Science notes on electrical circuits.",
+                sender = "Science Teacher",
+                timestampMs = 1723000000000L,
+                hashSha256 = "hash_science",
+                syncStatus = "PENDING",
+                driveFileId = null,
+                attachmentCount = 1
+            )
+        )
+
+        val matchedMaze = NoticeReconciliationEngine.findMatchingNoticeForAttachment(
+            "Even Number maze.pdf",
+            candidates
+        )
+        assertThat(matchedMaze).isNotNull()
+        assertThat(matchedMaze?.noticeId).isEqualTo("notice_math_practice")
+
+        val matchedColouring = NoticeReconciliationEngine.findMatchingNoticeForAttachment(
+            "ODD & EVEN Colouring.pdf",
+            candidates
+        )
+        assertThat(matchedColouring).isNotNull()
+        assertThat(matchedColouring?.noticeId).isEqualTo("notice_math_practice")
+
+        val matchedGingerbread = NoticeReconciliationEngine.findMatchingNoticeForAttachment(
+            "Even Number Gingerbread Maze.pdf",
+            candidates
+        )
+        assertThat(matchedGingerbread).isNotNull()
+        assertThat(matchedGingerbread?.noticeId).isEqualTo("notice_math_practice")
+
+        // Incompatible subject check: science worksheet should not match math practice
+        val matchedScience = NoticeReconciliationEngine.findMatchingNoticeForAttachment(
+            "Electrical Circuits Notes.pdf",
+            candidates
+        )
+        assertThat(matchedScience?.noticeId).isEqualTo("notice_science")
+    }
+
+    @Test
+    fun `sanitizeAttachmentFileName preserves double dots while collapsing truncation ellipses`() {
+        // Teacher revisions with double dots must be preserved
+        assertThat(com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName("Addition Level 1..pdf"))
+            .isEqualTo("Addition Level 1..pdf")
+        assertThat(com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName("Addition Level 1.pdf"))
+            .isEqualTo("Addition Level 1.pdf")
+        assertThat(com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName("Subtraction Level 2..pdf"))
+            .isEqualTo("Subtraction Level 2..pdf")
+
+        // Truncation ellipses with 3 dots or unicode ellipsis must collapse
+        assertThat(com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName("Long Worksheets...pdf"))
+            .isEqualTo("Long Worksheets.pdf")
+        assertThat(com.kids.collector.service.KidsAccessibilityService.sanitizeAttachmentFileName("Long Worksheets…pdf"))
+            .isEqualTo("Long Worksheets.pdf")
+    }
 }

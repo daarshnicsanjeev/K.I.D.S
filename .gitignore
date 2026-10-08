@@ -68,3 +68,14 @@ scratch/
 __pycache__/
 *.py[cod]
 
+# Local database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Raw crawler stream dumps and test captures
+raw_stream_dumps/
+classroom_stream_dump_*.json
+
+

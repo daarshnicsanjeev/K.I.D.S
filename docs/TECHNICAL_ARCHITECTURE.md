@@ -2383,7 +2383,13 @@ To guarantee parent privacy, app stability, and zero system crashes, `KidsAccess
    - **Match Scoring Heuristics (`findMatchingNoticeForAttachment`):**
      1. Exact normalized title match.
      2. Clean direct substring containment ($\ge 4$ characters).
-     3. High-confidence token overlap: requires $\ge 60\%$ clean token overlap, or $\ge 2$ matching tokens with $\ge 50\%$ overlap.
+     3. High-confidence token overlap: requires $\ge 33\%$ clean token overlap, or matching curriculum domain synonyms.
+   - **Curriculum Domain Synonyms & Semantic Clusters:**
+     Maps domain-specific curriculum synonyms (e.g. arithmetic activities like `even`, `odd`, `maze`, `colouring`, `numbers` $\leftrightarrow$ `addition`, `subtraction`, `mathematics`), ensuring educational activity worksheets that do not explicitly repeat the chapter title in their filenames are correctly routed to their authentic classroom notice.
+   - **Cross-Subject Exclusion Boundary:**
+     Enforces strict subject isolation boundaries (Science vs. Math vs. Spanish vs. Hindi), preventing cross-subject misattributions (e.g. an electrical circuit worksheet will never accidentally match an arithmetic practice post).
+   - **Notice Load Balancing & Cross-Notice Rebalancing:**
+     When multiple curriculum notices exist in the same subject area, the engine boosts empty candidate notices (`attachmentCount == 0`) and autonomously rebalances generic Level worksheets from overloaded homework notices into their designated practice sheet posts.
    - **Automatic Placeholder Purge & Body Healing:**
      `reconcile(db)` automatically migrates attachments from `"Google Drive Shared Resources"` notices to their authentic parent notices, increments the parent's `attachmentCount`, and deletes empty placeholder notices. It also detects curriculum notices whose bodies were corrupted by circular mis-clicks and restores clean curriculum text.
    - **Trigger Points:**

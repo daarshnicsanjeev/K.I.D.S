@@ -78,11 +78,11 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val ATTACHMENT_WAKE_RETURN_TIMEOUT_MS = 2000L
 
         fun calculateDynamicDetailDiscoveryScrollBudget(initialAttachmentCount: Int): Int {
-            return if (initialAttachmentCount == 0) 2 else (initialAttachmentCount / 2) + 2
+            return (initialAttachmentCount + 8).coerceIn(8, 25)
         }
 
         fun calculateDynamicChipSearchScrollLimit(totalAttachmentCount: Int): Int {
-            return (totalAttachmentCount / 2) + 2
+            return (totalAttachmentCount + 6).coerceIn(8, 25)
         }
 
         fun calculateDynamicWakeViewerTimeoutMs(fileName: String): Long {
@@ -98,7 +98,7 @@ class KidsAccessibilityService : AccessibilityService() {
         fun matchesAttachmentChipText(targetFileName: String, candidateText: String): Boolean {
             val normalizedTarget = java.text.Normalizer.normalize(targetFileName, java.text.Normalizer.Form.NFC)
             val cleanTarget = normalizedTarget.replace("...", "").trim()
-            val targetBase = cleanTarget.substringBeforeLast('.').lowercase()
+            val targetBase = cleanTarget.substringBeforeLast('.').trimEnd('.').lowercase()
 
             val normalizedCandidate = java.text.Normalizer.normalize(candidateText, java.text.Normalizer.Form.NFC)
             val candidateCleaned = normalizedCandidate
@@ -166,9 +166,13 @@ class KidsAccessibilityService : AccessibilityService() {
         fun sanitizeAttachmentFileName(rawName: String): String {
             if (rawName.isBlank()) return rawName
             val trimmed = rawName.trim()
-            // Collapse multiple consecutive dots before extension (e.g. "Addition Level 1..pdf" -> "Addition Level 1.pdf")
-            val collapsedDots = trimmed.replace(Regex("""\.+(\w+)$"""), ".$1")
-            return collapsedDots.trim()
+            val normalizedSpaces = trimmed.replace(Regex("""\s+\."""), ".")
+            // Collapse truncation ellipses (3 or more consecutive dots or unicode ellipsis before extension, e.g. "Doc...pdf" -> "Doc.pdf"),
+            // while preserving legitimate teacher revisions and duplicate indicators (e.g. "Addition Level 1..pdf" must NOT collapse into "Addition Level 1.pdf").
+            val collapsedEllipsis = normalizedSpaces
+                .replace(Regex("""\.{3,}(\w+)$"""), ".$1")
+                .replace(Regex("""\u2026(\w+)$"""), ".$1")
+            return collapsedEllipsis.trim()
         }
 
         private const val APP_EXIT_DEBOUNCE_MILLIS = 3_000L
@@ -179,6 +183,10 @@ class KidsAccessibilityService : AccessibilityService() {
         private const val STREAM_TAB_FALLBACK_HORIZONTAL_RATIO = 0.16f
         private const val STREAM_TAB_FALLBACK_VERTICAL_RATIO = 0.94f
         private const val BOTTOM_NAV_BAR_MARGIN_PX = 320
+        private const val SURVEY_MAX_CONSECUTIVE_STATIC_PAGES = 10
+        private const val SURVEY_PAGINATION_RETRY_DELAY_MILLIS = 2_000L
+        private const val SURVEY_ZERO_COUNT_RETRY_DELAY_MILLIS = 700L
+        private const val SURVEY_STANDARD_STEP_DELAY_MILLIS = 450L
         const val CLASSROOM_PACKAGE_NAME = "com.google.android.apps.classroom"
         const val ACTION_START_CRAWL = "com.kids.collector.ACTION_START_CRAWL"
         const val ACTION_STOP_CRAWL = "com.kids.collector.ACTION_STOP_CRAWL"
@@ -1212,7 +1220,7 @@ class KidsAccessibilityService : AccessibilityService() {
             // Smart bottom detection:
             // Only conclude bottom if the screen is PHYSICALLY STATIC across multiple scrolls,
             // with a network pagination grace delay. Never terminate while the viewport is actively moving!
-            if (identicalScreenCount >= 5) {
+            if (identicalScreenCount >= SURVEY_MAX_CONSECUTIVE_STATIC_PAGES) {
                 // Final bottom sweep: capture any remaining cards at the physical bottom of the feed
                 val finalRoot = rootInActiveWindow
                 if (finalRoot != null) {
@@ -1230,8 +1238,18 @@ class KidsAccessibilityService : AccessibilityService() {
 
             // Controlled step scroll forward to reveal next batch without kinetic fling
             stepScrollStream(isScrollForward = true)
-            // If the screen appeared static on this swipe, give Classroom 1,200ms to fetch older posts from network
-            val postScrollDelay = if (identicalScreenCount > 0) 1200L else if (surveyZeroCount > 0) 700L else 450L
+            // If the screen appeared static on this swipe, give Classroom adaptive grace to fetch older posts from network
+            val postScrollDelay = if (identicalScreenCount > 0) {
+                CrawlerTraceLogger.log(
+                    "STREAM_SURVEY",
+                    "Static frame detected (count=$identicalScreenCount/$SURVEY_MAX_CONSECUTIVE_STATIC_PAGES). Waiting ${SURVEY_PAGINATION_RETRY_DELAY_MILLIS}ms for network pagination..."
+                )
+                SURVEY_PAGINATION_RETRY_DELAY_MILLIS
+            } else if (surveyZeroCount > 0) {
+                SURVEY_ZERO_COUNT_RETRY_DELAY_MILLIS
+            } else {
+                SURVEY_STANDARD_STEP_DELAY_MILLIS
+            }
             delay(postScrollDelay)
         }
 
@@ -1418,7 +1436,7 @@ class KidsAccessibilityService : AccessibilityService() {
                 val fullText = unvisitedCard.fullText
 
                 // If this post is already fully captured and ALL its attachments are physically verified in Drive, skip detail view!
-                if (isNoticeFullyCapturedInDb(title)) {
+                if (isNoticeFullyCapturedInDb(targetItem)) {
                     CrawlerTraceLogger.log(
                         "STREAM_SURVEY",
                         "Notice #${targetItem.index} (\"$title\") already has all attachments synced to Drive. Skipping detail view."
@@ -1590,7 +1608,7 @@ class KidsAccessibilityService : AccessibilityService() {
                             }
                             continue
                         }
-                        savedAttCount = processPostDetailAndDownload(detailRoot, title)
+                        savedAttCount = processPostDetailAndDownload(detailRoot, targetItem)
                     } catch (e: Exception) {
                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
                     } finally {
@@ -1726,7 +1744,7 @@ class KidsAccessibilityService : AccessibilityService() {
                                             }
                                             continue
                                         }
-                                        savedAttCount = processPostDetailAndDownload(detailRoot, nextItem.title)
+                                        savedAttCount = processPostDetailAndDownload(detailRoot, nextItem)
                                     } catch (e: Exception) {
                                         CrawlerTraceLogger.log("DEEP_CRAWLER", "Error extracting detail: ${e.message}")
                                     } finally {
@@ -1790,13 +1808,14 @@ class KidsAccessibilityService : AccessibilityService() {
                     if (isOscillating) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Oscillation detected around target #${nextItem.index}! Breaking oscillation by advancing forward towards older posts..."
+                            "Oscillation detected around target #${nextItem.index}! Engaging controlled micro-drag towards target..."
                         )
-                        targetAhead = true
-                        lastKnownScrollDirection = true
+                        targetAhead = (minVisibleIndex != null && nextItem.index < minVisibleIndex).not()
+                        lastKnownScrollDirection = targetAhead
                     }
 
-                    if (consecutiveTargetAttempts >= 4 || currentAttempts >= 4) {
+                    val maxRecoveryAttemptsLimit = 8
+                    if (consecutiveTargetAttempts >= maxRecoveryAttemptsLimit || currentAttempts >= maxRecoveryAttemptsLimit) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
                             "Skipping post #${nextItem.index} (\"${nextItem.title}\") after recovery attempts exceeded ($consecutiveTargetAttempts attempts)."
@@ -1815,16 +1834,26 @@ class KidsAccessibilityService : AccessibilityService() {
                         continue
                     }
 
+                    val isAdjacentCard = (minVisibleIndex != null && (minVisibleIndex - nextItem.index) in 1..2) ||
+                            (maxVisibleIndex != null && (nextItem.index - maxVisibleIndex) in 1..2) ||
+                            isOscillating
+
                     if (!targetAhead) {
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Stepping backward..."
+                            "Displaced: visible items [${minVisibleIndex}..${maxVisibleIndex}] are after target #${nextItem.index}. Stepping backward (isAdjacent=$isAdjacentCard)..."
                         )
                         crawlerOverlay?.updateStatus(
                             "Seeking Notice...",
                             "#${nextItem.index}/$total: ${nextItem.title.take(30)}"
                         )
-                        stepScrollStream(isScrollForward = false)
+                        if (isAdjacentCard && crawlerOverlay != null) {
+                            var dragDone = false
+                            crawlerOverlay?.performControlledDrag(isScrollForward = false) { dragDone = true }
+                            waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { dragDone }
+                        } else {
+                            stepScrollStream(isScrollForward = false)
+                        }
                     } else {
                         val fastForwarding = nextItem.index > 1 && (manifest.completedCount >= (nextItem.index - 1))
                         val statusTitle = if (fastForwarding) "Fast-Forwarding Synced Notices..." else "Navigating to Post..."
@@ -1832,10 +1861,16 @@ class KidsAccessibilityService : AccessibilityService() {
 
                         CrawlerTraceLogger.log(
                             "AUTO_RECOVERY",
-                            "Target #${nextItem.index} is ahead. Stepping forward (fastForwarding=$fastForwarding)..."
+                            "Target #${nextItem.index} is ahead. Stepping forward (fastForwarding=$fastForwarding, isAdjacent=$isAdjacentCard)..."
                         )
                         crawlerOverlay?.updateStatus(statusTitle, statusDetail)
-                        stepScrollStream(isScrollForward = true)
+                        if (isAdjacentCard && crawlerOverlay != null) {
+                            var dragDone = false
+                            crawlerOverlay?.performControlledDrag(isScrollForward = true) { dragDone = true }
+                            waitForCondition(timeoutMs = 1200, pollIntervalMs = 150) { dragDone }
+                        } else {
+                            stepScrollStream(isScrollForward = true)
+                        }
                     }
                     delay(300)
                 } else {
@@ -2012,7 +2047,7 @@ class KidsAccessibilityService : AccessibilityService() {
         }
     }
 
-    private suspend fun processPostDetailAndDownload(detailRoot: AccessibilityNodeInfo, fallbackTitle: String): Int {
+    private suspend fun processPostDetailAndDownload(detailRoot: AccessibilityNodeInfo, targetItem: StreamManifestItem): Int {
         val db = KidsDatabase.getInstance(applicationContext)
 
         // Dismiss soft keyboard if focused in comment box
@@ -2036,7 +2071,7 @@ class KidsAccessibilityService : AccessibilityService() {
                     !lower.startsWith("for reference") &&
                     item.trim().length > 3
         }
-        val cleanFallback = if (fallbackTitle.isNotBlank() && fallbackTitle != "Classroom Notice") fallbackTitle else null
+        val cleanFallback = if (targetItem.title.isNotBlank() && targetItem.title != "Classroom Notice") targetItem.title else null
         val title = cleanFallback ?: titleCandidate?.take(80) ?: "Classroom Notice"
         val category = classifier.classify(title, combinedText)
 
@@ -2062,18 +2097,18 @@ class KidsAccessibilityService : AccessibilityService() {
         val rawChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: savedChildName
         val targetChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(rawChildId)
 
+        val uniqueContentKey = "$combinedText|${targetItem.fingerprint}"
         val hash = deduplicationEngine.computeNoticeHash(
             childId = targetChildId,
             sourceApp = "com.google.android.apps.classroom",
             title = title,
-            body = combinedText
+            body = uniqueContentKey
         )
 
         val parsedDate = ClassroomDateParser.parse(combinedText)
         val postTimestamp = parsedDate?.timestampMs ?: System.currentTimeMillis()
 
         var noticeEntity = db.noticeDao().findByHash(hash)
-            ?: db.noticeDao().findByChildAndTitle(targetChildId, title)
         val noticeId = noticeEntity?.noticeId ?: UUID.randomUUID().toString()
         if (noticeEntity == null) {
             noticeEntity = NoticeEntity(
@@ -2093,8 +2128,8 @@ class KidsAccessibilityService : AccessibilityService() {
             db.noticeDao().insert(noticeEntity)
             crawlerOverlay?.incrementNoticeCount()
             CrawlerTraceLogger.log("SCROLLER_ACCEPTED", "Notice backfilled: \"$title\" ($category, date: ${parsedDate?.canonicalDate ?: "current"})")
-        } else if (parsedDate != null && noticeEntity.timestampMs != postTimestamp) {
-            db.noticeDao().update(noticeEntity.copy(timestampMs = postTimestamp))
+        } else if (parsedDate != null && (noticeEntity.timestampMs != postTimestamp || noticeEntity.body != combinedText)) {
+            db.noticeDao().update(noticeEntity.copy(timestampMs = postTimestamp, body = combinedText))
         }
 
         // 4. Discover and register attachments
@@ -2106,6 +2141,8 @@ class KidsAccessibilityService : AccessibilityService() {
         var detailScrolls = 0
         var isDetailBottomReached = false
         val maxDiscoveryScrolls = calculateDynamicDetailDiscoveryScrollBudget(initialAtts.size)
+        var consecutiveStaticDetailScrolls = 0
+        val maxStaticDetailScrollTolerance = 2
 
         while (!isDetailBottomReached && detailScrolls < maxDiscoveryScrolls && serviceScope.isActive) {
             var scrollDone = false
@@ -2129,7 +2166,12 @@ class KidsAccessibilityService : AccessibilityService() {
                 }
                 scrolledRoot.recycle()
                 if (newlyDiscoveredCount == 0) {
-                    isDetailBottomReached = true
+                    consecutiveStaticDetailScrolls++
+                    if (consecutiveStaticDetailScrolls >= maxStaticDetailScrollTolerance) {
+                        isDetailBottomReached = true
+                    }
+                } else {
+                    consecutiveStaticDetailScrolls = 0
                 }
             } else {
                 isDetailBottomReached = true
@@ -2937,8 +2979,8 @@ class KidsAccessibilityService : AccessibilityService() {
     private fun findAttachmentChipByFileName(rootNode: AccessibilityNodeInfo, fileName: String): AccessibilityNodeInfo? {
         val cleanFileName = fileName.replace("...", "").trim()
         val withoutParentheses = cleanFileName.replace(Regex("""\([^)]*\)"""), "").trim()
-        val baseFileName = cleanFileName.substringBeforeLast('.')
-        val baseWithoutParens = withoutParentheses.substringBeforeLast('.')
+        val baseFileName = cleanFileName.substringBeforeLast('.').trimEnd('.')
+        val baseWithoutParens = withoutParentheses.substringBeforeLast('.').trimEnd('.')
 
         val searchQueries = linkedSetOf(
             cleanFileName,
@@ -3964,25 +4006,71 @@ class KidsAccessibilityService : AccessibilityService() {
         return matchedItems
     }
 
-    private suspend fun isNoticeFullyCapturedInDb(title: String): Boolean {
+    private suspend fun isNoticeFullyCapturedInDb(targetItem: StreamManifestItem): Boolean {
+        return isNoticeFullyCapturedInDb(targetItem.title, targetItem.previewText, targetItem.fingerprint)
+    }
+
+    private suspend fun isNoticeFullyCapturedInDb(
+        title: String,
+        previewText: String = "",
+        fingerprint: String = ""
+    ): Boolean {
         val db = KidsDatabase.getInstance(applicationContext)
         val cleanTitle = title.trim()
-        val notice = db.noticeDao().getAllNoticesDirect().firstOrNull { existing ->
+        val allNotices = db.noticeDao().getAllNoticesDirect()
+        if (allNotices.isEmpty()) return false
+
+        if (fingerprint.isNotBlank()) {
+            val (_, _, savedChildName) = com.kids.collector.data.drive.DriveVaultManager.getSavedVaultPrefs(applicationContext)
+            val targetChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(savedChildName)
+            val expectedHash = deduplicationEngine.computeNoticeHash(
+                childId = targetChildId,
+                sourceApp = "com.google.android.apps.classroom",
+                title = cleanTitle,
+                body = if (previewText.isNotBlank()) "$previewText|$fingerprint" else fingerprint
+            )
+            val hashMatch = db.noticeDao().findByHash(expectedHash)
+            if (hashMatch != null) {
+                return verifyNoticeAttachmentsSynced(db, hashMatch)
+            }
+        }
+
+        val previewSnippet = previewText.lines()
+            .map { it.trim() }
+            .filter { line ->
+                val lower = line.lowercase()
+                line.length >= 8 &&
+                        !line.equals(cleanTitle, ignoreCase = true) &&
+                        !lower.startsWith("tab ") &&
+                        !lower.startsWith("add class comment")
+            }
+            .firstOrNull() ?: ""
+
+        val matchingNotices = allNotices.filter { existing ->
             val existingTitle = existing.title.trim()
             if (existingTitle.equals(cleanTitle, ignoreCase = true)) {
-                return@firstOrNull true
+                true
+            } else {
+                val isTruncated = cleanTitle.endsWith("...") || cleanTitle.endsWith("…")
+                if (isTruncated) {
+                    val cleanPrefix = cleanTitle.removeSuffix("...").removeSuffix("…").trim()
+                    cleanPrefix.length >= 45 && existingTitle.startsWith(cleanPrefix, ignoreCase = true)
+                } else false
             }
-            // If the card title was truncated with ellipsis, match by prefix only if non-truncated part is substantial (>=45 chars)
-            val isTruncated = cleanTitle.endsWith("...") || cleanTitle.endsWith("…")
-            if (isTruncated) {
-                val cleanPrefix = cleanTitle.removeSuffix("...").removeSuffix("…").trim()
-                if (cleanPrefix.length >= 45 && existingTitle.startsWith(cleanPrefix, ignoreCase = true)) {
-                    return@firstOrNull true
-                }
-            }
-            false
-        } ?: return false
+        }
 
+        if (matchingNotices.isEmpty()) return false
+
+        val notice = if (matchingNotices.size > 1 && previewSnippet.isNotBlank()) {
+            matchingNotices.firstOrNull { it.body.contains(previewSnippet, ignoreCase = true) } ?: return false
+        } else {
+            matchingNotices.first()
+        }
+
+        return verifyNoticeAttachmentsSynced(db, notice)
+    }
+
+    private suspend fun verifyNoticeAttachmentsSynced(db: KidsDatabase, notice: NoticeEntity): Boolean {
         val atts = db.attachmentDao().getAttachmentsForNotice(notice.noticeId)
         if (atts.isNotEmpty()) {
             // Must verify that EVERY registered attachment is physically present locally or verified in Drive
@@ -3995,11 +4083,19 @@ class KidsAccessibilityService : AccessibilityService() {
             }
         }
 
+        val cleanTitle = notice.title.trim()
         val isLikelyMaterial = cleanTitle.contains("material", true) ||
                 cleanTitle.contains("worksheet", true) ||
+                cleanTitle.contains("worksheets", true) ||
+                cleanTitle.contains("sheet", true) ||
+                cleanTitle.contains("sheets", true) ||
+                cleanTitle.contains("practice", true) ||
                 cleanTitle.contains("notes", true) ||
                 cleanTitle.contains("answer key", true) ||
-                cleanTitle.contains("assignment", true)
+                cleanTitle.contains("assignment", true) ||
+                cleanTitle.contains("revision", true) ||
+                cleanTitle.contains("paper", true) ||
+                cleanTitle.contains("module", true)
 
         // If it is a material or worksheet post but has 0 attachments registered, never assume it is fully captured
         if (isLikelyMaterial) {
@@ -4067,7 +4163,7 @@ class KidsAccessibilityService : AccessibilityService() {
             val fingerprint = if (occurrence > 1) computeCardFingerprint(cardItems, occurrence) else baseFingerprint
 
             val existingNotice = db.noticeDao().findByHash(fingerprint)
-            val isAlreadyCaptured = (visitedPostFingerprints.contains(fingerprint) || existingNotice != null) && isNoticeFullyCapturedInDb(title)
+            val isAlreadyCaptured = (visitedPostFingerprints.contains(fingerprint) || existingNotice != null) && isNoticeFullyCapturedInDb(title, combinedText, fingerprint)
             val added = manifest.addItem(fingerprint, title, combinedText, isAlreadyCaptured)
             if (added) {
                 addedCount++
@@ -4115,15 +4211,15 @@ class KidsAccessibilityService : AccessibilityService() {
         val rawChildId = targetChild?.childId ?: children.firstOrNull()?.childId ?: savedChildName
         val targetChildId = com.kids.collector.data.drive.DriveVaultManager.canonicalChildId(rawChildId)
 
+        val uniqueContentKey = "$fullText|$fingerprint"
         val hash = deduplicationEngine.computeNoticeHash(
             childId = targetChildId,
             sourceApp = "com.google.android.apps.classroom",
             title = title,
-            body = fullText
+            body = uniqueContentKey
         )
 
         val existing = db.noticeDao().findByHash(hash)
-            ?: db.noticeDao().findByChildAndTitle(targetChildId, title)
         if (existing == null) {
             val noticeEntity = NoticeEntity(
                 noticeId = UUID.randomUUID().toString(),
@@ -4166,55 +4262,73 @@ class KidsAccessibilityService : AccessibilityService() {
         val combinedDetail = detailTexts.joinToString(" ").lowercase()
         val normTargetTitle = StreamManifest.normalizeTitle(targetItem.title)
 
-        // 1. Exact or containment match of normalized title in detail view
-        if (normTargetTitle.length >= 6 && combinedDetail.contains(normTargetTitle)) {
+        val isGenericTitle = normTargetTitle.startsWith("dear parents") ||
+                normTargetTitle.startsWith("ruchi mittal") ||
+                normTargetTitle.startsWith("bhumika parmar") ||
+                normTargetTitle == "classroom notice" ||
+                normTargetTitle.length < 6
+
+        // 1. Exact or containment match of normalized title in detail view (for non-generic titles)
+        if (!isGenericTitle && normTargetTitle.length >= 6 && combinedDetail.contains(normTargetTitle)) {
             return true
         }
 
-        // 2. Check all substantive text candidates in detail view
-        val substantiveDetailTexts = detailTexts.filter { item ->
-            val lower = item.trim().lowercase()
-            !excludedChrome.contains(lower) &&
-                    !excludedChrome.any { lower.startsWith(it) } &&
-                    !lower.startsWith("tab ") &&
-                    !lower.startsWith("add class comment") &&
-                    !lower.contains("class comments") &&
-                    !lower.startsWith("back to ") &&
-                    item.trim().length > 3
-        }
+        // 2. Check all substantive text candidates in detail view (for non-generic titles)
+        if (!isGenericTitle) {
+            val substantiveDetailTexts = detailTexts.filter { item ->
+                val lower = item.trim().lowercase()
+                !excludedChrome.contains(lower) &&
+                        !excludedChrome.any { lower.startsWith(it) } &&
+                        !lower.startsWith("tab ") &&
+                        !lower.startsWith("add class comment") &&
+                        !lower.contains("class comments") &&
+                        !lower.startsWith("back to ") &&
+                        item.trim().length > 3
+            }
 
-        for (item in substantiveDetailTexts) {
-            val normDetailTitle = StreamManifest.normalizeTitle(item)
-            if (normDetailTitle.isNotBlank() && (
-                normDetailTitle == normTargetTitle ||
-                (normDetailTitle.length >= 6 && normTargetTitle.contains(normDetailTitle)) ||
-                (normTargetTitle.length >= 6 && normDetailTitle.contains(normTargetTitle))
-            )) {
-                return true
+            for (item in substantiveDetailTexts) {
+                val normDetailTitle = StreamManifest.normalizeTitle(item)
+                if (normDetailTitle.isNotBlank() && (
+                    normDetailTitle == normTargetTitle ||
+                    (normDetailTitle.length >= 6 && normTargetTitle.contains(normDetailTitle)) ||
+                    (normTargetTitle.length >= 6 && normDetailTitle.contains(normTargetTitle))
+                )) {
+                    return true
+                }
+            }
+
+            // 3. Substantive token overlap (excluding educational stop words)
+            val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+"""))
+                .filter { it.length >= 3 && !isGenericStopWord(it) }
+                .toSet()
+            if (targetTokens.isNotEmpty()) {
+                val matchingTokens = targetTokens.filter { combinedDetail.contains(it) }
+                val overlapRatio = matchingTokens.size.toFloat() / targetTokens.size
+                if (overlapRatio >= 0.5f || (targetTokens.size == 1 && matchingTokens.isNotEmpty())) {
+                    return true
+                }
             }
         }
 
-        // 3. Substantive token overlap (excluding educational stop words)
-        val targetTokens = normTargetTitle.split(Regex("""[\s\p{Punct}]+"""))
-            .filter { it.length >= 3 && !isGenericStopWord(it) }
-            .toSet()
-        if (targetTokens.isNotEmpty()) {
-            val matchingTokens = targetTokens.filter { combinedDetail.contains(it) }
-            val overlapRatio = matchingTokens.size.toFloat() / targetTokens.size
-            if (overlapRatio >= 0.5f || (targetTokens.size == 1 && matchingTokens.isNotEmpty())) {
-                return true
+        // 4. Stream Announcement preview match (substantive line of announcement text)
+        val previewSnippet = targetItem.previewText.lines()
+            .map { it.trim().lowercase() }
+            .filter { line ->
+                line.length >= 8 &&
+                        !line.startsWith("dear parents") &&
+                        !line.startsWith("ruchi mittal") &&
+                        !line.startsWith("bhumika parmar") &&
+                        !line.startsWith("add class comment")
             }
-        }
+            .firstOrNull()?.take(40) ?: targetItem.previewText.trim().lowercase().take(40)
 
-        // 4. Stream Announcement preview match (if announcement without separate title)
-        val preview = targetItem.previewText.trim().lowercase().take(40)
-        if (preview.length >= 15 && combinedDetail.contains(preview)) {
+        if (previewSnippet.length >= 8 && combinedDetail.contains(previewSnippet)) {
             return true
         }
 
         CrawlerTraceLogger.log(
             "POST_VALIDATION_DEBUG",
-            "Target #${targetItem.index} mismatch debug: normTarget=\"$normTargetTitle\", substantive=${substantiveDetailTexts.take(3)}, detailSample=\"${combinedDetail.take(120)}\""
+            "Target #${targetItem.index} mismatch debug: normTarget=\"$normTargetTitle\", previewSnippet=\"$previewSnippet\", detailSample=\"${combinedDetail.take(120)}\""
         )
         return false
     }
@@ -4236,21 +4350,22 @@ class KidsAccessibilityService : AccessibilityService() {
             return UUID.randomUUID().toString().take(16)
         }
 
-        val header = filtered.firstOrNull()?.take(60)?.lowercase()?.trim().orEmpty()
-        val dateItem = filtered.drop(1).firstOrNull { item ->
-            val lower = item.lowercase()
-            hasPostDateOrTimestamp(lower)
-        }?.take(30)?.lowercase()?.trim().orEmpty()
-
-        val bodySnippet = filtered.drop(1)
-            .filter { it.lowercase().trim() != dateItem }
-            .joinToString(" ")
-            .take(60)
-            .lowercase()
-            .trim()
+        // Extract immutable header and secondary date/subtitle from the first 2 physical lines of the card
+        val firstItemLines = filtered.first().split("\n").map { it.trim() }.filter { it.isNotBlank() }
+        val header = firstItemLines.firstOrNull()?.take(60)?.lowercase()?.trim().orEmpty()
+        val secondLine = if (firstItemLines.size > 1) {
+            firstItemLines[1].take(30).lowercase().trim()
+        } else {
+            val candidateDate = filtered.drop(1).firstOrNull { item ->
+                val lower = item.lowercase()
+                hasPostDateOrTimestamp(lower)
+            }
+            candidateDate?.take(30)?.lowercase()?.trim()
+                ?: filtered.drop(1).firstOrNull()?.split("\n")?.firstOrNull { it.isNotBlank() }?.take(30)?.lowercase()?.trim().orEmpty()
+        }
 
         val occSuffix = if (occurrenceIndex > 0) "|occ_$occurrenceIndex" else ""
-        val canonicalContent = "$header|$dateItem|$bodySnippet$occSuffix"
+        val canonicalContent = "$header|$secondLine$occSuffix"
         return try {
             val md = MessageDigest.getInstance("SHA-256")
             val digest = md.digest(canonicalContent.toByteArray(Charsets.UTF_8))
@@ -4314,10 +4429,13 @@ class KidsAccessibilityService : AccessibilityService() {
 
         val candidate = when {
             isOptionsButton || isVideoOrExternalLink || isSectionHeader -> null
-            !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...")) -> {
+            !desc.isNullOrBlank() && extensions.any { desc.contains(it, ignoreCase = true) } && !desc.contains("options", ignoreCase = true) -> {
+                if (desc.contains('.')) desc else "$desc.pdf"
+            }
+            !text.isNullOrBlank() && (extensions.any { text.contains(it, ignoreCase = true) } || text.endsWith("...") || text.endsWith("…")) -> {
                 if (text.contains('.')) text else "$text.pdf"
             }
-            !desc.isNullOrBlank() && (extensions.any { desc.contains(it, ignoreCase = true) } || (desc.contains("attachment", ignoreCase = true) && !desc.contains("options", ignoreCase = true)) || desc.contains("pdf", ignoreCase = true)) -> {
+            !desc.isNullOrBlank() && ((desc.contains("attachment", ignoreCase = true) && !desc.contains("options", ignoreCase = true)) || desc.contains("pdf", ignoreCase = true)) -> {
                 if (desc.contains('.')) desc else "$desc.pdf"
             }
             else -> null

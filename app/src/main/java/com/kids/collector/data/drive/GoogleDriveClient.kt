@@ -425,23 +425,38 @@ class GoogleDriveClient(
         val newLines = newText.lines().filter { it.isNotBlank() }
 
         val noticeIdRegex = Regex(""""noticeId"\s*:\s*"([^"]+)"""")
+        val hashRegex = Regex(""""hashSha256"\s*:\s*"([^"]+)"""")
         val idToIndexMap = mutableMapOf<String, Int>()
+        val hashToIndexMap = mutableMapOf<String, Int>()
         for ((index, line) in existingLines.withIndex()) {
             val noticeId = noticeIdRegex.find(line)?.groupValues?.get(1)
             if (noticeId != null) {
                 idToIndexMap[noticeId] = index
             }
+            val hash = hashRegex.find(line)?.groupValues?.get(1)
+            if (hash != null) {
+                hashToIndexMap[hash] = index
+            }
         }
 
         for (newLine in newLines) {
             val noticeId = noticeIdRegex.find(newLine)?.groupValues?.get(1)
-            if (noticeId != null && idToIndexMap.containsKey(noticeId)) {
-                val targetIndex = idToIndexMap[noticeId]!!
-                existingLines[targetIndex] = newLine
+            val hash = hashRegex.find(newLine)?.groupValues?.get(1)
+            val existingIndex = when {
+                noticeId != null && idToIndexMap.containsKey(noticeId) -> idToIndexMap[noticeId]
+                hash != null && hashToIndexMap.containsKey(hash) -> hashToIndexMap[hash]
+                else -> null
+            }
+            if (existingIndex != null) {
+                existingLines[existingIndex] = newLine
             } else {
                 existingLines.add(newLine)
+                val targetIndex = existingLines.lastIndex
                 if (noticeId != null) {
-                    idToIndexMap[noticeId] = existingLines.lastIndex
+                    idToIndexMap[noticeId] = targetIndex
+                }
+                if (hash != null) {
+                    hashToIndexMap[hash] = targetIndex
                 }
             }
         }

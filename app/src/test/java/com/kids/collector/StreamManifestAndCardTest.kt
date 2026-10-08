@@ -369,11 +369,12 @@ class StreamManifestAndCardTest {
                 val fp = "${title.trim().lowercase().take(60)}|${date.trim().lowercase().take(30)}"
                 testManifest.addItem(fp, title, title, false)
             }
-            assertThat(testManifest.totalCount).isEqualTo(172)
-            assertThat(testManifest.pendingCount).isEqualTo(172)
+            val expectedTotal = posts.length()
+            assertThat(testManifest.totalCount).isEqualTo(expectedTotal)
+            assertThat(testManifest.pendingCount).isEqualTo(expectedTotal)
 
-            // Test reverse traversal from bottom (172) to top (1)
-            var expectedIndex = 172
+            // Test reverse traversal from bottom to top (1)
+            var expectedIndex = expectedTotal
             while (testManifest.pendingCount > 0) {
                 val nextItem = testManifest.getNextPendingItemReverse()
                 assertThat(nextItem).isNotNull()

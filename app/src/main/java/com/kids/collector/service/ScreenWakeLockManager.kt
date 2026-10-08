@@ -5,6 +5,7 @@ import android.graphics.PixelFormat
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.content.pm.ActivityInfo
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -94,6 +95,7 @@ class ScreenWakeLockManager {
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.START
+                    screenOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                     x = 0
                     y = 0
                 }
