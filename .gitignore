@@ -31,3 +31,27 @@ Thumbs.db
 .vscode/
 .idea/
 .vite/
+
+# Android & Gradle Build Artifacts (Cross-Branch Hygiene)
+.gradle/
+.kotlin/
+build-artifacts/
+build-artifacts-latest/
+local.properties
+*.apk
+*.aab
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python & Test Dumps
+__pycache__/
+*.py[cod]
+scratch/
+raw_stream_dumps/
+detail_dumps/
+detail_dumps_v3/
+classroom_stream_dump_*.json
+/*.xml
+web_preview/
