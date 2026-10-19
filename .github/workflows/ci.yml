@@ -39,20 +39,33 @@ jobs:
           echo "Executing Zero-Hardcode & Dynamic Configuration Guardian Audit..."
           python scripts/verify_zero_hardcode.py
 
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Chrome Extension Unit Tests
+        working-directory: extension
+        run: |
+          npm ci
+          npm test
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.9'
 
       - name: Grant Execute Permission to Gradlew
-        run: chmod +x gradlew
+        run: chmod +x android/gradlew
 
-      - name: Execute Unit Test Suite
+      - name: Execute Android Unit Test Suite
+        working-directory: android
         run: |
           echo "Executing Unit Tests..."
           ./gradlew testDebugUnitTest --stacktrace
 
       - name: Assemble Debug APK
+        working-directory: android
         run: |
           echo "Compiling Debug APK..."
           ./gradlew assembleDebug --stacktrace
@@ -66,7 +79,7 @@ jobs:
           gh release delete latest --yes || true
           git push --delete origin latest || true
           gh release create latest \
-            app/build/outputs/apk/debug/app-debug.apk#K.I.D.S-latest.apk \
+            android/app/build/outputs/apk/debug/app-debug.apk#K.I.D.S-latest.apk \
             --title "K.I.D.S. (Latest Automated Build - Run #${{ github.run_number }})" \
             --notes "Automated continuous delivery build from commit ${{ github.sha }} on $(date -u '+%Y-%m-%d %H:%M:%S UTC')." \
             --prerelease
@@ -77,7 +90,7 @@ jobs:
         with:
           name: build-and-test-artifacts
           path: |
-            app/build/reports/
-            app/build/test-results/
-            app/build/outputs/apk/
+            android/app/build/reports/
+            android/app/build/test-results/
+            android/app/build/outputs/apk/
           retention-days: 7

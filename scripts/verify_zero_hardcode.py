@@ -22,7 +22,7 @@ if sys.platform == "win32":
         pass
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
-TARGET_SOURCE_DIR = ROOT_DIR / "app" / "src" / "main" / "java"
+TARGET_SOURCE_DIR = (ROOT_DIR / "android" / "app" / "src" / "main" / "java") if (ROOT_DIR / "android" / "app").exists() else (ROOT_DIR / "app" / "src" / "main" / "java")
 EXEMPTIONS_FILE = ROOT_DIR / ".hardcode-exemptions.json"
 
 # Rules to detect unapproved hardcoded values
