@@ -76,6 +76,9 @@ __pycache__/
 
 # Raw crawler stream dumps and test captures
 raw_stream_dumps/
+detail_dumps/
+detail_dumps_v3/
 classroom_stream_dump_*.json
+/*.xml
 
 
